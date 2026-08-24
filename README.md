@@ -1,6 +1,6 @@
 # QED64 — Lean 4 in your browser, 64-bit
 
-QED64 is a Lean 4 web editor in the spirit of [live.lean-lang.org](https://live.lean-lang.org)
+[QED64](https://qed64.fawadworkaddress.workers.dev/) is a Lean 4 web editor in the spirit of [live.lean-lang.org](https://live.lean-lang.org)
 with one decisive difference: **no server checks your proofs**. The real Lean 4
 compiler runs in a Web Worker as **WebAssembly Memory64** (LP64, shared memory,
 pthreads), with the Lean core library and a 4,192-module **Mathlib** profile
