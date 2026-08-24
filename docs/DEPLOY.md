@@ -33,11 +33,30 @@ The setup that fits: **Cloudflare Workers static assets (app shell) + R2
 - `.github/workflows/ci.yml` — every push/PR: typecheck, 95 unit tests,
   worker syntax. No artifacts needed; runs in under a minute.
 - `.github/workflows/deploy.yml` — pushes to `main` rebuild and redeploy
-  the app shell (needs the `CLOUDFLARE_API_TOKEN` repo secret). Artifact
-  changes stay a manual `scripts/upload-artifacts.sh` — they change only
-  when the toolchain is rebuilt or snapshots re-baked, which requires the
-  14-core local pipeline anyway (GitHub's free runners have neither the
-  cores nor the ~15 GB wasm heap the umbrella bake needs).
+  the app shell. Requires two GitHub Actions secrets (set in repo
+  **Settings → Secrets and variables → Actions**):
+  - `CLOUDFLARE_API_TOKEN` — a Cloudflare API token with exactly one
+    permission: **Account → Workers Scripts → Edit** (scoped to your
+    account). Create it at
+    https://dash.cloudflare.com/profile/api-tokens using the
+    "Edit Cloudflare Workers" template, then restrict it to the one
+    account. Do **not** add R2 permission; a separate R2 token handles
+    artifact uploads (see above).
+  - `CLOUDFLARE_ACCOUNT_ID` — your Cloudflare account ID (visible in
+    the Workers dashboard URL: `dash.cloudflare.com/<account-id>/workers`).
+    Providing the account ID explicitly lets narrowly-scoped tokens skip
+    the `/accounts` membership-discovery call.
+
+  Artifact changes stay a manual `scripts/upload-artifacts.sh` — they
+  change only when the toolchain is rebuilt or snapshots re-baked, which
+  requires the 14-core local pipeline anyway (GitHub's free runners have
+  neither the cores nor the ~15 GB wasm heap the umbrella bake needs).
+
+  **Troubleshooting `Authentication error [code: 10000]`**: this means
+  the `CLOUDFLARE_API_TOKEN` secret is missing, expired, or lacks
+  `Workers Scripts: Edit` permission. Regenerate the token in the
+  Cloudflare dashboard (use the "Edit Cloudflare Workers" template) and
+  update the GitHub secret.
 
 ## Consistency rule
 
