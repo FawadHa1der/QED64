@@ -10,6 +10,10 @@ workers_dev = true
 [assets]
 directory = "dist"
 binding = "ASSETS"
+# Assets are served BEFORE the worker by default, which would skip the
+# COOP/COEP headers the app cannot live without — run the worker for every
+# request so withHeaders() applies to the shell too.
+run_worker_first = true
 
 [[r2_buckets]]
 binding = "ARTIFACTS"
