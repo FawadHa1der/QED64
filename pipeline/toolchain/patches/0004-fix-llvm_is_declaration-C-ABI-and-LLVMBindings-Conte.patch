@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: QED64 Toolchain <qed64-toolchain@localhost>
 Date: Thu, 20 Aug 2026 15:42:04 -0400
-Subject: [PATCH 04/14] fix: llvm_is_declaration C ABI and LLVMBindings Context
+Subject: [PATCH 04/15] fix: llvm_is_declaration C ABI and LLVMBindings Context
  declaration order
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

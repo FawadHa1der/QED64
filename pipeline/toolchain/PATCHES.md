@@ -1,7 +1,7 @@
 # The wasm64 patch series
 
 **The authoritative, upstream-ready series lives in [`patches/`](patches/):**
-fourteen `git am`-able commits over `cauli/lean4@5732b84` (branch `qed64-wasm64`
+fifteen `git am`-able commits over `cauli/lean4@5732b84` (branch `qed64-wasm64`
 in `work/lean4`), each with full rationale and an explicit upstreaming
 verdict in its commit message. Summary:
 
@@ -21,6 +21,7 @@ verdict in its commit message. Summary:
 | 0012 | **Flat open-addressing object table for the compactor** (node-based map cost ~5 GB for the ~10^8 objects of a whole-Mathlib save; flat table ~2 GB, faster walk) | **as-is** (pure memory/perf win on every platform) |
 | 0013 | **In-memory snapshot load** (`CompactedRegion.readMem`, `lean_wasm_load_snapshot_mem`): the host streams a region straight into a `malloc` buffer, skipping the MEMFS staging copy (a second multi-GB JS-heap allocation) | applies to any no-mmap host; the shared `finish_region_read` refactor is upstream-neutral |
 | 0014 | **Snapshot-load stage timings + streamed init progress**: every load reports region-read vs `[init]`-replay split (plus top-10 module timings when replay >5 s), and streams `[WASM INIT] i/n module` per module so hosts can render live progress through the blocking call | diagnostic; the numbers justify upstream work on initializer execution |
+| 0015 | Multi-arch emsdk base image (drops the -arm64 pin so amd64 hosts build natively) | build hygiene |
 
 Profile verdict (2026-08-23): a whole-Mathlib snapshot load spends **~0.7 s
 relocating 2.6 GB and ~114 s executing 152 modules' interpreted `[init]`

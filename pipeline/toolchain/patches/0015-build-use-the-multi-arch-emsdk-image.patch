@@ -1,0 +1,25 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: QED64 Toolchain <qed64-toolchain@localhost>
+Date: Mon, 24 Aug 2026 10:35:05 -0400
+Subject: [PATCH 15/15] build: use the multi-arch emsdk image
+
+This PR drops the -arm64 suffix from the build image so the toolchain builds natively on both arm64 and amd64 hosts; the multi-arch tag resolves to the same image content per platform.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ docker-wasm64/Dockerfile | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/docker-wasm64/Dockerfile b/docker-wasm64/Dockerfile
+index ff57c87..014c8fd 100644
+--- a/docker-wasm64/Dockerfile
++++ b/docker-wasm64/Dockerfile
+@@ -1,4 +1,4 @@
+-FROM emscripten/emsdk:6.0.5-arm64
++FROM emscripten/emsdk:6.0.5
+ 
+ # Native stage0 needs the host libuv headers/library. The wasm stage builds its
+ # own patched libuv through Emscripten.
+-- 
+2.50.1 (Apple Git-155)
+
