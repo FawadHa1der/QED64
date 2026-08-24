@@ -2,7 +2,13 @@
 # tiny). Artifacts (2.1 GB in R2) are uploaded manually via
 # scripts/upload-artifacts.sh when a runtime or snapshot actually changes —
 # GitHub runners neither need nor want the multi-GB payload.
-# Required repo secret: CLOUDFLARE_API_TOKEN (Workers+R2 edit permissions).
+#
+# Required repo secrets (Settings → Secrets and variables → Actions):
+#   CLOUDFLARE_API_TOKEN  — API token with Account → Workers Scripts → Edit
+#                           (use the "Edit Cloudflare Workers" template in
+#                           the Cloudflare dashboard; no R2 permission needed)
+#   CLOUDFLARE_ACCOUNT_ID — your Cloudflare account ID (spares the token
+#                           the /accounts membership-discovery call)
 name: deploy
 on:
   push:
@@ -19,6 +25,21 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      # Fast pre-flight: verify the token can reach the Workers Scripts API
+      # before spending minutes on build. This hits the same endpoint wrangler
+      # deploy calls first; a 200 means the token has Workers Scripts: Edit.
+      - name: Verify Cloudflare Workers token
+        run: |
+          status=$(curl -sf -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts")
+          if [ "$status" != "200" ]; then
+            echo "::error::Cloudflare API returned HTTP $status. Ensure CLOUDFLARE_API_TOKEN has 'Account → Workers Scripts → Edit' permission (use the 'Edit Cloudflare Workers' template). See docs/DEPLOY.md."
+            exit 1
+          fi
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       - run: npx tsc --noEmit && npx vitest run tests/unit
       - run: npm run build && rm -rf dist/runtime dist/profiles dist/snapshots
       # Plain wrangler (pinned in devDependencies) instead of wrangler-action:
