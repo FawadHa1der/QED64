@@ -40,12 +40,12 @@ git clone --depth 1 --branch reinstate-wasm https://github.com/cauli/lean4.git l
 git -C lean4 am ../../patches/*.patch     # 10 commits; tree 73573e1e…
 
 # 1-5. Image, configure, stage0+stage1, link (≈45-90 min on 14 cores)
-./build.sh          # docker build → configure-qed64.sh → stage1-configure
+pipeline/toolchain/build.sh          # docker build → configure-qed64.sh → stage1-configure
                     # → stage1 libs → lean link
 # If the link stops at libleaninitialize.a (fresh build trees lack the
 # target), or to embed the githash correctly (git safe.directory inside
 # the container), run:
-./finish.sh
+pipeline/toolchain/finish.sh
 
 # 6. Node quirk: the artifact must carry a CJS marker when it lives inside
 # an ESM package (Emscripten pthread workers load lean.js as CommonJS)
