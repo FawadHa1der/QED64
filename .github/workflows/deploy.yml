@@ -24,3 +24,6 @@ jobs:
       - uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          # Narrowly-scoped tokens cannot list accounts; pass the id so
+          # wrangler skips the /accounts discovery call.
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
