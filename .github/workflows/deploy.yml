@@ -21,9 +21,11 @@ jobs:
       - run: npm ci
       - run: npx tsc --noEmit && npx vitest run tests/unit
       - run: npm run build && rm -rf dist/runtime dist/profiles dist/snapshots
-      - uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          # Narrowly-scoped tokens cannot list accounts; pass the id so
-          # wrangler skips the /accounts discovery call.
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      # Plain wrangler (pinned in devDependencies) instead of wrangler-action:
+      # the wrapper swallowed error output on failure. Env vars are wrangler's
+      # native non-interactive auth; the account id spares narrowly-scoped
+      # tokens the /accounts discovery call.
+      - run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
