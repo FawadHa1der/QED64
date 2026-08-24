@@ -117,8 +117,8 @@ node --stack-size=8192 pipeline/snapshot/snapshot-probe.mjs --snap work/snapshot
 
 ## Provenance and trust
 
-The runtime (`wasm64-2c197d38d7fbe922`, Lean `4.33.0-pre`, clean-room build of
-`cauli/lean4@5732b84` + the 13-patch series in `pipeline/toolchain/patches/`)
+The runtime (`wasm64-b33e19ecb8121edc`, Lean `4.33.0-pre`, clean-room build of
+`cauli/lean4@5732b84` + the 15-patch series in `pipeline/toolchain/patches/`)
 and both profile packs are consumed here **by digest**: every chunk
 and transport part is SHA-256-pinned in a manifest, `sync:artifacts` refuses
 unverified bytes, `verify:release` re-derives the raw pack digests, and the

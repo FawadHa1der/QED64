@@ -428,6 +428,23 @@ export class App {
       this.hideProgress();
       this.setPhase("failed", "Install failed");
       this.setupLog(`Install failed: ${(error as Error).message}`);
+      // A failed install (usually a network drop mid-download) must be
+      // retryable in place — verified parts are already cached, so a retry
+      // resumes cheaply instead of forcing a full page reload.
+      const panel = this.el.panels.messages;
+      panel.innerHTML = "";
+      const note = document.createElement("div");
+      note.className = "empty-hint";
+      note.textContent = `Install failed: ${(error as Error).message}. Already-downloaded parts are cached — retrying continues from there.`;
+      panel.append(note);
+      const retry = document.createElement("button");
+      retry.className = "control primary inline-action";
+      retry.textContent = "Retry install";
+      retry.addEventListener("click", () => {
+        this.setPhase("installing", "Retrying install…");
+        void this.installAndBoot(profileIds);
+      });
+      panel.append(retry);
     } finally {
       this.installing = false;
     }

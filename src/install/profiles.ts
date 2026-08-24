@@ -417,11 +417,29 @@ export async function inflateTransport(
       let bytes: Uint8Array<ArrayBuffer>;
       try {
         bytes = await fetchPart("force-cache");
-      } catch (error) {
-        if (sinkError) throw error;
-        // A poisoned HTTP-cache entry (e.g. an SPA fallback cached before the
-        // parts were deployed) fails verification; bypass the cache once.
-        bytes = await fetchPart("reload");
+      } catch (firstError) {
+        if (sinkError) throw firstError;
+        // Two distinct failure classes end up here. A poisoned HTTP-cache
+        // entry (an SPA fallback cached before the parts were deployed)
+        // fails verification and one cache-bypassing retry fixes it forever.
+        // A transient network drop ("Failed to fetch") mid-way through a
+        // ~1 GB, 60-part download is routine on real connections and killed
+        // installs on the deployed site — retry with backoff before giving
+        // up, and always bypass the cache on retries.
+        let lastError: unknown = firstError;
+        let recovered: Uint8Array<ArrayBuffer> | null = null;
+        for (const delayMs of [0, 2000, 8000]) {
+          if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
+          if (sinkError) throw lastError;
+          try {
+            recovered = await fetchPart("reload");
+            break;
+          } catch (retryError) {
+            lastError = retryError;
+          }
+        }
+        if (recovered === null) throw lastError;
+        bytes = recovered;
       }
       downloaded += bytes.byteLength;
       onProgress({ phase: "download", loaded: downloaded, total: transport.byteLength });

@@ -123,3 +123,11 @@ regression-pinned where testable. They will save the next person days.
     automatic reboot (cache-revalidating reinstall) and the interrupted
     check re-runs itself. Live-drilled via injected failures: healthy branch
     keeps the session, poisoned branch self-heals to ✓ with no user action.
+23. **Real networks drop connections mid-gigabyte.** The first Mathlib
+    install against the deployed site died at 1.16 GiB with a bare
+    "Failed to fetch" — one transient failure among ~60 sequential part
+    downloads, fatal, recoverable only by page reload. Localhost testing can
+    never surface this. Every part fetch now retries with backoff
+    (0 s/2 s/8 s, cache-bypassing), and a failed install renders a
+    "Retry install" button — verified parts are already in the HTTP cache,
+    so retries resume nearly for free.
