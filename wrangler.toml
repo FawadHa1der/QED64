@@ -1,6 +1,9 @@
 name = "qed64"
 main = "infra/worker.js"
 compatibility_date = "2026-08-01"
+# Serve on <name>.workers.dev (requires the one-time account-wide subdomain
+# registration in the dashboard); attach a custom domain later via routes.
+workers_dev = true
 
 # App shell only: dist/ minus the R2-served artifact directories (the deploy
 # script prunes them after `vite build`; Workers assets cap files at 25 MiB).
