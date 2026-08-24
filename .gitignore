@@ -1,0 +1,9 @@
+node_modules/
+dist/
+# Large binary artifacts are synced from a verified source, never committed.
+public/runtime/chunks/
+public/profiles/*.part-*
+work/
+*.log
+.DS_Store
+public/snapshots/

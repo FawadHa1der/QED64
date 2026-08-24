@@ -1,0 +1,89 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: QED64 Toolchain <qed64-toolchain@localhost>
+Date: Thu, 20 Aug 2026 15:42:04 -0400
+Subject: [PATCH 04/14] fix: llvm_is_declaration C ABI and LLVMBindings Context
+ declaration order
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Two related defects in the LLVM backend bindings, both masked on 32-bit
+targets where pointers and i32 scalars share a wasm value type:
+
+1. `llvm_is_declaration` (src/library/llvm.cpp) returned a boxed
+   `lean_object *` while the generated C for `@[extern]`-declared
+   `Lean.LLVM.isDeclaration : … → BaseIO Bool` expects a raw `uint8_t`.
+   This is semantically wrong on EVERY platform: `lean_box(0)` is the
+   non-null value 1, so LLVM `false` reads as `true`. On wasm64 it is also
+   structurally fatal — the definition's i64 return does not match the
+   caller's expected i32, and Binaryen validation fails in
+   `l_Lean_LLVM_isDeclaration___boxed`. Return raw `uint8_t`.
+
+2. In LLVMBindings.lean, `BasicBlock` and `Builder` referenced `Context`
+   BEFORE `Lean.LLVM.Context` was declared. Auto-bound implicits silently
+   generalized that identifier to an arbitrary sort, changing the generated
+   ABI of three builder bindings (`positionBuilderAtEnd`, `getInsertBlock`,
+   `clearInsertionPosition`) from unboxed `size_t` to boxed `lean_object *`.
+   Move the `Context` declaration first so the bindings elaborate at their
+   intended types.
+
+Upstreaming: BOTH UPSTREAMABLE AS-IS to leanprover/lean4; (1) is a live
+correctness bug wherever -DLLVM=ON is exercised, (2) is a public-signature
+bug visible in `#check Lean.LLVM.positionBuilderAtEnd`.
+---
+ src/Lean/Compiler/IR/LLVMBindings.lean | 10 +++++-----
+ src/library/llvm.cpp                   |  5 ++---
+ 2 files changed, 7 insertions(+), 8 deletions(-)
+
+diff --git a/src/Lean/Compiler/IR/LLVMBindings.lean b/src/Lean/Compiler/IR/LLVMBindings.lean
+index 2fa1281..4089b89 100644
+--- a/src/Lean/Compiler/IR/LLVMBindings.lean
++++ b/src/Lean/Compiler/IR/LLVMBindings.lean
+@@ -43,7 +43,11 @@ def AttributeIndex.AttributeReturnIndex : AttributeIndex := { val := 0 }
+ -- This value is ~0 for 64 bit
+ def AttributeIndex.AttributeFunctionIndex : AttributeIndex := { val := 18446744073709551615 }
+ 
+-structure BasicBlock (ctx : Context)  where
++structure Context where
++  private mk :: ptr : USize
++instance : Nonempty Context := by exact ⟨{ ptr := default }⟩
++
++structure BasicBlock (ctx : Context) where
+   private mk :: ptr : USize
+ instance : Nonempty (BasicBlock ctx) := by exact ⟨{ ptr := default }⟩
+ 
+@@ -51,10 +55,6 @@ structure Builder (ctx : Context) where
+   private mk :: ptr : USize
+ instance : Nonempty (Builder ctx) := by exact ⟨{ ptr := default }⟩
+ 
+-structure Context where
+-  private mk :: ptr : USize
+-instance : Nonempty Context := by exact ⟨{ ptr := default }⟩
+-
+ structure LLVMType (ctx : Context) where
+   private mk :: ptr : USize
+ instance : Nonempty (LLVMType ctx) := by exact ⟨{ ptr := default }⟩
+diff --git a/src/library/llvm.cpp b/src/library/llvm.cpp
+index e45e358..f408e14 100644
+--- a/src/library/llvm.cpp
++++ b/src/library/llvm.cpp
+@@ -1373,14 +1373,13 @@ extern "C" LEAN_EXPORT lean_object *lean_llvm_get_value_name2(size_t ctx, size_t
+ #endif  // LEAN_LLVM
+ }
+ 
+-extern "C" LEAN_EXPORT lean_object *llvm_is_declaration(size_t ctx, size_t global) {
++extern "C" LEAN_EXPORT uint8_t llvm_is_declaration(size_t ctx, size_t global) {
+ #ifndef LEAN_LLVM
+     lean_always_assert(
+         false && ("Please build a version of Lean4 with -DLLVM=ON to invoke "
+                   "the LLVM backend function."));
+ #else
+-	uint8_t is_bool = LLVMIsDeclaration(lean_to_Value(global));
+-	return lean_box(is_bool);
++	return LLVMIsDeclaration(lean_to_Value(global));
+ #endif  // LEAN_LLVM
+ }
+ 
+-- 
+2.50.1 (Apple Git-155)
+

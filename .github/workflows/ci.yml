@@ -1,0 +1,22 @@
+# CI: every push/PR gets the fast, artifact-free checks. The multi-GB
+# runtime/profile/snapshot artifacts are not in git (content-addressed,
+# synced to R2 out of band), and integration tests skip cleanly without
+# them, so this stays under a minute.
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npx vitest run tests/unit
+      - run: node --check public/workers/lean.worker.js && node --check infra/worker.js

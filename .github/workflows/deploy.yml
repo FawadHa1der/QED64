@@ -1,0 +1,26 @@
+# CD: pushes to main redeploy the APP SHELL to Cloudflare Workers (seconds,
+# tiny). Artifacts (2.1 GB in R2) are uploaded manually via
+# scripts/upload-artifacts.sh when a runtime or snapshot actually changes —
+# GitHub runners neither need nor want the multi-GB payload.
+# Required repo secret: CLOUDFLARE_API_TOKEN (Workers+R2 edit permissions).
+name: deploy
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    needs: []
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx tsc --noEmit && npx vitest run tests/unit
+      - run: npm run build && rm -rf dist/runtime dist/profiles dist/snapshots
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}

@@ -1,0 +1,130 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: QED64 Toolchain <qed64-toolchain@localhost>
+Date: Thu, 20 Aug 2026 15:41:36 -0400
+Subject: [PATCH 01/14] build: add the Emscripten 6.0.5 wasm64 Docker build
+ recipe
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A pinned, containerized build environment for the wasm64 (Memory64) target:
+the emscripten/emsdk:6.0.5-arm64 image (use the amd64 tag or a multi-arch
+digest pin on x86-64 CI; tags are mutable — pin by digest for releases) plus
+two configure contracts:
+
+* configure.sh — the spike's original values (12 GiB declared maximum,
+  CHECK_OLEAN_VERSION=ON), kept for provenance;
+* configure-qed64.sh — the release configuration: 16 GiB declared maximum
+  (wasm import matching requires every embedder-provided memory maximum to
+  be <= the module's declared maximum, and shipped workers probe up to
+  8-16 GiB), and CHECK_OLEAN_VERSION=OFF (the strict gate is a 40-byte
+  strncmp of each olean's producer githash against the loading binary's
+  LEAN_GITHASH in lean_compacted_region_read; artifact packs produced by a
+  different commit of the same source lineage would all be rejected with it
+  ON — pack trust is enforced at the SHA-256 manifest layer instead; note
+  the loader still enforces the format version and GMP flag byte, so a
+  GMP-enabled producer's packs remain unloadable regardless).
+
+Container note: run `git config --global --add safe.directory /lean4` before
+configuring, or git fails on the bind mount and stage0 embeds an EMPTY
+githash (observed; violates release gate 5).
+
+Native stage0 needs host libuv/OpenSSL headers; the wasm stage builds its
+own patched libuv through Emscripten.
+
+Upstreaming: replaces the historical i386-stage0 recipe (the wasm32 build's
+pointer-width shim); with an LP64 target, stage0 is an ordinary native build
+and the exotic 32-bit toolchain requirements disappear.
+---
+ docker-wasm64/Dockerfile         | 12 ++++++++++++
+ docker-wasm64/configure-qed64.sh | 29 +++++++++++++++++++++++++++++
+ docker-wasm64/configure.sh       | 22 ++++++++++++++++++++++
+ 3 files changed, 63 insertions(+)
+ create mode 100644 docker-wasm64/Dockerfile
+ create mode 100755 docker-wasm64/configure-qed64.sh
+ create mode 100755 docker-wasm64/configure.sh
+
+diff --git a/docker-wasm64/Dockerfile b/docker-wasm64/Dockerfile
+new file mode 100644
+index 0000000..ff57c87
+--- /dev/null
++++ b/docker-wasm64/Dockerfile
+@@ -0,0 +1,12 @@
++FROM emscripten/emsdk:6.0.5-arm64
++
++# Native stage0 needs the host libuv headers/library. The wasm stage builds its
++# own patched libuv through Emscripten.
++RUN apt-get update \
++ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
++      ccache \
++      libssl-dev \
++      libuv1-dev \
++      pkg-config \
++ && rm -rf /var/lib/apt/lists/*
++
+diff --git a/docker-wasm64/configure-qed64.sh b/docker-wasm64/configure-qed64.sh
+new file mode 100755
+index 0000000..5581ec3
+--- /dev/null
++++ b/docker-wasm64/configure-qed64.sh
+@@ -0,0 +1,29 @@
++#!/bin/sh
++# QED64 clean-room configure: identical to configure.sh except
++#  * EMSCRIPTEN_MAXIMUM_MEMORY=17179869184 (16 GiB) — the certified runtime's
++#    declared maximum; an embedder may import any memory whose maximum is <=
++#    this, so 16 GiB keeps every worker configuration type-compatible;
++#  * CHECK_OLEAN_VERSION=OFF — this build embeds its real githash while the
++#    certified profile packs carry the original producer's; the patch series
++#    changes no serialization, and artifact trust lives in the SHA-256
++#    manifest layer, so the strict-equality githash gate must stay off.
++set -eu
++cmake /lean4 --preset release -B /build \
++  -DCMAKE_C_COMPILER_WORKS=1 \
++  -DCMAKE_TOOLCHAIN_FILE=/emsdk/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake \
++  -DCMAKE_C_FLAGS=-m64 \
++  -DCMAKE_CXX_FLAGS=-m64 \
++  -DCMAKE_AR=/emsdk/upstream/emscripten/emar \
++  -DSTAGE0_CMAKE_C_COMPILER=/usr/bin/gcc \
++  -DSTAGE0_CMAKE_CXX_COMPILER=/usr/bin/g++ \
++  -DSTAGE0_CMAKE_EXECUTABLE_SUFFIX= \
++  -DSTAGE0_USE_GMP=OFF \
++  -DSTAGE0_MMAP=OFF \
++  -DUSE_GMP=OFF \
++  -DMMAP=OFF \
++  -DUSE_MIMALLOC=OFF \
++  -DCHECK_OLEAN_VERSION=OFF \
++  -DLEAN_INSTALL_SUFFIX=-linux_wasm64 \
++  -DSTAGE1_LEAN_PLATFORM_TARGET=wasm64-unknown-emscripten \
++  -DEMSCRIPTEN_INITIAL_MEMORY=134217728 \
++  -DEMSCRIPTEN_MAXIMUM_MEMORY=17179869184
+diff --git a/docker-wasm64/configure.sh b/docker-wasm64/configure.sh
+new file mode 100755
+index 0000000..ef5313e
+--- /dev/null
++++ b/docker-wasm64/configure.sh
+@@ -0,0 +1,22 @@
++#!/bin/sh
++set -eu
++
++cmake /lean4 --preset release -B /build \
++  -DCMAKE_C_COMPILER_WORKS=1 \
++  -DCMAKE_TOOLCHAIN_FILE=/emsdk/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake \
++  -DCMAKE_C_FLAGS=-m64 \
++  -DCMAKE_CXX_FLAGS=-m64 \
++  -DCMAKE_AR=/emsdk/upstream/emscripten/emar \
++  -DSTAGE0_CMAKE_C_COMPILER=/usr/bin/gcc \
++  -DSTAGE0_CMAKE_CXX_COMPILER=/usr/bin/g++ \
++  -DSTAGE0_CMAKE_EXECUTABLE_SUFFIX= \
++  -DSTAGE0_USE_GMP=OFF \
++  -DSTAGE0_MMAP=OFF \
++  -DUSE_GMP=OFF \
++  -DMMAP=OFF \
++  -DUSE_MIMALLOC=OFF \
++  -DCHECK_OLEAN_VERSION=ON \
++  -DLEAN_INSTALL_SUFFIX=-linux_wasm64 \
++  -DSTAGE1_LEAN_PLATFORM_TARGET=wasm64-unknown-emscripten \
++  -DEMSCRIPTEN_INITIAL_MEMORY=134217728 \
++  -DEMSCRIPTEN_MAXIMUM_MEMORY=12884901888
+-- 
+2.50.1 (Apple Git-155)
+

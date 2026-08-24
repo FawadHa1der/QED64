@@ -1,0 +1,92 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: QED64 Toolchain <qed64-toolchain@localhost>
+Date: Thu, 20 Aug 2026 15:42:55 -0400
+Subject: [PATCH 10/14] fix: report parser diagnostics from lean_wasm_compile
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The persistent browser shell (`wasmCompile`) elaborates with a synchronous
+loop over `Frontend.processCommand` and collects `commandState.messages`
+after each command. That recovers elaboration messages, but PARSER messages
+are attached before elaboration, and `Command.elabCommandTopLevel` resets
+the command-state log at the start of each command — so pure parse errors
+(unparseable text, bare identifiers, unterminated declarations) vanished:
+the compile returned success with zero diagnostics while the parser's error
+recovery silently skipped the offending text.
+
+Inline the parse step of `Frontend.processCommand` in the collect loop:
+
+* call `Parser.parseCommand` with an EMPTY message log, making its returned
+  log exactly the new parse diagnostics, appended to the accumulator BEFORE
+  elaboration can touch any state (verified safe: parseCommand treats its
+  incoming log as write-only — recovery decisions come solely from
+  ModuleParserState.recovering and parser stack state);
+* seed `commandState.messages` with an empty log before
+  `elabCommandAtFrontend`, so the post-command collection is exactly that
+  command's elaboration output — correct whether or not a given toolchain's
+  `elabCommandTopLevel` restores its incoming log;
+* preserve the rest of `processCommand`'s behavior (cmdPos update, pushed
+  command array, parser-state threading, terminal-command detection); the
+  only deliberate omission is the `profileit "parsing"` timing wrapper.
+
+Observable change: `lean_wasm_compile` on input like `asdf garbage` now
+emits `unexpected identifier; expected command` with exact positions and
+returns a nonzero error count, matching the batch CLI. Verified in the
+clean-room build: Node probe and real-Chromium acceptance both show the
+new diagnostic.
+
+Upstreaming: the defect pattern applies to ANY embedder that drives
+`Frontend.processCommand` in a loop and reads messages afterwards; the
+inlined-parse collection (or an upstream `processCommand` variant returning
+the parse log) is the general fix.
+---
+ src/Lean/Shell.lean | 27 ++++++++++++++++++++++++---
+ 1 file changed, 24 insertions(+), 3 deletions(-)
+
+diff --git a/src/Lean/Shell.lean b/src/Lean/Shell.lean
+index 682e8d8..5d38e1d 100644
+--- a/src/Lean/Shell.lean
++++ b/src/Lean/Shell.lean
+@@ -135,14 +135,35 @@ def wasmCompile (code : String) (fileName : String := "<input>") : IO UInt32 :=
+     { commandState := cmdState, parserState := parserState, cmdPos := parserState.pos }
+   -- `Command.elabCommandTopLevel` resets `commandState.messages` at the start of
+   -- every command, so the final state holds only the last command's messages.
+-  -- Collect the log after each command instead of reading the end state; seed it
+-  -- with any header (import) parse errors.
++  -- Collecting after each command recovers ELABORATION messages, but PARSER
++  -- messages (garbage text, unterminated declarations) are attached before
++  -- elaboration and were silently lost to that reset. Inline the parse step of
++  -- `Frontend.processCommand` so parse diagnostics reach the log directly:
++  --  * `parseCommand` gets an EMPTY log, so its result is exactly the new
++  --    parse errors, which we append to `acc` before elaborating;
++  --  * the command state is seeded with an empty log before elaboration, so
++  --    the post-command collection is exactly that command's elaboration
++  --    messages regardless of whether `elabCommandTopLevel` restores its
++  --    incoming log (behavior that has changed across toolchains).
+   let collect : Elab.Frontend.FrontendM MessageLog := do
+     let mut acc : MessageLog := headerMessages
+     let mut done := false
+     while !done do
+-      done := (← Elab.Frontend.processCommand)
++      Elab.Frontend.updateCmdPos
++      let cmdState ← Elab.Frontend.getCommandState
++      let pstate ← Elab.Frontend.getParserState
++      let scope := cmdState.scopes.head!
++      let pmctx : Parser.ParserModuleContext :=
++        { env := cmdState.env, options := scope.opts,
++          currNamespace := scope.currNamespace, openDecls := scope.openDecls }
++      let (cmd, ps, parseMessages) := Parser.parseCommand inputCtx pmctx pstate {}
++      acc := acc ++ parseMessages
++      modify fun s => { s with commands := s.commands.push cmd }
++      Elab.Frontend.setParserState ps
++      Elab.Frontend.setMessages {}
++      Elab.Frontend.elabCommandAtFrontend cmd
+       acc := acc ++ (← Elab.Frontend.getCommandState).messages
++      done := Parser.isTerminalCommand cmd
+     return acc
+   let (msgLog, _s) ← StateRefT'.run (ReaderT.run collect frontendCtx) frontendState
+ 
+-- 
+2.50.1 (Apple Git-155)
+

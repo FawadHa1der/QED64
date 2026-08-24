@@ -1,0 +1,47 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: QED64 Toolchain <qed64-toolchain@localhost>
+Date: Thu, 20 Aug 2026 15:42:05 -0400
+Subject: [PATCH 06/14] fix: use EM_ASM_PTR for pointer-returning EM_ASM blocks
+ in runtime/io.cpp
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+`lean_io_getenv` and `lean_io_app_path` returned JS-allocated C strings
+through EM_ASM_INT, which truncates to 32 bits. Harmless while every heap
+address fits in 4 GiB; silently corrupting on wasm64 the moment an
+allocation lands above it. EM_ASM_PTR is the pointer-width-correct form.
+
+Upstreaming: UPSTREAMABLE AS-IS — EM_ASM_PTR degrades to the same code on
+wasm32, so the change is safe for the existing target too.
+---
+ src/runtime/io.cpp | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/src/runtime/io.cpp b/src/runtime/io.cpp
+index 0ea005c..d21e8f6 100644
+--- a/src/runtime/io.cpp
++++ b/src/runtime/io.cpp
+@@ -972,7 +972,7 @@ extern "C" LEAN_EXPORT obj_res lean_io_getenv(b_obj_arg env_var) {
+ #if defined(LEAN_EMSCRIPTEN)
+     // HACK(WN): getenv doesn't seem to work in Emscripten even though it should
+     // see https://emscripten.org/docs/porting/connecting_cpp_and_javascript/Interacting-with-code.html#interacting-with-code-environment-variables
+-    char* val = reinterpret_cast<char*>(EM_ASM_INT({
++    char* val = reinterpret_cast<char*>(EM_ASM_PTR({
+         var envVar = UTF8ToString($0);
+         var val = ENV[envVar];
+         if (val) {
+@@ -1376,8 +1376,8 @@ extern "C" LEAN_EXPORT obj_res lean_io_app_path() {
+         return io_result_mk_error("failed to resolve symbolic links when locating application");
+     return io_result_mk_ok(mk_string(buf2));
+ #elif defined(LEAN_EMSCRIPTEN)
+-    // See https://emscripten.org/docs/api_reference/emscripten.h.html#c.EM_ASM_INT
+-    char* appPath = reinterpret_cast<char*>(EM_ASM_INT({
++    // A pointer return must use EM_ASM_PTR: EM_ASM_INT truncates wasm64 addresses.
++    char* appPath = reinterpret_cast<char*>(EM_ASM_PTR({
+         var isNode = (typeof process !== "undefined") &&
+                      (process.release && process.release.name === "node");
+         
+-- 
+2.50.1 (Apple Git-155)
+

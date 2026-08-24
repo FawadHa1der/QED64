@@ -1,0 +1,159 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: QED64 Toolchain <qed64-toolchain@localhost>
+Date: Fri, 21 Aug 2026 16:32:48 -0400
+Subject: [PATCH 12/14] perf: flat open-addressing object table for the region
+ compactor
+
+This PR cuts the memory the compactor spends tracking already-visited objects by roughly 2.5x, which lets whole-environment saves of Mathlib-scale environments fit in a 16 GiB wasm64 address space.
+
+The seen-object table was a node-based unordered_map: ~56 bytes per entry, i.e. ~5 GB for the ~10^8 objects a whole-Mathlib environment contains, on top of the environment itself and the >2 GiB output buffer. A flat open-addressing table keyed by object pointer (16 bytes per slot, linear probing, grown at 0.7 load) holds the same mapping in ~2 GB and walks with fewer cache misses. Behaviour is unchanged: pointer-identity dedup with the same insert/find semantics.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ src/runtime/compact.cpp | 53 +++++++++++++++++++++++++++++++++++++----
+ src/runtime/compact.h   | 40 ++++++++++++++++++++++++++++++-
+ 2 files changed, 87 insertions(+), 6 deletions(-)
+
+diff --git a/src/runtime/compact.cpp b/src/runtime/compact.cpp
+index 4a17b45..73e5ac9 100644
+--- a/src/runtime/compact.cpp
++++ b/src/runtime/compact.cpp
+@@ -145,6 +145,48 @@ std::vector<lib_info> object_compactor::used_libs() const {
+     return result;
+ }
+ 
++object_offset_table::object_offset_table() {
++    m_mask = (1u << 16) - 1;
++    m_slots = static_cast<slot *>(calloc(m_mask + 1, sizeof(slot)));
++    if (m_slots == nullptr)
++        throw exception("object compactor: failed to allocate the object table");
++}
++
++object_offset_table::~object_offset_table() {
++    free(m_slots);
++}
++
++void object_offset_table::grow() {
++    size_t old_cap = m_mask + 1;
++    slot * old = m_slots;
++    size_t new_cap = old_cap * 2;
++    slot * fresh = static_cast<slot *>(calloc(new_cap, sizeof(slot)));
++    if (fresh == nullptr)
++        throw exception((sstream() << "object compactor: out of memory growing the object table to "
++                         << new_cap << " slots").str());
++    m_slots = fresh;
++    m_mask = new_cap - 1;
++    for (size_t j = 0; j < old_cap; j++) {
++        if (old[j].m_key == nullptr) continue;
++        size_t i = hash(old[j].m_key) & m_mask;
++        while (m_slots[i].m_key != nullptr) i = (i + 1) & m_mask;
++        m_slots[i] = old[j];
++    }
++    free(old);
++}
++
++void object_offset_table::insert(object * o, object_offset off) {
++    lean_assert(o != nullptr);
++    if ((m_size + 1) * 10 > (m_mask + 1) * 7) grow();
++    size_t i = hash(o) & m_mask;
++    for (;;) {
++        slot & s = m_slots[i];
++        if (s.m_key == nullptr) { s.m_key = o; s.m_val = off; m_size++; return; }
++        if (s.m_key == o) { s.m_val = off; return; }
++        i = (i + 1) & m_mask;
++    }
++}
++
+ object_compactor::object_compactor(void * base_addr, std::vector<region_view> dep_regions,
+                                    bool allow_closures):
+     m_max_sharing_table(new max_sharing_table(this)),
+@@ -215,7 +257,7 @@ void * object_compactor::alloc(size_t sz) {
+ object_offset object_compactor::save(object * o, object * new_o) {
+     lean_assert(m_begin <= new_o && new_o < m_end);
+     object_offset off = reinterpret_cast<object_offset>(reinterpret_cast<char*>(new_o) - reinterpret_cast<char*>(m_begin) + reinterpret_cast<size_t>(m_base_addr));
+-    m_obj_table.insert(std::make_pair(o, off));
++    m_obj_table.insert(o, off);
+     return off;
+ }
+ 
+@@ -235,9 +277,10 @@ object_offset object_compactor::to_offset(object * o) {
+     if (lean_is_scalar(o)) {
+         return o;
+     } else {
+-        auto it = m_obj_table.find(o);
+-        if (it != m_obj_table.end()) {
+-            return it->second;
++        bool found;
++        object_offset seen = m_obj_table.find(o, found);
++        if (found) {
++            return seen;
+         }
+         // Only check dep regions for non-heap objects
+         if (!m_dep_regions.empty() && !lean_has_rc(o)) {
+@@ -254,7 +297,7 @@ object_offset object_compactor::to_offset(object * o) {
+                     // Object is in this dep region, compute its base_addr-relative pointer
+                     object_offset off = reinterpret_cast<object_offset>(
+                         reinterpret_cast<size_t>(region.base_addr) + (addr - static_cast<char *>(region.begin)));
+-                    m_obj_table.insert(std::make_pair(o, off));
++                    m_obj_table.insert(o, off);
+                     return off;
+                 }
+             }
+diff --git a/src/runtime/compact.h b/src/runtime/compact.h
+index 4c01ab5..72c50b4 100644
+--- a/src/runtime/compact.h
++++ b/src/runtime/compact.h
+@@ -37,11 +37,49 @@ struct region_view {
+     void * base_addr;
+ };
+ 
++/** Open-addressing pointer → offset map for the compactor's seen-object table.
++
++    Compacting a whole Mathlib-scale environment visits ~10^8 objects. A node-based
++    `std::unordered_map` spends ~56 bytes per entry on that (several GB on top of the
++    environment and the output buffer — more than a 16 GiB wasm64 address space
++    holds); a flat table costs 16 bytes per slot at ≤ 0.7 load and walks faster. Keys
++    are non-null object pointers, so null marks an empty slot. */
++class object_offset_table {
++    struct slot { object * m_key; object_offset m_val; };
++    slot * m_slots = nullptr;
++    size_t m_mask = 0;
++    size_t m_size = 0;
++    static size_t hash(object * o) {
++        // pointers are 8-byte aligned: mix the informative bits
++        size_t h = reinterpret_cast<size_t>(o) >> 3;
++        h ^= h >> 29; h *= 0xbf58476d1ce4e5b9ULL; h ^= h >> 32;
++        return h;
++    }
++    void grow();
++public:
++    object_offset_table();
++    ~object_offset_table();
++    object_offset_table(object_offset_table const &) = delete;
++    object_offset_table & operator=(object_offset_table const &) = delete;
++    /** Returns the stored offset, or sets `found = false`. */
++    object_offset find(object * o, bool & found) const {
++        size_t i = hash(o) & m_mask;
++        for (;;) {
++            slot const & s = m_slots[i];
++            if (s.m_key == o) { found = true; return s.m_val; }
++            if (s.m_key == nullptr) { found = false; return nullptr; }
++            i = (i + 1) & m_mask;
++        }
++    }
++    void insert(object * o, object_offset off);
++    size_t size() const { return m_size; }
++};
++
+ class LEAN_EXPORT object_compactor {
+     struct max_sharing_table;
+     friend struct max_sharing_hash;
+     friend struct max_sharing_eq;
+-    lean::unordered_map<object*, object_offset, std::hash<object*>, std::equal_to<object*>> m_obj_table;
++    object_offset_table m_obj_table;
+     std::unique_ptr<max_sharing_table> m_max_sharing_table;
+     // Scratch stack of child offsets, to avoid repeated stack allocs during recursion
+     std::vector<object_offset> m_tmp;
+-- 
+2.50.1 (Apple Git-155)
+

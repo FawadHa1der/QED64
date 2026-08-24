@@ -1,0 +1,90 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: QED64 Toolchain <qed64-toolchain@localhost>
+Date: Thu, 20 Aug 2026 15:42:05 -0400
+Subject: [PATCH 07/14] fix: complete the non-libuv fallback stubs for newer
+ Std.Net externs
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The `#else` (no-libuv) branches of runtime/uv/tcp.cpp and udp.cpp were
+missing five symbols added on the libuv side (`lean_uv_tcp_wait_readable`,
+`lean_uv_tcp_cancel_recv`, `lean_uv_tcp_try_accept`,
+`lean_uv_udp_wait_readable`, `lean_uv_udp_cancel_recv`), so any Emscripten
+link referencing them was incomplete. Add asserting stubs in the style of
+the surrounding fallbacks: they establish link completeness, not browser
+networking, and abort with a clear message if reached.
+
+Known gap, deliberate: these stubs are NOT added to the explicit
+Emscripten export list, matching the certified runtime — interpreter dlsym
+of these names fails cleanly rather than reaching an aborting stub.
+
+Upstreaming: UPSTREAMABLE AS-IS; same family as the known unguarded-libuv
+breakage (leanprover/lean4#6817, PR #13298).
+---
+ src/runtime/uv/tcp.cpp | 18 ++++++++++++++++++
+ src/runtime/uv/udp.cpp | 12 ++++++++++++
+ 2 files changed, 30 insertions(+)
+
+diff --git a/src/runtime/uv/tcp.cpp b/src/runtime/uv/tcp.cpp
+index eadc3be..0fde232 100644
+--- a/src/runtime/uv/tcp.cpp
++++ b/src/runtime/uv/tcp.cpp
+@@ -773,6 +773,18 @@ extern "C" LEAN_EXPORT lean_obj_res lean_uv_tcp_recv(b_obj_arg socket, uint64_t
+     );
+ }
+ 
++extern "C" LEAN_EXPORT lean_obj_res lean_uv_tcp_wait_readable(b_obj_arg socket) {
++    lean_always_assert(
++        false && ("Please build a version of Lean4 with libuv to invoke this.")
++    );
++}
++
++extern "C" LEAN_EXPORT lean_obj_res lean_uv_tcp_cancel_recv(b_obj_arg socket) {
++    lean_always_assert(
++        false && ("Please build a version of Lean4 with libuv to invoke this.")
++    );
++}
++
+ extern "C" LEAN_EXPORT lean_obj_res lean_uv_tcp_bind(b_obj_arg socket, b_obj_arg addr) {
+     lean_always_assert(
+         false && ("Please build a version of Lean4 with libuv to invoke this.")
+@@ -797,6 +809,12 @@ extern "C" LEAN_EXPORT lean_obj_res lean_uv_tcp_accept(b_obj_arg socket) {
+     );
+ }
+ 
++extern "C" LEAN_EXPORT lean_obj_res lean_uv_tcp_try_accept(b_obj_arg socket) {
++    lean_always_assert(
++        false && ("Please build a version of Lean4 with libuv to invoke this.")
++    );
++}
++
+ extern "C" LEAN_EXPORT lean_obj_res lean_uv_tcp_shutdown(b_obj_arg socket) {
+     lean_always_assert(
+         false && ("Please build a version of Lean4 with libuv to invoke this.")
+diff --git a/src/runtime/uv/udp.cpp b/src/runtime/uv/udp.cpp
+index 110c360..42cd7fa 100644
+--- a/src/runtime/uv/udp.cpp
++++ b/src/runtime/uv/udp.cpp
+@@ -609,6 +609,18 @@ extern "C" LEAN_EXPORT lean_obj_res lean_uv_udp_recv(b_obj_arg socket, uint64_t
+     );
+ }
+ 
++extern "C" LEAN_EXPORT lean_obj_res lean_uv_udp_wait_readable(b_obj_arg socket) {
++    lean_always_assert(
++        false && ("Please build a version of Lean4 with libuv to invoke this.")
++    );
++}
++
++extern "C" LEAN_EXPORT lean_obj_res lean_uv_udp_cancel_recv(b_obj_arg socket) {
++    lean_always_assert(
++        false && ("Please build a version of Lean4 with libuv to invoke this.")
++    );
++}
++
+ // =======================================
+ // UDP Socket Utility Functions
+ 
+-- 
+2.50.1 (Apple Git-155)
+

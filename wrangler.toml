@@ -1,0 +1,13 @@
+name = "qed64"
+main = "infra/worker.js"
+compatibility_date = "2026-08-01"
+
+# App shell only: dist/ minus the R2-served artifact directories (the deploy
+# script prunes them after `vite build`; Workers assets cap files at 25 MiB).
+[assets]
+directory = "dist"
+binding = "ASSETS"
+
+[[r2_buckets]]
+binding = "ARTIFACTS"
+bucket_name = "qed64-artifacts"

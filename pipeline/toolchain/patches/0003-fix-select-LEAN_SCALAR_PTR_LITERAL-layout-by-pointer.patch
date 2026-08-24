@@ -1,0 +1,38 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: QED64 Toolchain <qed64-toolchain@localhost>
+Date: Thu, 20 Aug 2026 15:42:04 -0400
+Subject: [PATCH 03/14] fix: select LEAN_SCALAR_PTR_LITERAL layout by pointer
+ width, not by Emscripten
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The macro emitted the two-slot 32-bit form whenever LEAN_EMSCRIPTEN was
+defined, assuming Emscripten implies ILP32. Under -m64 (wasm64) that
+silently corrupts statically-emitted tagged scalars (e.g. Name hashes) by
+splitting a 64-bit literal across two 32-bit slots. Gate on
+UINTPTR_MAX == UINT32_MAX instead.
+
+Upstreaming: UPSTREAMABLE AS-IS to leanprover/lean4 — the current guard is
+wrong the moment any 64-bit Emscripten target exists, and the width-based
+guard is correct for both.
+---
+ src/include/lean/lean.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/include/lean/lean.h b/src/include/lean/lean.h
+index 23a2105..24a99dc 100644
+--- a/src/include/lean/lean.h
++++ b/src/include/lean/lean.h
+@@ -3267,7 +3267,7 @@ static inline lean_obj_res lean_runtime_hold(b_lean_obj_arg a) {
+ // a native 32-bit build (e.g. the stage0 of the wasm cross-build) must take the
+ // two-slot form, or the 64-bit cast truncates the value and leaves the second
+ // slot zero, silently corrupting statically-emitted scalars such as Name hashes.
+-#if defined(LEAN_EMSCRIPTEN) || UINTPTR_MAX == UINT32_MAX
++#if UINTPTR_MAX == UINT32_MAX
+ #define LEAN_SCALAR_PTR_LITERAL(b1, b2, b3, b4, b5, b6, b7, b8) (lean_object*)((uint32_t)b1 | ((uint32_t)b2 << 8) | ((uint32_t)b3 << 16) | ((uint32_t)b4 << 24)), (lean_object*)((uint32_t)b5 | ((uint32_t)b6 << 8) | ((uint32_t)b7 << 16) | ((uint32_t)b8 << 24))
+ #else
+ #define LEAN_SCALAR_PTR_LITERAL(b1, b2, b3, b4, b5, b6, b7, b8) (lean_object*)((uint64_t)b1 | ((uint64_t)b2 << 8) | ((uint64_t)b3 << 16) | ((uint64_t)b4 << 24) | ((uint64_t)b5 << 32) | ((uint64_t)b6 << 40) | ((uint64_t)b7 << 48) | ((uint64_t)b8 << 56))
+-- 
+2.50.1 (Apple Git-155)
+

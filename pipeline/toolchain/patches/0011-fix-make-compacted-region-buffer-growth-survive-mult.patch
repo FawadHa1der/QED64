@@ -1,0 +1,110 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: QED64 Toolchain <qed64-toolchain@localhost>
+Date: Fri, 21 Aug 2026 16:12:02 -0400
+Subject: [PATCH 11/14] fix: make compacted-region buffer growth survive
+ multi-GB saves
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+This PR makes whole-environment region saves fail with a clear error instead of crashing when the output buffer cannot grow, and lets callers reserve the buffer up front via LEAN_COMPACTOR_RESERVE.
+
+The compactor grew its output buffer by malloc-doubling plus memcpy with no null check. Saving a ~4,800-module Mathlib environment produces a >2 GiB region, so the 2→4 GiB doubling briefly needs 6 GiB of buffers on top of the environment being saved; in a 16 GiB wasm64 address space that allocation fails and the memcpy into the null pointer surfaces as a RuntimeError: memory access out of bounds (the call stack shows the compactor's ~2,500-deep object recursion, which is bounded and harmless). Growth now uses realloc (in place when the buffer tops the heap), a failed growth throws an exception naming the sizes, and LEAN_COMPACTOR_RESERVE (bytes) reserves the whole buffer in one allocation before the walk starts so no doubling copy ever happens.
+
+Upstreaming: the null check and realloc are unconditional improvements; the reserve knob matters to any embedder saving large regions without mmap.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ src/runtime/compact.cpp | 37 ++++++++++++++++++++++++++++++-------
+ src/runtime/compact.h   |  1 +
+ 2 files changed, 31 insertions(+), 7 deletions(-)
+
+diff --git a/src/runtime/compact.cpp b/src/runtime/compact.cpp
+index a3a79f1..4a17b45 100644
+--- a/src/runtime/compact.cpp
++++ b/src/runtime/compact.cpp
+@@ -8,10 +8,12 @@ Author: Leonardo de Moura
+ #include <string>
+ #include <vector>
+ #include <cstring>
++#include <cstdlib>
+ #include <lean/lean.h>
+ #include "runtime/hash.h"
+ #include "runtime/compact.h"
+ #include "runtime/exception.h"
++#include "runtime/sstream.h"
+ #include "util/alloc.h"
+ 
+ #ifdef LEAN_WINDOWS
+@@ -150,9 +152,11 @@ object_compactor::object_compactor(void * base_addr, std::vector<region_view> de
+     m_libs(get_loaded_libs()),
+     m_allow_closures(allow_closures),
+     m_base_addr(base_addr),
+-    m_begin(malloc(LEAN_COMPACTOR_INIT_SZ)),
++    m_begin(malloc(initial_capacity())),
+     m_end(m_begin),
+-    m_capacity(static_cast<char*>(m_begin) + LEAN_COMPACTOR_INIT_SZ) {
++    m_capacity(static_cast<char*>(m_begin) + initial_capacity()) {
++    if (m_begin == nullptr)
++        throw exception("object compactor: failed to reserve the initial region buffer");
+     // Sort dep regions by `begin` address for binary search in `to_offset`.
+     std::sort(m_dep_regions.begin(), m_dep_regions.end(),
+               [](region_view const & a, region_view const & b) { return a.begin < b.begin; });
+@@ -169,18 +173,37 @@ object_compactor::~object_compactor() {
+ */
+ object_offset g_null_offset = reinterpret_cast<object_offset>(static_cast<size_t>(-1) - 1);
+ 
++/* Initial region buffer capacity. `LEAN_COMPACTOR_RESERVE` (bytes) lets a caller that
++   knows it is about to compact a multi-GB environment reserve the whole buffer up front:
++   growth-by-doubling needs the old and new buffers to coexist during the copy, which for
++   a 2 GiB buffer is a 6 GiB transient on top of the environment being saved — more than a
++   16 GiB wasm64 address space holds next to a whole-Mathlib environment. */
++size_t object_compactor::initial_capacity() {
++    if (char const * env = getenv("LEAN_COMPACTOR_RESERVE")) {
++        size_t v = strtoull(env, nullptr, 10);
++        if (v >= LEAN_COMPACTOR_INIT_SZ) return v;
++    }
++    return LEAN_COMPACTOR_INIT_SZ;
++}
++
+ void * object_compactor::alloc(size_t sz) {
+     size_t rem = sz % sizeof(void*);
+     if (rem != 0)
+         sz = sz + sizeof(void*) - rem;
+     while (static_cast<char*>(m_end) + sz > m_capacity) {
+         size_t new_capacity = capacity()*2;
+-        void * new_begin = malloc(new_capacity);
+-        memcpy(new_begin, m_begin, size());
+-        m_end      = static_cast<char*>(new_begin) + size();
+-        m_capacity = static_cast<char*>(new_begin) + new_capacity;
+-        free(m_begin);
++        size_t used = size();
++        // `realloc` extends in place when the buffer tops the heap, avoiding the copy and
++        // its transient double footprint; a failed growth must be an error, not a write
++        // through a null pointer.
++        void * new_begin = realloc(m_begin, new_capacity);
++        if (new_begin == nullptr)
++            throw exception((sstream() << "object compactor: out of memory growing the region buffer to "
++                             << (new_capacity >> 20) << " MB (" << (used >> 20) << " MB used); "
++                             << "set LEAN_COMPACTOR_RESERVE to reserve the buffer up front").str());
+         m_begin    = new_begin;
++        m_end      = static_cast<char*>(new_begin) + used;
++        m_capacity = static_cast<char*>(new_begin) + new_capacity;
+     }
+     void * r = m_end;
+     memset(r, 0, sz);
+diff --git a/src/runtime/compact.h b/src/runtime/compact.h
+index ce47209..4c01ab5 100644
+--- a/src/runtime/compact.h
++++ b/src/runtime/compact.h
+@@ -60,6 +60,7 @@ class LEAN_EXPORT object_compactor {
+     void * m_end;
+     void * m_capacity;
+     size_t capacity() const { return static_cast<char*>(m_capacity) - static_cast<char*>(m_begin); }
++    static size_t initial_capacity();
+     object_offset save(object * o, object * new_o);
+     object_offset save_max_sharing(object * o, object * new_o, size_t new_o_sz);
+     object_offset to_offset(object * o);
+-- 
+2.50.1 (Apple Git-155)
+

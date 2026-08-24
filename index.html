@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>QED64 — Lean 4 in your browser, 64-bit</title>
+  <meta name="description" content="The real Lean 4 compiler and Mathlib, running client-side on WebAssembly Memory64. No server checks your proofs.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+  <script type="module" src="/src/main.ts"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">∎</span>
+      <span class="brand-name">QED<span class="brand-64">64</span></span>
+      <span class="brand-tag">Lean 4 · wasm64 · client-side</span>
+    </div>
+    <select id="examples" class="control" aria-label="Examples"></select>
+    <div class="spacer"></div>
+    <label class="auto-label control-like" title="Recheck automatically while you type">
+      <input type="checkbox" id="auto" checked> auto
+    </label>
+    <button id="run" class="control primary" disabled title="Ctrl/⌘ + Enter">Check ▸</button>
+    <button id="share" class="control" title="Copy a link to this code">Share</button>
+    <button id="theme-toggle" class="control icon" title="Toggle theme" aria-label="Toggle theme">◐</button>
+  </header>
+
+  <div id="progress-row" class="progress-row hidden" role="status">
+    <span id="progress-label"></span>
+    <div class="progress-track"><div id="progress-bar" class="progress-fill"></div></div>
+  </div>
+
+  <main class="split">
+    <section id="editor-pane" class="editor-pane" aria-label="Lean source editor"></section>
+    <aside class="side-pane">
+      <nav class="tabbar" aria-label="Panels">
+        <button class="tab active" data-panel="messages">Messages</button>
+        <button class="tab" data-panel="goals">Goals</button>
+        <button class="tab" data-panel="setup">Setup</button>
+      </nav>
+      <div id="panel-messages" class="panel" aria-live="polite"></div>
+      <div id="panel-goals" class="panel hidden"></div>
+      <div id="panel-setup" class="panel hidden">
+        <div class="setup-section">
+          <h3>Libraries</h3>
+          <p class="setup-note">The Lean core library installs automatically (~120 MB download, cached in your browser). Mathlib’s essential profile adds 4,192 modules of real Mathlib.</p>
+          <button id="install-mathlib" class="control primary">Install Mathlib · ~993 MB</button>
+        </div>
+        <div class="setup-section">
+          <h3>Semantics</h3>
+          <label class="setup-note" title="By default, Mathlib buffers compile against one pre-baked environment holding the whole essential profile, so any import combination checks in seconds — but everything in the profile is in scope regardless of your import lines. Strict mode compiles the header exactly as written; the first check per import set then imports its closure (minutes).">
+            <input type="checkbox" id="strict-headers"> Strict headers — compile imports exactly as written (first Mathlib check becomes minutes-long)
+          </label>
+        </div>
+        <div class="setup-section">
+          <h3>Log</h3>
+          <div id="setup-log" class="setup-log" aria-live="polite"></div>
+        </div>
+        <div class="setup-section">
+          <h3>About</h3>
+          <p class="setup-note">
+            QED64 runs a genuine LP64 build of the Lean 4 compiler as WebAssembly
+            Memory64 with pthreads — proofs are elaborated and kernel-checked on
+            your machine, never on a server. Runtime and libraries are
+            content-addressed and SHA-256-verified before they execute.
+            Requires desktop Chrome/Edge 133+ or Firefox 134+.
+          </p>
+          <p class="setup-note">
+            This deployment runs the QED64 clean-room runtime, which includes
+            toolchain patch 0010: parse errors (unreadable text, unterminated
+            declarations) are reported with positions, like every other
+            diagnostic. The editor additionally pre-flags parser-skipped lines
+            instantly, before the compiler even runs.
+          </p>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <footer class="statusbar">
+    <span id="status-state" class="status-chip" data-phase="probing">Starting…</span>
+    <span id="status-version" class="status-item"></span>
+    <div class="spacer"></div>
+    <span id="status-timing" class="status-item"></span>
+    <span id="status-memory" class="status-item"></span>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,102 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: QED64 Toolchain <qed64-toolchain@localhost>
+Date: Thu, 20 Aug 2026 15:41:36 -0400
+Subject: [PATCH 02/14] build: wasm64 configuration in src/CMakeLists.txt
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- accept -m64 C/CXX flags end to end (outer configure, stage1, leanc for
+  generated C, the in-tree libuv build) so CMAKE_SIZEOF_VOID_P=8 and every
+  object shares the LP64 ABI;
+- expose EMSCRIPTEN_INITIAL_MEMORY / EMSCRIPTEN_MAXIMUM_MEMORY as cache
+  variables with spike defaults 134217728 / 12884901888; release builds
+  override the maximum to 17179869184 (16 GiB) via configure-qed64.sh —
+  the module's declared maximum bounds every importable memory;
+- add -lworkerfs.js to the Emscripten link line: browser embedders mount
+  read-only artifact packs via WORKERFS, which must be linked into the
+  filesystem glue explicitly.
+
+(The wasm64-unknown-emscripten platform string flows through the
+pre-existing STAGE1_LEAN_PLATFORM_TARGET cache variable; this patch adds no
+new mechanism for it — the -D flag in the configure scripts selects it.)
+
+Upstreaming: the flag plumbing and workerfs link are generic; the memory
+values are deployment policy.
+---
+ src/CMakeLists.txt | 31 +++++++++++++++++++++++--------
+ 1 file changed, 23 insertions(+), 8 deletions(-)
+
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 3cbea55..474d6ca 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -154,11 +154,20 @@ endif()
+ if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+   message(STATUS "64-bit machine detected")
+   set(NumBits 64)
++  set(DEFAULT_EMSCRIPTEN_INITIAL_MEMORY 134217728)
++  set(DEFAULT_EMSCRIPTEN_MAXIMUM_MEMORY 12884901888)
+ else()
+   message(STATUS "32-bit machine detected")
+   set(NumBits 32)
++  set(DEFAULT_EMSCRIPTEN_INITIAL_MEMORY 67108864)
++  set(DEFAULT_EMSCRIPTEN_MAXIMUM_MEMORY 4294967296)
+ endif()
+ 
++set(EMSCRIPTEN_INITIAL_MEMORY "${DEFAULT_EMSCRIPTEN_INITIAL_MEMORY}" CACHE STRING
++  "Initial Emscripten linear-memory size in bytes")
++set(EMSCRIPTEN_MAXIMUM_MEMORY "${DEFAULT_EMSCRIPTEN_MAXIMUM_MEMORY}" CACHE STRING
++  "Maximum Emscripten linear-memory size in bytes")
++
+ if(MMAP MATCHES "ON")
+   string(APPEND LEAN_EXTRA_CXX_FLAGS " -D LEAN_MMAP")
+ endif()
+@@ -193,9 +202,10 @@ if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
+   # runtime is exception-heavy, so the emulated mode dominated profiles of
+   # olean import loading in the browser.
+   # No -flto: it OOMs the CI runner during the LTO link, so -mtail-call stands in
+-  # as the codegen optimization. MAXIMUM_MEMORY=4GB (up from the 2GB default) tests
+-  # whether the Init-import allocation is bounded-but-large or truly unbounded;
+-  # shared-memory growth doesn't engage here, so the worker reserves it up front.
++  # as the codegen optimization. The maximum is configured below: wasm32 uses
++  # 4GB, while wasm64 defaults to a 12GB operational ceiling. Current engines
++  # and Emscripten can grow shared memory; keep INITIAL_MEMORY modest so startup
++  # does not commit the full working set.
+   # INCOMING_MODULE_JS_API: emsdk 6 strictly validates Module keys supplied by
+     # the embedder; the playground workers set all of these before load.
+     # Threads: 4.33's import machinery creates IO.Promises during env
+@@ -212,6 +222,12 @@ if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
+     # that only shape the final JS/wasm output live in EMSCRIPTEN_LINK_SETTINGS
+     # so that link-only experiments keep the ccache'd objects valid.
+     set(EMSCRIPTEN_SETTINGS "-sDISABLE_EXCEPTION_CATCHING=0 -pthread")
++    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
++      # CMAKE_{C,CXX}_FLAGS=-m64 must also be present at configure time so
++      # CMake detects the target pointer width correctly. Repeating it here
++      # ensures generated Lean C, runtime C++, and the final link all agree.
++      string(APPEND EMSCRIPTEN_SETTINGS " -m64")
++    endif()
+     set(EMSCRIPTEN_LINK_SETTINGS "-sALLOW_MEMORY_GROWTH=1 -sINCOMING_MODULE_JS_API=print,printErr,setStatus,locateFile,mainScriptUrlOrBlob,INITIAL_MEMORY,wasmMemory,noInitialRun,preRun,onRuntimeInitialized,onAbort,onExit,arguments,ENV")
+ 
+   # EMSCRIPTEN_DEBUG: Enable readable function names and assertions for debugging
+@@ -916,13 +932,12 @@ if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
+   # matched the working 4.28 build. STACK_SIZE=16MB covers whatever import work
+   # still runs on the main wasm stack (Emscripten's 64KB default overflows it).
+   # INITIAL_MEMORY must exceed static data + the 16MB stack + per-thread TLS; the
+-  # pthread layout needs ~22MB up front (the default 16MB fails to link). Shared
+-  # memory does NOT grow here (the browser's SharedArrayBuffer isn't resizable in
+-  # this config), so the worker reserves the real size up front; MAXIMUM_MEMORY=4GB
+-  # raises the wasm32 ceiling from 2GB so we can test whether the import fits.
++  # pthread layout needs ~22MB up front (the default 16MB fails to link). Memory
++  # growth is enabled; MAXIMUM_MEMORY is an address-space ceiling, not an eager
++  # physical allocation. wasm64 uses 128MB initially and may grow to 12GB.
+   string(
+     APPEND LEAN_EXE_LINKER_FLAGS
+-    " ${LIB}/temp/libleanshell.a ${TOOLCHAIN_STATIC_LINKER_FLAGS} ${EMSCRIPTEN_SETTINGS} ${EMSCRIPTEN_LINK_SETTINGS} -lnodefs.js -s EXIT_RUNTIME=1 -s MAIN_MODULE=2 -s ERROR_ON_UNDEFINED_SYMBOLS=0 -sEXPORTED_FUNCTIONS=@${LEAN_SOURCE_DIR}/emscripten-exports.txt -sEXPORTED_RUNTIME_METHODS=ccall,callMain,FS,ENV,getValue,setValue,stringToNewUTF8,UTF8ToString -s STACK_SIZE=16777216 -sINITIAL_MEMORY=67108864 -sMAXIMUM_MEMORY=4294967296 -sPTHREAD_POOL_SIZE=4"
++    " ${LIB}/temp/libleanshell.a ${TOOLCHAIN_STATIC_LINKER_FLAGS} ${EMSCRIPTEN_SETTINGS} ${EMSCRIPTEN_LINK_SETTINGS} -lnodefs.js -lworkerfs.js -s EXIT_RUNTIME=1 -s MAIN_MODULE=2 -s ERROR_ON_UNDEFINED_SYMBOLS=0 -sEXPORTED_FUNCTIONS=@${LEAN_SOURCE_DIR}/emscripten-exports.txt -sEXPORTED_RUNTIME_METHODS=ccall,callMain,FS,ENV,getValue,setValue,stringToNewUTF8,UTF8ToString -s STACK_SIZE=16777216 -sINITIAL_MEMORY=${EMSCRIPTEN_INITIAL_MEMORY} -sMAXIMUM_MEMORY=${EMSCRIPTEN_MAXIMUM_MEMORY} -sPTHREAD_POOL_SIZE=4"
+   )
+ endif()
+ 
+-- 
+2.50.1 (Apple Git-155)
+

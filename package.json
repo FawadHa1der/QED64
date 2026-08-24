@@ -1,0 +1,37 @@
+{
+  "name": "qed64",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "QED64 \u2014 a Lean 4 web editor running the real compiler client-side on WebAssembly Memory64, with Mathlib profiles.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run --exclude '**/integration/**'",
+    "test:watch": "vitest --exclude '**/integration/**'",
+    "test:integration": "vitest run tests/integration",
+    "test:all": "vitest run",
+    "sync:artifacts": "node pipeline/release/sync-artifacts.mjs",
+    "runner": "node pipeline/snapshot/node-runner.mjs",
+    "bake:snapshot": "node pipeline/snapshot/bake-snapshot.mjs",
+    "pack": "node pipeline/artifacts/pack.mjs",
+    "inspect:pack": "node pipeline/artifacts/inspect.mjs",
+    "verify:release": "node pipeline/release/verify-release.mjs",
+    "promote:staging": "node pipeline/release/promote-staging.mjs"
+  },
+  "devDependencies": {
+    "@codemirror/autocomplete": "^6.18.0",
+    "@codemirror/commands": "^6.6.0",
+    "@codemirror/language": "^6.10.0",
+    "@codemirror/lint": "^6.8.0",
+    "@codemirror/search": "^6.5.0",
+    "@codemirror/state": "^6.4.0",
+    "@codemirror/view": "^6.34.0",
+    "@lezer/highlight": "^1.2.0",
+    "@types/node": "^26.2.0",
+    "typescript": "^5.6.0",
+    "vite": "^6.0.0",
+    "vitest": "^3.0.0"
+  }
+}

@@ -1,0 +1,515 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: QED64 Toolchain <qed64-toolchain@localhost>
+Date: Thu, 20 Aug 2026 15:42:55 -0400
+Subject: [PATCH 08/14] cleanup: remove wasm32-era debug instrumentation; fix
+ lean_shell_main arity
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Remove the bring-up logging that accumulated during the wasm32 effort
+across Shell.lean, Frontend.lean, Import.lean, initialize/init.cpp,
+util/io.h and util/shell.cpp — the [DEBUG:*] prints plus a few adjacent
+non-tagged bring-up logs — including an argv walker that indexed the JS
+heap via HEAPU32 with a 4-byte stride (wrong under LP64) and two
+pointer-to-int debug casts.
+
+Also corrects util/shell.cpp's declaration and call of `lean_shell_main` to
+the generated two-argument ABI (args, opts): the stale three-argument form
+passed an extra `lean_box(0)` "world" token that the generated definition
+does not take. Tolerated by past linkers; not a valid cross-TU C contract.
+
+Upstreaming: the arity fix is relevant wherever this shell shim exists; the
+debug removals are fork hygiene.
+---
+ src/Lean/Elab/Frontend.lean |   7 +-
+ src/Lean/Elab/Import.lean   |   2 -
+ src/Lean/Shell.lean         |   7 --
+ src/initialize/init.cpp     |  61 ------------
+ src/util/io.h               |  13 ---
+ src/util/shell.cpp          | 186 +-----------------------------------
+ 6 files changed, 3 insertions(+), 273 deletions(-)
+
+diff --git a/src/Lean/Elab/Frontend.lean b/src/Lean/Elab/Frontend.lean
+index f008421..fef83ed 100644
+--- a/src/Lean/Elab/Frontend.lean
++++ b/src/Lean/Elab/Frontend.lean
+@@ -299,8 +299,6 @@ def runFrontend
+     (incrLoadFileName? : Option System.FilePath := none)
+     (incrHeaderSaveFileName? : Option System.FilePath := none)
+     : IO (Option Environment) := do
+-  IO.println "[DEBUG:L] runFrontend entered"
+-  IO.println s!"[DEBUG:L] fileName = {fileName}, mainModuleName = {mainModuleName}"
+   let startTime := (← IO.monoNanosNow).toFloat / 1000000000
+   let inputCtx := Parser.mkInputContext input fileName
+   -- default `cmdlineSnapshots` to true (not done as default value for API back-compat reasons)
+@@ -355,14 +353,11 @@ def runFrontend
+   let snaps := Language.toSnapshotTree snap
+   let severityOverrides := errorOnKinds.foldl (·.insert · .error) {}
+ 
+-  IO.println "[DEBUG:N] About to run and report snapshots"
+   -- reporting should be done before any early exit from the function
+   let hasErrors ← snaps.runAndReport opts jsonOutput severityOverrides
+-  IO.println s!"[DEBUG:N] Reporting complete, hasErrors = {hasErrors}"
+ 
+   let some cmdState := Language.Lean.waitForFinalCmdState? snap
+-    | IO.println "[DEBUG:N] waitForFinalCmdState? returned none"
+-      return none
++    | return none
+   let env := cmdState.env
+   let finalOpts := cmdState.scopes[0]!.opts
+ 
+diff --git a/src/Lean/Elab/Import.lean b/src/Lean/Elab/Import.lean
+index 3c04e26..3206214 100644
+--- a/src/Lean/Elab/Import.lean
++++ b/src/Lean/Elab/Import.lean
+@@ -153,8 +153,6 @@ def processHeaderCore
+     if Elab.inServer.get opts then .server else .exported
+   else
+     .private
+-  if System.Platform.isEmscripten then
+-    IO.println s!"[DEBUG:IMPORT] Emscripten detected, using level = {repr level}"
+   let (env, messages) ← try
+     let env ←
+       importModules (leakEnv := leakEnv) (loadExts := true) (level := level)
+diff --git a/src/Lean/Shell.lean b/src/Lean/Shell.lean
+index c521ca7..682e8d8 100644
+--- a/src/Lean/Shell.lean
++++ b/src/Lean/Shell.lean
+@@ -683,14 +683,11 @@ def shellMain (args : List String) (opts : ShellOptions) : IO UInt32 := do
+       IO.eprintln "Expected exactly one file name"
+       displayHelp (useStderr := true)
+       return 1
+-  IO.println s!"[DEBUG:I] fileName = {fileName}"
+-  IO.println "[DEBUG:I] Reading file contents"
+   let contents ← decodeLossyUTF8 <$> do
+     if opts.useStdin then
+       (← IO.getStdin).readBinToEnd
+     else
+       IO.FS.readBinFile fileName
+-  IO.println s!"[DEBUG:I] contents length = {contents.length}"
+   if opts.onlyDeps then
+     Elab.printImports contents fileName
+     return 0
+@@ -712,9 +709,7 @@ def shellMain (args : List String) (opts : ShellOptions) : IO UInt32 := do
+       pure (contents.sliceFrom endLinePos).copy
+     else
+       pure contents
+-  IO.println "[DEBUG:J] Loading module setup"
+   let setup? ← opts.setupFileName?.mapM ModuleSetup.load
+-  IO.println s!"[DEBUG:J] setup? = {setup?.isSome}"
+   let mainModuleName ←
+     if let some setup := setup? then
+       pure setup.name
+@@ -726,8 +721,6 @@ def shellMain (args : List String) (opts : ShellOptions) : IO UInt32 := do
+           throw e
+     else
+       pure `_stdin
+-  IO.println s!"[DEBUG:J] mainModuleName = {mainModuleName}"
+-  IO.println "[DEBUG:K] Calling Elab.runFrontend"
+   let env? ← Elab.runFrontend contents opts.leanOpts fileName mainModuleName
+     opts.trustLevel opts.oleanFileName? opts.ileanFileName? opts.jsonOutput opts.errorOnKinds
+     #[] opts.printStats setup?
+diff --git a/src/initialize/init.cpp b/src/initialize/init.cpp
+index 7de2dd8..36a3c83 100644
+--- a/src/initialize/init.cpp
++++ b/src/initialize/init.cpp
+@@ -14,12 +14,6 @@ Author: Leonardo de Moura
+ #include "library/constructions/init_module.h"
+ #include "library/print.h"
+ #include "initialize/init.h"
+-// #region agent log
+-#if defined(LEAN_EMSCRIPTEN)
+-#include <emscripten.h>
+-#endif
+-// #endregion
+-
+ namespace lean {
+ extern "C" object* initialize_Init(uint8_t);
+ extern "C" object* initialize_Std(uint8_t);
+@@ -29,77 +23,22 @@ extern "C" object* initialize_Lean(uint8_t);
+ you must first call this function, and then `lean::io_mark_end_initialization`. In between
+ these two calls, you may also have to run additional initializers for your own modules. */
+ extern "C" LEAN_EXPORT void lean_initialize() {
+-    // #region agent log
+-#if defined(LEAN_EMSCRIPTEN)
+-    EM_ASM({ console.log("[DEBUG:INIT] lean_initialize() started"); });
+-#endif
+-    // #endregion
+     save_stack_info();
+-    // #region agent log
+-#if defined(LEAN_EMSCRIPTEN)
+-    EM_ASM({ console.log("[DEBUG:INIT] save_stack_info() done"); });
+-#endif
+-    // #endregion
+     initialize_util_module();
+-    // #region agent log
+-#if defined(LEAN_EMSCRIPTEN)
+-    EM_ASM({ console.log("[DEBUG:INIT] initialize_util_module() done"); });
+-#endif
+-    // #endregion
+     uint8_t builtin = 1;
+     // Initializing the core libs explicitly is necessary because of references to them other than
+     // via `import`, such as:
+     // * calling exported Lean functions from C++
+     // * calling into native code of the current module from a previous stage when `prefer_native`
+     //   is set
+-    // #region agent log
+-#if defined(LEAN_EMSCRIPTEN)
+-    EM_ASM({ console.log("[DEBUG:INIT] About to initialize_Init..."); });
+-#endif
+-    // #endregion
+     consume_io_result(initialize_Init(builtin));
+-    // #region agent log
+-#if defined(LEAN_EMSCRIPTEN)
+-    EM_ASM({ console.log("[DEBUG:INIT] initialize_Init() done"); });
+-#endif
+-    // #endregion
+-    // #region agent log
+-#if defined(LEAN_EMSCRIPTEN)
+-    EM_ASM({ console.log("[DEBUG:INIT] About to initialize_Std..."); });
+-#endif
+-    // #endregion
+     consume_io_result(initialize_Std(builtin));
+-    // #region agent log
+-#if defined(LEAN_EMSCRIPTEN)
+-    EM_ASM({ console.log("[DEBUG:INIT] initialize_Std() done"); });
+-#endif
+-    // #endregion
+-    // #region agent log
+-#if defined(LEAN_EMSCRIPTEN)
+-    EM_ASM({ console.log("[DEBUG:INIT] About to initialize_Lean..."); });
+-#endif
+-    // #endregion
+     consume_io_result(initialize_Lean(builtin));
+-    // #region agent log
+-#if defined(LEAN_EMSCRIPTEN)
+-    EM_ASM({ console.log("[DEBUG:INIT] initialize_Lean() done"); });
+-#endif
+-    // #endregion
+     initialize_kernel_module();
+-    // #region agent log
+-#if defined(LEAN_EMSCRIPTEN)
+-    EM_ASM({ console.log("[DEBUG:INIT] initialize_kernel_module() done"); });
+-#endif
+-    // #endregion
+     init_default_print_fn();
+     initialize_library_core_module();
+     initialize_library_module();
+     initialize_constructions_module();
+-    // #region agent log
+-#if defined(LEAN_EMSCRIPTEN)
+-    EM_ASM({ console.log("[DEBUG:INIT] lean_initialize() completed successfully"); });
+-#endif
+-    // #endregion
+ }
+ 
+ void finalize() {
+diff --git a/src/util/io.h b/src/util/io.h
+index 1bcbb21..dcf06e3 100644
+--- a/src/util/io.h
++++ b/src/util/io.h
+@@ -8,12 +8,6 @@ Author: Leonardo de Moura
+ #include "runtime/exception.h"
+ #include "runtime/object.h"
+ #include "runtime/string_ref.h"
+-// #region agent log
+-#if defined(LEAN_EMSCRIPTEN)
+-#include <emscripten.h>
+-#endif
+-// #endregion
+-
+ namespace lean {
+ extern "C" object* lean_io_error_to_string(object * err);
+ 
+@@ -37,13 +31,6 @@ inline void consume_io_result(object * o) {
+         inc(err_obj);
+         dec(o);
+         string_ref error(lean_io_error_to_string(err_obj));
+-        // #region agent log
+-#if defined(LEAN_EMSCRIPTEN)
+-        EM_ASM({
+-            console.log("[DEBUG:IO_ERROR] IO result error: " + UTF8ToString($0));
+-        }, error.data());
+-#endif
+-        // #endregion
+         throw exception(error.to_std_string());
+     }
+     dec(o);
+diff --git a/src/util/shell.cpp b/src/util/shell.cpp
+index 23e51cd..07f7385 100644
+--- a/src/util/shell.cpp
++++ b/src/util/shell.cpp
+@@ -209,50 +209,16 @@ static char const * g_opt_str =
+ ; // NOLINT
+ 
+ namespace lean {
+-extern "C" obj_res lean_shell_main(obj_arg args, obj_arg shell_opts, obj_arg world);
++extern "C" obj_res lean_shell_main(obj_arg args, obj_arg shell_opts);
+ int run_shell_main(int argc, char* argv[], object_ref const & shell_opts) {
+-    // #region agent log
+-#ifdef LEAN_EMSCRIPTEN
+-    EM_ASM({ console.log("[DEBUG:G] run_shell_main entered, building args list"); });
+-#endif
+-    // #endregion
+     list_ref<string_ref> args;
+     while (argc > 0) {
+         argc--;
+         args = list_ref<string_ref>(string_ref(argv[argc]), args);
+     }
+-    // #region agent log
+-#ifdef LEAN_EMSCRIPTEN
+-    EM_ASM({ console.log("[DEBUG:G] Args list built, preparing arguments..."); });
+-#endif
+-    // #endregion
+-    
+-    // Prepare arguments separately to isolate crash
+-#ifdef LEAN_EMSCRIPTEN
+-    EM_ASM({ console.log("[DEBUG:G] Calling args.steal()..."); });
+-#endif
+     object * args_obj = args.steal();
+-#ifdef LEAN_EMSCRIPTEN
+-    EM_ASM({ console.log("[DEBUG:G] args.steal() returned: " + $0); }, (int)(uintptr_t)args_obj);
+-#endif
+-    
+-#ifdef LEAN_EMSCRIPTEN
+-    EM_ASM({ console.log("[DEBUG:G] Calling shell_opts.to_obj_arg()..."); });
+-#endif
+     object * opts_obj = shell_opts.to_obj_arg();
+-#ifdef LEAN_EMSCRIPTEN
+-    EM_ASM({ console.log("[DEBUG:G] shell_opts.to_obj_arg() returned: " + $0); }, (int)(uintptr_t)opts_obj);
+-#endif
+-
+-#ifdef LEAN_EMSCRIPTEN
+-    EM_ASM({ console.log("[DEBUG:G] Now calling lean_shell_main..."); });
+-#endif
+-    object * result = lean_shell_main(args_obj, opts_obj, lean_box(0));
+-    // #region agent log
+-#ifdef LEAN_EMSCRIPTEN
+-    EM_ASM({ console.log("[DEBUG:G] lean_shell_main returned, processing result..."); });
+-#endif
+-    // #endregion
++    object * result = lean_shell_main(args_obj, opts_obj);
+     return get_io_scalar_result<uint32>(result);
+ }
+ 
+@@ -319,15 +285,6 @@ static void report_task_get_blocked_time(std::chrono::nanoseconds d) {
+ 
+ extern "C" LEAN_EXPORT int lean_main(int argc, char ** argv) {
+ #ifdef LEAN_EMSCRIPTEN
+-    // #region agent log
+-    EM_ASM({
+-        console.log("[DEBUG:A] lean_main entered, argc=" + $0);
+-        for (var i = 0; i < $0; i++) {
+-            var argPtr = HEAPU32[($1 >> 2) + i];
+-            console.log("[DEBUG:A] argv[" + i + "]=" + UTF8ToString(argPtr));
+-        }
+-    }, argc, argv);
+-    // #endregion
+     // Set up the virtual filesystem based on the runtime environment.
+     // Node.js: Use NODEFS to access the real filesystem.
+     // Browser: Use MEMFS (default) with pre-created directories.
+@@ -382,31 +339,6 @@ extern "C" LEAN_EXPORT int lean_main(int argc, char ** argv) {
+                 ENV["LEAN_PATH"] = "/lib/lean/library";
+             }
+             
+-            console.log("Lean 4 WASM running in browser mode");
+-            console.log("LEAN_PATH:", ENV["LEAN_PATH"]);
+-            console.log("Working directory:", FS.cwd());
+-            // #region agent log
+-            // Debug: List files in LEAN_PATH to verify .olean files are present
+-            try {
+-                var leanPath = ENV["LEAN_PATH"] || "/lib/lean/library";
+-                console.log("[DEBUG:B] Checking for .olean files in LEAN_PATH:", leanPath);
+-                try {
+-                    var files = FS.readdir(leanPath);
+-                    console.log("[DEBUG:B] Files in " + leanPath + ":", JSON.stringify(files.slice(0, 10)));
+-                } catch(e) {
+-                    console.log("[DEBUG:B] ERROR: Cannot read LEAN_PATH directory:", e.message);
+-                }
+-                // Check for Init.olean specifically
+-                try {
+-                    var stat = FS.stat(leanPath + "/Init.olean");
+-                    console.log("[DEBUG:B] Init.olean exists, size:", stat.size);
+-                } catch(e) {
+-                    console.log("[DEBUG:B] ERROR: Init.olean not found:", e.message);
+-                }
+-            } catch(e) {
+-                console.log("[DEBUG:B] LEAN_PATH check failed:", e.message);
+-            }
+-            // #endregion
+         }
+     );
+ #elif defined(LEAN_WINDOWS)
+@@ -416,70 +348,25 @@ extern "C" LEAN_EXPORT int lean_main(int argc, char ** argv) {
+     // see https://github.com/leanprover/lean4/issues/4291
+     SetConsoleOutputCP(CP_UTF8);
+ #endif
+-    // #region agent log
+-#ifdef LEAN_EMSCRIPTEN
+-    EM_ASM({ console.log("[DEBUG:C] About to create lean::initializer"); });
+-#endif
+-    // #endregion
+     auto init_start = std::chrono::steady_clock::now();
+     lean::initializer init;
+     second_duration init_time = std::chrono::steady_clock::now() - init_start;
+-    // #region agent log
+-#ifdef LEAN_EMSCRIPTEN
+-    EM_ASM({ console.log("[DEBUG:C] lean::initializer completed successfully"); });
+-#endif
+-    // #endregion
+ 
+     try {
+-        // #region agent log
+-#ifdef LEAN_EMSCRIPTEN
+-        EM_ASM({ console.log("[DEBUG:D] About to call init_search_path()"); });
+-#endif
+-        // #endregion
+         // Remark: This currently runs under `IO.initializing = true`.
+         init_search_path();
+-        // #region agent log
+-#ifdef LEAN_EMSCRIPTEN
+-        EM_ASM({ console.log("[DEBUG:D] init_search_path() completed successfully"); });
+-#endif
+-        // #endregion
+     } catch (lean::throwable & ex) {
+-        // #region agent log
+-#ifdef LEAN_EMSCRIPTEN
+-        EM_ASM({ console.log("[DEBUG:D] init_search_path() threw exception"); });
+-#endif
+-        // #endregion
+         std::cerr << "error: " << ex.what() << std::endl;
+         return 1;
+     }
+     consume_io_result(lean_enable_initializer_execution());
+-    // #region agent log
+-#ifdef LEAN_EMSCRIPTEN
+-    EM_ASM({ console.log("[DEBUG:E] lean_enable_initializer_execution completed"); });
+-#endif
+-    // #endregion
+ 
+     int rc;
+     object_ref shell_opts;
+     try {
+-        // #region agent log
+-#ifdef LEAN_EMSCRIPTEN
+-        EM_ASM({ console.log("[DEBUG:E] Creating shell options"); });
+-#endif
+-        // #endregion
+         shell_opts = mk_shell_options();
+-        // #region agent log
+-#ifdef LEAN_EMSCRIPTEN
+-        EM_ASM({ console.log("[DEBUG:E] Shell options created, processing command line"); });
+-#endif
+-        // #endregion
+         for (;;) {
+             int c = getopt_long(argc, argv, g_opt_str, g_long_options, NULL);
+-            // #region agent log
+-#ifdef LEAN_EMSCRIPTEN
+-            EM_ASM({ console.log("[DEBUG:E] getopt_long returned: " + $0); }, c);
+-#endif
+-            // #endregion
+             if (c == -1)
+                 break; // end of command line
+             if (process_shell_option(shell_opts, c, optarg, rc))
+@@ -488,20 +375,10 @@ extern "C" LEAN_EXPORT int lean_main(int argc, char ** argv) {
+                 break; // stop consuming arguments after `--run`
+         }
+     } catch (lean::throwable & ex) {
+-        // #region agent log
+-#ifdef LEAN_EMSCRIPTEN
+-        EM_ASM({ console.log("[DEBUG:E] Exception during option processing"); });
+-#endif
+-        // #endregion
+         std::cerr << "error: " << ex.what() << std::endl;
+         return 1;
+     }
+ 
+-    // #region agent log
+-#ifdef LEAN_EMSCRIPTEN
+-    EM_ASM({ console.log("[DEBUG:E] About to call io_mark_end_initialization"); });
+-#endif
+-    // #endregion
+     lean::io_mark_end_initialization();
+ 
+     if (get_shell_profiler(shell_opts)) {
+@@ -509,76 +386,17 @@ extern "C" LEAN_EXPORT int lean_main(int argc, char ** argv) {
+         report_profiling_time("initialization", init_time);
+     }
+ 
+-    // #region agent log
+-#ifdef LEAN_EMSCRIPTEN
+-    EM_ASM({ console.log("[DEBUG:E] Creating scoped_task_manager"); });
+-#endif
+-    // #endregion
+     scoped_task_manager scope_task_man(get_shell_num_threads(shell_opts));
+-    // #region agent log
+-#ifdef LEAN_EMSCRIPTEN
+-    EM_ASM({ console.log("[DEBUG:E] scoped_task_manager created"); });
+-#endif
+-    // #endregion
+ 
+     try {
+-        // #region agent log
+-#ifdef LEAN_EMSCRIPTEN
+-        EM_ASM({ console.log("[DEBUG:E] About to call run_shell_main with argc=" + $0); }, argc - optind);
+-        // Log the arguments being passed to shell_main
+-        for (int i = optind; i < argc; i++) {
+-            EM_ASM({
+-                console.log("[DEBUG:F] shell_main arg[" + $0 + "]=" + UTF8ToString($1));
+-            }, i - optind, argv[i]);
+-        }
+-        // Check if input file exists
+-        EM_ASM({
+-            var inputFile = UTF8ToString($0);
+-            console.log("[DEBUG:F] Checking if input file exists: " + inputFile);
+-            try {
+-                var stat = FS.stat(inputFile);
+-                console.log("[DEBUG:F] Input file exists, size: " + stat.size + " bytes");
+-                // Try to read first 100 chars
+-                var content = FS.readFile(inputFile, { encoding: 'utf8' });
+-                console.log("[DEBUG:F] Input file content (first 200 chars): " + content.substring(0, 200));
+-            } catch(e) {
+-                console.log("[DEBUG:F] ERROR: Input file does not exist or cannot be read: " + e.message);
+-            }
+-        }, argv[optind]);
+-#endif
+-        // #endregion
+         return run_shell_main(argc - optind, argv + optind, shell_opts);
+     } catch (lean::throwable & ex) {
+-        // #region agent log
+-#ifdef LEAN_EMSCRIPTEN
+-        EM_ASM({
+-            console.log("[DEBUG:F] run_shell_main threw lean::throwable: " + UTF8ToString($0));
+-        }, ex.what());
+-#endif
+-        // #endregion
+         std::cerr << ex.what() << "\n";
+     } catch (std::bad_alloc & ex) {
+-        // #region agent log
+-#ifdef LEAN_EMSCRIPTEN
+-        EM_ASM({ console.log("[DEBUG:F] run_shell_main threw bad_alloc"); });
+-#endif
+-        // #endregion
+         std::cerr << "out of memory" << std::endl;
+     } catch (std::exception & ex) {
+-        // #region agent log
+-#ifdef LEAN_EMSCRIPTEN
+-        EM_ASM({
+-            console.log("[DEBUG:F] run_shell_main threw std::exception: " + UTF8ToString($0));
+-        }, ex.what());
+-#endif
+-        // #endregion
+         std::cerr << "exception: " << ex.what() << std::endl;
+     } catch (...) {
+-        // #region agent log
+-#ifdef LEAN_EMSCRIPTEN
+-        EM_ASM({ console.log("[DEBUG:F] run_shell_main threw unknown exception"); });
+-#endif
+-        // #endregion
+         std::cerr << "unknown exception" << std::endl;
+     }
+     return 1;
+-- 
+2.50.1 (Apple Git-155)
+

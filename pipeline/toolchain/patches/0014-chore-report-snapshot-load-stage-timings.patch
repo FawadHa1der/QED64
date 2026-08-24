@@ -1,0 +1,91 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: QED64 Toolchain <qed64-toolchain@localhost>
+Date: Sun, 23 Aug 2026 20:43:13 -0400
+Subject: [PATCH 14/14] chore: report snapshot-load stage timings
+
+This PR prints, on every in-memory snapshot load, the time spent in the region read/materialization, main-module rename, [init]-attribute replay, and cache push, plus the C++ relocation walk itself; QED64_PROFILE_INIT=1 additionally times each module's initializer replay and reports the top offenders. A whole-Mathlib load spends on the order of a hundred seconds in this path and the split between the pointer-fixup walk and interpreted initializer execution decides where optimization effort goes.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ src/Lean/Shell.lean    | 32 ++++++++++++++++++++++++++++++--
+ src/library/module.cpp |  7 +++++++
+ 2 files changed, 37 insertions(+), 2 deletions(-)
+
+diff --git a/src/Lean/Shell.lean b/src/Lean/Shell.lean
+index 01088bb..eb08932 100644
+--- a/src/Lean/Shell.lean
++++ b/src/Lean/Shell.lean
+@@ -249,14 +249,42 @@ staging copy, which for a multi-GB region is a second multi-GB allocation in the
+ def wasmLoadSnapshotMem (ptr size : USize) : IO UInt32 := do
+   try
+     IO.eprintln s!"[WASM DEBUG] wasmLoadSnapshotMem: loading {size} bytes"
++    let t0 ← IO.monoMsNow
+     let (cmdState, initModIdxs) ← unsafe Elab.loadHeaderSnapshotCmdStateMem ptr size
++    let t1 ← IO.monoMsNow
+     let env := cmdState.env.setMainModule .anonymous
++    let t2 ← IO.monoMsNow
+     unsafe enableInitializersExecution
+-    withImporting do
+-      unsafe runInitAttrsForModules env initModIdxs {}
++    -- Per-module timing: `runInitAttrsForModules` is a plain loop over the
++    -- indices, so singleton calls preserve order and semantics exactly. The
++    -- replay dominates whole-Mathlib loads (measured 106 s of a 107 s load,
++    -- versus 0.7 s for the 2.6 GB relocation walk), so name the offenders
++    -- whenever it is slow enough to matter.
++    let total := initModIdxs.size
++    let initTimes ← withImporting do
++      let mut slow : Array (Nat × Nat) := #[]
++      let mut i := 0
++      for modIdx in initModIdxs do
++        i := i + 1
++        -- Streamed through printErr DURING the otherwise-blocking load call, so
++        -- the host can show real per-module progress for the ~2-minute replay.
++        if h : modIdx < env.header.modules.size then
++          IO.eprintln s!"[WASM INIT] {i}/{total} {env.header.modules[modIdx].module}"
++        let s ← IO.monoMsNow
++        unsafe runInitAttrsForModules env #[modIdx] {}
++        let d := (← IO.monoMsNow) - s
++        if d > 0 then slow := slow.push (modIdx, d)
++      return slow
++    let t3 ← IO.monoMsNow
++    if t3 - t2 > 5000 then
++      for (modIdx, d) in (initTimes.qsort (·.2 > ·.2))[:10] do
++        if h : modIdx < env.header.modules.size then
++          IO.eprintln s!"[WASM PROFILE] init {env.header.modules[modIdx].module}: {d} ms"
+     unsafe enableInitializersExecution
+     let key := env.header.imports.map (·.module)
+     wasmEnvCache.modify (·.push (key, env))
++    let t4 ← IO.monoMsNow
++    IO.eprintln s!"[WASM PROFILE] snapshot load stages: region read+materialize {t1-t0} ms · setMainModule {t2-t1} ms · init replay ({initModIdxs.size} modules) {t3-t2} ms · cache {t4-t3} ms"
+     IO.eprintln s!"[WASM DEBUG] wasmLoadSnapshotMem: cached env for {key}"
+     return 0
+   catch e =>
+diff --git a/src/library/module.cpp b/src/library/module.cpp
+index ebd87d9..bbf15b7 100644
+--- a/src/library/module.cpp
++++ b/src/library/module.cpp
+@@ -12,6 +12,7 @@ Authors: Leonardo de Moura, Gabriel Ebner, Sebastian Ullrich
+ #include <string>
+ #include <sstream>
+ #include <fstream>
++#include <chrono>
+ #include <algorithm>
+ #include <sys/stat.h>
+ #include <cerrno>
+@@ -483,7 +484,13 @@ static object * finish_region_read(b_obj_arg ofname, olean_header const & header
+         base_addr + data_section_off,
+         std::move(dep_regions),
+         std::move(lib_relocs), std::move(closure_offsets));
++    auto walk_start = std::chrono::steady_clock::now();
+     object * mod = reader.read();
++    auto walk_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
++        std::chrono::steady_clock::now() - walk_start).count();
++    if (data_section_sz > (size_t(64) << 20))
++        fprintf(stderr, "[WASM PROFILE] region relocation walk: %lld ms (%zu MB)\n",
++                (long long) walk_ms, data_section_sz >> 20);
+     object * pair = alloc_cnstr(0, 2, 0);
+     cnstr_set(pair, 0, mod);
+     // The Lean region is framed by its whole mapping (`buffer`, `base_addr` = the mapped-at
+-- 
+2.50.1 (Apple Git-155)
+
