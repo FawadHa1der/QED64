@@ -355,6 +355,7 @@ export class App {
     this.snapshotIndex = await fetchSnapshotIndex();
     try {
       this.index = await fetchProfileIndex();
+      if (!this.index) throw new Error("profile index missing or invalid (/profiles/index.json)");
       const manifestResponse = await fetch("/runtime/runtime-manifest.json", { cache: "no-cache" });
       if (!manifestResponse.ok) throw new Error(`runtime manifest: HTTP ${manifestResponse.status}`);
       this.runtime = (await manifestResponse.json()) as RuntimeManifest;

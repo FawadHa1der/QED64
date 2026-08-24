@@ -1,0 +1,9 @@
+# Cross-origin isolation for every response — without COOP/COEP the browser
+# refuses SharedArrayBuffer/Memory64 and the app cannot start. Applied by
+# Workers static assets (and Cloudflare Pages) even when a request is served
+# before the worker script runs; infra/worker.js sets the same headers for
+# R2-backed paths.
+/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+  Cross-Origin-Resource-Policy: same-origin
