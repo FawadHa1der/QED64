@@ -54,4 +54,20 @@ describe("shouldUseUmbrella", () => {
   it("stays off when any named import is unavailable — missing modules must error", () => {
     expect(shouldUseUmbrella(["Mathlib.Data.Real.Basic", "Mathlib.DoesNotExist"], available)).toBe(false);
   });
+
+  it("treats aggregator/tutorial aliases as satisfied by the umbrella", () => {
+    // MIL.Common (Mathematics in Lean) alongside a real Mathlib import — the
+    // exact header every MIL exercise ships with.
+    expect(shouldUseUmbrella(["MIL.Common", "Mathlib.Data.Real.Basic"], available)).toBe(true);
+    // Whole-library aggregators dropped by the curation.
+    expect(shouldUseUmbrella(["Mathlib"], available)).toBe(true);
+    expect(shouldUseUmbrella(["Mathlib.Tactic"], available)).toBe(true);
+    // An alias alone still counts as Mathlib intent.
+    expect(shouldUseUmbrella(["MIL.Common"], available)).toBe(true);
+  });
+
+  it("aliases do not launder genuinely unknown modules", () => {
+    expect(shouldUseUmbrella(["MIL.Common", "MyProject.Defs"], available)).toBe(false);
+    expect(shouldUseUmbrella(["MIL.NotCommon"], available)).toBe(false);
+  });
 });

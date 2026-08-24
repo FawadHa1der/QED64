@@ -14,6 +14,7 @@ import {
 import {
   fetchProfileIndex,
   importClosure,
+  importLineOf,
   installProfile,
   parseImports,
   storageEstimate,
@@ -24,7 +25,12 @@ import { EXAMPLES } from "./examples";
 import { parseCoverageLints } from "./editor/coverage";
 import { fetchSnapshotIndex, matchSnapshot, snapshotCacheKey, type SnapshotIndex } from "./runtime/snapshots";
 import { isStaleStorageError } from "./runtime/errors";
-import { UMBRELLA_MODULE, rewriteHeaderToUmbrella, shouldUseUmbrella } from "./runtime/umbrella";
+import {
+  UMBRELLA_ALIAS_MODULES,
+  UMBRELLA_MODULE,
+  rewriteHeaderToUmbrella,
+  shouldUseUmbrella,
+} from "./runtime/umbrella";
 
 const AUTOCHECK_DEBOUNCE_MS = 900;
 const PROFILE_PREF_KEY = "qed64.profile";
@@ -588,8 +594,39 @@ export class App {
     if (this.phase !== "ready") return;
 
     const source = this.editor.getSource();
-    const missingProfile = this.missingImports(source);
-    if (missingProfile.length > 0) {
+    const orderedImports = parseImports(source);
+    const missingProfile = [...new Set(this.missingImports(source))];
+    // Aggregators and tutorial preludes (import Mathlib, Mathlib.Tactic,
+    // MIL.Common, …) are absent from the curated profile but served by the
+    // umbrella environment. They are excused from the missing-import warning
+    // ONLY under the full umbrella condition — the same one the compile path
+    // uses below — so the warning can never be suppressed for a header that
+    // then compiles as written and hard-fails on the alias.
+    const umbrellaEligible =
+      !this.el.strictHeaders.checked &&
+      this.installed.has("essential") &&
+      shouldUseUmbrella(orderedImports, this.getUmbrellaClosure()) &&
+      matchSnapshot(this.snapshotIndex, [UMBRELLA_MODULE]) !== null;
+    const aliasMisses = umbrellaEligible
+      ? missingProfile.filter((m) => UMBRELLA_ALIAS_MODULES.has(m))
+      : [];
+    const genuineMisses = missingProfile.filter((m) => !aliasMisses.includes(m));
+    if (genuineMisses.length > 0) {
+      // Aliases landing here mean the umbrella cannot stand in for them this
+      // check (strict headers, an unknown module alongside, or no snapshot) —
+      // explain which lever applies instead of lumping them in as maybe-typos.
+      const aliasHints = this.installed.has("essential")
+        ? genuineMisses.filter((m) => UMBRELLA_ALIAS_MODULES.has(m))
+        : [];
+      const trueMisses = genuineMisses.filter((m) => !aliasHints.includes(m));
+      const aliasHintText =
+        aliasHints.length === 0
+          ? ""
+          : this.el.strictHeaders.checked
+            ? `${aliasHints.join(", ")}: served by the full Mathlib environment — turn off "Strict headers" in Setup to use it.`
+            : trueMisses.length > 0
+              ? `${aliasHints.join(", ")}: normally served by the full Mathlib environment, but not alongside unknown imports.`
+              : `${aliasHints.join(", ")}: normally served by the full Mathlib environment, but its snapshot is unavailable this session.`;
       this.renderMessages([
         {
           fileName: "input.lean",
@@ -597,10 +634,14 @@ export class App {
           column: 0,
           severity: "warning",
           message:
-            `These imports are not in the installed profile: ${missingProfile.join(", ")}.\n` +
-            (this.installed.has("essential")
-              ? "They may not exist in the Mathlib-essential closure."
-              : "Install Mathlib (essential) to use them — one click below, ~1 GB once."),
+            (trueMisses.length > 0
+              ? `These imports are not in the installed profile: ${trueMisses.join(", ")}.\n` +
+                (this.installed.has("essential")
+                  ? "They may not exist in the Mathlib-essential closure."
+                  : "Install Mathlib (essential) to use them — one click below, ~1 GB once.")
+              : "") +
+            (trueMisses.length > 0 && aliasHintText ? "\n" : "") +
+            aliasHintText,
         },
       ]);
       if (!this.installed.has("essential") && this.index?.profiles.some((p) => p.id === "essential")) {
@@ -625,11 +666,7 @@ export class App {
     // covering every Mathlib import combination) via a position-preserving
     // header rewrite; missing modules were already surfaced above, so the
     // umbrella cannot mask a nonexistent import.
-    const orderedImports = parseImports(source);
-    let umbrella =
-      !this.el.strictHeaders.checked &&
-      shouldUseUmbrella(orderedImports, this.getUmbrellaClosure()) &&
-      matchSnapshot(this.snapshotIndex, [UMBRELLA_MODULE]) !== null;
+    let umbrella = umbrellaEligible;
     let compileImports = umbrella ? [UMBRELLA_MODULE] : orderedImports;
     let importKey = compileImports.join("\u0000");
     if (!this.paidImportSets.has(importKey) && compileImports.length > 0) {
@@ -695,6 +732,21 @@ export class App {
         }
       }
     }
+    // Built from the FINAL umbrella state (a failed snapshot load demotes it
+    // above), and merged with the compile's diagnostics so the explanation
+    // survives the result overwriting the panel — a note must never claim the
+    // Mathlib environment stands in when the compile ran the raw header.
+    const aliasNotes: Diagnostic[] = umbrella
+      ? aliasMisses.map((m) => ({
+          fileName: "input.lean",
+          line: importLineOf(source, m),
+          column: 0,
+          severity: "information" as const,
+          message:
+            `${m} — ${UMBRELLA_ALIAS_MODULES.get(m)} — is not a module in this playground; ` +
+            `the Mathlib-essential environment (4,192 curated modules) stands in for it.`,
+        }))
+      : [];
     const compileSource = umbrella ? rewriteHeaderToUmbrella(source) : source;
     if (umbrella && !this.umbrellaFirstCheckDone) {
       // The first compile against a freshly loaded umbrella warms tactic and
@@ -717,7 +769,7 @@ export class App {
       // The runtime cannot report parse errors (known defect); the coverage
       // lint flags column-0 text the parser will have skipped silently.
       const lints = parseCoverageLints(source);
-      const merged = [...result.diagnostics, ...lints];
+      const merged = [...result.diagnostics, ...lints, ...aliasNotes];
       this.lastDiagnostics = merged;
       this.editor.setLeanDiagnostics(merged);
       this.renderMessages(merged, result);

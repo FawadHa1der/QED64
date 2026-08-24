@@ -17,6 +17,19 @@
 
 export const UMBRELLA_MODULE = "QED64.Essential";
 
+// Modules users paste constantly that do not exist in the installed profile,
+// but whose *intent* the umbrella environment serves: whole-library
+// aggregators the curation drops, and tutorial preludes that are themselves
+// just Mathlib re-exports (MIL.Common = Mathlib.Tactic + Util.Delaborators +
+// a set_option). Under the rewrite they are satisfied by the umbrella like
+// any in-closure import; in strict-headers mode they fail honestly.
+export const UMBRELLA_ALIAS_MODULES: ReadonlyMap<string, string> = new Map([
+  ["Mathlib", "the whole-Mathlib aggregator"],
+  ["Mathlib.Tactic", "the all-tactics aggregator"],
+  ["Batteries", "the whole-Batteries aggregator"],
+  ["MIL.Common", "the Mathematics in Lean tutorial prelude (Mathlib re-exports)"],
+]);
+
 const IMPORT_LINE = /^(?:public\s+|private\s+)?(?:meta\s+)?import\s+[A-Za-z_][\w.«»]*/;
 
 /** Rewrite the header import lines to the umbrella module, preserving the
@@ -40,17 +53,18 @@ export function rewriteHeaderToUmbrella(source: string): string {
 }
 
 /** True when this import set should compile against the umbrella environment:
- * at least one Mathlib module, and every named module inside the umbrella's
- * own import closure — an import outside it (a core module Mathlib never
- * touches, or a module that doesn't exist) would silently lose its
- * declarations under the rewrite, so those sets compile as written. */
+ * at least one Mathlib module (or alias), and every named module inside the
+ * umbrella's own import closure or the alias table — an import outside both
+ * (a core module Mathlib never touches, or a module that doesn't exist)
+ * would silently lose its declarations under the rewrite, so those sets
+ * compile as written. */
 export function shouldUseUmbrella(
   orderedImports: string[],
   umbrellaClosure: { has(name: string): boolean },
 ): boolean {
   return (
     orderedImports.length > 0 &&
-    orderedImports.some((m) => m.startsWith("Mathlib")) &&
-    orderedImports.every((m) => umbrellaClosure.has(m))
+    orderedImports.some((m) => m.startsWith("Mathlib") || UMBRELLA_ALIAS_MODULES.has(m)) &&
+    orderedImports.every((m) => umbrellaClosure.has(m) || UMBRELLA_ALIAS_MODULES.has(m))
   );
 }

@@ -619,6 +619,19 @@ export function parseImports(source: string): string[] {
   return imports;
 }
 
+/** 1-based line number of the import line naming `module`, for anchoring
+ * diagnostics; 1 when not found. */
+export function importLineOf(source: string, module: string): number {
+  const lines = source.split("\n");
+  for (let i = 0; i < lines.length; i += 1) {
+    const t = lines[i]!.trim();
+    if (t.startsWith("--")) continue;
+    const m = /^(?:public\s+|private\s+)?(?:meta\s+)?import\s+([A-Za-z_][\w.«»]*)/.exec(t);
+    if (m && m[1] === module) return i + 1;
+  }
+  return 1;
+}
+
 export async function storageEstimate(): Promise<{ usage: number; quota: number } | null> {
   try {
     const estimate = await navigator.storage.estimate();
