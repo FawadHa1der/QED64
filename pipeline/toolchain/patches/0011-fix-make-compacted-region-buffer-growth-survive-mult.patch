@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: QED64 Toolchain <qed64-toolchain@localhost>
 Date: Fri, 21 Aug 2026 16:12:02 -0400
-Subject: [PATCH 11/15] fix: make compacted-region buffer growth survive
+Subject: [PATCH 11/17] fix: make compacted-region buffer growth survive
  multi-GB saves
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -105,6 +105,3 @@ index ce47209..4c01ab5 100644
      object_offset save(object * o, object * new_o);
      object_offset save_max_sharing(object * o, object * new_o, size_t new_o_sz);
      object_offset to_offset(object * o);
--- 
-2.50.1 (Apple Git-155)
-

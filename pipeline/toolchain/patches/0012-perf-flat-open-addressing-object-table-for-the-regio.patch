@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: QED64 Toolchain <qed64-toolchain@localhost>
 Date: Fri, 21 Aug 2026 16:32:48 -0400
-Subject: [PATCH 12/15] perf: flat open-addressing object table for the region
+Subject: [PATCH 12/17] perf: flat open-addressing object table for the region
  compactor
 
 This PR cuts the memory the compactor spends tracking already-visited objects by roughly 2.5x, which lets whole-environment saves of Mathlib-scale environments fit in a 16 GiB wasm64 address space.
@@ -154,6 +154,3 @@ index 4c01ab5..72c50b4 100644
      std::unique_ptr<max_sharing_table> m_max_sharing_table;
      // Scratch stack of child offsets, to avoid repeated stack allocs during recursion
      std::vector<object_offset> m_tmp;
--- 
-2.50.1 (Apple Git-155)
-

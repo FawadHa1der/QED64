@@ -41,15 +41,19 @@ a given import set pays that set's import once; the resident environment then
 serves rechecks in milliseconds.
 
 Live-verified performance (in-app Chromium, Apple Silicon): boot loads a
-107 MB `init` snapshot in ~0.6 s, so the first Init-only check is ~300 ms.
+107 MB `init` snapshot in ~0.7 s, so the first Init-only check is ~300 ms.
 The first Mathlib check of a session streams the **one** `mathlib` umbrella
-snapshot (806 MB on the wire, 2.57 GiB region) straight into the wasm heap
-in ~128 s and then checks in ~31 s; after that, **every** Mathlib buffer —
-whatever its imports, including combinations nobody pre-baked — rechecks in
-**37–67 ms**. Compiling the same header's closure in-browser instead takes
-5–6 minutes (what "Strict headers" in the Setup tab opts into). Full
-numbers in `docs/ARCHITECTURE.md`; the war-story list of environment
-pathologies this survives is `docs/HARDENING.md`.
+snapshot (806 MiB on the wire, 2.57 GiB region) straight into the wasm heap
+and loads it in **~5 s past the download** (repeat visits: ~18 s click-to-✓
+total from the OPFS cache, zero network) and first-checks in **71 ms–1.6 s**;
+after that, **every** Mathlib buffer — whatever its imports, including
+combinations nobody pre-baked — rechecks in **21–77 ms**. Compiling the same
+header's closure in-browser instead takes minutes (what "Strict headers" in
+the Setup tab opts into). Tutorial headers (`import Mathlib`,
+`import Mathlib.Tactic`, Mathematics in Lean's `import MIL.Common`) compile
+unchanged against the same environment. Full numbers in
+`docs/ARCHITECTURE.md`; the war-story list of environment pathologies this
+survives is `docs/HARDENING.md`.
 
 ## Layout
 
@@ -117,8 +121,8 @@ node --stack-size=8192 pipeline/snapshot/snapshot-probe.mjs --snap work/snapshot
 
 ## Provenance and trust
 
-The runtime (`wasm64-b33e19ecb8121edc`, Lean `4.33.0-pre`, clean-room build of
-`cauli/lean4@5732b84` + the 15-patch series in `pipeline/toolchain/patches/`)
+The runtime (`wasm64-7a2879deebfbc2c7`, Lean `4.33.0-pre`, clean-room build of
+`cauli/lean4@5732b84` + the 17-patch series in `pipeline/toolchain/patches/`)
 and both profile packs are consumed here **by digest**: every chunk
 and transport part is SHA-256-pinned in a manifest, `sync:artifacts` refuses
 unverified bytes, `verify:release` re-derives the raw pack digests, and the

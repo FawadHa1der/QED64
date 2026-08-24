@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: QED64 Toolchain <qed64-toolchain@localhost>
 Date: Thu, 20 Aug 2026 15:42:55 -0400
-Subject: [PATCH 09/15] build: refresh the explicit Emscripten export list
+Subject: [PATCH 09/17] build: refresh the explicit Emscripten export list
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -117,6 +117,3 @@ index 40693cf..8bd489b 100644
  _l___private_Init_Data_Array_Basic_0__Array_mapMUnsafe_map___at___00Lean_Elab_throwErrorWithNestedErrors___at___00Lean_Doc_tactic_spec__0_spec__1___boxed
  _l___private_Init_Data_Array_Basic_0__Array_mapMUnsafe_map___at___00Lean_Elab_throwErrorWithNestedErrors___at___00Lean_Elab_OpenDecl_resolveNameUsingNamespacesCore___at___00Lean_Elab_OpenDecl_elabOpenDecl___at___00Lean_Elab_Tactic_evalOpen_spec__3_spec__19_spec__32_spec__40___boxed
  _l___private_Init_Data_Array_Basic_0__Array_mapMUnsafe_map___at___00Lean_Elab_throwErrorWithNestedErrors___at___00Lean_Elab_OpenDecl_resolveNameUsingNamespacesCore___at___00Lean_Elab_OpenDecl_elabOpenDecl___at___00Lean_Elab_Term_elabOpen_spec__2_spec__18_spec__31_spec__40___boxed
--- 
-2.50.1 (Apple Git-155)
-

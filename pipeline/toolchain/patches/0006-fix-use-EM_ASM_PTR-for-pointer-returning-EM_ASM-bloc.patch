@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: QED64 Toolchain <qed64-toolchain@localhost>
 Date: Thu, 20 Aug 2026 15:42:05 -0400
-Subject: [PATCH 06/15] fix: use EM_ASM_PTR for pointer-returning EM_ASM blocks
+Subject: [PATCH 06/17] fix: use EM_ASM_PTR for pointer-returning EM_ASM blocks
  in runtime/io.cpp
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -42,6 +42,3 @@ index 0ea005c..d21e8f6 100644
          var isNode = (typeof process !== "undefined") &&
                       (process.release && process.release.name === "node");
          
--- 
-2.50.1 (Apple Git-155)
-

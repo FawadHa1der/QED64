@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: QED64 Toolchain <qed64-toolchain@localhost>
 Date: Thu, 20 Aug 2026 15:42:04 -0400
-Subject: [PATCH 03/15] fix: select LEAN_SCALAR_PTR_LITERAL layout by pointer
+Subject: [PATCH 03/17] fix: select LEAN_SCALAR_PTR_LITERAL layout by pointer
  width, not by Emscripten
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -33,6 +33,3 @@ index 23a2105..24a99dc 100644
  #define LEAN_SCALAR_PTR_LITERAL(b1, b2, b3, b4, b5, b6, b7, b8) (lean_object*)((uint32_t)b1 | ((uint32_t)b2 << 8) | ((uint32_t)b3 << 16) | ((uint32_t)b4 << 24)), (lean_object*)((uint32_t)b5 | ((uint32_t)b6 << 8) | ((uint32_t)b7 << 16) | ((uint32_t)b8 << 24))
  #else
  #define LEAN_SCALAR_PTR_LITERAL(b1, b2, b3, b4, b5, b6, b7, b8) (lean_object*)((uint64_t)b1 | ((uint64_t)b2 << 8) | ((uint64_t)b3 << 16) | ((uint64_t)b4 << 24) | ((uint64_t)b5 << 32) | ((uint64_t)b6 << 40) | ((uint64_t)b7 << 48) | ((uint64_t)b8 << 56))
--- 
-2.50.1 (Apple Git-155)
-

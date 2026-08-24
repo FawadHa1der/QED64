@@ -928,7 +928,9 @@ async function loadSnapshot(msg) {
       // The runtime takes ownership of the buffer as the region's backing store.
       const owned = heapPtr;
       heapPtr = null;
-      res = M._lean_wasm_load_snapshot_mem(owned, asPtr(received));
+      // Third arg: replay-control flags — bit 0 runs the [init] attribute
+      // replay, which the app always needs (compiles die without it).
+      res = M._lean_wasm_load_snapshot_mem(owned, asPtr(received), 1n);
     } else {
       if (total > 0 && received !== total) {
         // The pre-size was a hint; trim (or extend) to what actually arrived so

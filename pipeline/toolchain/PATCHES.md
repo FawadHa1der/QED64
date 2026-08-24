@@ -1,7 +1,7 @@
 # The wasm64 patch series
 
 **The authoritative, upstream-ready series lives in [`patches/`](patches/):**
-fifteen `git am`-able commits over `cauli/lean4@5732b84` (branch `qed64-wasm64`
+seventeen `git am`-able commits over `cauli/lean4@5732b84` (branch `qed64-wasm64`
 in `work/lean4`), each with full rationale and an explicit upstreaming
 verdict in its commit message. Summary:
 
@@ -22,15 +22,24 @@ verdict in its commit message. Summary:
 | 0013 | **In-memory snapshot load** (`CompactedRegion.readMem`, `lean_wasm_load_snapshot_mem`): the host streams a region straight into a `malloc` buffer, skipping the MEMFS staging copy (a second multi-GB JS-heap allocation) | applies to any no-mmap host; the shared `finish_region_read` refactor is upstream-neutral |
 | 0014 | **Snapshot-load stage timings + streamed init progress**: every load reports region-read vs `[init]`-replay split (plus top-10 module timings when replay >5 s), and streams `[WASM INIT] i/n module` per module so hosts can render live progress through the blocking call | diagnostic; the numbers justify upstream work on initializer execution |
 | 0015 | Multi-arch emsdk base image (drops the -arm64 pin so amd64 hosts build natively) | build hygiene |
+| 0016 | **Replay-control flags on `lean_wasm_load_snapshot_mem`** (bit 0 = run the `[init]` replay; extension states come from the region, the replay rebuilds process-side registrations) | fork-shaped control surface; useful to any embedder |
+| 0017 | **Interpreter dlsym probes gated on the wasm export table**: `lookup_symbol_in_cur_exe` consults a one-time `Set` of export names before calling dlsym | **as-is** for the Emscripten target — turns a 173 s pathology into ~1 s (below) |
 
-Profile verdict (2026-08-23): a whole-Mathlib snapshot load spends **~0.7 s
-relocating 2.6 GB and ~114 s executing 152 modules' interpreted `[init]`
-initializers** (top offenders: ToDual 11.0 s, ToAdditive 10.3 s,
-Attr.Register 7.1 s — attribute registrations that would be milliseconds
-native). A shared-interpreter-context patch (reusing symbol/constant caches
-across the replay) was built, measured — **no improvement, the time is real
-interpreted work** — and reverted. The honest fix is upstream-shaped: native
-compilation of initializer code or interpreter performance.
+Profile verdict (2026-08-23, superseded 2026-08-24): a whole-Mathlib snapshot
+load spent **~0.7 s relocating 2.6 GB and ~114 s in 152 modules' interpreted
+`[init]` replay**. A shared-interpreter-context patch (reusing symbol/constant
+caches across the replay) was built, measured — no improvement — and reverted;
+that experiment concluded "the time is real interpreted work". **It was not.**
+A `--profiling-funcs` CPU profile attributed 173 s of a 180 s load to the
+JavaScript `dlsym` shim: the interpreter probes for a *native* implementation
+of every symbol it touches, no Mathlib symbol exists in the binary, and under
+Emscripten every miss crosses into JS and allocates an error string. Patch
+0017's export-table gate collapses the replay to **~1.1 s** (total 2.57 GiB
+load: 117.5 s → **1.95 s**) and the first full-stress compile from 32–36 s to
+**4.3 s** — the same storm was throttling compiles. The wasm64 footgun inside
+the fix: EM_JS pointer parameters arrive in JS as BigInt, and `UTF8ToString`
+does Number arithmetic — convert first or every probe throws "Cannot mix
+BigInt" (the same class of bug as patch 0006).
 
 A note on 0011's diagnosis, kept because the wrong turn is instructive: the
 crash trace shows the compactor ~2,500 frames deep in its object recursion,

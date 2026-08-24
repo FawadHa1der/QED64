@@ -12,7 +12,8 @@ profile manifest      ──sha256──► gzip transport parts (8+60) ──gu
 
 | Artifact | Identity | Source |
 |---|---|---|
-| **Runtime `wasm64-b33e19ecb8121edc` (served)** | lean.wasm `b33e19ec…` | QED64 clean-room build: `cauli/lean4@5732b84` + the 14-patch series (embedded githash matches HEAD of `work/lean4`). Adds 0014: snapshot-load stage telemetry + per-module init progress streamed through the blocking load. Emscripten 6.0.5 Docker, full gate incl. THE PARSE GATE |
+| **Runtime `wasm64-7a2879deebfbc2c7` (served)** | lean.wasm `7a2879de…` | QED64 clean-room build: `cauli/lean4@5732b84` + the 17-patch series (embedded githash matches HEAD of `work/lean4`). Adds 0016 (replay-control flags on `lean_wasm_load_snapshot_mem`) and 0017 (interpreter dlsym probes gated on the wasm export table — the ~100× snapshot-load fix). Emscripten 6.0.5 Docker, full gate incl. THE PARSE GATE |
+| Runtime `wasm64-b33e19ecb8121edc` (previous) | lean.wasm `b33e19ec…` | 15-patch series (adds 0014 stage telemetry + streamed init progress, 0015 multi-arch emsdk image); superseded by the dlsym-gate build |
 | Runtime `wasm64-2c197d38d7fbe922` (previous) | lean.wasm `2c197d38…` | 13-patch series; first umbrella-capable runtime, superseded by the telemetry build |
 | Runtime `wasm64-bc6ede1a5ed48460`, `wasm64-f0a78c3352dff1a0` (interim, dev only) | — | Same series at patches 0011 and 0012 respectively; gate-passed, used to bake and validate the umbrella under Node, superseded |
 | Runtime `wasm64-3d1f8042960a65a9` (interim, dev only) | lean.wasm `3d1f8042…` (105,927,492 B) | Same series + a 128 MB main-stack patch that chased a misdiagnosed crash; gate-passed and briefly served on the dev server, never baked against, superseded |

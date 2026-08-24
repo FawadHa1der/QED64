@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: QED64 Toolchain <qed64-toolchain@localhost>
 Date: Thu, 20 Aug 2026 15:42:55 -0400
-Subject: [PATCH 08/15] cleanup: remove wasm32-era debug instrumentation; fix
+Subject: [PATCH 08/17] cleanup: remove wasm32-era debug instrumentation; fix
  lean_shell_main arity
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -510,6 +510,3 @@ index 23e51cd..07f7385 100644
          std::cerr << "unknown exception" << std::endl;
      }
      return 1;
--- 
-2.50.1 (Apple Git-155)
-

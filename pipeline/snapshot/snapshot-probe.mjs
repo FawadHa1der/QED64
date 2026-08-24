@@ -157,7 +157,8 @@ globalThis.Module = {
         fs.closeSync(fd2);
         console.log(`staged ${total} bytes into the wasm heap`);
         t0 = performance.now();
-        lr = M._lean_wasm_load_snapshot_mem(asPtr(heapPtr), asPtr(total));
+        const initFlags = BigInt(arg("init-flags", "1"));
+        lr = M._lean_wasm_load_snapshot_mem(asPtr(heapPtr), asPtr(total), initFlags);
       } else {
         lr = M._lean_wasm_load_snapshot(mkString(snapPath));
       }

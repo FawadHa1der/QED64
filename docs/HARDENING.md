@@ -131,3 +131,19 @@ regression-pinned where testable. They will save the next person days.
     (0 s/2 s/8 s, cache-bypassing), and a failed install renders a
     "Retry install" button — verified parts are already in the HTTP cache,
     so retries resume nearly for free.
+24. **"The time is real work" needs a CPU profile before you believe it.**
+    The 115 s umbrella `[init]` replay survived one failed optimization
+    (shared interpreter caches — measured, no change) and was written off as
+    irreducible interpreted execution. A `--profiling-funcs` build + DevTools
+    profile then attributed **173 s of a 180 s load to the JS `dlsym` shim**:
+    the interpreter probes every symbol for a native implementation, misses
+    on all of Mathlib, and each Emscripten miss crosses into JavaScript and
+    allocates an error string. An EM_JS gate over a one-time `Set` of
+    `wasmExports` keys (toolchain patch 0017) collapsed the replay to ~1 s
+    and cut first-compile times 8× — the storm had been throttling *every*
+    interpreter run, not just the replay. Two sub-lessons: wall-time
+    attribution by stage (patch 0014) cannot distinguish "interpreter is
+    slow" from "interpreter's host calls are slow" — only a sampling profile
+    can; and EM_JS pointer params arrive as BigInt under wasm64, so
+    `UTF8ToString(Number(sym))`, or the gate itself throws "Cannot mix
+    BigInt" from inside the replay (the patch-0006 class again).

@@ -4,15 +4,19 @@
 
 | Event | Measured |
 |---|---|
-| Runtime verify + instantiate + Lean init | ~10 s |
-| `init` snapshot (107 MB wire / 342 MB region) region-load at boot | **608–691 ms**; first Init-only check ~300 ms |
+| Runtime verify + instantiate + Lean init | ~8–10 s |
+| `init` snapshot (107 MB wire / 342 MB region) region-load at boot | **~0.7–0.8 s**; first Init-only check ~300 ms |
 | First check, Init only, without the snapshot | ~25–43 s |
-| `mathlib` umbrella snapshot (806 MB wire / 2.57 GiB region) streamed straight into the wasm heap | **128 s**, once per session (with Mathlib's 3.25 GiB pack *also* resident in this pane's memory) |
-| First Mathlib check after the umbrella load (reals + `linarith` example) | **31.0 s** |
-| Any later Mathlib check — *any* import combination, including headers never baked (e.g. `Nat.Prime.Basic` + `Topology.Basic` + `Order.Filter.Basic`) | **37–67 ms** |
-| The same reals example compiled by importing its closure in-browser (strict-headers mode / no snapshot) | 313–348 s |
+| `mathlib` umbrella snapshot (806 MiB wire / 2.57 GiB region) — download + region walk + `[init]` replay | **~5–7 s** past the download (repeat visits: **~18 s click-to-✓ total** reading the OPFS-cached bytes, zero network) |
+| First Mathlib check after the umbrella load | **71 ms** (light `rw` buffer) – **1.6 s** (first use of linarith/norm_num/ring/positivity) |
+| Any later Mathlib check — *any* import combination, including headers never baked (e.g. `Nat.Prime.Basic` + `Topology.Basic` + `Order.Filter.Basic`) | **21–77 ms** |
+| The same reals example compiled by importing its closure in-browser (strict-headers mode / no snapshot) | minutes (dominated by the olean closure import) |
 | Peak Memory64 heap with the umbrella resident | 3.01 GiB of 8 GiB max |
 | App bundle (everything that isn't Lean) | 127 KB gzipped |
+
+Before toolchain patch 0017 the umbrella load took **~128 s** and the first
+Mathlib check **~31 s** — see "What the load actually costs" below for what
+those seconds really were.
 
 ## The worker (public/workers/lean.worker.js)
 
@@ -95,9 +99,18 @@ Playground semantics caveat: under the rewrite, everything in the essential
 profile is in scope regardless of which subset the header names (code may
 elaborate here that would need more imports in a real project). Named imports
 are still validated against the installed profiles, so nonexistent modules
-error rather than vanish. Headers naming modules *outside* the umbrella
-closure — core-only buffers included — compile as written, with exact import
-semantics, via the normal import path.
+error rather than vanish — with one deliberate exception: `UMBRELLA_ALIAS_MODULES`
+(whole-library aggregators the curation drops — `Mathlib`, `Mathlib.Tactic`,
+`Batteries` — and tutorial preludes that are pure Mathlib re-exports, like
+Mathematics in Lean's `MIL.Common`) count as satisfied by the umbrella, so
+pasted tutorial code compiles unchanged, with an information note on the
+import line explaining the substitution. The excusal applies only under the
+full umbrella condition (Mathlib installed, strict headers off, umbrella
+snapshot available, every other import in the closure) — in every other case
+those imports warn like any missing module, with a hint naming the lever.
+Headers naming modules *outside* the umbrella closure — core-only buffers
+included — compile as written, with exact import semantics, via the normal
+import path.
 
 A failed or missing snapshot degrades to the normal import path with the
 header as written (the app just shows the first-compile explainer; it never
@@ -110,16 +123,21 @@ bake mounts via `--lib`.
 ### What the load actually costs (profiled)
 
 Every snapshot load prints its stage split to the worker log. For the
-2.57 GiB umbrella: **region read + relocation walk ≈ 0.7 s; `[init]`
-attribute replay over 152 modules ≈ 105–115 s (>99 %)** — the initializers
-execute in the IR interpreter (top offenders: `ToDual` 11.0 s, `ToAdditive`
-10.3 s, `Attr.Register` 7.1 s), and a measured shared-interpreter-cache
-experiment showed the time is the work itself, not per-call overhead. The
-replay streams `[WASM INIT] i/n module` lines through the otherwise-blocking
-call, which the app renders as a live 152-step counter. Making the replay
-fast needs upstream work (natively compiled initializers or interpreter
-performance); a SharedWorker that outlives reloads would amortize it across
-visits and is the highest-value follow-up.
+2.57 GiB umbrella: **region read + relocation walk ≈ 1–2 s; `[init]`
+attribute replay over 152 modules ≈ 1–2 s.** The replay streams
+`[WASM INIT] i/n module` lines through the otherwise-blocking call, which
+the app renders as a live 152-step counter.
+
+The replay used to cost **105–115 s** and read as irreducible interpreted
+work (a shared-interpreter-cache experiment measured no change). A
+`--profiling-funcs` CPU profile then attributed 173 s of a 180 s load to
+Emscripten's JavaScript `dlsym` shim: the IR interpreter probes for a
+*native* implementation of every symbol it touches, no Mathlib symbol
+exists in the binary, and each miss crossed into JS and allocated an error
+string. Toolchain patch 0017 gates the probe on a one-time `Set` of the
+module's export names, which collapsed the replay ~100× and cut first
+compiles ~8× — the same storm had been throttling every interpreter run
+(see HARDENING lesson 24).
 
 ### Snapshot cache and the preparation UX
 

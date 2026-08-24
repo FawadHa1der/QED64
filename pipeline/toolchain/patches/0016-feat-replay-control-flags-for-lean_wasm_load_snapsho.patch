@@ -1,0 +1,59 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: QED64 Toolchain <qed64-toolchain@localhost>
+Date: Mon, 24 Aug 2026 16:22:19 -0400
+Subject: [PATCH 16/17] feat: replay control flags for
+ lean_wasm_load_snapshot_mem
+
+This PR adds a flags parameter to lean_wasm_load_snapshot_mem; bit 0 controls whether the [init] attribute replay runs after the region is materialized. Extension states are restored by the region itself; the replay rebuilds process-side registrations, which a host that knows its workload does not need can skip.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ src/Lean/Shell.lean | 17 ++++++++++++-----
+ 1 file changed, 12 insertions(+), 5 deletions(-)
+
+diff --git a/src/Lean/Shell.lean b/src/Lean/Shell.lean
+index eb08932..71215d5 100644
+--- a/src/Lean/Shell.lean
++++ b/src/Lean/Shell.lean
+@@ -246,9 +246,9 @@ def wasmLoadSnapshot (path : String) : IO UInt32 := do
+ staging copy, which for a multi-GB region is a second multi-GB allocation in the host's JS heap.
+ -/
+ @[export lean_wasm_load_snapshot_mem]
+-def wasmLoadSnapshotMem (ptr size : USize) : IO UInt32 := do
++def wasmLoadSnapshotMem (ptr size flags : USize) : IO UInt32 := do
+   try
+-    IO.eprintln s!"[WASM DEBUG] wasmLoadSnapshotMem: loading {size} bytes"
++    IO.eprintln s!"[WASM DEBUG] wasmLoadSnapshotMem: loading {size} bytes (flags {flags})"
+     let t0 ← IO.monoMsNow
+     let (cmdState, initModIdxs) ← unsafe Elab.loadHeaderSnapshotCmdStateMem ptr size
+     let t1 ← IO.monoMsNow
+@@ -260,11 +260,18 @@ def wasmLoadSnapshotMem (ptr size : USize) : IO UInt32 := do
+     -- replay dominates whole-Mathlib loads (measured 106 s of a 107 s load,
+     -- versus 0.7 s for the 2.6 GB relocation walk), so name the offenders
+     -- whenever it is slow enough to matter.
+-    let total := initModIdxs.size
++    -- flags bit 0: run the [init] attribute replay. Extension states live in
++    -- the env and are restored by the region itself; the replay rebuilds
++    -- process-side registrations, and a host that knows its workload does not
++    -- need them can skip it.
++    let replayModIdxs := if flags &&& 1 == 1 then initModIdxs else #[]
++    if replayModIdxs.isEmpty && !initModIdxs.isEmpty then
++      IO.eprintln s!"[WASM PROFILE] init replay SKIPPED ({initModIdxs.size} modules)"
++    let total := replayModIdxs.size
+     let initTimes ← withImporting do
+       let mut slow : Array (Nat × Nat) := #[]
+       let mut i := 0
+-      for modIdx in initModIdxs do
++      for modIdx in replayModIdxs do
+         i := i + 1
+         -- Streamed through printErr DURING the otherwise-blocking load call, so
+         -- the host can show real per-module progress for the ~2-minute replay.
+@@ -284,7 +291,7 @@ def wasmLoadSnapshotMem (ptr size : USize) : IO UInt32 := do
+     let key := env.header.imports.map (·.module)
+     wasmEnvCache.modify (·.push (key, env))
+     let t4 ← IO.monoMsNow
+-    IO.eprintln s!"[WASM PROFILE] snapshot load stages: region read+materialize {t1-t0} ms · setMainModule {t2-t1} ms · init replay ({initModIdxs.size} modules) {t3-t2} ms · cache {t4-t3} ms"
++    IO.eprintln s!"[WASM PROFILE] snapshot load stages: region read+materialize {t1-t0} ms · setMainModule {t2-t1} ms · init replay ({replayModIdxs.size} modules) {t3-t2} ms · cache {t4-t3} ms"
+     IO.eprintln s!"[WASM DEBUG] wasmLoadSnapshotMem: cached env for {key}"
+     return 0
+   catch e =>
