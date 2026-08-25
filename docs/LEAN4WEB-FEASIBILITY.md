@@ -136,12 +136,22 @@ The decisive technical facts, verified against source and by experiment:
 1. **Stage 1 — pump probe (this branch, done):** patch 0018 + Node probe
    proving initialize→didOpen→diagnostics→`$/lean/rpc` goals against the
    wasm64 worker. *Exit: probe passes for an Init-only document.*
-2. **Stage 2 — browser transport + forked front end:** fork lean4web client,
-   replace the WebSocket with the WorkerDirect bridge into a QED64-style
-   worker (verified chunks, WORKERFS mounts, capability gate), shim the
-   watchdog contract (initialize response, exit-2 restart, keepAlive
-   forwarding, URI mapping). *Exit: live InfoView goals while typing an
-   Init-only proof in the browser.*
+2. **Stage 2 — browser transport + front end: COMPLETE (2026-08-25 eve).**
+   `frontend/` wires lean4monaco (Monaco + the real vscode-lean4 InfoView)
+   at the QED64 worker through a WorkerDirect MessagePort and a ~150-line
+   page-side watchdog shim. Verified on screen: live interactive tactic
+   state at the cursor (`n : Nat ⊢ n + 0 = n`), "No goals" after `simp`,
+   the `sorry` warning in All Messages, and incremental re-elaboration
+   while typing. Two final defects found and fixed on the way: the
+   worker's LSP output needed a flush after every message (patch 0022 —
+   the line-buffered TTY held bodies until the next frame corrupted the
+   stream), and the header env import must run as a plain compile before
+   `lsp-init` (a long main-thread wasm stint inside init silences the
+   session; the shim warms it, making the in-init prebuild a 0 ms hit).
+   Patch 0021 added the prebuilt-header-envs hook that hands host-thread
+   imports to the elaboration task. Deferred polish: exit-code-2 restart
+   on header edits, the orphan-header root cause (guarded worker-side),
+   completion/semantic-token legends.
 3. **Stage 3 — Mathlib at speed:** hook the env cache/umbrella snapshot into
    the worker's header setup (fork patch in `setupImports`, mirroring
    `getOrCreateWasmEnvFor`), OPFS snapshot cache reuse, restart-fast path.
