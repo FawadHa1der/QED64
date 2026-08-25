@@ -43,6 +43,14 @@ export async function bootQed64(onStatus: (line: string) => void): Promise<Boote
   const session = new LeanSession();
   session.onLog = (stream: string, text: string) => console.debug(`[lean:${stream}] ${text}`);
   session.onProgress = (p: { phase: string; label?: string }) => onStatus(p.label ?? p.phase);
+  // A header edit makes the file worker exit (the watchdog restart contract,
+  // exit code 2) — under wasm that tears down the whole instance. Until the
+  // shim learns to reboot and replay, say so instead of dying silently.
+  session.onStateChange = (state: string) => {
+    if (state === "dead") {
+      onStatus("Lean stopped (header edits restart the worker — reload the page to continue)");
+    }
+  };
   const ready = await session.boot({
     runtime,
     memory: { initialBytes: 256 * 1048576, maximumCandidates: memoryCandidates() },

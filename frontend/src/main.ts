@@ -25,6 +25,8 @@ example : False := sorry
 async function main() {
   const { session } = await bootQed64(status);
   const shim = new WatchdogShim(session, status);
+  // Debug handle for driving/inspecting the session from the console.
+  (globalThis as unknown as Record<string, unknown>).qed64 = { session, shim };
 
   status("starting Monaco + InfoView…");
   const leanMonaco = new LeanMonaco();
