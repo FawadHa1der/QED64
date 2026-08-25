@@ -102,6 +102,15 @@ export class LeanSession {
   private worker: Worker;
   private pending = new Map<string, Pending>();
   private seq = 0;
+  /** Runtime-owning RPCs (compile, loadSnapshot) execute strictly one at a
+   * time. The worker rejects any such request that arrives while another
+   * owns the runtime (BAD_STATE) — and snapshot loads are async on the
+   * worker, so a compile posted mid-load DOES arrive early enough to bounce:
+   * observed live as a user-facing "Compile failed: Worker is 'compiling',
+   * not ready." when a check raced the boot snapshot load right after boot.
+   * Serializing here makes that guard unreachable from a single session
+   * regardless of caller timing. */
+  private turn: Promise<unknown> = Promise.resolve();
   state: SessionState = "starting";
   onProgress: (event: ProgressEvent) => void = () => {};
   onLog: (stream: string, text: string) => void = () => {};
@@ -170,6 +179,20 @@ export class LeanSession {
     }
   }
 
+  /** Take the next runtime turn: wait for every earlier compile/loadSnapshot
+   * to settle (success or failure alike), then run `op` — unless the session
+   * died while queued, in which case reject instead of posting to a
+   * terminated worker and hanging forever. */
+  private exclusive<T>(op: () => Promise<T>): Promise<T> {
+    const run = (): Promise<T> =>
+      this.state === "dead"
+        ? Promise.reject(Object.assign(new Error("Session is dead; request not sent."), { code: "DEAD" }))
+        : op();
+    const turn = this.turn.then(run, run);
+    this.turn = turn.catch(() => {});
+    return turn;
+  }
+
   private request<T>(type: string, payload: Record<string, unknown> = {}, transfer: Transferable[] = []): Promise<T> {
     const requestId = `r${(this.seq += 1)}`;
     return new Promise<T>((resolve, reject) => {
@@ -206,13 +229,15 @@ export class LeanSession {
     return ready;
   }
 
-  async compile(source: string, fileName?: string): Promise<CompileResult> {
-    this.transition("compiling");
-    try {
-      return await this.request<CompileResult>("compile", { input: { source, fileName } });
-    } finally {
-      if (this.state === "compiling") this.transition("ready");
-    }
+  compile(source: string, fileName?: string): Promise<CompileResult> {
+    return this.exclusive(async () => {
+      this.transition("compiling");
+      try {
+        return await this.request<CompileResult>("compile", { input: { source, fileName } });
+      } finally {
+        if (this.state === "compiling") this.transition("ready");
+      }
+    });
   }
 
   loadSnapshot(
@@ -221,7 +246,7 @@ export class LeanSession {
     expectedBytes?: number,
     cacheKey?: string,
   ): Promise<{ success: boolean; elapsedMs: number }> {
-    return this.request("loadSnapshot", { input: { url, name, expectedBytes, cacheKey } });
+    return this.exclusive(() => this.request("loadSnapshot", { input: { url, name, expectedBytes, cacheKey } }));
   }
 
   telemetry(): Promise<{ state: string; memory?: MemoryTelemetry }> {

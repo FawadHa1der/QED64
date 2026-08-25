@@ -165,3 +165,17 @@ regression-pinned where testable. They will save the next person days.
     errors as probe-then-reboot triggers. Sub-lesson: deleting OPFS entries
     while iterating `dir.keys()` silently invalidates the iterator — collect
     names first, then delete.
+26. **"Ready" on screen does not mean the worker is free.** The app flips its
+    phase to ready before the boot snapshot load, and snapshot loads are
+    `async` on the worker while owning the runtime (`state = "compiling"`) —
+    so a manual check in that window posts a compile the worker CAN process
+    mid-load, and it bounces with BAD_STATE, rendered live as "Compile
+    failed: Worker is 'compiling', not ready." (2026-08-25). The app-side
+    collision queue (`compileQueued`) never engaged because it keys on the
+    app phase, not the worker's. Fix at the seam: `LeanSession` serializes
+    all runtime-owning RPCs (compile, loadSnapshot) through a promise chain
+    — a turn only starts after every earlier one settles, and turns queued
+    when the session dies reject instead of posting into a terminated worker
+    (regression-pinned in `tests/unit/session-serialization.test.ts`). The
+    app additionally treats any residual BAD_STATE compile rejection as
+    queue-one-retry rather than a rendered error.

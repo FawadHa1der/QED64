@@ -127,6 +127,12 @@ export class App {
     indeterminate: boolean;
   } | null = null;
   private storageRecoveryAttempted = false;
+  /** One free retry when a compile bounces off a still-busy worker
+   * (BAD_STATE, "Worker is 'compiling', not ready"): queue-and-rerun instead
+   * of rendering it as a compile failure. The session serializes its own
+   * RPCs, so this only fires if app and worker state ever disagree again —
+   * a second consecutive bounce falls through to the normal error path. */
+  private workerBusyRetried = false;
   private umbrellaFirstCheckDone = false;
   private snapshotPrefetchStarted = false;
   private lastDiagnostics: Diagnostic[] = [];
@@ -764,6 +770,7 @@ export class App {
     const started = performance.now();
     try {
       const result = await this.session.compile(compileSource, "/workspace/input.lean");
+      this.workerBusyRetried = false;
       if (umbrella) this.umbrellaFirstCheckDone = true;
       this.paidImportSets.add(importKey);
       // The runtime cannot report parse errors (known defect); the coverage
@@ -778,7 +785,19 @@ export class App {
       this.el.statusTiming.textContent = `checked in ${fmtMs(result.elapsedMs)}`;
     } catch (error) {
       const message = (error as Error).message ?? String(error);
-      if (isStaleStorageError(message) && !this.storageRecoveryAttempted) {
+      const workerBusy =
+        (error as { code?: string }).code === "BAD_STATE" ||
+        /Worker is '\w+', not ready/.test(message);
+      if (!workerBusy) this.workerBusyRetried = false;
+      if (workerBusy && !this.workerBusyRetried) {
+        // Observed live (2026-08-25): a manual check right after boot raced
+        // the boot snapshot load — phase read "ready" while the worker still
+        // owned the runtime, and the rejection rendered as "Compile failed".
+        // A collision is transient by definition: re-run this check when the
+        // session frees instead of alarming the user.
+        this.workerBusyRetried = true;
+        if (this.compileQueued !== "manual") this.compileQueued = origin;
+      } else if (isStaleStorageError(message) && !this.storageRecoveryAttempted) {
         // The storage behind a mounted pack died mid-session (observed: an
         // OPFS quota event can empty the pack directory while WORKERFS still
         // holds File objects over it — every read then throws NotFoundError).
