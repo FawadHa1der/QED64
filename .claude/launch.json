@@ -4,8 +4,11 @@
     {
       "name": "qed64-dev",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
-      "port": 5173,
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
+      "port": 5183,
       "autoPort": true
     },
     {

@@ -1,0 +1,28 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: QED64 Toolchain <qed64-toolchain@localhost>
+Date: Tue, 25 Aug 2026 11:51:53 -0400
+Subject: [PATCH 19/19] build: preallocate 24 pthread workers with 8 MiB stacks
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+This PR raises the Emscripten pthread pool from 4 to 24 and caps worker stacks at 8 MiB (the main stack stays 16 MiB). The language server spawns every task on a dedicated OS thread, and synchronous pthread_create can only succeed while preallocated workers remain — with the old pool of 4 a single dedicated spawn from Lean code failed with an IO error in the browser.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ src/CMakeLists.txt | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 474d6ca..9099515 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -937,7 +937,7 @@ if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
+   # physical allocation. wasm64 uses 128MB initially and may grow to 12GB.
+   string(
+     APPEND LEAN_EXE_LINKER_FLAGS
+-    " ${LIB}/temp/libleanshell.a ${TOOLCHAIN_STATIC_LINKER_FLAGS} ${EMSCRIPTEN_SETTINGS} ${EMSCRIPTEN_LINK_SETTINGS} -lnodefs.js -lworkerfs.js -s EXIT_RUNTIME=1 -s MAIN_MODULE=2 -s ERROR_ON_UNDEFINED_SYMBOLS=0 -sEXPORTED_FUNCTIONS=@${LEAN_SOURCE_DIR}/emscripten-exports.txt -sEXPORTED_RUNTIME_METHODS=ccall,callMain,FS,ENV,getValue,setValue,stringToNewUTF8,UTF8ToString -s STACK_SIZE=16777216 -sINITIAL_MEMORY=${EMSCRIPTEN_INITIAL_MEMORY} -sMAXIMUM_MEMORY=${EMSCRIPTEN_MAXIMUM_MEMORY} -sPTHREAD_POOL_SIZE=4"
++    " ${LIB}/temp/libleanshell.a ${TOOLCHAIN_STATIC_LINKER_FLAGS} ${EMSCRIPTEN_SETTINGS} ${EMSCRIPTEN_LINK_SETTINGS} -lnodefs.js -lworkerfs.js -s EXIT_RUNTIME=1 -s MAIN_MODULE=2 -s ERROR_ON_UNDEFINED_SYMBOLS=0 -sEXPORTED_FUNCTIONS=@${LEAN_SOURCE_DIR}/emscripten-exports.txt -sEXPORTED_RUNTIME_METHODS=ccall,callMain,FS,ENV,getValue,setValue,stringToNewUTF8,UTF8ToString -s STACK_SIZE=16777216 -sINITIAL_MEMORY=${EMSCRIPTEN_INITIAL_MEMORY} -sMAXIMUM_MEMORY=${EMSCRIPTEN_MAXIMUM_MEMORY} -sPTHREAD_POOL_SIZE=24 -sDEFAULT_PTHREAD_STACK_SIZE=8388608"
+   )
+ endif()
+ 

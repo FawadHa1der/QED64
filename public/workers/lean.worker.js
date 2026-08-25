@@ -33,6 +33,73 @@ let M = null; // the live Emscripten module (window.Module is the glue's)
 // Emscripten reads print/printErr ONCE at startup; route through this sink so
 // each compile can claim the output stream.
 let sink = null;
+
+// ---------------------------------------------------------------------------
+// LSP debug mode (feature/lean4web-frontend Stage-1 probe)
+//
+// After an `lsp-init` request the runtime hosts a Lean FILE WORKER session
+// (toolchain patch 0018): the server writes Content-Length-framed JSON-RPC
+// to stdout, which arrives here as flushed print() chunks (Lean flushes per
+// message). Chunks are re-joined as BYTES (frame lengths count UTF-8 bytes,
+// and goals contain multi-byte glyphs), framed, and forwarded to the page as
+// `lsp` events.
+// ---------------------------------------------------------------------------
+let lspMode = false;
+let lspBuf = new Uint8Array(0);
+const lspEncoder = new TextEncoder();
+const lspDecoder = new TextDecoder();
+
+function lspStdoutChunk(text) {
+  const bytes = lspEncoder.encode(`${text}\n`);
+  const joined = new Uint8Array(lspBuf.length + bytes.length);
+  joined.set(lspBuf, 0);
+  joined.set(bytes, lspBuf.length);
+  lspBuf = joined;
+  for (;;) {
+    const head = lspDecoder.decode(lspBuf.subarray(0, Math.min(lspBuf.length, 256)));
+    const m = /Content-Length: (\d+)/i.exec(head);
+    if (!m) return;
+    const len = Number(m[1]);
+    // Body starts after the header's blank-line separator; print() chunking
+    // rewrites \r\n runs, so skip every CR/LF after the header line.
+    let at = head.indexOf(m[0]) + m[0].length;
+    while (at < lspBuf.length) {
+      const b = lspBuf[at];
+      if (b === 0x0d || b === 0x0a) at += 1;
+      else break;
+    }
+    if (lspBuf.length < at + len) return;
+    const body = lspDecoder.decode(lspBuf.subarray(at, at + len));
+    lspBuf = lspBuf.slice(at + len);
+    try {
+      event(null, "lsp", { msg: JSON.parse(body) });
+    } catch {
+      event(null, "log", { stream: "stderr", text: `lsp: unparseable ${len}-byte frame` });
+    }
+  }
+}
+
+function lspInit(msg) {
+  try {
+    if (state !== "ready") throw new Error(`Worker is '${state}', not ready.`);
+    lspMode = true;
+    const rc = callP(M._lean_wasm_lsp_init, mkLeanString(msg.input.initParams), mkLeanString(msg.input.didOpen));
+    const tag = ioResultTag(rc);
+    post({ type: "result", requestId: msg.requestId, result: { operation: "lsp-init", tag } });
+  } catch (error) {
+    lspMode = false;
+    fail(msg.requestId, error, "LSP_INIT_FAILED", false);
+  }
+}
+
+function lspSend(msg) {
+  try {
+    const rc = callP(M._lean_wasm_lsp_send, mkLeanString(msg.input.message));
+    post({ type: "result", requestId: msg.requestId, result: { operation: "lsp-send", tag: ioResultTag(rc) } });
+  } catch (error) {
+    fail(msg.requestId, error, "LSP_SEND_FAILED", false);
+  }
+}
 let bootConfig = null;
 let bootMemory = null; // the shared Memory64 this worker created; heap writes re-read .buffer after growth
 let currentRequest = null;
@@ -507,8 +574,13 @@ async function boot(msg) {
         return p.endsWith(".wasm") ? wasmUrl : new URL(p, scriptUrl).href;
       },
       mainScriptUrlOrBlob: scriptUrl,
-      print: (v) => sink && sink.push("stdout", v),
-      printErr: (v) => sink && sink.push("stderr", v),
+      print: (v) => (lspMode ? lspStdoutChunk(v) : sink && sink.push("stdout", v)),
+      printErr: (v) => {
+        if (sink) sink.push("stderr", v);
+        // Outside a compile (LSP mode, background tasks) stderr still matters:
+        // surface it as log events instead of dropping it.
+        else event(null, "log", { stream: "stderr", text: String(v) });
+      },
       ENV: { LEAN_PATH: bootConfig.leanPath },
       preRun: [
         function mountEverything() {
@@ -1017,6 +1089,12 @@ self.addEventListener("message", (e) => {
         requestId: msg.requestId,
         result: { operation: "telemetry", state, memory: memoryTelemetry() },
       });
+      break;
+    case "lsp-init":
+      lspInit(msg);
+      break;
+    case "lsp-send":
+      lspSend(msg);
       break;
     case "dispose":
       post({ type: "result", requestId: msg.requestId, result: { operation: "dispose" } });

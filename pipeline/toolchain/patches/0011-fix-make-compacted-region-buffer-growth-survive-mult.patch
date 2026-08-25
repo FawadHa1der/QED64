@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: QED64 Toolchain <qed64-toolchain@localhost>
 Date: Fri, 21 Aug 2026 16:12:02 -0400
-Subject: [PATCH 11/17] fix: make compacted-region buffer growth survive
+Subject: [PATCH 11/19] fix: make compacted-region buffer growth survive
  multi-GB saves
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
