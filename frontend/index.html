@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>QED64 · Lean InfoView</title>
+  <style>
+    html, body { height: 100%; margin: 0; font-family: system-ui, sans-serif; }
+    #status { padding: 6px 12px; background: #1b1d29; color: #cfd2e6; font: 13px/1.4 ui-monospace, monospace; }
+    #split { display: flex; height: calc(100% - 30px); }
+    #editor { flex: 1 1 55%; min-width: 0; }
+    #infoview { flex: 1 1 45%; min-width: 0; border-left: 1px solid #ccc; }
+  </style>
+</head>
+<body>
+  <div id="status">booting…</div>
+  <div id="split">
+    <div id="editor"></div>
+    <div id="infoview"></div>
+  </div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

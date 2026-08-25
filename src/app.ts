@@ -565,7 +565,12 @@ export class App {
         }
       }
       this.el.installMathlib.classList.toggle("hidden", this.installed.has("essential"));
-      if (this.el.auto.checked) void this.check("auto");
+      // ?lsp keeps the session pristine for language-server experiments:
+      // LSP-mode sessions must be the runtime's first client (no prior
+      // main-thread compiles), so the boot auto-check is suppressed.
+      if (this.el.auto.checked && !new URLSearchParams(location.search).has("lsp")) {
+        void this.check("auto");
+      }
     } catch (error) {
       if (generation !== this.generation) return;
       this.hideProgress();

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: QED64 Toolchain <qed64-toolchain@localhost>
 Date: Mon, 24 Aug 2026 10:35:05 -0400
-Subject: [PATCH 15/20] build: use the multi-arch emsdk image
+Subject: [PATCH 15/21] build: use the multi-arch emsdk image
 
 This PR drops the -arm64 suffix from the build image so the toolchain builds natively on both arm64 and amd64 hosts; the multi-arch tag resolves to the same image content per platform.
 

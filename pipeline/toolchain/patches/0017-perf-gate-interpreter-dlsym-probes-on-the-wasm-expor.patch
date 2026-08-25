@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: QED64 Toolchain <qed64-toolchain@localhost>
 Date: Mon, 24 Aug 2026 16:22:19 -0400
-Subject: [PATCH 17/20] perf: gate interpreter dlsym probes on the wasm export
+Subject: [PATCH 17/21] perf: gate interpreter dlsym probes on the wasm export
  table
 
 This PR makes lookup_symbol_in_cur_exe under Emscripten consult a one-time Set of the module's export names before calling dlsym. The interpreter probes for a native implementation of every symbol it touches; under Emscripten each miss is a JavaScript dlsym call that allocates an error string. Profiling a whole-Mathlib snapshot load attributed 173 s of 180 s to these misses; with the gate the same [init] replay takes about 1 s.

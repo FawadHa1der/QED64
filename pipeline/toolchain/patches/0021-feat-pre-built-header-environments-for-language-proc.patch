@@ -1,0 +1,110 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: QED64 Toolchain <qed64-toolchain@localhost>
+Date: Tue, 25 Aug 2026 15:51:07 -0400
+Subject: [PATCH 21/21] feat: pre-built header environments for language
+ processing
+
+This PR adds Language.Lean.prebuiltHeaderEnvs, a registry of environments keyed by exact ordered import lists that processHeader consults before Elab.processHeaderCore imports from disk, and populates it in lean_wasm_lsp_init after building the header environment on the host thread via the existing wasm env cache. Olean reads from elaboration task pthreads are proxied to the host thread and stall under WORKERFS in browsers; importing on the host thread and handing the finished environment to the task avoids the pathology entirely, and snapshot-seeded environments serve worker sessions through the same key. Drops a stale mangled processHeader specialization from the explicit export list (the dlsym gate makes absent exports fall back to the interpreter).
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ src/Lean/Language/Lean.lean | 31 +++++++++++++++++++++++++++----
+ src/Lean/Shell.lean         | 15 +++++++++++++++
+ src/emscripten-exports.txt  |  1 -
+ 3 files changed, 42 insertions(+), 5 deletions(-)
+
+diff --git a/src/Lean/Language/Lean.lean b/src/Lean/Language/Lean.lean
+index abb8b54..e94cc08 100644
+--- a/src/Lean/Language/Lean.lean
++++ b/src/Lean/Language/Lean.lean
+@@ -17,6 +17,7 @@ public import Lean.Elab.Import
+ 
+ public section
+ 
++
+ /-!
+ # Note [Incremental Parsing]
+ 
+@@ -234,6 +235,19 @@ namespace Lean.Language.Lean
+ open Lean.Elab Command
+ open Lean.Parser
+ 
++/-- Embedder-provided pre-built header environments, keyed by the exact
++ordered import list. Consulted before `Elab.processHeaderCore` imports from
++disk: WASM hosts build the environment on the host thread (file reads from
++elaboration task threads are proxied to the host and can be prohibitively
++slow) and push it here; a miss falls through to the normal import. -/
++private initialize prebuiltHeaderEnvs :
++    IO.Ref (Array (Array Name × Environment)) ← IO.mkRef #[]
++
++/-- Publish pre-built header environments (exact-ordered import keys). -/
++def setPrebuiltHeaderEnvs (envs : Array (Array Name × Environment)) : IO Unit :=
++  prebuiltHeaderEnvs.set envs
++
++
+ /-- Lean-specific processing context. -/
+ structure LeanProcessingContext extends ProcessingContext where
+   /-- Position of the first file difference if there was a previous invocation. -/
+@@ -495,11 +509,20 @@ where
+ 
+       let startTime := (← IO.monoNanosNow).toFloat / 1000000000
+       let mut opts := setup.opts
++      let prebuilt ← prebuiltHeaderEnvs.get
++      let importKey := setup.imports.map (·.module)
++      let override? : Option Environment :=
++        if setup.imports.isEmpty then none
++        else prebuilt.findSome? fun (k, env) => if k == importKey then some env else none
+       -- allows `headerEnv` to be leaked, which would live until the end of the process anyway
+-      let (headerEnv, msgLog) ← Elab.processHeaderCore (leakEnv := true)
+-        stx.startPos setup.imports setup.isModule setup.opts .empty ctx.toInputContext
+-        setup.trustLevel setup.plugins setup.mainModuleName setup.package? setup.importArts
+-        (headerStx? := stx) (origHeaderStx? := origStx)
++      let (headerEnv, msgLog) ← do
++        match override? with
++        | some env => pure (env.setMainModule setup.mainModuleName, MessageLog.empty)
++        | none =>
++          Elab.processHeaderCore (leakEnv := true)
++            stx.startPos setup.imports setup.isModule setup.opts .empty ctx.toInputContext
++            setup.trustLevel setup.plugins setup.mainModuleName setup.package? setup.importArts
++            (headerStx? := stx) (origHeaderStx? := origStx)
+       let stopTime := (← IO.monoNanosNow).toFloat / 1000000000
+       let diagnostics := (← Snapshot.Diagnostics.ofMessageLog msgLog)
+       if msgLog.hasErrors then
+diff --git a/src/Lean/Shell.lean b/src/Lean/Shell.lean
+index a5e7c8c..f411aba 100644
+--- a/src/Lean/Shell.lean
++++ b/src/Lean/Shell.lean
+@@ -339,6 +339,21 @@ def wasmLspInit (initParamsJson : String) (didOpenJson : String) : IO UInt32 :=
+     let o ← IO.getStdout
+     let e ← IO.getStderr
+     IO.eprintln s!"[WASM LSP] initializing worker for {tdoc.uri} ({tdoc.text.length} bytes)"
++    -- Pre-build the header environment ON THIS THREAD and register a pure
++    -- cache lookup for the elaboration task: olean reads from task pthreads
++    -- are proxied to the host thread and stall under WORKERFS, while this
++    -- thread imports them the same proven way `lean_wasm_compile` does. The
++    -- exact-ordered key also makes snapshot-seeded envs (wasmEnvCache) serve
++    -- worker sessions for free.
++    let (header, _, _) ← Parser.parseHeader (Parser.mkInputContext tdoc.text.crlfToLf tdoc.uri)
++    let imports := Elab.headerToImports header
++    unless imports.isEmpty do
++      let t0 ← IO.monoMsNow
++      discard <| getOrCreateWasmEnvFor imports
++      IO.eprintln s!"[WASM LSP] header env prebuilt in {(← IO.monoMsNow) - t0} ms"
++    -- Publish every cached env (incl. the fresh prebuild) for the worker's
++    -- header processing to find.
++    Language.Lean.setPrebuiltHeaderEnvs (← wasmEnvCache.get)
+     -- Timed sleeps on dedicated pthreads never wake under this Emscripten
+     -- build (an `IO.sleep` as the reporter's first statement silenced the
+     -- whole server); a zero report delay makes `IO.sleep 0` return
+diff --git a/src/emscripten-exports.txt b/src/emscripten-exports.txt
+index 2b9d608..efb08bc 100644
+--- a/src/emscripten-exports.txt
++++ b/src/emscripten-exports.txt
+@@ -31321,7 +31321,6 @@ _l_Lean_Option_get_x3f___at___00Lean_PrettyPrinter_delabCore_spec__5___boxed
+ _l_Lean_Option_get_x3f___at___00Lean_addTraceAsMessages___at___00Lean_Core_wrapAsyncAsSnapshot_spec__0_spec__0___boxed
+ _l_Lean_Option_get_x3f___at___00Lean_addTraceAsMessages___at___00Lean_Elab_Command_wrapAsyncAsSnapshot_spec__0_spec__0___boxed
+ _l_Lean_Option_get_x3f___at___00Lean_addTraceAsMessages___at___00__private_Lean_Meta_Basic_0__Lean_Meta_realizeValue_realizeAndReport_spec__3_spec__8___boxed
+-_l_Lean_Option_get_x3f___at___00__private_Lean_Language_Lean_0__Lean_Language_Lean_process_processHeader_spec__1___boxed
+ _l_Lean_Option_get_x3f___at___00__private_Lean_Widget_InteractiveDiagnostic_0__Lean_Widget_msgToInteractiveAux_go_spec__2___boxed
+ _l_Lean_Option_get_x3f___boxed
+ _l_Lean_Option_get_x3f___redArg___boxed

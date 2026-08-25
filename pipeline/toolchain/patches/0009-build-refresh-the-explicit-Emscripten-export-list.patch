@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: QED64 Toolchain <qed64-toolchain@localhost>
 Date: Thu, 20 Aug 2026 15:42:55 -0400
-Subject: [PATCH 09/20] build: refresh the explicit Emscripten export list
+Subject: [PATCH 09/21] build: refresh the explicit Emscripten export list
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

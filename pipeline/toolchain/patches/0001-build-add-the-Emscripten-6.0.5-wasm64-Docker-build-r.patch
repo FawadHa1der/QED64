@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: QED64 Toolchain <qed64-toolchain@localhost>
 Date: Thu, 20 Aug 2026 15:41:36 -0400
-Subject: [PATCH 01/20] build: add the Emscripten 6.0.5 wasm64 Docker build
+Subject: [PATCH 01/21] build: add the Emscripten 6.0.5 wasm64 Docker build
  recipe
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

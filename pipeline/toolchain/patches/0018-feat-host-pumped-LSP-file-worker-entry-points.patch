@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: QED64 Toolchain <qed64-toolchain@localhost>
 Date: Tue, 25 Aug 2026 11:51:53 -0400
-Subject: [PATCH 18/20] feat: host-pumped LSP file worker entry points
+Subject: [PATCH 18/21] feat: host-pumped LSP file worker entry points
 
 This PR adds lean_wasm_lsp_init and lean_wasm_lsp_send, letting an embedder that cannot provide a blocking stdin (WASM hosts must keep their event loop live for cross-thread proxying) drive a single-file language-server session one JSON-RPC message at a time: init replicates the watchdog's initialize/didOpen startup sequence of initAndRunWorker, send runs one mainLoop dispatch for an already-read message, and server-to-client traffic flows through the worker's ordinary stdout channel. The report delay is forced to 0: timed sleeps on dedicated pthreads do not wake under this Emscripten build, and the reporter's first statement is that sleep.
 
