@@ -605,6 +605,19 @@ async function boot(msg) {
         try {
           progress(requestId, "initialize", "Initializing the Lean runtime");
           M = self.Module;
+          // Persistent embedding: no main() ever runs, so the runtime
+          // keepalive counter is 0 and the FIRST event-loop-serviced proxied
+          // call from a pthread would end in maybeExit() → _exit(): the glue's
+          // callUserCallback wraps the mailbox check, tearing down the runtime
+          // and terminating the caller thread mid-emscripten_proxy_sync (the
+          // proxied op runs, its ACK never lands). One keepalive ref makes the
+          // runtime persistent, which is exactly what this worker is.
+          if (typeof runtimeKeepalivePush === "function") {
+            runtimeKeepalivePush();
+            event(null, "log", { stream: "stderr", text: "[boot] runtime keepalive pushed" });
+          } else {
+            event(null, "log", { stream: "stderr", text: "[boot] WARNING: runtimeKeepalivePush not in scope" });
+          }
           M._lean_initialize_runtime_module();
           M._lean_initialize();
           M._lean_io_mark_end_initialization();

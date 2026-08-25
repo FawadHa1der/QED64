@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: QED64 Toolchain <qed64-toolchain@localhost>
 Date: Thu, 20 Aug 2026 15:42:04 -0400
-Subject: [PATCH 03/19] fix: select LEAN_SCALAR_PTR_LITERAL layout by pointer
+Subject: [PATCH 03/20] fix: select LEAN_SCALAR_PTR_LITERAL layout by pointer
  width, not by Emscripten
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

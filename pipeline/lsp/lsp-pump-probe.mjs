@@ -204,6 +204,10 @@ globalThis.Module = {
       const sp = M._lean_init_search_path();
       void sp;
       if (typeof M._lean_wasm_lsp_init !== "function") throw new Error("lean_wasm_lsp_init export missing — rebuild with patch 0018");
+      // Persistent embedding keepalive — without it the first event-loop
+      // mailbox check runs maybeExit() and _exit()s the runtime (see
+      // docs/LEAN4WEB-FEASIBILITY.md, the emsdk teardown bug).
+      if (typeof globalThis.runtimeKeepalivePush === "function") { globalThis.runtimeKeepalivePush(); log("runtime keepalive pushed"); }
 
       // Node-harness quirk: the main runtime thread's proxy mailbox is only
       // drained inside wasm futex waits; while we idle in the event loop,

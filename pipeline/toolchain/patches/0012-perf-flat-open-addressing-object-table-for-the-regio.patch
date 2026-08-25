@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: QED64 Toolchain <qed64-toolchain@localhost>
 Date: Fri, 21 Aug 2026 16:32:48 -0400
-Subject: [PATCH 12/19] perf: flat open-addressing object table for the region
+Subject: [PATCH 12/20] perf: flat open-addressing object table for the region
  compactor
 
 This PR cuts the memory the compactor spends tracking already-visited objects by roughly 2.5x, which lets whole-environment saves of Mathlib-scale environments fit in a 16 GiB wasm64 address space.

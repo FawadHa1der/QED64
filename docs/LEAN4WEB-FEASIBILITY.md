@@ -171,7 +171,26 @@ What is PROVEN, each by direct experiment:
    `IO.sleep` + join all complete when the main thread blocks in wasm
    (`IO.wait`), confirming every primitive is present in the binary.
 
-The ONE open blocker — root cause isolated to a single mechanism:
+**STAGE 1 COMPLETE (2026-08-25 pm).** The blocker below was root-caused to an
+emscripten runtime bug, fixed at three levels (embedder keepalive in the
+worker and probes; a glue patch in the build image; an upstream-ready PR —
+see `docs/EMSDK-BUG-REPORT.md`), and the full LSP conversation now passes
+against the real runtime: `initialize` → `didOpen` → `$/lean/fileProgress`
+stream → `publishDiagnostics` (correct `sorry` warning) →
+`waitForDiagnostics` → `$/lean/rpc/connect` → **`$/lean/rpc/call
+Lean.Widget.getInteractiveGoals` returning a genuine InfoView goals payload**
+(hypotheses, goal terms, subexpression info) — 28 s end to end including the
+Init import (`lsp-pump-probe.mjs`). In the browser, the same fix was
+verified at the thread level (dedicated task survives proxied I/O and timed
+sleep); the worker LSP session streams `fileProgress`/`publishDiagnostics`
+but stalls in the pthread-side header import — the first Stage-2 work item,
+with a designed fix that we want anyway: build the header environment on the
+main thread inside `lean_wasm_lsp_init` (reusing the proven
+`getOrCreateWasmEnvFor`/snapshot machinery), which is exactly the Stage-3
+umbrella hook.
+
+The blocker as originally isolated (kept for the record; now resolved — the
+"first proxied call" observation was the emscripten teardown below):
 
 - **A dedicated pthread parks forever inside its FIRST proxied call.** The
   experiment chain that pinned it: a thread that spins (pure CPU), prints A,
