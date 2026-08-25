@@ -10,6 +10,8 @@ const isolationHeaders = {
 
 export default defineConfig({
   server: {
+    // Honor a harness-assigned port (e.g. Claude Code preview) when present.
+    ...(process.env.PORT ? { port: Number(process.env.PORT), strictPort: true } : {}),
     headers: isolationHeaders,
     // The profile packs are ~1.1 GB of static parts; keep watch away from them.
     watch: { ignored: ["**/public/profiles/**", "**/public/runtime/**"] },

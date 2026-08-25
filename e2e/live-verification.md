@@ -19,3 +19,9 @@ executed and passed on 2026-08-20, in-app Chromium 148):
 8. Reload the page: core comes "from OPFS cache"; no re-download.
 9. Kill the dev server mid-install: the app reports a failed install, no
    stuck progress bar, and a reload recovers.
+10. Boot-race regression (added 2026-08-25, verified same day): with a
+    snapshot load in flight (right after boot, or replayed via
+    `__qedApp.session.loadSnapshot(<init url>)` + clicking **Check** in the
+    same tick), the check must queue behind the load and land with a normal
+    verdict — never "Compile failed: Worker is 'compiling', not ready."
+    (HARDENING 26; seam pinned in tests/unit/session-serialization.test.ts.)
