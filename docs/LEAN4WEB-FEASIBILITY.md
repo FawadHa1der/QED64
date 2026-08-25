@@ -171,35 +171,37 @@ What is PROVEN, each by direct experiment:
    `IO.sleep` + join all complete when the main thread blocks in wasm
    (`IO.wait`), confirming every primitive is present in the binary.
 
-The ONE open blocker, precisely characterized:
+The ONE open blocker — root cause isolated to a single mechanism:
 
-- **Timed sleeps on dedicated pthreads never wake in the persistent-boot
-  browser context** ("before" arrives, "after `IO.sleep`" never does; fresh
-  session, first action — not a wedge from prior state), and the worker's
-  main thread later stalls. Lean's server sleeps in exactly four places; the
-  reporter's first statement is one (neutralized via
-  `server.reportDelayMs := 0` in patch 0018), yet the processing chain still
-  stalls — so a further wait-primitive in the snapshot-task chain is
-  affected, not just `IO.sleep`.
-- Sleep is pure-wasm (`memory.atomic.wait` timed futex; no sleep syscalls
-  exist in the JS glue), so an environment factor that differs between
-  "main blocked in wasm" (works) and "main in the event loop" (stalls) is
-  implicated. The **strongest suspect is hidden-tab throttling**: every
-  in-pane experiment necessarily ran with `document.visibilityState ===
-  "hidden"`, Chrome throttles hidden pages' workers aggressively, and the
-  automation harness cannot make the tab visible while driving it. **Next
-  experiment (needs a human): run the dedicated+sleep probe in a visible
-  tab.** If visibility fixes it, Stage 1 is complete and the remaining work
-  is UX-shaped; production would need the standard mitigations (audio
-  context / title-blink prompts are not needed — a playground is visible
-  while used).
-- Fallback paths if visibility is NOT the answer, in order of preference:
-  (a) trace the exact futex address/clock behavior with a `--profiling-funcs`
-  build paused in DevTools; (b) patch the four server sleep sites (three are
-  option- or feature-gated) and audit `ServerTask` waits for timed variants;
-  (c) relocate Lean's main loop off the runtime thread
-  (`PROXY_TO_PTHREAD`-style), making "main blocked in wasm" the steady
-  state — the configuration proven to work end to end in CLI mode.
+- **A dedicated pthread parks forever inside its FIRST proxied call.** The
+  experiment chain that pinned it: a thread that spins (pure CPU), prints A,
+  spins identically, prints B — completes spin 1 with the correct result,
+  A is *delivered to the host*, and B never happens. Same signature with
+  sleeps ("before" arrives, "after" never — the thread never even reached
+  the sleep), file writes, and the LSP reporter (its output channel's first
+  message). Clocks were verified consistent across threads; hidden-tab
+  throttling was refuted by a visible-tab run (user-executed); the spawn
+  itself and pure-CPU execution are fine.
+- The asymmetry that names the defective layer: the proxied call's
+  completion-ACK reaches the calling thread when the Emscripten main thread
+  services the proxy queue **from inside a wasm futex wait** (CLI boot,
+  where everything works end to end) and is lost when serviced **from the
+  JS event loop** (persistent boot, browser and Node alike) — even though
+  the proxied operation itself executes (the output is visible). A parked
+  thread also wedges subsequent main-thread IO (it plausibly holds an
+  `em_task_queue` slot), which explains the follow-on compile failures.
+- This is an emsdk-6.0.5 + Memory64 + pthreads bug class, not an
+  architecture problem, and it reproduces in ~10 lines. Next steps, in
+  order: (a) reproduce in a ~20-line pure-C pthread program with our exact
+  link flags — isolates Lean entirely and doubles as the upstream bug
+  report; (b) read emsdk 6.0.5's `library_pthread.js`/proxying source (in
+  the build image, unminified) against the repro — the wasm64 pointer paths
+  in the event-loop servicing route are the prime suspects, and this class
+  of one-line BigInt/view fix has precedent in our patch series (0006,
+  0017); (c) if the glue resists, restructure the embedding so the
+  runtime's main thread stays blocked in wasm (the CLI-proven
+  configuration) with a dedicated JS-side service worker — heavier, but
+  known-good.
 
 ## Evidence log
 
