@@ -9,6 +9,7 @@
 // (`{ $type: 'WorkerDirect', messagePort }` — BrowserMessageReader/Writer
 // exchange plain JSON-RPC objects, no Content-Length framing).
 import type { LeanSession } from "../../src/runtime/client";
+import { loadSnapshotByName, type BootedQed64 } from "./qed64-boot";
 
 // `request` is private on LeanSession; the shim is a trusted internal peer.
 type RpcSession = { request(type: string, payload: Record<string, unknown>): Promise<unknown> };
@@ -71,6 +72,7 @@ export class WatchdogShim {
   private queue: JsonRpc[] = [];
 
   constructor(
+    private readonly booted: BootedQed64,
     private readonly session: LeanSession,
     private readonly log: (line: string) => void,
   ) {
@@ -109,16 +111,28 @@ export class WatchdogShim {
       this.starting = true;
       this.log("starting Lean file worker (header env prebuild may take ~30 s on first use)…");
       try {
-        // Warm the header environment with a plain compile FIRST: the env
-        // import must not run inside lsp-init (a long main-thread wasm stint
-        // before initializeWorker silences the whole session — see the
-        // Stage-2 notes in docs/LEAN4WEB-FEASIBILITY.md). After this, the
-        // prebuild inside lsp-init is a 0 ms cache hit.
+        // The header environment must exist in the main-thread cache BEFORE
+        // lsp-init (a long wasm stint inside init silences the session, and
+        // the elaboration pthread cannot import oleans itself). Preference
+        // order: a covering snapshot (umbrella for Mathlib headers — the
+        // superset aliasing in lean_wasm_lsp_init then serves the document's
+        // exact import key from it), else a plain warm compile of the header.
         const text = String((msg.params as { textDocument?: { text?: string } })?.textDocument?.text ?? "");
         const headerLines = text.split("\n").filter((l) => /^\s*(?:public\s+|private\s+)?(?:meta\s+)?import\s+/.test(l));
-        const warmSource = `${headerLines.join("\n")}\n`;
-        await (this.session as unknown as { compile(s: string, f: string): Promise<unknown> }).compile(warmSource, "/workspace/__warm.lean");
-        this.log("header environment warmed");
+        const wantsMathlib = headerLines.some((l) => /import\s+(Mathlib|Batteries|MIL\.)/.test(l));
+        let covered = false;
+        if (wantsMathlib) {
+          covered = await loadSnapshotByName(this.booted, "mathlib", this.log);
+        }
+        if (!covered && headerLines.length > 0) {
+          // No snapshot covers this header: warm the env with a plain
+          // compile — safe outside lsp-init, but pays the real olean import
+          // (minutes for Mathlib headers when the umbrella is unavailable).
+          if (wantsMathlib) this.log("no Mathlib snapshot — importing the header from oleans (minutes)…");
+          const warmSource = `${headerLines.join("\n")}\n`;
+          await (this.session as unknown as { compile(s: string, f: string): Promise<unknown> }).compile(warmSource, "/workspace/__warm.lean");
+        }
+        this.log("header environment ready");
         const r = (await (this.session as unknown as RpcSession).request("lsp-init", {
           input: {
             initParams: JSON.stringify(this.initParams ?? {}),

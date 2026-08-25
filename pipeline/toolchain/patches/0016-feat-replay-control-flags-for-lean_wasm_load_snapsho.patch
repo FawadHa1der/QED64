@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: QED64 Toolchain <qed64-toolchain@localhost>
 Date: Mon, 24 Aug 2026 16:22:19 -0400
-Subject: [PATCH 16/22] feat: replay control flags for
+Subject: [PATCH 16/23] feat: replay control flags for
  lean_wasm_load_snapshot_mem
 
 This PR adds a flags parameter to lean_wasm_load_snapshot_mem; bit 0 controls whether the [init] attribute replay runs after the region is materialized. Extension states are restored by the region itself; the replay rebuilds process-side registrations, which a host that knows its workload does not need can skip.

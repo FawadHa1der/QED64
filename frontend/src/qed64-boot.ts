@@ -4,11 +4,32 @@
 // is the app shell's installAndBoot/bootSession flow with the UI stripped.
 import { LeanSession, memoryCandidates, type LibraryPack, type RuntimeManifest } from "../../src/runtime/client";
 import { fetchProfileIndex, installProfile, type InstalledProfile } from "../../src/install/profiles";
+import { fetchSnapshotIndex, snapshotCacheKey, type SnapshotIndex } from "../../src/runtime/snapshots";
 
 export interface BootedQed64 {
   session: LeanSession;
   runtime: RuntimeManifest;
   installed: Map<string, InstalledProfile>;
+  snapshots: SnapshotIndex | null;
+}
+
+/** Load a named snapshot into the resident runtime (idempotent per session). */
+export async function loadSnapshotByName(
+  booted: BootedQed64,
+  name: string,
+  onStatus: (line: string) => void,
+): Promise<boolean> {
+  const entry = booted.snapshots?.snapshots.find((s) => s.name === name);
+  if (!entry) return false;
+  onStatus(`loading the ${name} environment snapshot…`);
+  try {
+    const r = await booted.session.loadSnapshot(entry.url, `${name}.snap`, entry.bytes, snapshotCacheKey(entry));
+    onStatus(r.success ? `${name} environment ready` : `${name} snapshot did not load`);
+    return r.success;
+  } catch (err) {
+    onStatus(`${name} snapshot failed: ${(err as Error).message}`);
+    return false;
+  }
 }
 
 export async function bootQed64(onStatus: (line: string) => void): Promise<BootedQed64> {
@@ -20,13 +41,18 @@ export async function bootQed64(onStatus: (line: string) => void): Promise<Boote
   const runtime = (await manifestResponse.json()) as RuntimeManifest;
 
   const installed = new Map<string, InstalledProfile>();
-  const core = index.profiles.find((p) => p.id === "core");
-  if (!core) throw new Error("core profile not published");
-  onStatus("installing Lean core library…");
-  const profile = await installProfile(core, (p) => {
-    onStatus(`${p.phase} core — ${(p.loaded / 1048576) | 0} / ${((p.total ?? 0) / 1048576) | 0} MiB`);
-  });
-  installed.set("core", profile);
+  for (const id of ["core", "essential"]) {
+    const entry = index.profiles.find((p) => p.id === id);
+    if (!entry) {
+      if (id === "core") throw new Error("core profile not published");
+      continue; // Mathlib optional: Init-only editing still works
+    }
+    onStatus(`installing ${id} profile…`);
+    const profile = await installProfile(entry, (p) => {
+      onStatus(`${p.phase} ${id} — ${(p.loaded / 1048576) | 0} / ${((p.total ?? 0) / 1048576) | 0} MiB`);
+    });
+    installed.set(id, profile);
+  }
 
   const packs: LibraryPack[] = [...installed.values()].flatMap((p) =>
     p.segments.map((segment, i) => ({
@@ -58,5 +84,10 @@ export async function bootQed64(onStatus: (line: string) => void): Promise<Boote
     packs,
   });
   onStatus(`Lean ready (${ready.mode})`);
-  return { session, runtime, installed };
+  const snapshots = await fetchSnapshotIndex();
+  const booted: BootedQed64 = { session, runtime, installed, snapshots };
+  // The init snapshot makes Init-only worker sessions instant (the superset
+  // aliasing in lean_wasm_lsp_init serves any covered header from it).
+  await loadSnapshotByName(booted, "init", onStatus);
+  return booted;
 }

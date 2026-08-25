@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: QED64 Toolchain <qed64-toolchain@localhost>
 Date: Thu, 20 Aug 2026 15:42:04 -0400
-Subject: [PATCH 05/22] fix: lean_kernel_diag_is_enabled is uint8, not uint8*
+Subject: [PATCH 05/23] fix: lean_kernel_diag_is_enabled is uint8, not uint8*
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

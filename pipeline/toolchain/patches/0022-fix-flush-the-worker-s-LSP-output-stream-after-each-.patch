@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: QED64 Toolchain <qed64-toolchain@localhost>
 Date: Tue, 25 Aug 2026 16:13:13 -0400
-Subject: [PATCH 22/22] fix: flush the worker's LSP output stream after each
+Subject: [PATCH 22/23] fix: flush the worker's LSP output stream after each
  message
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

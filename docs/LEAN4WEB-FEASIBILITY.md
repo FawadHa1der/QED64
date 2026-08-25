@@ -152,11 +152,18 @@ The decisive technical facts, verified against source and by experiment:
    imports to the elaboration task. Deferred polish: exit-code-2 restart
    on header edits, the orphan-header root cause (guarded worker-side),
    completion/semantic-token legends.
-3. **Stage 3 — Mathlib at speed:** hook the env cache/umbrella snapshot into
-   the worker's header setup (fork patch in `setupImports`, mirroring
-   `getOrCreateWasmEnvFor`), OPFS snapshot cache reuse, restart-fast path.
-   *Exit: Mathlib buffer gets InfoView goals with the umbrella's seconds-class
-   startup.*
+3. **Stage 3 — Mathlib at speed: COMPLETE (2026-08-25 night).** Patch 0023
+   aliases a document's header to the smallest cached environment whose
+   closure covers it, so the boot-loaded Init snapshot serves core docs with
+   zero prebuild and the umbrella snapshot serves ANY Mathlib header; the
+   shim loads the umbrella on the first Mathlib `didOpen` (fresh bakes for
+   the dev runtime, content-addressed). Verified on screen: a Mathlib buffer
+   (`import Mathlib.Data.Real.Basic`) elaborates with `rw`/`linarith`
+   proofs, and the InfoView shows live mid-proof states —
+   `a b c : ℝ ⊢ b * c * a = b * (a * c)` with rewrite-diff highlighting,
+   and the full `linarith` goal `x y : ℝ, h1 : x < y, h2 : 0 < x ⊢
+   x * 2 < y * 2` — boot to worker-running in under 30 s with cached
+   artifacts.
 4. **Stage 4 — productize:** examples/settings/themes rewire, install flow,
    usability matrix, deploy beside (not replacing) the current QED64 UI.
 

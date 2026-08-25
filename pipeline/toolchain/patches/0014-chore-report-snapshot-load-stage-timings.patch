@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: QED64 Toolchain <qed64-toolchain@localhost>
 Date: Sun, 23 Aug 2026 20:43:13 -0400
-Subject: [PATCH 14/22] chore: report snapshot-load stage timings
+Subject: [PATCH 14/23] chore: report snapshot-load stage timings
 
 This PR prints, on every in-memory snapshot load, the time spent in the region read/materialization, main-module rename, [init]-attribute replay, and cache push, plus the C++ relocation walk itself; QED64_PROFILE_INIT=1 additionally times each module's initializer replay and reports the top offenders. A whole-Mathlib load spends on the order of a hundred seconds in this path and the split between the pointer-fixup walk and interpreted initializer execution decides where optimization effort goes.
 

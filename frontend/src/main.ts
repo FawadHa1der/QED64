@@ -13,18 +13,23 @@ const status = (line: string) => {
   console.log(`[qed64] ${line}`);
 };
 
-const EXAMPLE = `theorem probe (n : Nat) : n + 0 = n := by
-  simp
+const EXAMPLE = `import Mathlib.Data.Real.Basic
 
-example (a b : Nat) (h : a = b) : a + 1 = b + 1 := by
-  rw [h]
+example (a b c : ℝ) : c * b * a = b * (a * c) := by
+  rw [mul_comm c b]
+  rw [mul_assoc b c a]
+  rw [mul_comm c a]
+
+example (x y : ℝ) (h1 : x < y) (h2 : 0 < x) : x * 2 < y * 2 := by
+  linarith
 
 example : False := sorry
 `;
 
 async function main() {
-  const { session } = await bootQed64(status);
-  const shim = new WatchdogShim(session, status);
+  const booted = await bootQed64(status);
+  const { session } = booted;
+  const shim = new WatchdogShim(booted, session, status);
   // Debug handle for driving/inspecting the session from the console.
   (globalThis as unknown as Record<string, unknown>).qed64 = { session, shim };
 

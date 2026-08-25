@@ -1,0 +1,52 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: QED64 Toolchain <qed64-toolchain@localhost>
+Date: Tue, 25 Aug 2026 16:44:30 -0400
+Subject: [PATCH 23/23] feat: serve worker headers from covering cached
+ environments
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+This PR makes lean_wasm_lsp_init satisfy a document's header from the smallest cached environment whose import closure covers it, registering an alias entry under the document's exact import key. A snapshot-seeded environment (the boot-time Init snapshot, the whole-Mathlib umbrella) then serves any covered header with no olean import at all — the playground superset semantics the batch path obtains from its header rewrite, but with exact source positions. Headers nothing covers still import for real on the host thread.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ src/Lean/Shell.lean | 25 ++++++++++++++++++++++---
+ 1 file changed, 22 insertions(+), 3 deletions(-)
+
+diff --git a/src/Lean/Shell.lean b/src/Lean/Shell.lean
+index f411aba..409566e 100644
+--- a/src/Lean/Shell.lean
++++ b/src/Lean/Shell.lean
+@@ -348,9 +348,28 @@ def wasmLspInit (initParamsJson : String) (didOpenJson : String) : IO UInt32 :=
+     let (header, _, _) ← Parser.parseHeader (Parser.mkInputContext tdoc.text.crlfToLf tdoc.uri)
+     let imports := Elab.headerToImports header
+     unless imports.isEmpty do
+-      let t0 ← IO.monoMsNow
+-      discard <| getOrCreateWasmEnvFor imports
+-      IO.eprintln s!"[WASM LSP] header env prebuilt in {(← IO.monoMsNow) - t0} ms"
++      let key := imports.map (·.module)
++      let cache ← wasmEnvCache.get
++      unless cache.any (·.1 == key) do
++        -- Prefer the smallest cached environment whose import closure covers
++        -- the document (snapshot-seeded init/umbrella envs): the playground
++        -- superset semantics the batch path gets from its header rewrite,
++        -- with exact positions and no olean import. Fall back to a real
++        -- import on this thread when nothing covers.
++        let mut best : Option (Nat × Environment) := none
++        for (_, env) in cache do
++          let names := env.allImportedModuleNames
++          if imports.all (fun i => names.contains i.module) then
++            if best.all (names.size < ·.1) then
++              best := some (names.size, env)
++        match best with
++        | some (sz, env) =>
++          IO.eprintln s!"[WASM LSP] header served by a cached superset env ({sz} modules)"
++          wasmEnvCache.modify (·.push (key, env))
++        | none =>
++          let t0 ← IO.monoMsNow
++          discard <| getOrCreateWasmEnvFor imports
++          IO.eprintln s!"[WASM LSP] header env prebuilt in {(← IO.monoMsNow) - t0} ms"
+     -- Publish every cached env (incl. the fresh prebuild) for the worker's
+     -- header processing to find.
+     Language.Lean.setPrebuiltHeaderEnvs (← wasmEnvCache.get)
