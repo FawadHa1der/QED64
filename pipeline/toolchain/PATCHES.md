@@ -1,7 +1,7 @@
 # The wasm64 patch series
 
 **The authoritative, upstream-ready series lives in [`patches/`](patches/):**
-twenty `git am`-able commits over `cauli/lean4@5732b84` (branch `qed64-wasm64`
+twenty-two `git am`-able commits over `cauli/lean4@5732b84` (branch `qed64-wasm64`
 in `work/lean4`), each with full rationale and an explicit upstreaming
 verdict in its commit message. Summary:
 
@@ -27,6 +27,8 @@ verdict in its commit message. Summary:
 | 0018 | **Host-pumped LSP file worker** (`lean_wasm_lsp_init` / `lean_wasm_lsp_send`): drive a single-file server session one message at a time when a blocking stdin is impossible (WASM event-loop hosts); forces `server.reportDelayMs := 0` (timed sleeps on dedicated pthreads do not wake under this build) | experimental (branch `feature/lean4web-frontend`); the embedding shape mirrors the watchdog contract |
 | 0019 | **24 preallocated pthread workers, 8 MiB thread stacks**: every `ServerTask` is `prio := .dedicated`, and synchronous `pthread_create` under Emscripten can only claim preallocated workers | needed by any wasm host running the language server |
 | 0020 | **Keepalive-guard emscripten's `$checkMailbox`** (build-image patch to emsdk 6.0.5): mailbox servicing ran through `callUserCallback`→`maybeExit`, which `_exit()`s an EXIT_RUNTIME=1 runtime with no keepalives — terminating the pthread blocked in `emscripten_proxy_sync` right after its proxied op executed. Reproduced in 30 lines of pure C on stock wasm32 | **upstream emscripten PR ready** — see docs/EMSDK-BUG-REPORT.md |
+| 0021 | **Pre-built header environments** (`Language.Lean.prebuiltHeaderEnvs`, consulted by `processHeader` before the disk import; populated by `lean_wasm_lsp_init` from the wasm env cache): olean reads from elaboration pthreads proxy to the host and stall under WORKERFS | the hook shape is upstream-plausible for any embedder pre-importing on a preferred thread |
+| 0022 | **Flush the worker's LSP output after each message**: frame bodies have no trailing newline; a line-buffered host stream held them until the next message, whose bytes a framed reader ate as the missing body | **as-is** — correct for any line-buffered stdout |
 
 Profile verdict (2026-08-23, superseded 2026-08-24): a whole-Mathlib snapshot
 load spent **~0.7 s relocating 2.6 GB and ~114 s in 152 modules' interpreted

@@ -109,6 +109,16 @@ export class WatchdogShim {
       this.starting = true;
       this.log("starting Lean file worker (header env prebuild may take ~30 s on first use)…");
       try {
+        // Warm the header environment with a plain compile FIRST: the env
+        // import must not run inside lsp-init (a long main-thread wasm stint
+        // before initializeWorker silences the whole session — see the
+        // Stage-2 notes in docs/LEAN4WEB-FEASIBILITY.md). After this, the
+        // prebuild inside lsp-init is a 0 ms cache hit.
+        const text = String((msg.params as { textDocument?: { text?: string } })?.textDocument?.text ?? "");
+        const headerLines = text.split("\n").filter((l) => /^\s*(?:public\s+|private\s+)?(?:meta\s+)?import\s+/.test(l));
+        const warmSource = `${headerLines.join("\n")}\n`;
+        await (this.session as unknown as { compile(s: string, f: string): Promise<unknown> }).compile(warmSource, "/workspace/__warm.lean");
+        this.log("header environment warmed");
         const r = (await (this.session as unknown as RpcSession).request("lsp-init", {
           input: {
             initParams: JSON.stringify(this.initParams ?? {}),

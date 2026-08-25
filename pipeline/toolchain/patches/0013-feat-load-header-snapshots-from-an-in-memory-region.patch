@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: QED64 Toolchain <qed64-toolchain@localhost>
 Date: Fri, 21 Aug 2026 17:12:03 -0400
-Subject: [PATCH 13/21] feat: load header snapshots from an in-memory region
+Subject: [PATCH 13/22] feat: load header snapshots from an in-memory region
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

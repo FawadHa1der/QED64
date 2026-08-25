@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: QED64 Toolchain <qed64-toolchain@localhost>
 Date: Tue, 25 Aug 2026 11:51:53 -0400
-Subject: [PATCH 19/21] build: preallocate 24 pthread workers with 8 MiB stacks
+Subject: [PATCH 19/22] build: preallocate 24 pthread workers with 8 MiB stacks
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

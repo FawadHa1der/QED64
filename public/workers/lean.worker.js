@@ -49,7 +49,10 @@ let lspBuf = new Uint8Array(0);
 const lspEncoder = new TextEncoder();
 const lspDecoder = new TextDecoder();
 
+const lspChunkRing = [];
 function lspStdoutChunk(text) {
+  lspChunkRing.push(`${Date.now() % 100000}: ${JSON.stringify(String(text).slice(0, 90))}`);
+  if (lspChunkRing.length > 24) lspChunkRing.shift();
   const bytes = lspEncoder.encode(`${text}\n`);
   const joined = new Uint8Array(lspBuf.length + bytes.length);
   joined.set(lspBuf, 0);
@@ -69,6 +72,16 @@ function lspStdoutChunk(text) {
       else break;
     }
     if (lspBuf.length < at + len) return;
+    // Resync guard: an orphaned header (its body lost to an interleaved or
+    // failed write) must not eat the NEXT frame's bytes as its body. A real
+    // body is JSON; if the "body" position holds another header, drop the
+    // orphan and continue from here.
+    const bodyHead = lspDecoder.decode(lspBuf.subarray(at, Math.min(at + 16, lspBuf.length)));
+    if (bodyHead.startsWith("Content-Length")) {
+      event(null, "log", { stream: "stderr", text: `lsp: dropped orphaned header (lost ${len}-byte body)` });
+      lspBuf = lspBuf.slice(at);
+      continue;
+    }
     const body = lspDecoder.decode(lspBuf.subarray(at, at + len));
     lspBuf = lspBuf.slice(at + len);
     try {
@@ -1103,6 +1116,22 @@ self.addEventListener("message", (e) => {
         result: { operation: "telemetry", state, memory: memoryTelemetry() },
       });
       break;
+    case "lsp-threads": {
+      const PT = typeof PThread !== "undefined" ? PThread : null;
+      post({
+        type: "result",
+        requestId: msg.requestId,
+        result: {
+          operation: "lsp-threads",
+          unused: PT?.unusedWorkers?.length ?? -1,
+          running: PT ? Object.keys(PT.pthreads ?? {}).length : -1,
+          lspBufLen: lspBuf.length,
+          ring: lspChunkRing.slice(-14),
+          lspBufHead: lspBuf.length ? new TextDecoder().decode(lspBuf.subarray(0, Math.min(160, lspBuf.length))) : "",
+        },
+      });
+      break;
+    }
     case "lsp-init":
       lspInit(msg);
       break;

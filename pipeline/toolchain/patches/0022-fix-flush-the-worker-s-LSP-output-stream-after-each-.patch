@@ -1,0 +1,35 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: QED64 Toolchain <qed64-toolchain@localhost>
+Date: Tue, 25 Aug 2026 16:13:13 -0400
+Subject: [PATCH 22/22] fix: flush the worker's LSP output stream after each
+ message
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+This PR flushes the file worker's stdout after every serialized LSP write. Frame bodies carry no trailing newline, so on a line-buffered host stream (an Emscripten TTY) a body could sit in the buffer until the next message arrived — whose bytes a framed reader then consumes as the missing body, corrupting the stream from that point on.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ src/Lean/Server/FileWorker.lean | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/src/Lean/Server/FileWorker.lean b/src/Lean/Server/FileWorker.lean
+index a5256a5..c6a74d6 100644
+--- a/src/Lean/Server/FileWorker.lean
++++ b/src/Lean/Server/FileWorker.lean
+@@ -522,7 +522,13 @@ section Initialization
+ 
+           -- note that because of `server.reportDelayMs`, we cannot simply set `maxDocVersion` here
+           -- as that would allow outdated messages to be reported until the delay is over
+-        writeSerializedLspMessage o serialized |>.catchExceptions (fun _ => pure ())
++        (do
++          writeSerializedLspMessage o serialized
++          -- Frame bodies carry no trailing newline; without an explicit flush
++          -- a line-buffered host stream (Emscripten TTY) holds the body until
++          -- the NEXT message arrives, whose bytes a framed reader then eats
++          -- as the missing body — corrupting the stream.
++          o.flush) |>.catchExceptions (fun _ => pure ())
+       return chanOut
+ 
+     getImportClosure? (snap : Language.Lean.InitialSnapshot) : Array Name := Id.run do

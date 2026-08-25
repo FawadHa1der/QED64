@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: QED64 Toolchain <qed64-toolchain@localhost>
 Date: Tue, 25 Aug 2026 15:51:07 -0400
-Subject: [PATCH 21/21] feat: pre-built header environments for language
+Subject: [PATCH 21/22] feat: pre-built header environments for language
  processing
 
 This PR adds Language.Lean.prebuiltHeaderEnvs, a registry of environments keyed by exact ordered import lists that processHeader consults before Elab.processHeaderCore imports from disk, and populates it in lean_wasm_lsp_init after building the header environment on the host thread via the existing wasm env cache. Olean reads from elaboration task pthreads are proxied to the host thread and stall under WORKERFS in browsers; importing on the host thread and handing the finished environment to the task avoids the pathology entirely, and snapshot-seeded environments serve worker sessions through the same key. Drops a stale mangled processHeader specialization from the explicit export list (the dlsym gate makes absent exports fall back to the interpreter).
