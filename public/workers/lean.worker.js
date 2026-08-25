@@ -776,6 +776,26 @@ async function beginSnapshotCacheWrite(cacheKey) {
           w.close();
           await dir.removeEntry(partial);
         }
+        // Prune superseded bakes of the same logical snapshot (keys embed a
+        // digest or sizes, so every deploy leaves a differently-named
+        // sibling; without this, dead multi-GB entries accumulate until the
+        // origin hits its OPFS quota). Collect names BEFORE deleting —
+        // removing entries mid-iteration invalidates the directory iterator.
+        try {
+          const stem = cacheKey.split(".")[0];
+          const stale = [];
+          for await (const entryName of dir.keys()) {
+            if (entryName !== cacheKey && entryName.startsWith(`${stem}.`) && entryName.endsWith(".snapz")) {
+              stale.push(entryName);
+            }
+          }
+          for (const entryName of stale) {
+            await dir.removeEntry(entryName).catch(() => {});
+          }
+          if (stale.length > 0) {
+            event(null, "log", { stream: "stderr", text: `snapshot cache pruned: ${stale.join(", ")}` });
+          }
+        } catch { /* best effort */ }
         return true;
       } catch (error) {
         dead = true;

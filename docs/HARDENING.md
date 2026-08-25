@@ -147,3 +147,21 @@ regression-pinned where testable. They will save the next person days.
     can; and EM_JS pointer params arrive as BigInt under wasm64, so
     `UTF8ToString(Number(sym))`, or the gate itself throws "Cannot mix
     BigInt" from inside the replay (the patch-0006 class again).
+25. **A rebuilt runtime bakes a snapshot of the IDENTICAL raw size.** Same
+    environment content, different relocation values: old and new umbrella
+    regions were both exactly 2,755,235,045 bytes (init: 342,124,365). So a
+    size check can never detect a stale snapshot, and the first live deploy
+    of a new runtime trapped "memory access out of bounds" on every compile
+    for returning visitors: `/snapshots/mathlib.snapz` was a **fixed URL
+    served immutable (max-age 1y)**, the browser HTTP disk cache kept the
+    old bytes, they inflated to precisely the size the fresh index declared,
+    and the loader relocated old-function-table pointers against the new
+    binary. Fixes: content-addressed snapshot names
+    (`<name>.<sha256-16>.snapz`, digest in the index — immutable caching is
+    only safe under content addressing), the OPFS cache keyed by digest
+    instead of sizes, commit-time pruning of superseded same-name entries
+    (multi-GB corpses otherwise accumulate into the origin's quota), and
+    wasm traps ("memory access out of bounds", RuntimeError) joining IO
+    errors as probe-then-reboot triggers. Sub-lesson: deleting OPFS entries
+    while iterating `dir.keys()` silently invalidates the iterator — collect
+    names first, then delete.

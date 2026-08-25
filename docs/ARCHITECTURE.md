@@ -65,8 +65,15 @@ One persistent Worker owns one Lean process for the whole session:
 baked snapshot to the ordered import list it was baked for. The app fetches it
 at install time; `matchSnapshot` is an exact ordered-array match — no subsets,
 because the runtime keys its environment cache by the precise import sequence.
-Snapshots are gzip-served (`url` ends `.snapz`, `transfer` = wire size, `bytes`
-= raw region size). The worker sniffs the gzip magic on the first chunk —
+Snapshots are gzip-served and **content-addressed** — `url` is
+`<name>.<sha256-16>.snapz` with the digest also in the index entry, `transfer`
+= wire size, `bytes` = raw region size. Content addressing is load-bearing,
+not hygiene: a rebuilt runtime bakes a region of the *identical raw size*
+(same env content, different relocation values), so a fixed URL behind
+immutable HTTP caching once served a stale snapshot that passed every size
+check and trapped "memory access out of bounds" against the new binary
+(HARDENING lesson 25). The OPFS cache is keyed by the same digest and prunes
+superseded same-name entries when a new bake commits. The worker sniffs the gzip magic on the first chunk —
 servers that recognise `.gz` add `Content-Encoding: gzip` and the browser
 inflates transparently, so the URL cannot be trusted — inflates through
 `DecompressionStream` when needed, and streams the region **straight into a

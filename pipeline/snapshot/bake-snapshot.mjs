@@ -9,6 +9,7 @@
 // Usage: node pipeline/snapshot/bake-snapshot.mjs [--name init] [--probe '#check 2+2'] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--out <dir>]
 
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
@@ -63,10 +64,32 @@ const snapBytes = fs.statSync(snap).size;
 console.log(`compressing ${name}.snapz …`);
 // `.snapz`, not `.gz`: a recognised gzip extension makes servers add Content-Encoding
 // and the browser pre-inflates, defeating the worker's compressed OPFS cache.
-const gzPath = path.join(out, `${name}.snapz`);
-await pipeline(fs.createReadStream(snap), createGzip({ level: 6 }), fs.createWriteStream(`${gzPath}.tmp`));
-fs.renameSync(`${gzPath}.tmp`, gzPath);
-try { fs.rmSync(path.join(out, `${name}.snap`)); } catch {} // supersede any raw-served copy
+// The published name is CONTENT-ADDRESSED (`<name>.<digest16>.snapz`):
+// snapshots are binary-paired to the runtime, and a rebuilt runtime produces
+// a region of the *identical raw size* (same env content, different
+// relocation values) — so a fixed name behind immutable HTTP caching let a
+// stale snapshot pass every size check and trap "memory access out of
+// bounds" against the new binary. The digest in the URL makes immutable
+// caching correct.
+const tmpPath = path.join(out, `${name}.snapz.tmp`);
+const hasher = createHash("sha256");
+await pipeline(
+  fs.createReadStream(snap),
+  createGzip({ level: 6 }),
+  async function* (chunks) { for await (const c of chunks) { hasher.update(c); yield c; } },
+  fs.createWriteStream(tmpPath),
+);
+const digest = hasher.digest("hex");
+const gzName = `${name}.${digest.slice(0, 16)}.snapz`;
+const gzPath = path.join(out, gzName);
+fs.renameSync(tmpPath, gzPath);
+// Supersede any raw-served copy and every older bake of this logical name.
+try { fs.rmSync(path.join(out, `${name}.snap`)); } catch {}
+for (const f of fs.readdirSync(out)) {
+  if (f !== gzName && (f === `${name}.snapz` || new RegExp(`^${name}\\.[0-9a-f]{16}\\.snapz$`).test(f))) {
+    fs.rmSync(path.join(out, f));
+  }
+}
 const transferBytes = fs.statSync(gzPath).size;
 
 // Upsert the snapshot index the app consumes: each entry records the ORDERED
@@ -85,7 +108,8 @@ let index = { schema: "qed64.snapshot-index/v1", snapshots: [] };
 try { index = JSON.parse(fs.readFileSync(indexPath, "utf8")); } catch {}
 const entry = {
   name,
-  url: `/snapshots/${name}.snapz`,
+  url: `/snapshots/${gzName}`,
+  digest: `sha256:${digest}`,
   bytes: snapBytes,
   transfer: transferBytes,
   imports: importsOf(probe),

@@ -10,6 +10,10 @@
 export interface SnapshotEntry {
   name: string;
   url: string;
+  /** `sha256:<hex>` of the served (compressed) bytes; also embedded in the
+   * content-addressed `url`, which is what makes immutable HTTP caching of
+   * snapshots safe across runtime rebuilds. */
+  digest?: string;
   /** Raw (uncompressed) region size — what MEMFS must hold. */
   bytes: number;
   /** Compressed transfer size when `url` is gzip-served; absent = raw. */
@@ -63,9 +67,15 @@ export function matchSnapshot(index: SnapshotIndex | null, imports: string[]): S
   return null;
 }
 
-/** Stable OPFS cache file name for a snapshot: name + sizes identify a bake
- * (a re-bake changes the region size; a new runtime changes both). */
+/** Stable OPFS cache file name for a snapshot. Prefer the content digest:
+ * sizes do NOT identify a bake — a rebuilt runtime produces a region of the
+ * identical raw size (same environment content, different relocation
+ * values), and loading a stale snapshot against a new binary traps "memory
+ * access out of bounds". The size-based form remains only for indexes
+ * without digests. */
 export function snapshotCacheKey(entry: SnapshotEntry): string {
   const safe = entry.name.replace(/[^A-Za-z0-9._-]/g, "_");
+  const d = /^sha256:([0-9a-f]{64})$/.exec(entry.digest ?? "");
+  if (d) return `${safe}.${d[1]!.slice(0, 16)}.snapz`;
   return `${safe}.${entry.bytes}.${entry.transfer ?? 0}.snapz`;
 }

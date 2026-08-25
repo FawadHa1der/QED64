@@ -797,7 +797,12 @@ export class App {
           },
         ]);
       } else {
-        if (/returned an IO error/.test(message) && !this.runtimeRecoveryAttempted) {
+        // A wasm trap ("memory access out of bounds", RuntimeError) poisons
+        // the instance the same way an IO-errored runtime does — observed
+        // when a stale HTTP-cached snapshot loads against a rebuilt binary —
+        // so it earns the same probe-then-reboot recovery.
+        const runtimePoisoned = /returned an IO error|memory access out of bounds|RuntimeError/.test(message);
+        if (runtimePoisoned && !this.runtimeRecoveryAttempted) {
           this.pendingRuntimeProbe = origin;
         }
         this.renderMessages([
@@ -813,7 +818,7 @@ export class App {
                 : "") +
               (this.pendingRuntimeProbe
                 ? "\nVerifying the runtime is still healthy…"
-                : /returned an IO error/.test(message)
+                : runtimePoisoned
                   ? "\nThe runtime failed again after a restart — reload the page to start clean."
                   : ""),
           },
