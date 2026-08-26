@@ -10,6 +10,7 @@
 // attached to the same MessagePort and never notices.
 import type { LeanSession } from "../../src/runtime/client";
 import {
+  ensureProfile,
   loadSnapshotByName,
   type Qed64Artifacts,
   type Qed64Session,
@@ -200,7 +201,7 @@ export class WatchdogShim {
         method: "textDocument/waitForDiagnostics",
         params: { uri: this.doc.uri, version: 0 },
       });
-    }, 1500);
+    }, 2500);
     this.detachSession = () => {
       qs.session.worker.removeEventListener("message", onMessage);
       window.clearInterval(tickler);
@@ -262,7 +263,9 @@ export class WatchdogShim {
       this.queue = [];
       for (const q of queued) await this.forward(q);
     } catch (err) {
-      this.ui.idle(`Lean restart failed: ${(err as Error).message} — reload the page`);
+      if ((err as Error).message !== "__qed64_remount__") {
+        this.ui.idle(`Lean restart failed: ${(err as Error).message} — reload the page`);
+      }
     } finally {
       this.restarting = false;
     }
@@ -284,7 +287,19 @@ export class WatchdogShim {
     }
     if (!covered && headerLines.length > 0) {
       if (wantsMathlib) {
-        this.ui.busy("no Mathlib snapshot — importing the header from oleans (this can take minutes)");
+        // Importing needs the pack mounted; it is NOT installed at boot
+        // (snapshot-covered sessions never need it), so install on demand.
+        // A fresh install cannot retro-mount into the running session —
+        // dispose it and let the death-replay path boot one WITH the mount
+        // (prepareHeader runs again there and takes the warm-compile arm).
+        const hadPack = this.artifacts.installed.has("essential");
+        const ok = await ensureProfile(this.artifacts, "essential", this.ui);
+        if (!ok) this.ui.progress("Mathlib pack unavailable — imports may fail");
+        if (ok && !hadPack) {
+          this.qs.session.dispose();
+          throw new Error("__qed64_remount__");
+        }
+        this.ui.busy("importing the header from oleans (this can take minutes)");
       } else {
         this.ui.busy("preparing the header environment");
       }
@@ -359,7 +374,9 @@ export class WatchdogShim {
         this.queue = [];
         for (const q of queued) await this.forward(q);
       } catch (err) {
-        this.ui.idle(`Lean failed to start: ${(err as Error).message}`);
+        if ((err as Error).message !== "__qed64_remount__") {
+          this.ui.idle(`Lean failed to start: ${(err as Error).message}`);
+        }
       } finally {
         this.starting = false;
       }

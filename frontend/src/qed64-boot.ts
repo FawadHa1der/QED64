@@ -38,20 +38,21 @@ export async function installArtifacts(ui: StatusSink): Promise<Qed64Artifacts> 
   const runtime = (await manifestResponse.json()) as RuntimeManifest;
 
   const installed = new Map<string, InstalledProfile>();
-  for (const id of ["core", "essential"]) {
-    const entry = index.profiles.find((p) => p.id === id);
-    if (!entry) {
-      if (id === "core") throw new Error("core profile not published");
-      continue; // Mathlib optional: Init-only editing still works
-    }
-    const label = id === "core" ? "Lean core library" : "Mathlib";
-    ui.busy(`installing the ${label}`);
-    const profile = await installProfile(entry, (p) => {
+  // Only the core library installs at boot. Mathlib elaboration is served by
+  // the umbrella SNAPSHOT (a resident environment needs no pack mounts), so
+  // the 1 GB pack download + 3.3 GiB unpack is skipped entirely — it kept a
+  // real-Chrome first visit under enough memory pressure to crash the tab.
+  // The pack only installs on demand if a header must import from oleans.
+  const core = index.profiles.find((p) => p.id === "core");
+  if (!core) throw new Error("core profile not published");
+  ui.busy("installing the Lean core library");
+  installed.set(
+    "core",
+    await installProfile(core, (p) => {
       const verb = p.phase === "cached" ? "checking cached" : p.phase === "download" ? "downloading" : p.phase === "inflate" ? "unpacking" : "committing";
-      ui.progress(`${verb} ${label} — ${(p.loaded / 1048576) | 0} / ${((p.total ?? 0) / 1048576) | 0} MiB`);
-    });
-    installed.set(id, profile);
-  }
+      ui.progress(`${verb} core — ${(p.loaded / 1048576) | 0} / ${((p.total ?? 0) / 1048576) | 0} MiB`);
+    }),
+  );
   const snapshots = await fetchSnapshotIndex();
   return { runtime, index, installed, snapshots };
 }
@@ -100,7 +101,13 @@ export async function newSession(
   };
   await session.boot({
     runtime: artifacts.runtime,
-    memory: { initialBytes: 256 * 1048576, maximumCandidates: memoryCandidates() },
+    // The InfoView page shares the tab with Monaco and the vscode-api layer;
+    // start the heap-maximum probe at 6 GiB (plenty for the umbrella's
+    // ~3.2 GiB) instead of 8 to reduce reservation pressure in real Chrome.
+    memory: {
+      initialBytes: 256 * 1048576,
+      maximumCandidates: memoryCandidates().filter((b) => b <= 6 * 1073741824),
+    },
     leanPath: searchPath,
     packs,
   });
@@ -109,6 +116,25 @@ export async function newSession(
   // aliasing in lean_wasm_lsp_init serves any covered header from it).
   await loadSnapshotByName(artifacts, qs, "init", ui);
   return qs;
+}
+
+/** Install a profile on demand (for headers that must import from oleans). */
+export async function ensureProfile(
+  artifacts: Qed64Artifacts,
+  id: string,
+  ui: StatusSink,
+): Promise<boolean> {
+  if (artifacts.installed.has(id)) return true;
+  const entry = artifacts.index.profiles.find((p) => p.id === id);
+  if (!entry) return false;
+  ui.busy(`installing the ${id} library (needed to import this header)`);
+  artifacts.installed.set(
+    id,
+    await installProfile(entry, (p) => {
+      ui.progress(`${p.phase} ${id} — ${(p.loaded / 1048576) | 0} / ${((p.total ?? 0) / 1048576) | 0} MiB`);
+    }),
+  );
+  return true;
 }
 
 /** Load a named snapshot into the session's runtime (idempotent). */
