@@ -5,14 +5,44 @@
   <title>QED64 · Lean InfoView</title>
   <style>
     html, body { height: 100%; margin: 0; font-family: system-ui, sans-serif; }
-    #status { padding: 6px 12px; background: #1b1d29; color: #cfd2e6; font: 13px/1.4 ui-monospace, monospace; }
-    #split { display: flex; height: calc(100% - 30px); }
+    #bar {
+      display: flex; align-items: center; gap: 14px; padding: 6px 12px;
+      background: #1b1d29; color: #cfd2e6; font: 13px/1.5 system-ui, sans-serif;
+      border-bottom: 1px solid #2c2f40;
+    }
+    #bar .title { font-weight: 600; letter-spacing: .02em; color: #fff; white-space: nowrap; }
+    #bar .title small { font-weight: 400; color: #9aa0b8; margin-left: 6px; }
+    #examples {
+      background: #262a3d; color: #cfd2e6; border: 1px solid #3a3f58;
+      border-radius: 4px; padding: 3px 6px; font: 12px system-ui, sans-serif;
+    }
+    #pill {
+      display: flex; align-items: center; gap: 7px; margin-left: auto;
+      background: #262a3d; border: 1px solid #3a3f58; border-radius: 999px;
+      padding: 3px 12px; font: 12px ui-monospace, monospace; max-width: 55%;
+    }
+    #pill .dot {
+      width: 8px; height: 8px; border-radius: 50%; background: #52c47b; flex: none;
+    }
+    #pill.busy .dot { background: #e2a63d; animation: pulse 1s ease-in-out infinite; }
+    @keyframes pulse { 50% { opacity: .3; } }
+    #pill #ptext { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #pill #ptime { color: #9aa0b8; flex: none; }
+    #split { display: flex; height: calc(100% - 33px); }
     #editor { flex: 1 1 55%; min-width: 0; }
     #infoview { flex: 1 1 45%; min-width: 0; border-left: 1px solid #ccc; }
   </style>
 </head>
 <body>
-  <div id="status">booting…</div>
+  <div id="bar">
+    <span class="title">QED64<small>Lean 4 · wasm64 · no servers</small></span>
+    <select id="examples" title="Load an example">
+      <option value="mathlib">Mathlib — real numbers</option>
+      <option value="mil">Mathematics in Lean paste</option>
+      <option value="init">Lean core — induction</option>
+    </select>
+    <div id="pill" class="busy"><span class="dot"></span><span id="ptext">booting…</span><span id="ptime"></span></div>
+  </div>
   <div id="split">
     <div id="editor"></div>
     <div id="infoview"></div>

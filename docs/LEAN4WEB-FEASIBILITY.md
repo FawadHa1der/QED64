@@ -164,8 +164,29 @@ The decisive technical facts, verified against source and by experiment:
    and the full `linarith` goal `x y : ℝ, h1 : x < y, h2 : 0 < x ⊢
    x * 2 < y * 2` — boot to worker-running in under 30 s with cached
    artifacts.
-4. **Stage 4 — productize:** examples/settings/themes rewire, install flow,
-   usability matrix, deploy beside (not replacing) the current QED64 UI.
+4. **Stage 4 — productize: COMPLETE (2026-08-25 late).** The page has a
+   product bar (examples dropdown, status pill with spinner + elapsed-time
+   ticker for every long stage: installs with MiB counters, snapshot loads
+   with GiB labels, per-module init progress, an "elaborating" indicator
+   driven by `$/lean/fileProgress`). Header edits now restart transparently
+   — the shim detects import-line changes itself (the worker's exit-code-2
+   request is neutralized by the runtime keepalive), disposes the session,
+   reinstalls any transferred memory-mode packs, reboots, reloads
+   snapshots, and replays the tracked document; the Monaco client never
+   notices (verified: Mathlib→MIL restart 28 s, →Init 21 s, fully
+   narrated, with live goals afterward). MIL.Common/`import Mathlib`
+   aliases are rewritten shim-side (first alias line → `import
+   QED64.Essential`), so pasted tutorial code works in LSP mode. A
+   1.5 s "tickler" request keeps the worker's output stream draining —
+   residual missed flushes left the final response body stuck in the TTY
+   buffer until the next write (root-causing the remaining flush miss is
+   an open item; a Lean-side alias-coverage patch for the covering-env
+   check is also coded awaiting a Docker-available rebuild). Exhaustive UI
+   matrix: boot narration/timing, goals + rewrite-diff, elapsed ticker,
+   typing → incremental re-elaboration with live interactive errors,
+   both restart paths with post-restart InfoView health, All-Messages
+   interactive content, Expected-type section, rpc keepAlive/release,
+   cached-reload path — all green on screen.
 
 ## Stage-1 results (2026-08-25, this branch)
 
