@@ -2,7 +2,7 @@
 // the real vscode-lean4 InfoView) with zero servers — the Lean file worker
 // runs in this browser tab on the wasm64 runtime.
 import { LeanMonaco, LeanMonacoEditor, type LeanMonacoOptions } from "lean4monaco";
-import { installArtifacts, newSession, type Qed64Session, type StatusSink } from "./qed64-boot";
+import { installArtifacts, newSession, type ProgressInfo, type Qed64Session, type StatusSink } from "./qed64-boot";
 import { WatchdogShim } from "./watchdog-shim";
 
 const editorEl = document.getElementById("editor")! as HTMLElement;
@@ -11,6 +11,107 @@ const pill = document.getElementById("pill")!;
 const ptext = document.getElementById("ptext")!;
 const ptime = document.getElementById("ptime")!;
 const examplesEl = document.getElementById("examples")! as HTMLSelectElement;
+
+// ---- Boot overlay: staged first-visit progress with speed and ETA ---------
+// The heavy startup (a ~1 GB first-visit download, then a minutes-class
+// environment load) gets a full card over the workspace: a progress bar with
+// real byte counts, download speed, a time-left estimate, and a stage
+// checklist — the status pill alone reads as "stuck" at this scale.
+const bootEl = document.getElementById("boot")!;
+const bootCard = document.getElementById("bootcard")!;
+const bootBar = document.getElementById("bootbar")!;
+const bootFill = document.getElementById("bootfill")!;
+const bootLabel = document.getElementById("bootlabel")!;
+const bootNums = document.getElementById("bootnums")!;
+const bootReload = document.getElementById("bootreload")! as HTMLButtonElement;
+const STAGES = ["manifests", "core", "runtime", "env", "load", "check"];
+let bootStage = 0;
+let bootDone = false;
+// Downloads report cumulative bytes; a short moving window gives a stable
+// speed and time-left estimate that still tracks real throughput changes.
+const speedWindow: Array<{ t: number; loaded: number }> = [];
+let speedKey = "";
+
+function stageOf(label: string, info?: ProgressInfo): string | null {
+  const phase = info?.phase ?? "";
+  if (/^fetching manifests/.test(label)) return "manifests";
+  if (phase.startsWith("core-") || /core library/.test(label)) return "core";
+  if (/^(runtime|filesystem|initialize|memory|import)$/.test(phase) || /^(Starting|Mounting|Initializing)/.test(label)) return "runtime";
+  if (phase === "snapshot" || phase === "snapshot-cache" || /environment \(|environment snapshot/i.test(label)) return "env";
+  if (phase === "snapshot-load" || phase === "snapshot-init" || /into Lean/.test(label)) return "load";
+  if (/elaborating|checking/.test(label)) return "check";
+  return null;
+}
+
+function renderStages() {
+  document.querySelectorAll<HTMLElement>("#bootstages li").forEach((li) => {
+    const i = STAGES.indexOf(li.dataset.stage!);
+    li.classList.toggle("done", i < bootStage);
+    li.classList.toggle("active", i === bootStage);
+  });
+}
+
+function fmtMB(n: number) {
+  return n >= 1073741824 ? `${(n / 1073741824).toFixed(2)} GB` : `${(n / 1048576) | 0} MB`;
+}
+
+function bootProgress(label: string, info?: ProgressInfo) {
+  if (bootDone) return;
+  const stage = stageOf(label, info);
+  if (stage) {
+    const i = STAGES.indexOf(stage);
+    if (i > bootStage) speedWindow.length = 0;
+    if (i >= bootStage) { bootStage = i; renderStages(); }
+  }
+  bootLabel.textContent = label;
+  const { loaded, total, unit } = info ?? {};
+  if (unit === "bytes" && typeof loaded === "number" && typeof total === "number" && total > 0) {
+    bootBar.classList.remove("busy");
+    bootFill.style.width = `${Math.min(100, (loaded / total) * 100).toFixed(1)}%`;
+    // Reset the speed window when the byte counter belongs to a new download.
+    const key = `${info?.phase}:${total}`;
+    if (key !== speedKey) { speedKey = key; speedWindow.length = 0; }
+    const now = performance.now();
+    speedWindow.push({ t: now, loaded });
+    while (speedWindow.length > 2 && now - speedWindow[0].t > 8000) speedWindow.shift();
+    let rate = "";
+    const first = speedWindow[0];
+    if (now - first.t > 1500 && loaded > first.loaded) {
+      const bps = ((loaded - first.loaded) / (now - first.t)) * 1000;
+      const left = Math.max(0, total - loaded) / bps;
+      const eta = left >= 90 ? `~${Math.round(left / 60)} min left` : `~${Math.round(left)} s left`;
+      rate = ` · ${(bps / 1048576).toFixed(1)} MB/s · ${eta}`;
+    }
+    bootNums.textContent = `${fmtMB(loaded)} / ${fmtMB(total)}${rate}`;
+  } else if (unit === "modules" && typeof loaded === "number" && typeof total === "number" && total > 0) {
+    bootBar.classList.remove("busy");
+    bootFill.style.width = `${Math.min(100, (loaded / total) * 100).toFixed(1)}%`;
+    bootNums.textContent = `${loaded} / ${total} modules`;
+  } else {
+    bootBar.classList.add("busy");
+    bootNums.textContent = "";
+  }
+}
+
+function bootFinish() {
+  if (bootDone) return;
+  bootDone = true;
+  bootStage = STAGES.length;
+  renderStages();
+  bootEl.classList.add("done");
+  window.setTimeout(() => bootEl.remove(), 600);
+}
+
+function bootFail(message: string) {
+  if (bootDone) return;
+  bootCard.classList.add("failed");
+  bootCard.querySelector("h1")!.textContent = "QED64 could not start";
+  bootLabel.textContent = message;
+  bootNums.textContent = "";
+  bootBar.classList.remove("busy");
+  bootReload.hidden = false;
+}
+bootReload.addEventListener("click", () => window.location.reload());
 
 // ---- Status pill: spinner + label + elapsed ticker ------------------------
 let busySince: number | null = null;
@@ -31,11 +132,13 @@ const ui: StatusSink = {
     ptext.title = label;
     if (ticker === undefined) ticker = window.setInterval(renderTime, 1000);
     renderTime();
+    bootProgress(label);
     console.log(`[qed64] ${label}`);
   },
-  progress(label) {
+  progress(label, info) {
     ptext.textContent = label;
     ptext.title = label;
+    bootProgress(label, info);
   },
   idle(label) {
     busySince = null;
@@ -43,6 +146,12 @@ const ui: StatusSink = {
     ptext.textContent = label;
     ptext.title = label;
     renderTime();
+    if (/^FAILED|failed — reload|restart failed/.test(label)) bootFail(label);
+    else if (/^ready$/.test(label)) bootFinish();
+    // The editor-ready idle precedes the first elaboration; if that final
+    // "ready" never lands (nothing to elaborate, a missed transition), the
+    // overlay must still get out of the way eventually.
+    else if (/^ready/.test(label)) window.setTimeout(bootFinish, 120000);
     console.log(`[qed64] ${label}`);
   },
 };
@@ -103,7 +212,7 @@ async function main() {
   const qs = await makeSession({ mathlib: true });
   shim = new WatchdogShim(artifacts, qs, ui, makeSession);
   window.addEventListener("pagehide", () => shim?.disposeForUnload());
-  (globalThis as unknown as Record<string, unknown>).qed64 = { artifacts, shim, get editor() { return editor.editor; } };
+  (globalThis as unknown as Record<string, unknown>).qed64 = { artifacts, shim, ui, get editor() { return editor.editor; } };
 
   ui.busy("starting the editor");
   const leanMonaco = new LeanMonaco();
@@ -144,6 +253,7 @@ async function main() {
 }
 
 void main().catch((err) => {
-  ui.idle(`FAILED: ${err?.message ?? err}`);
+  ui.idle(`FAILED: ${(err as Error)?.message ?? err}`);
+  bootFail(`${(err as Error)?.message ?? err}`);
   console.error(err);
 });

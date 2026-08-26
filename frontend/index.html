@@ -35,6 +35,59 @@
        default is 300x150 with a border, which crams the whole InfoView into
        a thumbnail. Fill the pane. */
     #infoview iframe { display: block; width: 100%; height: 100%; border: none; background: #fff; }
+    #split { position: relative; }
+    #boot {
+      position: absolute; inset: 0; z-index: 10; display: flex;
+      align-items: center; justify-content: center;
+      background: rgba(246, 247, 251, .96); transition: opacity .4s;
+    }
+    #boot.done { opacity: 0; pointer-events: none; }
+    #bootcard {
+      width: min(560px, calc(100% - 48px)); background: #fff; border: 1px solid #dfe2ec;
+      border-radius: 12px; padding: 26px 30px; box-shadow: 0 12px 40px rgba(27, 29, 41, .10);
+      font: 14px/1.55 system-ui, sans-serif; color: #2a2d3d;
+    }
+    #bootcard h1 { margin: 0 0 10px; font-size: 18px; color: #1b1d29; }
+    #bootnote { margin: 0 0 18px; color: #5a5f78; }
+    #bootnote b { color: #2a2d3d; }
+    #bootbar {
+      height: 8px; border-radius: 999px; background: #e8eaf3; overflow: hidden; margin-bottom: 8px;
+    }
+    #bootfill {
+      height: 100%; width: 0%; border-radius: 999px; background: #4f6df5;
+      transition: width .3s ease;
+    }
+    #bootbar.busy #bootfill {
+      width: 30% !important;
+      animation: slide 1.4s ease-in-out infinite;
+    }
+    @keyframes slide { 0% { margin-left: -30%; } 100% { margin-left: 100%; } }
+    #bootstat {
+      display: flex; justify-content: space-between; gap: 12px; margin-bottom: 16px;
+      font: 12px ui-monospace, monospace; color: #5a5f78;
+    }
+    #bootstat #bootlabel { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #bootstat #bootnums { flex: none; }
+    #bootstages { margin: 0; padding: 0 0 0 2px; list-style: none; }
+    #bootstages li {
+      padding: 3px 0 3px 26px; position: relative; color: #9aa0b8;
+    }
+    #bootstages li::before {
+      content: ""; position: absolute; left: 2px; top: 8px; width: 12px; height: 12px;
+      border-radius: 50%; border: 2px solid #cdd2e4; box-sizing: border-box;
+    }
+    #bootstages li.active { color: #1b1d29; font-weight: 600; }
+    #bootstages li.active::before { border-color: #4f6df5; background: #dfe6ff; }
+    #bootstages li.done { color: #5a5f78; }
+    #bootstages li.done::before {
+      border-color: #52c47b; background: #52c47b;
+      background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12"><path d="M2.5 6.5l2.5 2.5 4.5-5" fill="none" stroke="white" stroke-width="2"/></svg>');
+    }
+    #bootcard.failed h1 { color: #c0392b; }
+    #bootreload {
+      margin-top: 14px; padding: 7px 18px; border-radius: 6px; border: 1px solid #4f6df5;
+      background: #4f6df5; color: #fff; font: 13px system-ui, sans-serif; cursor: pointer;
+    }
   </style>
 </head>
 <body>
@@ -50,6 +103,27 @@
   <div id="split">
     <div id="editor"></div>
     <div id="infoview"></div>
+    <div id="boot">
+      <div id="bootcard">
+        <h1>Loading Lean 4 + Mathlib into your browser</h1>
+        <p id="bootnote">First visit downloads about <b>1&nbsp;GB</b> (the Lean runtime and the full
+        Mathlib environment) and caches it in your browser &mdash; later visits start in
+        <b>about 20&nbsp;seconds</b>. Everything then runs locally: no servers, and your
+        proofs never leave this tab. The full Mathlib environment needs
+        <b>~6&nbsp;GB of memory</b> — on smaller machines, close other heavy tabs first.</p>
+        <div id="bootbar"><div id="bootfill"></div></div>
+        <div id="bootstat"><span id="bootlabel">starting…</span><span id="bootnums"></span></div>
+        <ol id="bootstages">
+          <li data-stage="manifests">Fetch manifests</li>
+          <li data-stage="core">Install the Lean core library</li>
+          <li data-stage="runtime">Start the Lean runtime</li>
+          <li data-stage="env">Download the Mathlib environment</li>
+          <li data-stage="load">Load the environment into Lean</li>
+          <li data-stage="check">Check the example proof</li>
+        </ol>
+        <button id="bootreload" hidden>Reload</button>
+      </div>
+    </div>
   </div>
   <script type="module" src="/src/main.ts"></script>
 </body>

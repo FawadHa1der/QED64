@@ -20,11 +20,19 @@ export interface Qed64Session {
   loadedSnapshots: Set<string>;
 }
 
+export interface ProgressInfo {
+  phase?: string;
+  loaded?: number;
+  total?: number;
+  unit?: string;
+}
+
 export interface StatusSink {
   /** A long-running stage began (spinner + elapsed ticker). */
   busy(label: string): void;
-  /** Update the busy label without restarting the clock. */
-  progress(label: string): void;
+  /** Update the busy label without restarting the clock; numeric progress
+   * (bytes/modules) rides along when the producer has it. */
+  progress(label: string, info?: ProgressInfo): void;
   /** The page is quiescent. */
   idle(label: string): void;
 }
@@ -61,7 +69,7 @@ export async function installArtifacts(ui: StatusSink): Promise<Qed64Artifacts> 
     "core",
     await installProfile(core, (p) => {
       const verb = p.phase === "cached" ? "checking cached" : p.phase === "download" ? "downloading" : p.phase === "inflate" ? "unpacking" : "committing";
-      ui.progress(`${verb} core — ${(p.loaded / 1048576) | 0} / ${((p.total ?? 0) / 1048576) | 0} MiB`);
+      ui.progress(`${verb} the Lean core library`, { phase: `core-${p.phase}`, loaded: p.loaded, total: p.total ?? 0, unit: "bytes" });
     }),
   );
   const snapshots = await fetchSnapshotIndex();
@@ -97,7 +105,7 @@ export async function newSession(
     artifacts.installed.set(
       id,
       await installProfile(entry, (p) => {
-        ui.progress(`${p.phase} ${id} — ${(p.loaded / 1048576) | 0} / ${((p.total ?? 0) / 1048576) | 0} MiB`);
+        ui.progress(`${p.phase} ${id}`, { phase: `pack-${p.phase}`, loaded: p.loaded, total: p.total ?? 0, unit: "bytes" });
       }),
     );
   }
@@ -115,7 +123,8 @@ export async function newSession(
   ui.busy("starting Lean");
   const session = new LeanSession();
   session.onLog = (stream: string, text: string) => console.debug(`[lean:${stream}] ${text}`);
-  session.onProgress = (p: { phase: string; label?: string }) => ui.progress(p.label ?? p.phase);
+  session.onProgress = (p: { phase: string; label?: string; loaded?: number; total?: number; unit?: string }) =>
+    ui.progress(p.label ?? p.phase, { phase: p.phase, loaded: p.loaded, total: p.total, unit: p.unit });
   session.onStateChange = (state: string) => {
     if (state === "dead") onDead();
   };
@@ -168,7 +177,7 @@ export async function loadSnapshotByName(
   const entry = artifacts.snapshots?.snapshots.find((s) => s.name === name);
   if (!entry) return false;
   const gib = (entry.bytes / 1073741824).toFixed(1);
-  ui.busy(`loading the ${name === "mathlib" ? "Mathlib" : name} environment (${gib} GiB — once per session, cached in your browser)`);
+  ui.busy(`loading the ${name === "mathlib" ? "Mathlib" : name} environment (${gib} GiB unpacked — cached in your browser after the first visit)`);
   try {
     const r = await qs.session.loadSnapshot(entry.url, `${name}.snap`, entry.bytes, snapshotCacheKey(entry));
     if (r.success) qs.loadedSnapshots.add(name);
