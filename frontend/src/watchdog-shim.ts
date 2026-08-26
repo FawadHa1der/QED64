@@ -162,6 +162,12 @@ export class WatchdogShim {
   private pendingResponses = new Map<number | string, { timer: number; method: string }>();
   /** How many source ranges the server reports as still elaborating. */
   private processingCount = 0;
+  /** When the current busy stretch began, for the slow-search hint. */
+  private busySince = 0;
+  private searchHintTimer: number | undefined;
+  /** The library-search index is built once per worker process; after the
+   * first search completes, later searches are seconds-class. */
+  private searchIndexWarm = false;
 
   constructor(
     private readonly artifacts: Qed64Artifacts,
@@ -224,8 +230,29 @@ export class WatchdogShim {
       const processing = (msg.params as { processing?: unknown[] })?.processing ?? [];
       const was = this.processingCount;
       this.processingCount = processing.length;
-      if (processing.length > 0 && was === 0) this.ui.busy("elaborating");
-      else if (processing.length === 0 && was > 0) this.ui.idle("ready");
+      if (processing.length > 0 && was === 0) {
+        this.ui.busy("elaborating");
+        this.busySince = performance.now();
+        // The first library search in a session builds a Mathlib-wide index
+        // (native builds ship it prebuilt; the wasm worker rebuilds per
+        // process). If a search tactic is in the buffer and elaboration runs
+        // long, say so instead of leaving a bare two-minute "elaborating".
+        window.clearTimeout(this.searchHintTimer);
+        if (!this.searchIndexWarm && this.doc && /\b(exact\?|apply\?|rw\?)/.test(this.doc.text)) {
+          this.searchHintTimer = window.setTimeout(() => {
+            if (this.processingCount > 0 && !this.searchIndexWarm) {
+              this.ui.progress("first library search — indexing Mathlib (about 2 min, once per session)");
+            }
+          }, 8000);
+        }
+      } else if (processing.length === 0 && was > 0) {
+        window.clearTimeout(this.searchHintTimer);
+        // A long stretch with a search tactic present means the index built.
+        if (this.doc && /\b(exact\?|apply\?|rw\?)/.test(this.doc.text) && performance.now() - this.busySince > 15000) {
+          this.searchIndexWarm = true;
+        }
+        this.ui.idle("ready");
+      }
     }
   }
 
@@ -276,6 +303,7 @@ export class WatchdogShim {
     if (this.restarting || !this.doc) return;
     this.restarting = true;
     this.workerStarted = false;
+    this.searchIndexWarm = false;
     this.failInFlight("the Lean worker restarted");
     this.ui.busy("restarting Lean (imports changed)");
     try {
