@@ -157,6 +157,9 @@ export class WatchdogShim {
   private queue: JsonRpc[] = [];
   private doc: TrackedDoc | null = null;
   private detachSession: (() => void) | null = null;
+  /** Requests awaiting a response, for loss detection (see forward) and
+   * for failing fast when the worker dies with requests in flight. */
+  private pendingResponses = new Map<number | string, { timer: number; method: string }>();
   /** How many source ranges the server reports as still elaborating. */
   private processingCount = 0;
 
@@ -165,7 +168,7 @@ export class WatchdogShim {
     private qs: Qed64Session,
     private readonly ui: StatusSink,
     /** Boot a replacement session after the current one dies. */
-    private readonly makeSession: () => Promise<Qed64Session>,
+    private readonly makeSession: (opts?: { mathlib?: boolean }) => Promise<Qed64Session>,
   ) {
     const channel = new MessageChannel();
     this.clientPort = channel.port2;
@@ -182,6 +185,13 @@ export class WatchdogShim {
       if (d && d.type === "event" && d.kind === "lsp" && d.msg) {
         // Tickler responses are shim-internal (see below) — never forwarded.
         if (typeof d.msg.id === "string" && d.msg.id.startsWith("qed64-tick")) return;
+        if (d.msg.id !== undefined && d.msg.method === undefined) {
+          const pending = this.pendingResponses.get(d.msg.id);
+          if (pending !== undefined) {
+            window.clearTimeout(pending.timer);
+            this.pendingResponses.delete(d.msg.id);
+          }
+        }
         this.observeServerMessage(d.msg);
         this.serverSide.postMessage(d.msg);
       }
@@ -219,6 +229,27 @@ export class WatchdogShim {
     }
   }
 
+  /** Answer every in-flight request with an error. A dead worker answers
+   * nothing, and a promise the client never settles wedges the InfoView
+   * permanently (the "All Messages" list stays empty while the badge keeps
+   * the dead session's counts). RPC calls get RpcNeedsReconnect (-32900) so
+   * vscode-lean4's rpc layer reconnects to the replacement session and
+   * refetches on its own. */
+  private failInFlight(why: string): void {
+    for (const [id, pending] of this.pendingResponses) {
+      window.clearTimeout(pending.timer);
+      const rpc = pending.method === "$/lean/rpc/call" || pending.method === "$/lean/rpc/connect";
+      this.serverSide.postMessage({
+        jsonrpc: "2.0",
+        id,
+        error: rpc
+          ? { code: -32900, message: `QED64: ${why}` }
+          : { code: -32603, message: `QED64: ${why}; please retry` },
+      });
+    }
+    this.pendingResponses.clear();
+  }
+
   /** Header edited: dispose the session (one worker serves one import set)
    * and bring up a replacement on the new text. */
   private async restartForHeaderChange(): Promise<void> {
@@ -238,9 +269,11 @@ export class WatchdogShim {
     if (this.restarting || !this.doc) return;
     this.restarting = true;
     this.workerStarted = false;
+    this.failInFlight("the Lean worker restarted");
     this.ui.busy("restarting Lean (imports changed)");
     try {
-      const qs = await this.makeSession();
+      const wantsMathlib = /^\s*import\s+(Mathlib|Batteries|MIL\b)/m.test(this.doc.text);
+      const qs = await this.makeSession({ mathlib: wantsMathlib });
       this.attachSession(qs);
       await this.prepareHeader(this.doc.text);
       const r = (await (qs.session as unknown as RpcSession).request("lsp-init", {
@@ -390,6 +423,39 @@ export class WatchdogShim {
   }
 
   private async forward(msg: JsonRpc): Promise<void> {
+    // A response frame is occasionally lost in the worker's output stream
+    // (a half-written frame is unrecoverable — the resync guard drops it).
+    // A promise the client never settles wedges the whole InfoView, so
+    // watchdog every request: on timeout, synthesize an error response —
+    // the InfoView treats it like any failed call and simply retries.
+    if (
+      msg.id !== undefined &&
+      msg.method !== undefined &&
+      typeof msg.id !== "string" &&
+      msg.method !== "textDocument/waitForDiagnostics" // legitimately long
+    ) {
+      const id = msg.id;
+      const method = msg.method;
+      const onTimeout = () => {
+        const pending = this.pendingResponses.get(id);
+        if (!pending) return;
+        // Responses queue behind elaboration legitimately (an rpc call is
+        // answered once its position is elaborated) — only an IDLE server
+        // owing an answer for 15s means the frame is truly gone.
+        if (this.processingCount > 0 || this.restarting || !this.workerStarted) {
+          pending.timer = window.setTimeout(onTimeout, 15000);
+          return;
+        }
+        this.pendingResponses.delete(id);
+        console.warn(`[shim] response for ${method} (#${id}) lost — synthesizing error so the client retries`);
+        this.serverSide.postMessage({
+          jsonrpc: "2.0",
+          id,
+          error: { code: -32603, message: "QED64: response lost in the output stream; please retry" },
+        });
+      };
+      this.pendingResponses.set(id, { timer: window.setTimeout(onTimeout, 15000), method });
+    }
     try {
       await (this.qs.session as unknown as RpcSession).request("lsp-send", {
         input: { message: JSON.stringify(msg) },

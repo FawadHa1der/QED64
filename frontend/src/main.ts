@@ -97,11 +97,12 @@ theorem Tree.mirror_size (t : Tree α) : t.mirror.size = t.size := by
 async function main() {
   const artifacts = await installArtifacts(ui);
   let shim: WatchdogShim | null = null;
-  const makeSession = (): Promise<Qed64Session> =>
-    newSession(artifacts, ui, () => void shim?.handleWorkerDeath());
-  const qs = await makeSession();
+  const makeSession = (opts?: { mathlib?: boolean }): Promise<Qed64Session> =>
+    newSession(artifacts, ui, () => void shim?.handleWorkerDeath(), opts);
+  // The default example is a Mathlib one — commit the umbrella-sized heap.
+  const qs = await makeSession({ mathlib: true });
   shim = new WatchdogShim(artifacts, qs, ui, makeSession);
-  (globalThis as unknown as Record<string, unknown>).qed64 = { artifacts, shim };
+  (globalThis as unknown as Record<string, unknown>).qed64 = { artifacts, shim, get editor() { return editor.editor; } };
 
   ui.busy("starting the editor");
   const leanMonaco = new LeanMonaco();
@@ -123,6 +124,9 @@ async function main() {
     },
   };
   await leanMonaco.start(options);
+  // Chrome's form-state restore can reset the picker (and fire `change`)
+  // long after load — pin it to the content we actually open.
+  examplesEl.value = "mathlib";
   await editor.start(editorEl, "/project/Probe.lean", EXAMPLES.mathlib);
   ui.idle("ready — put the cursor inside a proof");
 

@@ -30,13 +30,17 @@
     #pill #ptime { color: #9aa0b8; flex: none; }
     #split { display: flex; height: calc(100% - 33px); }
     #editor { flex: 1 1 55%; min-width: 0; }
-    #infoview { flex: 1 1 45%; min-width: 0; border-left: 1px solid #ccc; }
+    #infoview { flex: 1 1 45%; min-width: 0; border-left: 1px solid #ccc; background: #fff; }
+    /* lean4monaco's IFrameInfoWebview creates a bare <iframe> — browser
+       default is 300x150 with a border, which crams the whole InfoView into
+       a thumbnail. Fill the pane. */
+    #infoview iframe { display: block; width: 100%; height: 100%; border: none; background: #fff; }
   </style>
 </head>
 <body>
   <div id="bar">
     <span class="title">QED64<small>Lean 4 · wasm64 · no servers</small></span>
-    <select id="examples" title="Load an example">
+    <select id="examples" autocomplete="off" title="Load an example">
       <option value="mathlib">Mathlib — real numbers</option>
       <option value="mil">Mathematics in Lean paste</option>
       <option value="init">Lean core — induction</option>

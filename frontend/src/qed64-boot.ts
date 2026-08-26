@@ -57,10 +57,19 @@ export async function installArtifacts(ui: StatusSink): Promise<Qed64Artifacts> 
   return { runtime, index, installed, snapshots };
 }
 
+export interface SessionOptions {
+  /** The session will host the Mathlib umbrella: commit the heap up front.
+   * Growing a shared Memory64 by gigabytes in many steps while streaming
+   * the snapshot is where nondeterministic renderer crashes were observed;
+   * one large initial commit sidesteps the repeated-grow path. */
+  mathlib?: boolean;
+}
+
 export async function newSession(
   artifacts: Qed64Artifacts,
   ui: StatusSink,
   onDead: () => void,
+  opts: SessionOptions = {},
 ): Promise<Qed64Session> {
   // Memory-backed pack segments are TRANSFERRED to the worker at boot and
   // detach page-side; a restarted session must re-install them (an OPFS-
@@ -105,7 +114,7 @@ export async function newSession(
     // start the heap-maximum probe at 6 GiB (plenty for the umbrella's
     // ~3.2 GiB) instead of 8 to reduce reservation pressure in real Chrome.
     memory: {
-      initialBytes: 256 * 1048576,
+      initialBytes: (opts.mathlib ? 3584 : 256) * 1048576,
       maximumCandidates: memoryCandidates().filter((b) => b <= 6 * 1073741824),
     },
     leanPath: searchPath,
