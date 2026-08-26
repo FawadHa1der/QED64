@@ -16,7 +16,13 @@ jobs:
         with:
           node-version: 24
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
       - run: npm ci
       - run: npx tsc --noEmit
       - run: npx vitest run tests/unit
       - run: node --check public/workers/lean.worker.js && node --check infra/worker.js
+      - run: npm ci --prefix frontend
+      - run: npm run typecheck:site
+      - run: npm run build:site

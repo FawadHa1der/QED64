@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "QED64 — a Lean 4 web editor running the real compiler client-side on WebAssembly Memory64, with Mathlib profiles.",
+  "description": "QED64 \u2014 a Lean 4 web editor running the real compiler client-side on WebAssembly Memory64, with Mathlib profiles.",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
@@ -18,7 +18,10 @@
     "pack": "node pipeline/artifacts/pack.mjs",
     "inspect:pack": "node pipeline/artifacts/inspect.mjs",
     "verify:release": "node pipeline/release/verify-release.mjs",
-    "promote:staging": "node pipeline/release/promote-staging.mjs"
+    "promote:staging": "node pipeline/release/promote-staging.mjs",
+    "build:site": "npm --prefix frontend run build",
+    "typecheck:site": "npm --prefix frontend exec tsc -- --noEmit",
+    "preview:prod": "node scripts/serve-dist.mjs"
   },
   "devDependencies": {
     "@codemirror/autocomplete": "^6.18.0",

@@ -17,10 +17,11 @@ import {
   type StatusSink,
 } from "./qed64-boot";
 
-// `request`/`compile` access; the shim is a trusted internal peer.
+// `request`/`compile`/`worker` access; the shim is a trusted internal peer.
 type RpcSession = {
   request(type: string, payload: Record<string, unknown>): Promise<unknown>;
   compile(source: string, fileName: string): Promise<unknown>;
+  worker: Worker;
 };
 
 // Transcribed from Lean.Server.Watchdog.mkLeanServerCapabilities (4.33.0-pre).
@@ -202,7 +203,7 @@ export class WatchdogShim {
         this.serverSide.postMessage(d.msg);
       }
     };
-    qs.session.worker.addEventListener("message", onMessage);
+    (qs.session as unknown as RpcSession).worker.addEventListener("message", onMessage);
     // The worker's stdout occasionally misses a flush, leaving the final
     // response body stuck in the TTY buffer until the NEXT write arrives —
     // observed as an InfoView waiting forever on one answer. A periodic
@@ -219,7 +220,7 @@ export class WatchdogShim {
       });
     }, 2500);
     this.detachSession = () => {
-      qs.session.worker.removeEventListener("message", onMessage);
+      (qs.session as unknown as RpcSession).worker.removeEventListener("message", onMessage);
       window.clearInterval(tickler);
     };
   }

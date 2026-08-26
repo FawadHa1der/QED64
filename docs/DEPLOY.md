@@ -10,6 +10,14 @@ Netlify/Vercel free bandwidth caps all fail one of these.
 The setup that fits: **Cloudflare Workers static assets (app shell) + R2
 (artifacts), one origin, headers set in `infra/worker.js`.**
 
+The deployed shell is the lean4monaco editor in `frontend/` (Monaco + the
+real vscode-lean4 InfoView on the in-browser wasm64 LSP). `npm run
+build:site` builds it into the repo-root `dist/` that `wrangler deploy`
+ships; the older shell at the repo root remains dev-only (`npm run dev`,
+port 5183). All of the editor's runtime paths are root-absolute
+(`/infoview/*`, `/workers/*`, `/runtime/*`), so the shell must stay mounted
+at the origin root.
+
 | | Free tier | We use |
 |---|---|---|
 | R2 storage | 10 GB, **zero egress fees** | 2.1 GB |
@@ -47,6 +55,31 @@ output so `runtime/`, `snapshots/` and `index.json` move together, exactly
 like the local promote. The digest-named chunk files make mixed CDN caches
 harmless; the mutable files (`runtime-manifest.json`, `snapshots/index.json`)
 are served `must-revalidate`.
+
+## Atomic promotes (shell ↔ runtime pairing)
+
+The shell and the runtime deploy through different channels (git push vs
+`upload-artifacts.sh`), so a promote that changes both used to have a
+broken window whichever went first. The pinning scheme closes it:
+
+- `upload-artifacts.sh` uploads the manifest twice — at the mutable path
+  and at `runtime/runtime-manifest.<buildId>.json` (immutable, cached
+  forever, gitignored locally).
+- The shell build injects the `buildId` of the manifest committed in
+  `public/runtime/runtime-manifest.json` and asks for the PINNED manifest
+  first, falling back to the mutable path (dev, pre-scheme shells).
+- `rclone copy` (never `sync`) keeps every older runtime's chunks in R2,
+  so previously-deployed shells keep working during and after a promote.
+  Garbage-collect superseded chunk sets deliberately, much later.
+
+Promote checklist, in order:
+
+1. Commit the new `public/runtime/runtime-manifest.json` (paired with the
+   rebaked snapshots) — the shell build reads its `buildId`.
+2. `scripts/upload-artifacts.sh` — additive; invisible to deployed shells
+   until a shell that pins the new buildId ships.
+3. Push `main` — CI deploys the shell, which asks for the runtime it was
+   built against and finds it already in R2. No window.
 
 ## Security model: who can write what
 

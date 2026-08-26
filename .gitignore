@@ -7,3 +7,4 @@ work/
 *.log
 .DS_Store
 public/snapshots/
+public/runtime/runtime-manifest.wasm64-*.json

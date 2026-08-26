@@ -29,11 +29,22 @@ export interface StatusSink {
   idle(label: string): void;
 }
 
+declare const __QED64_BUILD_ID__: string;
+
 export async function installArtifacts(ui: StatusSink): Promise<Qed64Artifacts> {
   ui.busy("fetching manifests");
   const index = await fetchProfileIndex();
   if (!index) throw new Error("profile index missing (/profiles/index.json)");
-  const manifestResponse = await fetch("/runtime/runtime-manifest.json", { cache: "no-cache" });
+  // Prefer the immutable manifest of the runtime this shell was built
+  // against (uploaded by scripts/upload-artifacts.sh) so a shell deploy
+  // never races the mutable manifest switch; the mutable path serves dev
+  // and any shell whose pinned copy predates the pinning scheme.
+  let manifestResponse: Response | null = null;
+  if (typeof __QED64_BUILD_ID__ === "string") {
+    const pinned = await fetch(`/runtime/runtime-manifest.${__QED64_BUILD_ID__}.json`);
+    if (pinned.ok && (pinned.headers.get("content-type") ?? "").includes("json")) manifestResponse = pinned;
+  }
+  if (!manifestResponse) manifestResponse = await fetch("/runtime/runtime-manifest.json", { cache: "no-cache" });
   if (!manifestResponse.ok) throw new Error(`runtime manifest: HTTP ${manifestResponse.status}`);
   const runtime = (await manifestResponse.json()) as RuntimeManifest;
 

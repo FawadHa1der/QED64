@@ -1,5 +1,6 @@
 # CD: pushes to main redeploy the APP SHELL to Cloudflare Workers (seconds,
-# tiny). Artifacts (2.1 GB in R2) are uploaded manually via
+# tiny). The shell is the lean4monaco editor (frontend/), built into dist/.
+# Artifacts (multi-GB in R2) are uploaded manually via
 # scripts/upload-artifacts.sh when a runtime or snapshot actually changes —
 # GitHub runners neither need nor want the multi-GB payload.
 # Required repo secret: CLOUDFLARE_API_TOKEN (Workers+R2 edit permissions).
@@ -18,9 +19,17 @@ jobs:
         with:
           node-version: 24
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
       - run: npm ci
       - run: npx tsc --noEmit && npx vitest run tests/unit
-      - run: npm run build && rm -rf dist/runtime dist/profiles dist/snapshots
+      - run: npm ci --prefix frontend
+      - run: npm run typecheck:site
+      - run: npm run build:site
+      # Artifacts are served from R2 — never bundle them as worker assets
+      # (publicDir is off for builds; this prune is a defensive invariant).
+      - run: rm -rf dist/runtime dist/profiles dist/snapshots
       # Plain wrangler (pinned in devDependencies) instead of wrangler-action:
       # the wrapper swallowed error output on failure. Env vars are wrangler's
       # native non-interactive auth; the account id spares narrowly-scoped
