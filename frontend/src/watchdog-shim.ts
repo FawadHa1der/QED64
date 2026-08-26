@@ -306,7 +306,12 @@ export class WatchdogShim {
     this.workerStarted = false;
     this.searchIndexWarm = false;
     this.failInFlight("the Lean worker restarted");
-    this.ui.busy("restarting Lean (imports changed)");
+    // In-place re-init (wasmLspInit's "replacing it" path) wedges the new
+    // session's elaboration — until the toolchain patch that cancels the
+    // old session's tasks lands (see docs/PATCH-BACKLOG.md), imports
+    // changes pay a full worker reboot. Snapshots reload from OPFS, so
+    // this is tens of seconds, not the first-visit minutes — say so.
+    this.ui.busy("imports changed — restarting the checker (about half a minute; environments reload from cache)");
     try {
       const wantsMathlib = /^\s*import\s+(Mathlib|Batteries|MIL\b)/m.test(this.doc.text);
       const qs = await this.makeSession({ mathlib: wantsMathlib });
