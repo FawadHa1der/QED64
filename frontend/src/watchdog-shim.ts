@@ -229,6 +229,13 @@ export class WatchdogShim {
     }
   }
 
+  /** Release the wasm heap NOW. A reload does not promptly reclaim a
+   * dead page's committed 3.5 GiB shared memory; quick successive reloads
+   * stack sessions until the OS jetsams the renderer. Called on pagehide. */
+  disposeForUnload(): void {
+    try { this.qs.session.dispose(); } catch { /* already down */ }
+  }
+
   /** Answer every in-flight request with an error. A dead worker answers
    * nothing, and a promise the client never settles wedges the InfoView
    * permanently (the "All Messages" list stays empty while the badge keeps

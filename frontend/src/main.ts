@@ -102,6 +102,7 @@ async function main() {
   // The default example is a Mathlib one — commit the umbrella-sized heap.
   const qs = await makeSession({ mathlib: true });
   shim = new WatchdogShim(artifacts, qs, ui, makeSession);
+  window.addEventListener("pagehide", () => shim?.disposeForUnload());
   (globalThis as unknown as Record<string, unknown>).qed64 = { artifacts, shim, get editor() { return editor.editor; } };
 
   ui.busy("starting the editor");
