@@ -334,7 +334,10 @@ function createSharedMemory64(initialBytes, maxCandidatesBytes) {
 const memCheckpoints = [];
 function memCheckpoint(label) {
   try {
-    const b = M && M.wasmMemory ? M.wasmMemory.buffer.byteLength : 0;
+    // M.wasmMemory attaches late; bootMemory is the same Memory object from
+    // the moment we created it.
+    const mem = (M && M.wasmMemory) || bootMemory;
+    const b = mem ? mem.buffer.byteLength : 0;
     memCheckpoints.push({ label, t: Math.round(performance.now()), bytes: b });
     if (memCheckpoints.length > 64) memCheckpoints.shift();
     event(null, "log", { stream: "stderr", text: `[mem] ${label}: ${(b / 1048576) | 0} MiB` });

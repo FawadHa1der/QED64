@@ -338,11 +338,40 @@ export class WatchdogShim {
       for (const q of queued) await this.forward(q);
     } catch (err) {
       if ((err as Error).message !== "__qed64_remount__") {
-        this.ui.idle(`Lean restart failed: ${(err as Error).message} — reload the page`);
+        // A bad import line must not brick the page: surface the failure as
+        // a diagnostic ON the header, keep tracking edits, and let the next
+        // header edit retry the whole restart. Release the half-booted
+        // session's heap NOW — the retry boots a fresh one, and two live
+        // 3.5 GiB heaps is exactly the OOM recipe.
+        try { this.qs.session.dispose(); } catch { /* already down */ }
+        this.ui.idle("imports failed — edit the import line to retry");
+        this.publishHeaderFailure((err as Error).message);
       }
     } finally {
       this.restarting = false;
     }
+  }
+
+  /** Show an import/boot failure as a diagnostic on the document's first
+   * import line so the user can see and fix it in place. */
+  private publishHeaderFailure(message: string): void {
+    if (!this.doc) return;
+    const lines = this.doc.text.split("\n");
+    let line = lines.findIndex((l) => /^\s*(?:public\s+|private\s+)?(?:meta\s+)?import\s+/.test(l));
+    if (line < 0) line = 0;
+    this.serverSide.postMessage({
+      jsonrpc: "2.0",
+      method: "textDocument/publishDiagnostics",
+      params: {
+        uri: this.doc.uri,
+        diagnostics: [{
+          range: { start: { line, character: 0 }, end: { line, character: lines[line]?.length ?? 1 } },
+          severity: 1,
+          source: "QED64",
+          message: `imports could not be loaded: ${message}\nEdit the import line to retry.`,
+        }],
+      },
+    });
   }
 
   /** Ensure the header's environment exists in the main-thread cache BEFORE
@@ -419,8 +448,14 @@ export class WatchdogShim {
       // neutralized by the runtime keepalive) — the shim detects header
       // edits itself and restarts proactively, replaying the new text. The
       // superseding didOpen makes forwarding this didChange unnecessary.
-      if (this.workerStarted && headerOf(this.doc.text) !== headerBefore) {
-        void this.restartForHeaderChange();
+      if (headerOf(this.doc.text) !== headerBefore && !this.restarting) {
+        if (this.workerStarted) {
+          void this.restartForHeaderChange();
+        } else if (!this.starting) {
+          // The last header failed to load (or the worker died); a changed
+          // header is the user's fix — retry the boot with the new text.
+          void this.handleWorkerDeath();
+        }
         return;
       }
     }
