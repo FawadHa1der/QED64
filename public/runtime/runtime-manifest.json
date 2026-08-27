@@ -2,7 +2,7 @@
   "schema": "org.lean-browser64.runtime/v1",
   "buildId": "wasm64-31aef224f49e8385",
   "leanVersion": "4.33.0-pre",
-  "sourceRevision": "unspecified",
+  "sourceRevision": "qed64-wasm64@327107865 (base 5732b84)",
   "target": "wasm64-unknown-emscripten",
   "pointerBits": 64,
   "memory": {

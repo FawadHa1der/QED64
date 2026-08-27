@@ -209,6 +209,17 @@ theorem Tree.mirror_size (t : Tree α) : t.mirror.size = t.size := by
 
 async function main() {
   const artifacts = await installArtifacts(ui);
+  // Identify the exact compiler in the product bar: Lean version + fork
+  // commit visible, full provenance (incl. runtime id) in the tooltip.
+  {
+    const bi = document.getElementById("buildinfo");
+    const rt = artifacts.runtime;
+    if (bi && rt.leanVersion) {
+      const fork = /@([0-9a-f]+)/.exec(rt.sourceRevision ?? "")?.[1];
+      bi.textContent = `Lean ${rt.leanVersion} · wasm64${fork ? ` · qed64@${fork.slice(0, 7)}` : ""}`;
+      bi.title = `Lean ${rt.leanVersion}\n${rt.sourceRevision ?? "source revision unknown"}\nruntime ${rt.buildId}\nno servers — everything runs in this tab`;
+    }
+  }
   let shim: WatchdogShim | null = null;
   const makeSession = (opts?: { mathlib?: boolean }): Promise<Qed64Session> =>
     newSession(artifacts, ui, () => void shim?.handleWorkerDeath(), opts);

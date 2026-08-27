@@ -9,6 +9,7 @@
 
 import { createHash } from "node:crypto";
 import fs from "node:fs";
+import { execSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -20,7 +21,20 @@ function arg(name, fallback) {
 const binDir = path.resolve(arg("bin", ""));
 const outDir = path.resolve(root, arg("out", "public/runtime"));
 const leanVersion = arg("lean-version", "4.33.0-pre");
-const revision = arg("revision", "unspecified");
+// Default the source revision to the fork checkout that (by the pipeline's
+// build-then-chunk sequence) produced the binary being chunked, so every
+// manifest identifies its exact compiler commit. The pinned upstream base is
+// the lean4 commit the qed64-wasm64 branch is rebased on.
+const UPSTREAM_BASE = "5732b84";
+function forkRevision() {
+  try {
+    const head = execSync("git -C pipeline/toolchain/work/lean4 rev-parse --short=9 HEAD", { encoding: "utf8" }).trim();
+    return `qed64-wasm64@${head} (base ${UPSTREAM_BASE})`;
+  } catch {
+    return "unspecified";
+  }
+}
+const revision = arg("revision", forkRevision());
 if (!binDir) {
   console.error("usage: chunk-runtime.mjs --bin <dir> [--lean-version v] [--revision sha] [--out dir]");
   process.exit(2);

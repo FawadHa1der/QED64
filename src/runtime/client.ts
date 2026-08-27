@@ -45,6 +45,7 @@ export interface Capabilities {
 export interface ReadyInfo {
   buildId: string;
   leanVersion: string;
+  sourceRevision?: string;
   capabilities: Capabilities;
   memory?: MemoryTelemetry;
   mode: "persistent";
@@ -61,6 +62,7 @@ export interface ProgressEvent {
 export interface RuntimeManifest {
   buildId: string;
   leanVersion: string;
+  sourceRevision?: string;
   files: Record<
     "lean.js" | "lean.wasm",
     { bytes: number; sha256: string; chunks: { url: string; bytes: number; sha256: string }[] }

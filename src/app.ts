@@ -371,7 +371,7 @@ export class App {
       const manifestResponse = await fetch("/runtime/runtime-manifest.json", { cache: "no-cache" });
       if (!manifestResponse.ok) throw new Error(`runtime manifest: HTTP ${manifestResponse.status}`);
       this.runtime = (await manifestResponse.json()) as RuntimeManifest;
-      this.el.statusVersion.textContent = `Lean ${this.runtime.leanVersion} · ${this.runtime.buildId}`;
+      this.el.statusVersion.textContent = `Lean ${this.runtime.leanVersion} · ${this.runtime.buildId}${this.runtime.sourceRevision && this.runtime.sourceRevision !== "unspecified" ? ` · ${this.runtime.sourceRevision}` : ""}`;
       this.setupLog(`Runtime ${this.runtime.buildId} (Lean ${this.runtime.leanVersion}), 154 MB verified on load.`);
     } catch (error) {
       this.setPhase("failed", "Artifacts missing");
