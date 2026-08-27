@@ -171,3 +171,14 @@ Gate the rebuild on: garbage input → ≥1 error diagnostic; the defect test in
     MIL.Common). Runtime wasm64-b59deba0cfa73d9c; both slim snapshots
     rebaked byte-stable (raw sizes identical to the 0fdfd698 bakes).
 
+25. **0025-wasm-grow-cached-environments-extension-arrays.patch** — an env
+    loaded from a snapshot predates extensions registered by a LATER
+    snapshot's `[init]` replay; serving it then panics every generic
+    extension access ("invalid environment extension has been accessed" —
+    the PANIC-flood garbage on Init docs in umbrella sessions).
+    `Environment.ensureExtensionsSizeForWasm` (the resize
+    `finalizePersistentExtensions` already does) is applied at both env-
+    cache choke points. Output now matches live.lean-lang.org exactly.
+26. **0026-exports-drop-stale-specialization.patch** — export-list refresh
+    forced by 0025's reshaped loop. Runtime wasm64-284a58df5421c4f4.
+

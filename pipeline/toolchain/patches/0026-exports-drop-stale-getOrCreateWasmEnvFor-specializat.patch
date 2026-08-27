@@ -1,0 +1,28 @@
+From 61a1627ef80b8ba9706ddbb1fba05088d1c2af4e Mon Sep 17 00:00:00 2001
+From: QED64 Toolchain <qed64-toolchain@localhost>
+Date: Thu, 27 Aug 2026 10:30:39 -0400
+Subject: [PATCH 26/26] exports: drop stale getOrCreateWasmEnvFor
+ specialization symbol
+
+The extension-resize change reshaped the function's loop, renaming its
+specialization; the pinned export list referenced the old mangled name
+(dlsym gate falls back safely, same as the 0021-era refresh).
+---
+ src/emscripten-exports.txt | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/src/emscripten-exports.txt b/src/emscripten-exports.txt
+index efb08bc..f76805c 100644
+--- a/src/emscripten-exports.txt
++++ b/src/emscripten-exports.txt
+@@ -74395,7 +74395,6 @@ _l___private_Init_Data_Array_Basic_0__Array_forIn_x27Unsafe_loop___at___00__priv
+ _l___private_Init_Data_Array_Basic_0__Array_forIn_x27Unsafe_loop___at___00__private_Lean_Server_Rpc_Deriving_0__Lean_Server_RpcEncodable_deriveStructureInstance_spec__1___boxed
+ _l___private_Init_Data_Array_Basic_0__Array_forIn_x27Unsafe_loop___at___00__private_Lean_Server_Rpc_Deriving_0__Lean_Server_RpcEncodable_deriveStructureInstance_spec__1___lam__0___boxed
+ _l___private_Init_Data_Array_Basic_0__Array_forIn_x27Unsafe_loop___at___00__private_Lean_Server_Rpc_Deriving_0__Lean_Server_RpcEncodable_deriveStructureInstance_spec__1___lam__1___boxed
+-_l___private_Init_Data_Array_Basic_0__Array_forIn_x27Unsafe_loop___at___00__private_Lean_Shell_0__Lean_getOrCreateWasmEnvFor_spec__3___boxed
+ _l___private_Init_Data_Array_Basic_0__Array_forIn_x27Unsafe_loop___at___00__private_Lean_Structure_0__Lean_findParentProjStruct_x3f_go_spec__0___boxed
+ _l___private_Init_Data_Array_Basic_0__Array_forIn_x27Unsafe_loop___at___00__private_Lean_Structure_0__Lean_findParentProjStruct_x3f_go_spec__1___boxed
+ _l___private_Init_Data_Array_Basic_0__Array_forIn_x27Unsafe_loop___at___00__private_Lean_Util_Profiler_0__Lean_Firefox_addTrace_go_spec__0___boxed
+-- 
+2.50.1 (Apple Git-155)
+

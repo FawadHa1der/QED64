@@ -1,0 +1,81 @@
+From a4dee8f6e8fea9ca782868cdcb1ad17dfc5019dd Mon Sep 17 00:00:00 2001
+From: QED64 Toolchain <qed64-toolchain@localhost>
+Date: Thu, 27 Aug 2026 10:25:29 -0400
+Subject: [PATCH 25/26] wasm: grow cached environments' extension arrays to the
+ current registry
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+An environment loaded from a snapshot predates extensions registered
+later in the process (the mathlib snapshot's [init] replay registers
+Mathlib's env extensions); serving such an env for a document afterwards
+panics on any generic extension access ('invalid environment extension
+has been accessed' — surfaced as garbage PANIC diagnostics on Init
+documents in umbrella sessions, and latent in the compile path).
+Expose Environment.ensureExtensionsSizeForWasm (the same resize
+finalizePersistentExtensions performs after imports) and apply it in
+getOrCreateWasmEnvFor's cache hit and to the whole cache before
+wasmLspInit's covering pick.
+---
+ src/Lean/Environment.lean | 10 ++++++++++
+ src/Lean/Shell.lean       | 15 +++++++++++++++
+ 2 files changed, 25 insertions(+)
+
+diff --git a/src/Lean/Environment.lean b/src/Lean/Environment.lean
+index ee12616..517430b 100644
+--- a/src/Lean/Environment.lean
++++ b/src/Lean/Environment.lean
+@@ -1974,6 +1974,16 @@ private def ensureExtensionsArraySize (env : Environment) : IO Environment := do
+   let exts ← EnvExtension.ensureExtensionsArraySize env.base.private.extensions
+   return env.modifyCheckedAsync ({ · with extensions := exts })
+ 
++/-- WASM playground support: an environment loaded from a snapshot may predate
++environment extensions registered later in the same process (for example a
++second snapshot's `[init]` replay registering Mathlib's extensions). Its
++extension-state array is then too short, and any generic extension access
++panics with "invalid environment extension has been accessed". Growing the
++array to the current registry is exactly what `finalizePersistentExtensions`
++does after imports; expose it for the runtime's environment cache. -/
++def Environment.ensureExtensionsSizeForWasm (env : Environment) : IO Environment :=
++  ensureExtensionsArraySize env
++
+ private partial def finalizePersistentExtensions (env : Environment) (mods : Array ModuleData) (opts : Options) : IO Environment := do
+   loop 0 env
+ where
+diff --git a/src/Lean/Shell.lean b/src/Lean/Shell.lean
+index 67e8a13..a38b86d 100644
+--- a/src/Lean/Shell.lean
++++ b/src/Lean/Shell.lean
+@@ -69,6 +69,11 @@ def getOrCreateWasmEnvFor (imports : Array Import) : IO Environment := do
+   for (k, env) in (← wasmEnvCache.get) do
+     if k == key then
+       IO.eprintln "[WASM DEBUG] getOrCreateWasmEnvFor: returning cached env"
++      -- A cached env may predate extensions registered by a later snapshot's
++      -- [init] replay; grow its extension array or generic extension access
++      -- panics ("invalid environment extension has been accessed").
++      let env ← env.ensureExtensionsSizeForWasm
++      wasmEnvCache.modify (·.map fun (k', e) => if k' == key then (k', env) else (k', e))
+       return env
+   IO.eprintln s!"[WASM DEBUG] getOrCreateWasmEnvFor: cache miss, importing {key}…"
+   -- Mirror the frontend's header import (`processHeaderCore`, Elab/Import.lean):
+@@ -348,6 +353,16 @@ def wasmLspInit (initParamsJson : String) (didOpenJson : String) : IO UInt32 :=
+     -- worker sessions for free.
+     let (header, _, _) ← Parser.parseHeader (Parser.mkInputContext tdoc.text.crlfToLf tdoc.uri)
+     let imports := Elab.headerToImports header
++    -- Snapshot-seeded envs may predate later-registered extensions (a second
++    -- snapshot's [init] replay): grow every cached env's extension array
++    -- BEFORE serving any of them, or elaboration under an older env panics
++    -- with "invalid environment extension has been accessed".
++    do
++      let cache ← wasmEnvCache.get
++      let mut refreshed := #[]
++      for (k, env) in cache do
++        refreshed := refreshed.push (k, ← env.ensureExtensionsSizeForWasm)
++      wasmEnvCache.set refreshed
+     unless imports.isEmpty do
+       let key := imports.map (·.module)
+       let cache ← wasmEnvCache.get
+-- 
+2.50.1 (Apple Git-155)
+
