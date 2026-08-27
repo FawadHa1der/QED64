@@ -161,6 +161,10 @@ export class WatchdogShim {
   /** Requests awaiting a response, for loss detection (see forward) and
    * for failing fast when the worker dies with requests in flight. */
   private pendingResponses = new Map<number | string, { timer: number; method: string }>();
+  /** Debounce for header-change restarts: rapid example switches collapse
+   * into ONE boot of the final target instead of a chain of multi-GiB
+   * boots (three overlapping boots peaked a renderer at 11 GB). */
+  private restartDebounce: number | undefined;
   /** How many source ranges the server reports as still elaborating. */
   private processingCount = 0;
   /** When the current busy stretch began, for the slow-search hint. */
@@ -261,7 +265,7 @@ export class WatchdogShim {
    * dead page's committed 3.5 GiB shared memory; quick successive reloads
    * stack sessions until the OS jetsams the renderer. Called on pagehide. */
   disposeForUnload(): void {
-    try { this.qs.session.dispose(); } catch { /* already down */ }
+    this.disposeHard();
   }
 
   /** Answer every in-flight request with an error. A dead worker answers
@@ -291,11 +295,19 @@ export class WatchdogShim {
     if (this.restarting) return;
     this.restarting = true;
     this.workerStarted = false;
-    try {
-      this.qs.session.dispose();
-    } catch { /* already dying */ }
+    this.disposeHard();
     this.restarting = false;
     await this.handleWorkerDeath();
+  }
+
+  /** Dispose AND terminate the worker immediately. The polite dispose gives
+   * the worker 250 ms to acknowledge, and the multi-GiB shared heap is only
+   * reclaimed after termination + GC — on rapid example switches the old
+   * heap must be on its way out BEFORE the replacement commits its own
+   * 3.5 GiB, or the transient overlap OOM-kills the renderer. */
+  private disposeHard(): void {
+    try { this.qs.session.dispose(); } catch { /* already dying */ }
+    try { (this.qs.session as unknown as RpcSession).worker.terminate(); } catch { /* gone */ }
   }
 
   /** The wasm instance died (header edit or crash). Boot a new one and
@@ -312,11 +324,26 @@ export class WatchdogShim {
     // changes pay a full worker reboot. Snapshots reload from OPFS, so
     // this is tens of seconds, not the first-visit minutes — say so.
     this.ui.busy("imports changed — restarting the checker (about half a minute; environments reload from cache)");
+    // Terminate whatever remains of the previous worker NOW and give the
+    // engine a moment to release its heap before the replacement commits
+    // multiple GiB — overlapping dying and booting heaps under rapid
+    // example switches is the renderer-OOM recipe.
+    this.disposeHard();
+    await new Promise((r) => window.setTimeout(r, 1500));
+    // ONE atomic snapshot of the document for the whole boot. The doc keeps
+    // moving under rapid example switches; reading it live at each stage
+    // built Frankenstein sessions — booted for header A, umbrella loaded
+    // for header B, document opened with header C. An Init document inside
+    // an umbrella-loaded session is the known elaboration-wedge combination,
+    // so every stage uses this snapshot, and if the header moved on while
+    // we booted, we go around again afterwards.
+    const bootText = this.doc.text;
+    const bootVersion = this.doc.version;
     try {
-      const wantsMathlib = /^\s*import\s+(Mathlib|Batteries|MIL\b)/m.test(this.doc.text);
+      const wantsMathlib = /^\s*import\s+(Mathlib|Batteries|MIL\b)/m.test(bootText);
       const qs = await this.makeSession({ mathlib: wantsMathlib });
       this.attachSession(qs);
-      await this.prepareHeader(this.doc.text);
+      await this.prepareHeader(bootText);
       const r = (await (qs.session as unknown as RpcSession).request("lsp-init", {
         input: {
           initParams: JSON.stringify(this.initParams ?? {}),
@@ -324,8 +351,8 @@ export class WatchdogShim {
             textDocument: {
               uri: this.doc.uri,
               languageId: this.doc.languageId,
-              version: this.doc.version,
-              text: rewriteAliasImports(this.doc.text).text,
+              version: bootVersion,
+              text: rewriteAliasImports(bootText).text,
             },
           }),
         },
@@ -335,7 +362,25 @@ export class WatchdogShim {
       this.ui.idle("ready");
       const queued = this.queue;
       this.queue = [];
-      for (const q of queued) await this.forward(q);
+      for (const q of queued) {
+        // The didOpen carries bootVersion's exact text; a queued didChange at
+        // or below that version is already incorporated — replaying it would
+        // regress the worker's document. Later versions apply incrementally
+        // on top, exactly as LSP intends.
+        if (q.method === "textDocument/didChange") {
+          const v = (q.params as { textDocument?: { version?: number } })?.textDocument?.version;
+          if (typeof v === "number" && v <= bootVersion) continue;
+        }
+        await this.forward(q);
+      }
+      // Another switch may have landed while we booted: this session was
+      // built for bootText's imports — go around for the new header rather
+      // than serving it mixed.
+      if (headerOf(this.doc.text) !== headerOf(bootText)) {
+        this.restarting = false;
+        void this.restartForHeaderChange();
+        return;
+      }
     } catch (err) {
       if ((err as Error).message !== "__qed64_remount__") {
         // A bad import line must not brick the page: surface the failure as
@@ -343,7 +388,7 @@ export class WatchdogShim {
         // header edit retry the whole restart. Release the half-booted
         // session's heap NOW — the retry boots a fresh one, and two live
         // 3.5 GiB heaps is exactly the OOM recipe.
-        try { this.qs.session.dispose(); } catch { /* already down */ }
+        this.disposeHard();
         this.ui.idle("imports failed — edit the import line to retry");
         this.publishHeaderFailure((err as Error).message);
       }
@@ -449,13 +494,20 @@ export class WatchdogShim {
       // edits itself and restarts proactively, replaying the new text. The
       // superseding didOpen makes forwarding this didChange unnecessary.
       if (headerOf(this.doc.text) !== headerBefore && !this.restarting) {
-        if (this.workerStarted) {
-          void this.restartForHeaderChange();
-        } else if (!this.starting) {
-          // The last header failed to load (or the worker died); a changed
-          // header is the user's fix — retry the boot with the new text.
-          void this.handleWorkerDeath();
-        }
+        // Debounce: another switch within 2 s replaces this one, so a user
+        // flicking through the examples pays for ONE restart, not a chain.
+        window.clearTimeout(this.restartDebounce);
+        this.ui.busy("imports changed — the checker restarts in a moment");
+        this.restartDebounce = window.setTimeout(() => {
+          if (this.restarting) return;
+          if (this.workerStarted) {
+            void this.restartForHeaderChange();
+          } else if (!this.starting) {
+            // The last header failed to load (or the worker died); a changed
+            // header is the user's fix — retry the boot with the new text.
+            void this.handleWorkerDeath();
+          }
+        }, 2000);
         return;
       }
     }
@@ -479,9 +531,18 @@ export class WatchdogShim {
         if (r.tag !== 0) throw new Error("the imports could not be resolved — check the module names (details in the browser console)");
         this.workerStarted = true;
         this.ui.idle("ready");
+        const openVersion = (openParams as unknown as { textDocument: { version?: number } }).textDocument.version ?? 0;
         const queued = this.queue;
         this.queue = [];
-        for (const q of queued) await this.forward(q);
+        for (const q of queued) {
+          // The didOpen already carried this version's text — replaying an
+          // older didChange would regress the worker's document.
+          if (q.method === "textDocument/didChange") {
+            const v = (q.params as { textDocument?: { version?: number } })?.textDocument?.version;
+            if (typeof v === "number" && v <= openVersion) continue;
+          }
+          await this.forward(q);
+        }
       } catch (err) {
         if ((err as Error).message !== "__qed64_remount__") {
           this.ui.idle(`Lean failed to start: ${(err as Error).message}`);
