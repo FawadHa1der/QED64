@@ -249,7 +249,7 @@ export class WatchdogShim {
         if (!this.searchIndexWarm && this.doc && /\b(exact\?|apply\?|rw\?)/.test(this.doc.text)) {
           this.searchHintTimer = window.setTimeout(() => {
             if (this.processingCount > 0 && !this.searchIndexWarm) {
-              this.ui.progress("first library search — indexing Mathlib (about 2 min, once per session)");
+              this.ui.progress("first library search — indexing Mathlib (about a minute, once per session)");
             }
           }, 8000);
         }
