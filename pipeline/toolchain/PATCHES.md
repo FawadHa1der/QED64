@@ -157,3 +157,17 @@ done := Parser.isTerminalCommand cmd
 
 Gate the rebuild on: garbage input → ≥1 error diagnostic; the defect test in
 `tests/integration/persistent-path.test.ts` flips red when this lands.
+
+24. **0024-wasm-cancellable-session-replacement-save-exception.patch** —
+    three fixes in one: (a) `FileWorker.teardownForReplacement` + call in
+    `wasmLspInit` — cancels the replaced session's reporter and pending
+    requests and re-arms the once-per-process import guard whose neutered
+    `forceExit(2)` silently wedged every second worker init in a process
+    (the header-switch wedge); (b) `lean_compacted_region_save` surfaces
+    compactor-construction and write-path throws as IO errors instead of
+    wasm aborts; (c) `lean_compacted_region_read` non-mmap path reads each
+    olean ONCE (was header-read + lseek + full re-read); Shell covering
+    check accepts umbrella aliases (Mathlib/Mathlib.Tactic/Batteries/
+    MIL.Common). Runtime wasm64-b59deba0cfa73d9c; both slim snapshots
+    rebaked byte-stable (raw sizes identical to the 0fdfd698 bakes).
+

@@ -167,6 +167,8 @@ export class WatchdogShim {
   private restartDebounce: number | undefined;
   /** How many source ranges the server reports as still elaborating. */
   private processingCount = 0;
+  /** When the last $/lean/fileProgress arrived — the in-place switch's liveness signal. */
+  private lastProgressAt = 0;
   /** When the current busy stretch began, for the slow-search hint. */
   private busySince = 0;
   private searchHintTimer: number | undefined;
@@ -232,6 +234,7 @@ export class WatchdogShim {
   /** Track elaboration progress for the "working…" indicator. */
   private observeServerMessage(msg: JsonRpc) {
     if (msg.method === "$/lean/fileProgress") {
+      this.lastProgressAt = performance.now();
       const processing = (msg.params as { processing?: unknown[] })?.processing ?? [];
       const was = this.processingCount;
       this.processingCount = processing.length;
@@ -292,11 +295,78 @@ export class WatchdogShim {
   /** Header edited: dispose the session (one worker serves one import set)
    * and bring up a replacement on the new text. */
   private async restartForHeaderChange(): Promise<void> {
-    if (this.restarting) return;
+    if (this.restarting || !this.doc) return;
     this.restarting = true;
     this.workerStarted = false;
-    this.disposeHard();
+    // In-place replacement: since the toolchain gained cancellable session
+    // replacement (FileWorker.teardownForReplacement re-arms the import
+    // guard whose neutered forceExit silently wedged every second init),
+    // a header switch is just a fresh lsp-init inside the LIVE instance —
+    // every environment stays resident, no reboot, seconds not tens of
+    // seconds. The full reboot remains the fallback for anything unhealthy.
+    this.failInFlight("the Lean checker switched documents");
+    this.ui.busy("switching the checker to the new imports");
+    const bootText = this.doc.text;
+    const bootVersion = this.doc.version;
+    try {
+      await this.prepareHeader(bootText);
+      const r = (await (this.qs.session as unknown as RpcSession).request("lsp-init", {
+        input: {
+          initParams: JSON.stringify(this.initParams ?? {}),
+          didOpen: JSON.stringify({
+            textDocument: {
+              uri: this.doc.uri,
+              languageId: this.doc.languageId,
+              version: bootVersion,
+              text: rewriteAliasImports(bootText).text,
+            },
+          }),
+        },
+      })) as { tag: number };
+      if (r.tag !== 0) {
+        // The imports are bad, not the session: surface and let a header
+        // edit retry — no reboot needed.
+        this.restarting = false;
+        this.ui.idle("imports failed — edit the import line to retry");
+        this.publishHeaderFailure("the imports could not be resolved — check the module names (details in the browser console)");
+        return;
+      }
+      this.workerStarted = true;
+      this.ui.idle("ready");
+      const queued = this.queue;
+      this.queue = [];
+      for (const q of queued) {
+        if (q.method === "textDocument/didChange") {
+          const v = (q.params as { textDocument?: { version?: number } })?.textDocument?.version;
+          if (typeof v === "number" && v <= bootVersion) continue;
+        }
+        await this.forward(q);
+      }
+      if (headerOf(this.doc.text) !== headerOf(bootText)) {
+        this.restarting = false;
+        void this.restartForHeaderChange();
+        return;
+      }
+      // Liveness: a healthy replacement's reporter emits fileProgress within
+      // moments. Silence means the replacement machinery misbehaved (old
+      // binary, unforeseen state) — fall back to the proven full reboot.
+      const armed = performance.now();
+      let alive = false;
+      for (let i = 0; i < 24; i++) {
+        if (this.lastProgressAt > armed || this.processingCount > 0) { alive = true; break; }
+        await new Promise((res) => window.setTimeout(res, 500));
+      }
+      if (alive) {
+        this.restarting = false;
+        return;
+      }
+      console.warn("[shim] in-place switch produced no fileProgress — falling back to a full restart");
+    } catch (err) {
+      console.warn(`[shim] in-place header switch failed (${(err as Error).message}) — full restart`);
+    }
     this.restarting = false;
+    this.workerStarted = false;
+    this.disposeHard();
     await this.handleWorkerDeath();
   }
 
@@ -503,9 +573,14 @@ export class WatchdogShim {
           if (this.workerStarted) {
             void this.restartForHeaderChange();
           } else if (!this.starting) {
-            // The last header failed to load (or the worker died); a changed
-            // header is the user's fix — retry the boot with the new text.
-            void this.handleWorkerDeath();
+            // The last header failed to load; a changed header is the user's
+            // fix. Retry in place when the session survived (a bad import
+            // leaves it healthy), reboot when it died.
+            if ((this.qs.session as unknown as { state?: string }).state === "ready" || (this.qs.session as unknown as { state?: string }).state === "compiling") {
+              void this.restartForHeaderChange();
+            } else {
+              void this.handleWorkerDeath();
+            }
           }
         }, 2000);
         return;

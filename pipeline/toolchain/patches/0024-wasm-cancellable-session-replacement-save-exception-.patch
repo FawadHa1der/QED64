@@ -1,0 +1,204 @@
+From 2dab7cd11c57886959b7289e321cbed3fd5e6993 Mon Sep 17 00:00:00 2001
+From: QED64 Toolchain <qed64-toolchain@localhost>
+Date: Thu, 27 Aug 2026 09:50:33 -0400
+Subject: [PATCH] wasm: cancellable session replacement, save exception
+ boundary, single-read regions
+
+- FileWorker.teardownForReplacement + wasmLspInit calls it before
+  replacing a live session: cancels the reporter and pending requests
+  and re-arms the once-per-process import guard whose neutered
+  forceExit(2) path silently wedged every second init in a process.
+- lean_compacted_region_save: compactor construction and the write path
+  both surface throwable/std::exception as IO errors instead of
+  aborting the wasm runtime.
+- lean_compacted_region_read: non-mmap builds read the file once and
+  validate the header from the buffer (was: header read + lseek + full
+  re-read for every olean).
+- Shell.lean covering check: umbrella aliases (Mathlib/Mathlib.Tactic/
+  Batteries/MIL.Common) satisfied by the QED64.Essential env.
+---
+ src/Lean/Server/FileWorker.lean | 16 ++++++++++
+ src/Lean/Shell.lean             | 14 +++++++--
+ src/library/module.cpp          | 54 +++++++++++++++++++++++++++++----
+ 3 files changed, 75 insertions(+), 9 deletions(-)
+
+diff --git a/src/Lean/Server/FileWorker.lean b/src/Lean/Server/FileWorker.lean
+index c6a74d6..08f2ce2 100644
+--- a/src/Lean/Server/FileWorker.lean
++++ b/src/Lean/Server/FileWorker.lean
+@@ -365,6 +365,22 @@ abbrev WorkerM := ReaderT WorkerContext <| StateRefT WorkerState IO
+ /-- Makes sure we load imports at most once per process as they cannot be unloaded. -/
+ private builtin_initialize importsLoadedRef : IO.Ref Bool ← IO.mkRef false
+ 
++/-- WASM playground support: tear down a live worker session so a replacement
++can be initialized in the same process. The watchdog-restart contract
++(`IO.Process.forceExit 2` in `setupImports`) is unavailable there — the
++Emscripten runtime keepalive neuters process exit, so the guard's exit
++becomes a silent empty-error header snapshot and the session wedges. A
++replacement init instead cancels the old session's reporter and pending
++requests and re-arms the once-per-process import guard; imports are never
++unloaded, but this runtime keeps every imported environment resident and
++serves headers from its environment cache, so a re-run of `setupImports`
++is sound here. -/
++def teardownForReplacement (st : WorkerState) : IO Unit := do
++  st.reporterCancelTk.set
++  for (_, r) in st.pendingRequests do
++    r.cancelTk.cancelByCancelRequest
++  importsLoadedRef.set false
++
+ open Language Lean in
+ /--
+ Callback from Lean language processor after parsing imports that requests necessary information from
+diff --git a/src/Lean/Shell.lean b/src/Lean/Shell.lean
+index 409566e..67e8a13 100644
+--- a/src/Lean/Shell.lean
++++ b/src/Lean/Shell.lean
+@@ -324,8 +324,9 @@ private def runWorkerPump (ctx : Server.FileWorker.WorkerContext)
+ @[export lean_wasm_lsp_init]
+ def wasmLspInit (initParamsJson : String) (didOpenJson : String) : IO UInt32 := do
+   try
+-    if (← wasmLspSession.get).isSome then
+-      IO.eprintln "[WASM LSP] init called with a live session; replacing it"
++    if let some (_, oldStRef) ← wasmLspSession.get then
++      IO.eprintln "[WASM LSP] init called with a live session; cancelling it and replacing"
++      Server.FileWorker.teardownForReplacement (← oldStRef.get)
+     let initParams ← IO.ofExcept <| Json.parse initParamsJson >>= fromJson? (α := Lsp.InitializeParams)
+     let didOpen ← IO.ofExcept <| Json.parse didOpenJson >>= fromJson? (α := Lsp.LeanDidOpenTextDocumentParams)
+     let tdoc := didOpen.textDocument
+@@ -359,7 +360,14 @@ def wasmLspInit (initParamsJson : String) (didOpenJson : String) : IO UInt32 :=
+         let mut best : Option (Nat × Environment) := none
+         for (_, env) in cache do
+           let names := env.allImportedModuleNames
+-          if imports.all (fun i => names.contains i.module) then
++          -- Aggregators and tutorial preludes absent from the curated
++          -- profile (import Mathlib / Mathlib.Tactic / Batteries /
++          -- Mathematics in Lean's MIL.Common) count as satisfied by the
++          -- umbrella environment, mirroring the batch app's alias table.
++          let isUmbrella := names.contains `QED64.Essential
++          let aliasOk (m : Name) : Bool :=
++            isUmbrella && (m == `Mathlib || m == `Mathlib.Tactic || m == `Batteries || m == `MIL.Common)
++          if imports.all (fun i => names.contains i.module || aliasOk i.module) then
+             if best.all (names.size < ·.1) then
+               best := some (names.size, env)
+         match best with
+diff --git a/src/library/module.cpp b/src/library/module.cpp
+index bbf15b7..f2cdf61 100644
+--- a/src/library/module.cpp
++++ b/src/library/module.cpp
+@@ -14,6 +14,7 @@ Authors: Leonardo de Moura, Gabriel Ebner, Sebastian Ullrich
+ #include <fstream>
+ #include <chrono>
+ #include <algorithm>
++#include <exception>
+ #include <sys/stat.h>
+ #include <cerrno>
+ #include <cstring>
+@@ -274,8 +275,13 @@ extern "C" LEAN_EXPORT object * lean_compacted_region_save(b_obj_arg ofname, b_o
+     const size_t ALIGN = 1LL<<16;
+     bool allow_closures = allow_closures_u8 != 0;
+ 
+-    option_ref<object_ref> prev(oprev);
+     object_ref cs_obj;
++    char const * olean_fn_early = lean_string_cstr(ofname);
++    // Compactor CONSTRUCTION can throw ("closures cannot be compacted",
++    // bad_alloc, cyclic graphs). On wasm an exception escaping this extern-C
++    // boundary is an opaque abort; surface it as an IO error instead.
++    try {
++    option_ref<object_ref> prev(oprev);
+     if (prev) {
+         cs_obj = prev.get_val();
+     } else {
+@@ -297,6 +303,11 @@ extern "C" LEAN_EXPORT object * lean_compacted_region_save(b_obj_arg ofname, b_o
+         cs_obj = object_ref(mk_compactor(reinterpret_cast<void *>(base_addr),
+                                          std::move(dep_regions), allow_closures));
+     }
++    } catch (throwable const & ex) {
++        return io_result_mk_error((sstream() << "failed to save '" << olean_fn_early << "': " << ex.what()).str());
++    } catch (std::exception const & ex) {
++        return io_result_mk_error((sstream() << "failed to save '" << olean_fn_early << "': " << ex.what()).str());
++    }
+ 
+     object_compactor & compactor = *to_compactor(cs_obj.raw());
+ 
+@@ -402,7 +413,10 @@ extern "C" LEAN_EXPORT object * lean_compacted_region_save(b_obj_arg ofname, b_o
+             }
+             out.close();
+         }
+-    } catch (exception & ex) {
++    } catch (throwable const & ex) {
++        std::remove(olean_tmp_fn.c_str());
++        return io_result_mk_error((sstream() << "failed to write '" << olean_fn << "': " << ex.what()).str());
++    } catch (std::exception const & ex) {
+         std::remove(olean_tmp_fn.c_str());
+         return io_result_mk_error((sstream() << "failed to write '" << olean_fn << "': " << ex.what()).str());
+     }
+@@ -536,12 +550,37 @@ extern "C" LEAN_EXPORT object * lean_compacted_region_read(b_obj_arg ofname, b_o
+ 
+         olean_header default_header = {};
+         olean_header header;
++        char * buffer = nullptr;
++        bool is_mmap = false;
++#ifdef LEAN_MMAP
+         ssize_t read_size = readn(fd.get(), &header, sizeof(header));
+         if (read_size < 0) {
+             return io_result_mk_error((sstream() << "failed to read file '" << olean_fn << "': " << strerror(errno)).str());
+         }
+-        if (read_size != sizeof(header)
++        bool invalid_header_size = read_size != sizeof(header);
++#else
++        // Emscripten has no useful file-backed mmap: read the whole compacted
++        // region ONCE and validate the header from that buffer, instead of a
++        // header read + lseek(0) + full re-read (browser64 measured every
++        // olean being read twice through the proxied FS on this path).
++        if (size < sizeof(header)) {
++            return io_result_mk_error((sstream() << "failed to read file '" << olean_fn << "', invalid header").str());
++        }
++        buffer = static_cast<char *>(malloc(size));
++        if (!buffer) {
++            return io_result_mk_error((sstream() << "failed to allocate for file '" << olean_fn << "'").str());
++        }
++        ssize_t read_size = readn(fd.get(), buffer, size);
++        if (read_size < 0 || read_size != static_cast<ssize_t>(size)) {
++            free(buffer);
++            return io_result_mk_error((sstream() << "failed to read file '" << olean_fn << "': " << strerror(errno)).str());
++        }
++        memcpy(&header, buffer, sizeof(header));
++        bool invalid_header_size = false;
++#endif
++        if (invalid_header_size
+             || memcmp(header.marker, default_header.marker, sizeof(header.marker)) != 0) {
++            if (buffer) free(buffer);
+             return io_result_mk_error((sstream() << "failed to read file '" << olean_fn << "', invalid header").str());
+         }
+         if ((header.version != 2 && header.version != 3) || header.flags != default_header.flags
+@@ -549,13 +588,11 @@ extern "C" LEAN_EXPORT object * lean_compacted_region_read(b_obj_arg ofname, b_o
+             || strncmp(header.githash, LEAN_GITHASH, sizeof(header.githash)) != 0
+ #endif
+         ) {
++            if (buffer) free(buffer);
+             return io_result_mk_error((sstream() << "failed to read file '" << olean_fn << "', incompatible header").str());
+         }
+         char * base_addr = reinterpret_cast<char *>(header.base_addr);
+ 
+-        char * buffer = nullptr;
+-        bool is_mmap = false;
+-
+         // Map file COW-writable. The fallback walk in `region_reader::read()` writes
+         // fixed pointers back into the region's memory when any dep region didn't land at its
+         // saved `base_addr`, so the mapping must be writable. `v3` files additionally patch
+@@ -612,7 +649,12 @@ extern "C" LEAN_EXPORT object * lean_compacted_region_read(b_obj_arg ofname, b_o
+ #endif
+ 
+         if (!buffer) {
++            // Only reachable on LEAN_MMAP builds whose mmap fell through: the
++            // no-mmap path above already holds the whole file in `buffer`.
+             buffer = static_cast<char *>(malloc(size));
++            if (!buffer) {
++                return io_result_mk_error((sstream() << "failed to allocate for file '" << olean_fn << "'").str());
++            }
+             lseek(fd.get(), 0, SEEK_SET);
+             ssize_t r = readn(fd.get(), buffer, size);
+             if (r < 0 || r != static_cast<ssize_t>(size)) {
+-- 
+2.50.1 (Apple Git-155)
+
