@@ -97,8 +97,15 @@ function lspInit(msg) {
     if (state !== "ready") throw new Error(`Worker is '${state}', not ready.`);
     lspMode = true;
     const rc = callP(M._lean_wasm_lsp_init, mkLeanString(msg.input.initParams), mkLeanString(msg.input.didOpen));
+    // wasmLspInit reports failure as a SUCCESSFUL IO returning 1 (its catch
+    // prints the error and returns 1) — the IO-level tag alone reads such a
+    // failure as success, which left the shim believing a session existed
+    // after a bad import ("send without a session" forever, diagnostics
+    // frozen). Unbox the returned value like loadSnapshot does.
     const tag = ioResultTag(rc);
-    post({ type: "result", requestId: msg.requestId, result: { operation: "lsp-init", tag } });
+    const scalar = unboxScalar(ioResultValue(rc));
+    const ok = tag === 0 && (scalar === null || scalar === 0n);
+    post({ type: "result", requestId: msg.requestId, result: { operation: "lsp-init", tag: ok ? 0 : 1 } });
   } catch (error) {
     lspMode = false;
     fail(msg.requestId, error, "LSP_INIT_FAILED", false);
@@ -108,7 +115,10 @@ function lspInit(msg) {
 function lspSend(msg) {
   try {
     const rc = callP(M._lean_wasm_lsp_send, mkLeanString(msg.input.message));
-    post({ type: "result", requestId: msg.requestId, result: { operation: "lsp-send", tag: ioResultTag(rc) } });
+    const sTag = ioResultTag(rc);
+    const sVal = unboxScalar(ioResultValue(rc));
+    const sOk = sTag === 0 && (sVal === null || sVal === 0n);
+    post({ type: "result", requestId: msg.requestId, result: { operation: "lsp-send", tag: sOk ? 0 : 1 } });
   } catch (error) {
     fail(msg.requestId, error, "LSP_SEND_FAILED", false);
   }

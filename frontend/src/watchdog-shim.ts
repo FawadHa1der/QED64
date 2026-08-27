@@ -330,7 +330,7 @@ export class WatchdogShim {
           }),
         },
       })) as { tag: number };
-      if (r.tag !== 0) throw new Error(`lsp-init IO tag ${r.tag}`);
+      if (r.tag !== 0) throw new Error("the imports could not be resolved — check the module names (details in the browser console)");
       this.workerStarted = true;
       this.ui.idle("ready");
       const queued = this.queue;
@@ -476,7 +476,7 @@ export class WatchdogShim {
             }),
           },
         })) as { tag: number };
-        if (r.tag !== 0) throw new Error(`lsp-init IO tag ${r.tag}`);
+        if (r.tag !== 0) throw new Error("the imports could not be resolved — check the module names (details in the browser console)");
         this.workerStarted = true;
         this.ui.idle("ready");
         const queued = this.queue;
