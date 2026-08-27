@@ -1,0 +1,60 @@
+From 327107865579cedd41aa81c891e05621b143a402 Mon Sep 17 00:00:00 2001
+From: QED64 Toolchain <qed64-toolchain@localhost>
+Date: Thu, 27 Aug 2026 11:29:57 -0400
+Subject: [PATCH] wasmLspInit: resolve the header before replacing the live
+ session
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Typing an import line char-by-char sent every settled keystroke through
+a full session replacement that only THEN discovered the half-typed
+module name cannot resolve — tearing down the working session per
+attempt. Resolution (cache/covering/real-import) now runs first; an
+unresolvable header returns 2 with the live session completely
+untouched, so the page can keep the current checker serving and show a
+calm diagnostic while the user finishes the line (live.lean-lang.org
+behavior). Teardown+replacement happens only once resolution succeeds.
+---
+ src/Lean/Shell.lean | 17 +++++++++++++----
+ 1 file changed, 13 insertions(+), 4 deletions(-)
+
+diff --git a/src/Lean/Shell.lean b/src/Lean/Shell.lean
+index a38b86d..fb1cb21 100644
+--- a/src/Lean/Shell.lean
++++ b/src/Lean/Shell.lean
+@@ -329,9 +329,6 @@ private def runWorkerPump (ctx : Server.FileWorker.WorkerContext)
+ @[export lean_wasm_lsp_init]
+ def wasmLspInit (initParamsJson : String) (didOpenJson : String) : IO UInt32 := do
+   try
+-    if let some (_, oldStRef) ← wasmLspSession.get then
+-      IO.eprintln "[WASM LSP] init called with a live session; cancelling it and replacing"
+-      Server.FileWorker.teardownForReplacement (← oldStRef.get)
+     let initParams ← IO.ofExcept <| Json.parse initParamsJson >>= fromJson? (α := Lsp.InitializeParams)
+     let didOpen ← IO.ofExcept <| Json.parse didOpenJson >>= fromJson? (α := Lsp.LeanDidOpenTextDocumentParams)
+     let tdoc := didOpen.textDocument
+@@ -391,8 +388,20 @@ def wasmLspInit (initParamsJson : String) (didOpenJson : String) : IO UInt32 :=
+           wasmEnvCache.modify (·.push (key, env))
+         | none =>
+           let t0 ← IO.monoMsNow
+-          discard <| getOrCreateWasmEnvFor imports
++          try
++            discard <| getOrCreateWasmEnvFor imports
++          catch err =>
++            -- The header does not resolve (typically a partially-typed
++            -- import). The LIVE session has not been touched: report
++            -- "unresolvable" so the page can keep the current checker
++            -- serving and show a calm diagnostic while the user types.
++            IO.eprintln s!"[WASM LSP] header unresolvable (session kept): {err}"
++            return 2
+           IO.eprintln s!"[WASM LSP] header env prebuilt in {(← IO.monoMsNow) - t0} ms"
++    -- The header resolves — ONLY NOW replace any live session.
++    if let some (_, oldStRef) ← wasmLspSession.get then
++      IO.eprintln "[WASM LSP] init called with a live session; cancelling it and replacing"
++      Server.FileWorker.teardownForReplacement (← oldStRef.get)
+     -- Publish every cached env (incl. the fresh prebuild) for the worker's
+     -- header processing to find.
+     Language.Lean.setPrebuiltHeaderEnvs (← wasmEnvCache.get)
+-- 
+2.50.1 (Apple Git-155)
+

@@ -324,25 +324,45 @@ export class WatchdogShim {
     // a header switch is just a fresh lsp-init inside the LIVE instance —
     // every environment stays resident, no reboot, seconds not tens of
     // seconds. The full reboot remains the fallback for anything unhealthy.
-    this.failInFlight("the Lean checker switched documents");
-    this.ui.busy("switching the checker to the new imports");
+    this.ui.busy("checking the new imports");
     const bootText = this.doc.text;
     const bootVersion = this.doc.version;
     try {
-      await this.prepareHeader(bootText);
-      const r = (await (this.qs.session as unknown as RpcSession).request("lsp-init", {
-        input: {
-          initParams: JSON.stringify(this.initParams ?? {}),
-          didOpen: JSON.stringify({
-            textDocument: {
-              uri: this.doc.uri,
-              languageId: this.doc.languageId,
-              version: bootVersion,
-              text: rewriteAliasImports(bootText).text,
-            },
-          }),
-        },
-      })) as { tag: number };
+      const attempt = async (): Promise<{ tag: number }> =>
+        (await (this.qs.session as unknown as RpcSession).request("lsp-init", {
+          input: {
+            initParams: JSON.stringify(this.initParams ?? {}),
+            didOpen: JSON.stringify({
+              textDocument: {
+                uri: this.doc!.uri,
+                languageId: this.doc!.languageId,
+                version: bootVersion,
+                text: rewriteAliasImports(bootText).text,
+              },
+            }),
+          },
+        })) as { tag: number };
+      // Probe first: the worker resolves the header BEFORE replacing the
+      // live session, and tag 2 means "unresolvable, session untouched" —
+      // exactly what a half-typed import line produces. No teardown, no
+      // in-flight churn; the user keeps typing.
+      let r = await attempt();
+      if (r.tag === 2 && /^\s*import\s+(Mathlib|Batteries|MIL\b)/m.test(bootText) && !this.qs.loadedSnapshots.has("mathlib")) {
+        // The header wants Mathlib and the environment is not resident yet:
+        // load it once (honest pill) and probe again.
+        await this.prepareHeader(bootText);
+        r = await attempt();
+      }
+      if (r.tag === 2) {
+        // Still composing — keep the current checker fully intact, queue
+        // edits, and show a calm note on the import line. Every further
+        // header edit re-probes through the debounce.
+        this.restarting = false;
+        this.resolvePendingDeath();
+        this.ui.idle("imports incomplete — finish the import line to continue");
+        this.publishHeaderFailure("these imports do not resolve yet — check or finish the module name");
+        return;
+      }
       if (r.tag !== 0) {
         // The imports are bad, not the session: surface and let a header
         // edit retry — no reboot needed.
@@ -470,7 +490,19 @@ export class WatchdogShim {
           }),
         },
       })) as { tag: number };
+      if (r.tag === 2) {
+        // Half-typed imports: keep calm, no crash-loop accounting, retry on edit.
+        this.restarting = false;
+        this.resolvePendingDeath();
+        this.deathTimes.pop();
+        this.ui.idle("imports incomplete — finish the import line to continue");
+        this.publishHeaderFailure("these imports do not resolve yet — check or finish the module name");
+        return;
+      }
       if (r.tag !== 0) throw new Error("the imports could not be resolved — check the module names (details in the browser console)");
+      // The replacement is live: in-flight requests against the old session
+      // are now orphans — fail them so the InfoView reconnects.
+      this.failInFlight("the Lean checker switched documents");
       this.workerStarted = true;
       this.ui.idle("ready");
       const queued = this.queue;
@@ -626,11 +658,11 @@ export class WatchdogShim {
       // neutralized by the runtime keepalive) — the shim detects header
       // edits itself and restarts proactively, replaying the new text. The
       // superseding didOpen makes forwarding this didChange unnecessary.
-      if (headerOf(this.doc.text) !== headerBefore && !this.restarting) {
+      if ((headerOf(this.doc.text) !== headerBefore || !this.workerStarted) && !this.restarting) {
         // Debounce: another switch within 2 s replaces this one, so a user
         // flicking through the examples pays for ONE restart, not a chain.
         window.clearTimeout(this.restartDebounce);
-        this.ui.busy("imports changed — the checker restarts in a moment");
+        this.ui.busy("imports changed — updating…");
         this.restartDebounce = window.setTimeout(() => {
           if (this.restarting) return;
           if (this.workerStarted) {
@@ -666,6 +698,11 @@ export class WatchdogShim {
             }),
           },
         })) as { tag: number };
+        if (r.tag === 2) {
+          this.ui.idle("imports incomplete — finish the import line to continue");
+          this.publishHeaderFailure("these imports do not resolve yet — check or finish the module name");
+          return;
+        }
         if (r.tag !== 0) throw new Error("the imports could not be resolved — check the module names (details in the browser console)");
         this.workerStarted = true;
         this.ui.idle("ready");

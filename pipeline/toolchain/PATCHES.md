@@ -182,3 +182,11 @@ Gate the rebuild on: garbage input → ≥1 error diagnostic; the defect test in
 26. **0026-exports-drop-stale-specialization.patch** — export-list refresh
     forced by 0025's reshaped loop. Runtime wasm64-284a58df5421c4f4.
 
+27. **0027-wasmLspInit-resolve-header-before-replacing.patch** — typing an
+    import line sent every settled keystroke through a session replacement
+    that only then discovered the half-typed module cannot resolve.
+    Resolution now runs FIRST; unresolvable returns 2 with the live session
+    untouched (the page shows a calm "imports incomplete" note, live-parity)
+    and teardown happens only when the header resolves. Runtime
+    wasm64-31aef224f49e8385.
+

@@ -104,8 +104,10 @@ function lspInit(msg) {
     // frozen). Unbox the returned value like loadSnapshot does.
     const tag = ioResultTag(rc);
     const scalar = unboxScalar(ioResultValue(rc));
-    const ok = tag === 0 && (scalar === null || scalar === 0n);
-    post({ type: "result", requestId: msg.requestId, result: { operation: "lsp-init", tag: ok ? 0 : 1 } });
+    // Preserve the RETURNED VALUE: 0 = session initialized, 1 = hard failure,
+    // 2 = header unresolvable with the previous session kept intact.
+    const value = tag !== 0 ? 1 : Number(scalar ?? 0n);
+    post({ type: "result", requestId: msg.requestId, result: { operation: "lsp-init", tag: value } });
   } catch (error) {
     lspMode = false;
     fail(msg.requestId, error, "LSP_INIT_FAILED", false);
