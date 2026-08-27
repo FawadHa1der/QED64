@@ -54,7 +54,9 @@ graphs) escape the extern-C boundary = opaque wasm abort — exactly where
 heavy in-browser sessions die. Wrap construction+write, surface as IO.Error.
 Crib `lean4-resident-transport.patch` lines 50-123. Upstream-worthy.
 
-## 7. Server-slim REBAKE of the umbrella snapshot (Docker-FREE, artifact-heavy)
+## 7. Server-slim REBAKE — DONE on branch experiment/server-slim-rebake (see docs/SERVER-SLIM-REBAKE.md; snapshot −60%, download −62%, heap −39%, zero diagnostic drift)
+
+### (original notes)
 Audited: `.olean.private` is 246/370 MiB of the core pack and 2006/3328 MiB
 of essential (~60%), and the umbrella bake imported through those packs, so
 the 2.6 GiB snapshot almost certainly retains the same dead weight (Lean's

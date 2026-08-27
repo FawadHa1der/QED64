@@ -136,7 +136,7 @@ export async function newSession(
     // unrecoverable "Cannot enlarge memory" aborts; the linked runtime
     // declares 16 GiB and browser64's certified runs reserve it routinely.
     memory: {
-      initialBytes: (opts.mathlib ? 3584 : 256) * 1048576,
+      initialBytes: (opts.mathlib ? 2048 : 256) * 1048576,
       maximumCandidates: memoryCandidates(),
     },
     leanPath: searchPath,
