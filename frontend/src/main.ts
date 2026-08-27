@@ -148,6 +148,10 @@ const ui: StatusSink = {
     renderTime();
     if (/^FAILED|failed — reload|restart failed/.test(label)) bootFail(label);
     else if (/^ready$/.test(label)) bootFinish();
+    // A restored buffer can boot straight into an actionable state (e.g. a
+    // half-typed import that needs editing) — the workspace must be visible
+    // for the user to act, so these dismiss the overlay too.
+    else if (/^imports (incomplete|failed)/.test(label)) bootFinish();
     // The editor-ready idle precedes the first elaboration; if that final
     // "ready" never lands (nothing to elaborate, a missed transition), the
     // overlay must still get out of the way eventually.
