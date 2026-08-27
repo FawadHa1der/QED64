@@ -182,6 +182,11 @@ export class WatchdogShim {
    * be handled when the restart machinery unwinds — swallowing it leaves a
    * dead session behind a live-looking pill forever. */
   private deathPending = false;
+  /** Recent worker-death timestamps: the recovery machinery must not reboot
+   * forever into content that kills the checker on every replay. */
+  private deathTimes: number[] = [];
+  /** The crash-loop breaker tripped; an edit re-arms recovery. */
+  private crashLoopHalted = false;
   /** When the current busy stretch began, for the slow-search hint. */
   private busySince = 0;
   private searchHintTimer: number | undefined;
@@ -406,6 +411,20 @@ export class WatchdogShim {
       return;
     }
     if (!this.doc) return;
+    // Crash-loop breaker: three deaths inside two minutes means the current
+    // content kills the checker on every replay (e.g. an elaboration stack
+    // overflow) — stop the reboot cycle, keep the editor alive, and let an
+    // edit or an example switch re-arm recovery.
+    const now = performance.now();
+    this.deathTimes = this.deathTimes.filter((t) => now - t < 120000);
+    this.deathTimes.push(now);
+    if (this.deathTimes.length >= 3) {
+      this.crashLoopHalted = true;
+      this.workerStarted = false;
+      this.ui.idle("the checker keeps crashing on this content — edit the file or pick an example to retry");
+      this.publishHeaderFailure("the checker crashed repeatedly while processing this content. Edit the file (or pick an example from the menu) to restart it.");
+      return;
+    }
     this.restarting = true;
     this.workerStarted = false;
     this.heldChange = null;
@@ -589,6 +608,15 @@ export class WatchdogShim {
         text: p.textDocument.text,
         languageId: p.textDocument.languageId ?? "lean4",
       };
+    } else if (msg.method === "textDocument/didChange" && this.doc && this.crashLoopHalted) {
+      // The user changed something — give recovery a fresh chance.
+      const p = msg.params as { textDocument: { version: number }; contentChanges: ContentChange[] };
+      this.doc.version = p.textDocument.version;
+      this.doc.text = applyContentChanges(this.doc.text, p.contentChanges);
+      this.crashLoopHalted = false;
+      this.deathTimes = [];
+      void this.handleWorkerDeath();
+      return;
     } else if (msg.method === "textDocument/didChange" && this.doc) {
       const p = msg.params as { textDocument: { version: number }; contentChanges: ContentChange[] };
       const headerBefore = headerOf(this.doc.text);
