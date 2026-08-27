@@ -237,7 +237,23 @@ async function main() {
   // Chrome's form-state restore can reset the picker (and fire `change`)
   // long after load — pin it to the content we actually open.
   examplesEl.value = "mathlib";
-  await editor.start(editorEl, "/project/Probe.lean", EXAMPLES.mathlib);
+  // Crash insurance: the buffer persists locally on every edit, so a killed
+  // tab (runaway elaboration can still take the renderer down) costs a
+  // reload, not the user's proof.
+  let restored: string | null = null;
+  try { restored = window.localStorage.getItem("qed64.buffer"); } catch { /* storage unavailable */ }
+  await editor.start(editorEl, "/project/Probe.lean", restored ?? EXAMPLES.mathlib);
+  if (restored) ui.progress("restored your last buffer");
+  let saveTimer: number | undefined;
+  editor.editor?.getModel()?.onDidChangeContent(() => {
+    window.clearTimeout(saveTimer);
+    saveTimer = window.setTimeout(() => {
+      try {
+        const text = editor.editor?.getModel()?.getValue();
+        if (typeof text === "string") window.localStorage.setItem("qed64.buffer", text);
+      } catch { /* quota or private mode — persistence is best-effort */ }
+    }, 400);
+  });
   ui.idle("ready — put the cursor inside a proof");
 
   // Example switching = a document edit; if it changes the header, the

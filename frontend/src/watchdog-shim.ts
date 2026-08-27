@@ -169,6 +169,19 @@ export class WatchdogShim {
   private processingCount = 0;
   /** When the last $/lean/fileProgress arrived — the in-place switch's liveness signal. */
   private lastProgressAt = 0;
+  /** Rapid edits coalesce: while a flush is pending, incoming didChanges
+   * append their contentChanges instead of hitting the worker one by one —
+   * a fast garbage-typing storm otherwise piles elaboration churn until
+   * the renderer dies. Order is preserved; the flushed message carries the
+   * newest version, which is exactly LSP's contract. */
+  private heldChange: JsonRpc | null = null;
+  private changeFlush: number | undefined;
+
+  /** A worker death arrived while a restart was in flight (e.g. a stack
+   * overflow during the in-place switch's liveness window). The death must
+   * be handled when the restart machinery unwinds — swallowing it leaves a
+   * dead session behind a live-looking pill forever. */
+  private deathPending = false;
   /** When the current busy stretch began, for the slow-search hint. */
   private busySince = 0;
   private searchHintTimer: number | undefined;
@@ -298,6 +311,8 @@ export class WatchdogShim {
     if (this.restarting || !this.doc) return;
     this.restarting = true;
     this.workerStarted = false;
+    this.heldChange = null;
+    window.clearTimeout(this.changeFlush);
     // In-place replacement: since the toolchain gained cancellable session
     // replacement (FileWorker.teardownForReplacement re-arms the import
     // guard whose neutered forceExit silently wedged every second init),
@@ -327,6 +342,7 @@ export class WatchdogShim {
         // The imports are bad, not the session: surface and let a header
         // edit retry — no reboot needed.
         this.restarting = false;
+        this.resolvePendingDeath();
         this.ui.idle("imports failed — edit the import line to retry");
         this.publishHeaderFailure("the imports could not be resolved — check the module names (details in the browser console)");
         return;
@@ -344,6 +360,7 @@ export class WatchdogShim {
       }
       if (headerOf(this.doc.text) !== headerOf(bootText)) {
         this.restarting = false;
+        this.deathPending = false; // superseded: the next round handles state
         void this.restartForHeaderChange();
         return;
       }
@@ -358,6 +375,7 @@ export class WatchdogShim {
       }
       if (alive) {
         this.restarting = false;
+        this.resolvePendingDeath();
         return;
       }
       console.warn("[shim] in-place switch produced no fileProgress — falling back to a full restart");
@@ -383,9 +401,15 @@ export class WatchdogShim {
   /** The wasm instance died (header edit or crash). Boot a new one and
    * replay the current document; the Monaco client never notices. */
   async handleWorkerDeath(): Promise<void> {
-    if (this.restarting || !this.doc) return;
+    if (this.restarting) {
+      this.deathPending = true;
+      return;
+    }
+    if (!this.doc) return;
     this.restarting = true;
     this.workerStarted = false;
+    this.heldChange = null;
+    window.clearTimeout(this.changeFlush);
     this.searchIndexWarm = false;
     this.failInFlight("the Lean worker restarted");
     // In-place re-init (wasmLspInit's "replacing it" path) wedges the new
@@ -464,6 +488,17 @@ export class WatchdogShim {
       }
     } finally {
       this.restarting = false;
+      this.resolvePendingDeath();
+    }
+  }
+
+  /** A death recorded during a restart: if the session we ended up with is
+   * dead, run the recovery now that the machinery has unwound. */
+  private resolvePendingDeath(): void {
+    if (!this.deathPending) return;
+    this.deathPending = false;
+    if ((this.qs.session as unknown as { state?: string }).state === "dead") {
+      window.setTimeout(() => void this.handleWorkerDeath(), 100);
     }
   }
 
@@ -631,7 +666,31 @@ export class WatchdogShim {
       this.queue.push(msg);
       return;
     }
+    if (msg.method === "textDocument/didChange") {
+      const held = this.heldChange;
+      if (held) {
+        const hp = held.params as { textDocument: { version: number }; contentChanges: unknown[] };
+        const mp = msg.params as { textDocument: { version: number }; contentChanges: unknown[] };
+        hp.contentChanges.push(...mp.contentChanges);
+        hp.textDocument.version = mp.textDocument.version;
+      } else {
+        this.heldChange = msg;
+      }
+      window.clearTimeout(this.changeFlush);
+      this.changeFlush = window.setTimeout(() => void this.flushHeldChange(), 150);
+      return;
+    }
+    await this.flushHeldChange();
     await this.forward(msg);
+  }
+
+  /** Send the coalesced didChange (edits must precede any later request). */
+  private async flushHeldChange(): Promise<void> {
+    const held = this.heldChange;
+    if (!held) return;
+    this.heldChange = null;
+    window.clearTimeout(this.changeFlush);
+    await this.forward(held);
   }
 
   private async forward(msg: JsonRpc): Promise<void> {
@@ -674,6 +733,13 @@ export class WatchdogShim {
       });
     } catch (err) {
       console.warn(`[shim] lsp-send failed (${msg.method ?? msg.id}): ${(err as Error).message}`);
+      // Dead-man switch: the session died and no restart is running (the
+      // death event can be swallowed when it lands mid-restart) — recover.
+      if (!this.restarting && this.workerStarted
+          && (this.qs.session as unknown as { state?: string }).state === "dead") {
+        console.warn("[shim] session is dead with no restart in flight — rebooting");
+        void this.handleWorkerDeath();
+      }
     }
   }
 }

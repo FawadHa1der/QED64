@@ -130,14 +130,17 @@ export async function newSession(
   };
   await session.boot({
     runtime: artifacts.runtime,
-    // Maximum = address-space reservation, not commit (the boot loop walks
-    // down the candidate ladder on refusal). The old 6 GiB cap turned heavy
-    // sessions — library-search index builds, whole-environment work — into
-    // unrecoverable "Cannot enlarge memory" aborts; the linked runtime
-    // declares 16 GiB and browser64's certified runs reserve it routinely.
+    // Maximum = address-space reservation, not commit — but it is also the
+    // only bound on runaway growth (a garbage-elaboration storm ballooned a
+    // session to 9 GB and the RENDERER died first, losing the tab). A wasm
+    // "Cannot enlarge memory" abort at the cap is the BETTER failure now:
+    // the worker dies cleanly and the shim's death recovery reboots in
+    // seconds with the document replayed. 6 GiB leaves 2.5x headroom over
+    // the heaviest legitimate session measured on the slim stack (2.5 GiB
+    // after a full library search).
     memory: {
       initialBytes: (opts.mathlib ? 2048 : 256) * 1048576,
-      maximumCandidates: memoryCandidates(),
+      maximumCandidates: memoryCandidates().filter((b) => b <= 6 * 1073741824),
     },
     leanPath: searchPath,
     packs,
