@@ -278,10 +278,16 @@ export function probeMemory64(): boolean {
   }
 }
 
-/** Memory-maximum candidates, largest first, tuned by device memory. */
+/** Memory-maximum candidates, largest first, tuned by device memory.
+ * The maximum is ADDRESS-SPACE RESERVATION, not commit: browser64's
+ * certified Chrome/Firefox runs reserve the full 16 GiB the linked module
+ * declares, and capping lower turns heavy sessions (whole-environment
+ * work, library search) into unrecoverable "Cannot enlarge memory" aborts.
+ * The boot loop already walks down the ladder when a reservation is
+ * refused, so leading with 16 costs nothing on machines that refuse it. */
 export function memoryCandidates(): number[] {
   const GiB = 1024 ** 3;
   const device = (navigator as { deviceMemory?: number }).deviceMemory ?? 8;
-  const ladder = device >= 8 ? [8, 6, 4, 3] : device >= 4 ? [6, 4, 3, 2] : [4, 3, 2];
+  const ladder = device >= 8 ? [16, 12, 8, 6, 4, 3] : device >= 4 ? [8, 6, 4, 3, 2] : [4, 3, 2];
   return ladder.map((g) => g * GiB);
 }

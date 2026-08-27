@@ -130,12 +130,14 @@ export async function newSession(
   };
   await session.boot({
     runtime: artifacts.runtime,
-    // The InfoView page shares the tab with Monaco and the vscode-api layer;
-    // start the heap-maximum probe at 6 GiB (plenty for the umbrella's
-    // ~3.2 GiB) instead of 8 to reduce reservation pressure in real Chrome.
+    // Maximum = address-space reservation, not commit (the boot loop walks
+    // down the candidate ladder on refusal). The old 6 GiB cap turned heavy
+    // sessions — library-search index builds, whole-environment work — into
+    // unrecoverable "Cannot enlarge memory" aborts; the linked runtime
+    // declares 16 GiB and browser64's certified runs reserve it routinely.
     memory: {
       initialBytes: (opts.mathlib ? 3584 : 256) * 1048576,
-      maximumCandidates: memoryCandidates().filter((b) => b <= 6 * 1073741824),
+      maximumCandidates: memoryCandidates(),
     },
     leanPath: searchPath,
     packs,

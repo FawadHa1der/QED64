@@ -327,14 +327,30 @@ function createSharedMemory64(initialBytes, maxCandidatesBytes) {
   throw new Error("Could not allocate a shared Memory64 heap at any candidate size.");
 }
 
+// Wasm memory never shrinks, so the latest byteLength IS the session's
+// high-water; labeled checkpoints attribute growth to boot phases (a
+// browser64 measurement technique) and survive an OOM kill as the last
+// sample the host saw.
+const memCheckpoints = [];
+function memCheckpoint(label) {
+  try {
+    const b = M && M.wasmMemory ? M.wasmMemory.buffer.byteLength : 0;
+    memCheckpoints.push({ label, t: Math.round(performance.now()), bytes: b });
+    if (memCheckpoints.length > 64) memCheckpoints.shift();
+    event(null, "log", { stream: "stderr", text: `[mem] ${label}: ${(b / 1048576) | 0} MiB` });
+  } catch { /* telemetry must never break the runtime */ }
+}
+
 function memoryTelemetry() {
   try {
     const buffer = M && M.wasmMemory ? M.wasmMemory.buffer : null;
     if (!buffer) return undefined;
     return {
       currentBytes: buffer.byteLength,
+      initialBytes: bootConfig ? bootConfig.memory.initialBytes : undefined,
       maximumBytes: bootConfig ? bootConfig.memory.maximumBytes : undefined,
       shared: typeof SharedArrayBuffer === "function" && buffer instanceof SharedArrayBuffer,
+      checkpoints: memCheckpoints.slice(-16),
     };
   } catch {
     return undefined;
@@ -375,12 +391,27 @@ function validatePackEntry(file, blobSize, label) {
   }
 }
 
+// Lean's importer opportunistically opens EVERY companion facet present and
+// retains every opened region (browser64's audited finding on the same
+// pinned Lean): `.olean.private` alone is ~60% of our pack bytes (core
+// 246/370 MiB, essential 2006/3328 MiB) and elaboration output is identical
+// without it — hiding it from the mount cuts resident import memory by half
+// or more. Flip to false to compare behavior.
+const HIDE_PRIVATE_FACETS = true;
+
 function mountPacks(FS, packs, defaultMountPoint) {
   const grouped = new Map();
   for (const pack of packs) {
-    const files = pack.metadata && pack.metadata.files;
+    let files = pack.metadata && pack.metadata.files;
     if (!Array.isArray(files) || files.length === 0) {
       throw new TypeError(`Pack ${pack.id}: missing pack metadata.`);
+    }
+    if (HIDE_PRIVATE_FACETS) {
+      const before = files.length;
+      files = files.filter((f) => !String(f.filename).endsWith(".olean.private"));
+      if (files.length !== before) {
+        event(null, "log", { stream: "stderr", text: `[packs] ${pack.id}: hiding ${before - files.length} .olean.private facets from the mount` });
+      }
     }
     const mountPoint = pack.mountPoint || defaultMountPoint;
     if (pack.bytes) {
@@ -401,7 +432,7 @@ function mountPacks(FS, packs, defaultMountPoint) {
     if (!(pack.blob instanceof Blob)) throw new TypeError(`Pack ${pack.id}: no payload.`);
     for (const file of files) validatePackEntry(file, pack.blob.size, pack.id);
     if (!grouped.has(mountPoint)) grouped.set(mountPoint, []);
-    grouped.get(mountPoint).push({ metadata: pack.metadata, blob: pack.blob });
+    grouped.get(mountPoint).push({ metadata: { ...pack.metadata, files }, blob: pack.blob });
   }
   for (const [mountPoint, packages] of grouped) {
     mkdirp(FS, mountPoint);
@@ -615,6 +646,7 @@ async function boot(msg) {
         },
       ],
       onRuntimeInitialized() {
+        memCheckpoint("runtime-initialized");
         try {
           progress(requestId, "initialize", "Initializing the Lean runtime");
           M = self.Module;
@@ -651,6 +683,7 @@ async function boot(msg) {
         }
       },
       onAbort(reason) {
+        memCheckpoint("abort");
         if (!settled) {
           finishBoot(false, new Error(`Lean aborted during boot: ${reason || "unknown"}`));
           return;
@@ -780,6 +813,40 @@ async function snapshotCacheDir() {
   }
 }
 
+/** Free OPFS origin quota (advisory — embedders may lie; used only to gate
+ * optional cache writes, never as a correctness guarantee). */
+async function opfsFreeBytes() {
+  try {
+    const e = await navigator.storage.estimate();
+    return (e.quota || 0) - (e.usage || 0);
+  } catch {
+    return 0;
+  }
+}
+
+/** Sync-readable RAW (inflated) snapshot region cache entry, or null.
+ * browser64's audited finding: OPFS sync-handle reads land directly in the
+ * wasm heap at near-memory speed (~1.5 GB in ~200 ms of read service) — a
+ * warm boot from a raw cache skips gunzip AND every per-chunk JS buffer. */
+async function openRawSnapshot(rawKey, expectedBytes) {
+  const dir = await snapshotCacheDir();
+  if (!dir || !rawKey) return null;
+  let handle;
+  try {
+    handle = await (await dir.getFileHandle(rawKey)).createSyncAccessHandle();
+  } catch {
+    return null;
+  }
+  const size = handle.getSize();
+  if (size === 0 || (expectedBytes > 0 && size !== expectedBytes)) {
+    // Stale (different bake) or torn — self-heal by discarding.
+    handle.close();
+    dir.removeEntry(rawKey).catch(() => {});
+    return null;
+  }
+  return { handle, size };
+}
+
 /** A ReadableStream over a cached snapshot file, or null when absent. */
 async function openCachedSnapshot(cacheKey) {
   const dir = await snapshotCacheDir();
@@ -839,8 +906,9 @@ async function beginSnapshotCacheWrite(cacheKey) {
     write(bytes) {
       if (dead) return;
       try {
-        handle.write(bytes, { at });
+        const n = handle.write(bytes, { at });
         at += bytes.length;
+        if (n !== bytes.length) throw new Error(`short write: ${n} of ${bytes.length} bytes`);
       } catch (error) {
         dead = true;
         try { handle.close(); } catch { /* ignore */ }
@@ -848,8 +916,17 @@ async function beginSnapshotCacheWrite(cacheKey) {
         event(null, "log", { stream: "stderr", text: `snapshot cache write stopped: ${error && error.message}` });
       }
     },
-    async finish() {
+    async finish(expectedBytes) {
       if (dead) return false;
+      // OPFS write() can short-write silently at quota exhaustion (observed:
+      // a 2624 MB region committed as 1999 MB) — never commit a byte count
+      // that disagrees with what the caller streamed.
+      if (typeof expectedBytes === "number" && at !== expectedBytes) {
+        try { handle.close(); } catch { /* closed */ }
+        dir.removeEntry(partial).catch(() => {});
+        event(null, "log", { stream: "stderr", text: `snapshot cache aborted: wrote ${at} of ${expectedBytes} bytes` });
+        return false;
+      }
       try {
         handle.flush();
         handle.close();
@@ -932,34 +1009,74 @@ async function loadSnapshot(msg) {
   // fails first on memory-tight renderers). Needs the raw size up front.
   const direct = typeof M._lean_wasm_load_snapshot_mem === "function" && bootMemory && Number(expectedBytes) > 0;
   let heapPtr = null;
+  let received = 0;
   let stream = null;
   let reader = null;
   let cacheWriterRef = null;
   let prevSinkRef = null;
   try {
-    const cached = await openCachedSnapshot(cacheKey);
-    let sourceBody;
+    const rawKey = cacheKey ? `${cacheKey}.raw` : null;
+    const rawSource = direct && rawKey ? await openRawSnapshot(rawKey, Number(expectedBytes) || 0) : null;
+    let sourceBody = null;
     let fromCache = false;
     let contentLength = 0;
-    if (cached) {
-      sourceBody = cached.stream;
-      fromCache = true;
-      contentLength = cached.size;
-    } else {
-      const response = await fetch(url);
-      if (!response.ok || !response.body) throw new Error(`snapshot fetch: HTTP ${response.status}`);
-      sourceBody = response.body;
-      contentLength = Number(response.headers.get("content-length")) || 0;
+    if (!rawSource) {
+      const cached = await openCachedSnapshot(cacheKey);
+      if (cached) {
+        sourceBody = cached.stream;
+        fromCache = true;
+        contentLength = cached.size;
+      } else {
+        const response = await fetch(url);
+        if (!response.ok || !response.body) throw new Error(`snapshot fetch: HTTP ${response.status}`);
+        sourceBody = response.body;
+        contentLength = Number(response.headers.get("content-length")) || 0;
+      }
     }
     // For gzip-served snapshots content-length is the transfer size; the
     // caller passes the RAW region size for pre-sizing and progress.
-    const total = Number(expectedBytes) || contentLength || 0;
-    const cacheWriter = fromCache ? null : await beginSnapshotCacheWrite(cacheKey);
+    const total = Number(expectedBytes) || contentLength || (rawSource ? rawSource.size : 0) || 0;
+    // Cache policy, strictly-safe under lying quota estimates (observed:
+    // the Electron pane reports 0 free while OPFS holds 1.25 of 10 GB):
+    // network downloads always keep the compressed cache (as before), and
+    // a gzip-cache WARM boot opportunistically converts to a raw-region
+    // cache — sync-readable straight into the heap next boot, no gunzip,
+    // no chunk churn. If the raw write hits real quota exhaustion the
+    // transactional writer self-cleans and the gzip cache is still there,
+    // so no boot is ever worse than today. On success the gzip is deleted.
+    let cacheWriter = null;
+    let teeInflated = false;
+    if (!rawSource && fromCache && rawKey && direct && total > 0) {
+      cacheWriter = await beginSnapshotCacheWrite(rawKey);
+      teeInflated = cacheWriter !== null;
+    }
+    if (!rawSource && !cacheWriter && !fromCache) cacheWriter = await beginSnapshotCacheWrite(cacheKey);
     cacheWriterRef = cacheWriter;
     if (direct) {
       heapPtr = asPtr(M._malloc(asPtr(total)));
       if (heapPtr === 0n) throw new Error(`snapshot: could not allocate ${total} bytes in the wasm heap`);
-    } else {
+    }
+    if (rawSource) {
+      // Warm fast path: the inflated region sits in OPFS — sync-read it in
+      // large slices DIRECTLY into the wasm allocation. Re-derive the heap
+      // view per slice (a shared memory's buffer object changes on growth).
+      const SLICE = 64 * 1048576;
+      let off = 0;
+      while (off < total) {
+        const n = Math.min(SLICE, total - off);
+        const view = new Uint8Array(bootMemory.buffer, Number(heapPtr) + off, n);
+        const got = rawSource.handle.read(view, { at: off });
+        if (got <= 0) throw new Error("raw snapshot cache truncated mid-read");
+        if (off === 0) {
+          const magic = [0x6f, 0x6c, 0x65, 0x61, 0x6e]; // "olean"
+          if (magic.some((b, i) => view[i] !== b)) throw new Error("raw snapshot cache is not a compacted-region file");
+        }
+        off += got;
+        progress(msg.requestId, "snapshot-cache", "Loading environment snapshot", off, total, "bytes");
+      }
+      rawSource.handle.close();
+      received = total;
+    } else if (!direct) {
       stream = FS.open(path, "w");
       if (total > 0) {
         // Pre-size the MEMFS file: growth-by-doubling would transiently hold
@@ -973,11 +1090,12 @@ async function loadSnapshot(msg) {
     // extension add `Content-Encoding: gzip` and the browser inflates
     // transparently; trusting the URL would then gunzip plain olean bytes
     // ("incorrect header check"). Sniff the magic on the first chunk instead.
-    const rawReader = sourceBody.getReader();
+    const rawReader = rawSource ? null : sourceBody.getReader();
+    if (!rawSource) {
     const head = await rawReader.read();
     if (head.done || !head.value) throw new Error("snapshot fetch: empty body");
     const isGzip = head.value.length >= 2 && head.value[0] === 0x1f && head.value[1] === 0x8b;
-    if (cacheWriter) cacheWriter.write(head.value);
+    if (cacheWriter && !teeInflated) cacheWriter.write(head.value);
     const replay = new ReadableStream({
       start(controller) {
         controller.enqueue(head.value);
@@ -986,7 +1104,7 @@ async function loadSnapshot(msg) {
         const { done, value } = await rawReader.read();
         if (done) controller.close();
         else {
-          if (cacheWriter) cacheWriter.write(value);
+          if (cacheWriter && !teeInflated) cacheWriter.write(value);
           controller.enqueue(value);
         }
       },
@@ -996,7 +1114,6 @@ async function loadSnapshot(msg) {
     });
     const body = isGzip ? replay.pipeThrough(new DecompressionStream("gzip")) : replay;
     reader = body.getReader();
-    let received = 0;
     let first = true;
     for (;;) {
       const { done, value } = await reader.read();
@@ -1017,13 +1134,22 @@ async function loadSnapshot(msg) {
       } else {
         FS.write(stream, value, 0, value.length, received);
       }
+      if (cacheWriter && teeInflated) cacheWriter.write(value);
       received += value.length;
       progress(msg.requestId, fromCache ? "snapshot-cache" : "snapshot", "Loading environment snapshot", received, total || undefined, "bytes");
     }
     if (cacheWriter) {
-      const committed = await cacheWriter.finish();
-      event(null, "log", { stream: "stderr", text: committed ? `snapshot cached as ${cacheKey}` : "snapshot not cached" });
+      // Raw tees know the exact region size; compressed tees stream an
+      // unknown transfer length (no expectation to enforce).
+      const committed = await cacheWriter.finish(teeInflated ? received : undefined);
+      event(null, "log", { stream: "stderr", text: committed ? `snapshot cached as ${teeInflated ? rawKey : cacheKey}` : "snapshot not cached" });
+      if (committed && teeInflated) {
+        // The raw cache supersedes the compressed one — reclaim its quota.
+        const dir = await snapshotCacheDir();
+        if (dir && cacheKey) dir.removeEntry(cacheKey).catch(() => {});
+      }
     }
+    } // end !rawSource
     // The region load below is one synchronous wasm call (1–2 min for a
     // whole-Mathlib environment); tell the host before blocking so it can
     // show an honest "loading into Lean" stage instead of a pegged bar. The
@@ -1061,6 +1187,7 @@ async function loadSnapshot(msg) {
       res = callP(M._lean_wasm_load_snapshot, mkLeanString(path));
     }
     sink = prevSink;
+    memCheckpoint(`snapshot-loaded:${safeName}`);
     const tag = ioResultTag(res);
     const scalar = unboxScalar(ioResultValue(res));
     const ok = tag === 0 && (scalar === null || scalar === 0n);
