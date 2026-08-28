@@ -58,7 +58,9 @@ const asNum = (v) => (typeof v === "bigint" ? Number(v) : v);
 
 let M;
 const captured = [];
+const DUMP = process.argv.includes("--dump-messages");
 const capture = (stream) => (v) => {
+  if (DUMP && stream === "stdout") console.log(`[lean:stdout] ${v}`);
   captured.push({ stream, text: String(v), at: performance.now() });
 };
 const ioTag = (res) => Number(M.getValue(asNum(res) + 7, "i8")) & 0xff;

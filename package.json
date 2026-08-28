@@ -21,7 +21,8 @@
     "promote:staging": "node pipeline/release/promote-staging.mjs",
     "build:site": "npm --prefix frontend run build",
     "typecheck:site": "npm --prefix frontend exec tsc -- --noEmit",
-    "preview:prod": "node scripts/serve-dist.mjs"
+    "preview:prod": "node scripts/serve-dist.mjs",
+    "test:adversarial": "node tests/adversarial/run.mjs"
   },
   "devDependencies": {
     "@codemirror/autocomplete": "^6.18.0",
@@ -33,6 +34,7 @@
     "@codemirror/view": "^6.34.0",
     "@lezer/highlight": "^1.2.0",
     "@types/node": "^26.2.0",
+    "playwright": "^1.62.1",
     "typescript": "^5.6.0",
     "vite": "^6.0.0",
     "vitest": "^3.0.0",

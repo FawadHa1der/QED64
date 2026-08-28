@@ -1,0 +1,63 @@
+From 4a199090e511663f0a59ba7dfa87fd2a84a63050 Mon Sep 17 00:00:00 2001
+From: QED64 Toolchain <qed64-toolchain@localhost>
+Date: Fri, 28 Aug 2026 11:21:04 -0400
+Subject: [PATCH 28/29] HeaderSyntax.imports: degrade gracefully on
+ error-recovered headers
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Malformed headers (an unterminated block comment opening the file, a
+non-identifier module name in an import) produce syntax the quotation
+patterns cannot match, and the function panicked 'unreachable code has
+been reached' — then continued with default #[] so the file elaborated
+without its imports. The parser has already reported the real error;
+skip malformed import nodes (and anonymous names) instead of panicking,
+and treat a fully unrecognizable header as the implicit Init imports.
+Upstream-worthy: reproduced on stock syntax with plain error recovery.
+---
+ src/Lean/Elab/Import.lean | 22 ++++++++++++++++------
+ 1 file changed, 16 insertions(+), 6 deletions(-)
+
+diff --git a/src/Lean/Elab/Import.lean b/src/Lean/Elab/Import.lean
+index 3206214..0437137 100644
+--- a/src/Lean/Elab/Import.lean
++++ b/src/Lean/Elab/Import.lean
+@@ -28,18 +28,28 @@ def HeaderSyntax.isModule (header : HeaderSyntax) : Bool :=
+   !header.raw[0].isNone
+ 
+ def HeaderSyntax.imports (stx : HeaderSyntax) (includeInit : Bool := true) : Array Import :=
++  -- Error-recovered header syntax (an unterminated comment opening the file,
++  -- a non-identifier module name, …) does not match the quotation patterns;
++  -- panicking on it turns every malformed header into "unreachable code has
++  -- been reached" followed by elaboration WITHOUT the intended imports. The
++  -- parser has already reported the real error — degrade gracefully to the
++  -- imports we can read (plus the implicit Init), skipping malformed nodes.
+   match stx with
+   | `(Parser.Module.header| $[module%$moduleTk]? $[prelude%$preludeTk]? $importsStx*) =>
+     let imports := if preludeTk.isNone && includeInit then
+         #[{ module := `Init : Import }, { module := `Init, isMeta := true : Import }]
+       else #[]
+-    imports ++ importsStx.map fun
++    imports ++ importsStx.filterMap fun
+       | `(Parser.Module.import| $[public%$publicTk]? $[meta%$metaTk]? import $[all%$allTk]? $n) =>
+-        { module := n.getId, importAll := allTk.isSome
+-          isExported := publicTk.isSome || moduleTk.isNone
+-          isMeta := metaTk.isSome }
+-      | _ => unreachable!
+-  | _ => unreachable!
++        if n.getId.isAnonymous then none else
++        some { module := n.getId, importAll := allTk.isSome
++               isExported := publicTk.isSome || moduleTk.isNone
++               isMeta := metaTk.isSome }
++      | _ => none
++  | _ =>
++    if includeInit then
++      #[{ module := `Init : Import }, { module := `Init, isMeta := true : Import }]
++    else #[]
+ 
+ def HeaderSyntax.toModuleHeader (stx : HeaderSyntax) : ModuleHeader where
+   isModule := stx.isModule
+-- 
+2.50.1 (Apple Git-155)
+

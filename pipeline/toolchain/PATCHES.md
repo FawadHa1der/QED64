@@ -190,3 +190,12 @@ Gate the rebuild on: garbage input → ≥1 error diagnostic; the defect test in
     and teardown happens only when the header resolves. Runtime
     wasm64-31aef224f49e8385.
 
+28. **0028-HeaderSyntax.imports-degrade-gracefully.patch** — error-recovered
+    headers (unterminated block comment opening the file, non-identifier
+    module names) hit `unreachable!` → "PANIC ... unreachable code has been
+    reached" and then elaborated WITHOUT the intended imports. Found by the
+    adversarial corpus; skip malformed import nodes instead. Upstream-worthy.
+29. **0029-exports-drop-stale-imports-specialization.patch** — export-list
+    refresh forced by 0028's filterMap reshape. Runtime
+    wasm64-dca2763359db27e7.
+

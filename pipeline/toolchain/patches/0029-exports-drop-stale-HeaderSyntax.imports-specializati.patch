@@ -1,0 +1,25 @@
+From 4a35f4791887bc68edee5ab5f3165418c81be424 Mon Sep 17 00:00:00 2001
+From: QED64 Toolchain <qed64-toolchain@localhost>
+Date: Fri, 28 Aug 2026 11:27:29 -0400
+Subject: [PATCH 29/29] exports: drop stale HeaderSyntax.imports specialization
+ (filterMap reshape)
+
+---
+ src/emscripten-exports.txt | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/src/emscripten-exports.txt b/src/emscripten-exports.txt
+index f76805c..ed2aec9 100644
+--- a/src/emscripten-exports.txt
++++ b/src/emscripten-exports.txt
+@@ -75160,7 +75160,6 @@ _l___private_Init_Data_Array_Basic_0__Array_mapMUnsafe_map___at___00Lean_Elab_Fi
+ _l___private_Init_Data_Array_Basic_0__Array_mapMUnsafe_map___at___00Lean_Elab_FixedParamPerms_erase_spec__2___boxed
+ _l___private_Init_Data_Array_Basic_0__Array_mapMUnsafe_map___at___00Lean_Elab_FixedParamPerms_fixedArePrefix_spec__0___boxed
+ _l___private_Init_Data_Array_Basic_0__Array_mapMUnsafe_map___at___00Lean_Elab_FixedParams_Info_init_spec__0___boxed
+-_l___private_Init_Data_Array_Basic_0__Array_mapMUnsafe_map___at___00Lean_Elab_HeaderSyntax_imports_spec__2___boxed
+ _l___private_Init_Data_Array_Basic_0__Array_mapMUnsafe_map___at___00Lean_Elab_InlayHintInfo_toLspInlayHint_spec__0___boxed
+ _l___private_Init_Data_Array_Basic_0__Array_mapMUnsafe_map___at___00Lean_Elab_InlayHintLabel_toLspInlayHintLabel_spec__0___boxed
+ _l___private_Init_Data_Array_Basic_0__Array_mapMUnsafe_map___at___00Lean_Elab_LibrarySearch_evalApply_spec__0___boxed
+-- 
+2.50.1 (Apple Git-155)
+
