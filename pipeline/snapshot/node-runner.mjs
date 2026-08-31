@@ -108,6 +108,12 @@ globalThis.Module = {
       FS.mount(NODEFS, { root: libLean }, "/lib/lean");
       FS.mount(NODEFS, { root: workDir }, "/work");
       globalThis.Module.ENV.LEAN_PATH = "/lib/lean";
+      // Game packages (lean4game ecosystem) are legacy non-`module` Lean
+      // packages; patch 0030's gate lets the exported-level wasm env cache
+      // load their self-contained oleans. Opt-in via host env, mirrored here.
+      if (process.env.QED64_ALLOW_LEGACY_IMPORTS) {
+        globalThis.Module.ENV.QED64_ALLOW_LEGACY_IMPORTS = "1";
+      }
       // Whole-environment saves need the region buffer reserved up front (see
       // toolchain patch 0011); the bake passes the size through this env var.
       if (process.env.LEAN_COMPACTOR_RESERVE) {

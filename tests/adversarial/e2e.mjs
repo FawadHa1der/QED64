@@ -193,11 +193,20 @@ const only = arg("only", "");
 const actionItems = corpus.filter((it) => Array.isArray(it.actions) && it.actions.length)
   .filter((it) => !only || new RegExp(only).test(it.name));
 let sinceFresh = 0;
+// A Playwright evaluate on a dead/reloading page never resolves (no default
+// timeout), and one such hang has wedged entire runs — every scenario races
+// a hard deadline, and the alive probe races its own.
+const deadline = (ms, what) => new Promise((_, rej) => setTimeout(() => rej(new Error(`deadline: ${what} exceeded ${ms}ms`)), ms));
+const aliveProbe = () => Promise.race([
+  page.evaluate(() => !!globalThis.qed64).catch(() => false),
+  new Promise((res) => setTimeout(() => res(false), 5000)),
+]);
 for (const item of actionItems) {
   consoleLog = [];
   if (sinceFresh >= 4) { await freshPage(); sinceFresh = 0; }
   sinceFresh += 1;
   try {
+    await Promise.race([deadline(240000, item.name), (async () => {
     for (const a of item.actions) {
       switch (a.op) {
         case "setValue": await setBuffer(a.text ?? ""); break;
@@ -213,14 +222,15 @@ for (const item of actionItems) {
     }
     // settle: alive AND in a terminal state (ready / actionable import note / breaker)
     const settle = await waitPill(/^ready$|imports (incomplete|failed)|keeps crashing/, 120000, 2000);
-    const alive = await page.evaluate(() => !!globalThis.qed64).catch(() => false);
+    const alive = await aliveProbe();
     const panics = panicsInConsole();
     const pass = alive && settle.ok && (item.expect.panicFree ? panics === 0 : true)
       && (item.expect.mustSucceed ? /^ready$/.test(settle.s) : true);
     await record(item.name, `editor/${item.category}`, pass,
       `alive=${alive} settled='${settle.s.slice(0, 40)}'@${settle.ms}ms panics=${panics}`);
+    })()]);
   } catch (e) {
-    const alive = await page.evaluate(() => !!globalThis.qed64).catch(() => false);
+    const alive = await aliveProbe();
     results.push({ name: item.name, category: `editor/${item.category}`, pass: false,
       detail: `threw: ${String(e).slice(0, 140)} alive=${alive} pageCrashes=${pageCrashes}`,
       consoleTail: consoleLog.slice(-20) });

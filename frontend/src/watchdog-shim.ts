@@ -66,6 +66,10 @@ const SWALLOWED_NOTIFICATIONS = new Set([
   "$/setTrace",
   "workspace/didChangeConfiguration",
   "workspace/didChangeWatchedFiles",
+  // Multi-level clients (lean4game) close one document and open the next;
+  // this shim's worker sessions are replaced wholesale by lsp-init, so a
+  // didClose forwarded raw would only disturb the live FileWorker.
+  "textDocument/didClose",
 ]);
 
 type JsonRpc = {
@@ -207,6 +211,13 @@ export class WatchdogShim {
     private readonly ui: StatusSink,
     /** Boot a replacement session after the current one dies. */
     private readonly makeSession: (opts?: { mathlib?: boolean }) => Promise<Qed64Session>,
+    /** Host-specific policy hooks (the game build supplies these). */
+    private readonly policy: {
+      /** Name a snapshot whose baked environment covers this header, or null.
+       * Consulted before the Mathlib rule and before any warm compile — a
+       * covering snapshot makes file imports (and hence packs) unnecessary. */
+      coveringSnapshotFor?: (headerText: string) => string | null;
+    } = {},
   ) {
     const channel = new MessageChannel();
     this.clientPort = channel.port2;
@@ -603,7 +614,11 @@ export class WatchdogShim {
       .filter((l) => !/import\s+QED64\.Essential/.test(l));
     const wantsMathlib = /^\s*import\s+(Mathlib|Batteries|MIL\b)/m.test(text);
     let covered = false;
-    if (wantsMathlib) {
+    const custom = this.policy.coveringSnapshotFor?.(text) ?? null;
+    if (custom) {
+      covered = await loadSnapshotByName(this.artifacts, this.qs, custom, this.ui);
+    }
+    if (!covered && wantsMathlib) {
       covered = await loadSnapshotByName(this.artifacts, this.qs, "mathlib", this.ui);
     }
     if (!covered && headerLines.length > 0) {
@@ -651,12 +666,33 @@ export class WatchdogShim {
     // Track the document so a dead worker can be restarted with current text.
     if (msg.method === "textDocument/didOpen") {
       const p = msg.params as { textDocument: { uri: string; version: number; text: string; languageId: string } };
+      const hadDoc = this.doc !== null;
       this.doc = {
         uri: p.textDocument.uri,
         version: p.textDocument.version,
         text: p.textDocument.text,
         languageId: p.textDocument.languageId ?? "lean4",
       };
+      // A RE-open on a live session is a document replacement (lean4game
+      // closes one level's doc and opens the next): run the header-switch
+      // machinery — probe first, in-place lsp-init with the new text — the
+      // exact path a header didChange takes. Forwarding the raw didOpen
+      // instead would hand a second document to a single-doc FileWorker
+      // whose environment was resolved for the previous level.
+      if (hadDoc && this.workerStarted && !this.restarting) {
+        window.clearTimeout(this.restartDebounce);
+        this.headerDiverged = true;
+        this.crashLoopHalted = false;
+        this.deathTimes = [];
+        void this.restartForHeaderChange();
+        return;
+      }
+      if (hadDoc && (this.restarting || this.starting)) {
+        // A switch/boot is already in flight; the go-around's headerOf
+        // comparison against the updated doc handles the new target.
+        this.headerDiverged = true;
+        return;
+      }
     } else if (msg.method === "textDocument/didChange" && this.doc && this.crashLoopHalted) {
       // The user changed something — give recovery a fresh chance.
       const p = msg.params as { textDocument: { version: number }; contentChanges: ContentChange[] };

@@ -125,6 +125,29 @@ function lspSend(msg) {
     fail(msg.requestId, error, "LSP_SEND_FAILED", false);
   }
 }
+/** Write host-provided files into the worker's virtual FS (MEMFS). Game
+ * builds use this to place `.lake/gamedata/*.json` where GameServer's
+ * `Runner` reads them at proof-check time; generic for any small aux file.
+ * input: { files: [{ path: string, text?: string, bytes?: Uint8Array }] } */
+function writeFiles(msg) {
+  try {
+    const FS = M.FS;
+    let written = 0;
+    for (const f of msg.input?.files ?? []) {
+      if (typeof f?.path !== "string" || !f.path.startsWith("/")) {
+        throw new Error(`writeFiles: bad path ${String(f?.path)}`);
+      }
+      const dir = f.path.slice(0, f.path.lastIndexOf("/"));
+      FS.mkdirTree ? FS.mkdirTree(dir) : mkdirTree(dir);
+      FS.writeFile(f.path, f.bytes instanceof Uint8Array ? f.bytes : String(f.text ?? ""));
+      written += 1;
+    }
+    post({ type: "result", requestId: msg.requestId, result: { operation: "write-files", written } });
+  } catch (error) {
+    fail(msg.requestId, error, "WRITE_FILES_FAILED", false);
+  }
+}
+
 let bootConfig = null;
 let bootMemory = null; // the shared Memory64 this worker created; heap writes re-read .buffer after growth
 let currentRequest = null;
@@ -1279,6 +1302,9 @@ self.addEventListener("message", (e) => {
       break;
     case "lsp-send":
       lspSend(msg);
+      break;
+    case "write-files":
+      writeFiles(msg);
       break;
     case "dispose":
       post({ type: "result", requestId: msg.requestId, result: { operation: "dispose" } });

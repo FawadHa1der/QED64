@@ -33,6 +33,9 @@ const probeFile = arg("probe-file", "");
 const probeSource = probeFile ? fs.readFileSync(path.resolve(probeFile), "utf8") : arg("probe", "");
 const libDir = path.resolve(arg("lib", path.join(repoRoot, "work/lib-tree")));
 const budgetMs = Number(arg("budget-ms", "90000"));
+// Optional host dir NODEFS-mounted at /workspace (the worker cwd) — game
+// probes need `.lake/gamedata/*.json` visible to GameServer's Runner.
+const workspaceDir = arg("workspace", "") ? path.resolve(arg("workspace", "")) : "";
 // --via-memfs copies the snapshot into MEMFS in bounded chunks before loading —
 // the worker's exact path — instead of reading it through a NODEFS mount (a
 // single read() of a >2 GiB file trips Node's per-call I/O limits).
@@ -105,6 +108,7 @@ globalThis.Module = {
       }
       FS.mount(NODEFS, { root: libDir }, "/lib/lean");
       FS.mount(NODEFS, { root: scratch }, "/snapshots");
+      if (workspaceDir) FS.mount(NODEFS, { root: workspaceDir }, "/workspace");
       FS.chdir("/workspace");
     },
   ],
