@@ -177,6 +177,13 @@ export class WatchdogShim {
   private heldChange: JsonRpc | null = null;
   private changeFlush: number | undefined;
 
+  /** The worker's document is BEHIND the editor: a header edit was
+   * withheld (the debounce arms a restart instead of forwarding it), so
+   * position-fresh requests against the worker would run on stale text —
+   * observed as completion requests that hang until the switch settles.
+   * Cleared whenever an lsp-init hands the worker the current text. */
+  private headerDiverged = false;
+
   /** A worker death arrived while a restart was in flight (e.g. a stack
    * overflow during the in-place switch's liveness window). The death must
    * be handled when the restart machinery unwinds — swallowing it leaves a
@@ -373,6 +380,9 @@ export class WatchdogShim {
         return;
       }
       this.workerStarted = true;
+      // The worker now holds bootText; diverged only if the header moved on
+      // while the switch ran (the go-around below then restarts for it).
+      this.headerDiverged = headerOf(this.doc.text) !== headerOf(bootText);
       this.ui.idle("ready");
       const queued = this.queue;
       this.queue = [];
@@ -383,7 +393,12 @@ export class WatchdogShim {
         }
         await this.forward(q);
       }
-      if (headerOf(this.doc.text) !== headerOf(bootText)) {
+      // Recompute from the post-replay truth: an edit-then-revert during the
+      // switch can make the early assignment stale in either direction, and
+      // nothing but this line would ever clear it (a wedged-true flag keeps
+      // failing completions on a healthy session).
+      this.headerDiverged = headerOf(this.doc.text) !== headerOf(bootText);
+      if (this.headerDiverged) {
         this.restarting = false;
         this.deathPending = false; // superseded: the next round handles state
         void this.restartForHeaderChange();
@@ -504,6 +519,7 @@ export class WatchdogShim {
       // are now orphans — fail them so the InfoView reconnects.
       this.failInFlight("the Lean checker switched documents");
       this.workerStarted = true;
+      this.headerDiverged = headerOf(this.doc.text) !== headerOf(bootText);
       this.ui.idle("ready");
       const queued = this.queue;
       this.queue = [];
@@ -521,7 +537,8 @@ export class WatchdogShim {
       // Another switch may have landed while we booted: this session was
       // built for bootText's imports — go around for the new header rather
       // than serving it mixed.
-      if (headerOf(this.doc.text) !== headerOf(bootText)) {
+      this.headerDiverged = headerOf(this.doc.text) !== headerOf(bootText);
+      if (this.headerDiverged) {
         this.restarting = false;
         void this.restartForHeaderChange();
         return;
@@ -662,6 +679,7 @@ export class WatchdogShim {
         // Debounce: another switch within 2 s replaces this one, so a user
         // flicking through the examples pays for ONE restart, not a chain.
         window.clearTimeout(this.restartDebounce);
+        this.headerDiverged = true;
         this.ui.busy("imports changed — updating…");
         this.restartDebounce = window.setTimeout(() => {
           if (this.restarting) return;
@@ -705,6 +723,7 @@ export class WatchdogShim {
         }
         if (r.tag !== 0) throw new Error("the imports could not be resolved — check the module names (details in the browser console)");
         this.workerStarted = true;
+        this.headerDiverged = false; // recomputed below once the replay lands
         this.ui.idle("ready");
         const openVersion = (openParams as unknown as { textDocument: { version?: number } }).textDocument.version ?? 0;
         const queued = this.queue;
@@ -718,6 +737,14 @@ export class WatchdogShim {
           }
           await this.forward(q);
         }
+        // A header edit during the boot armed a debounce that the `starting`
+        // guard swallowed, and nothing re-arms it — without this go-around
+        // (the restart paths have the same check) the worker stays on the
+        // didOpen-time imports forever and headerDiverged stays latched,
+        // failing every completion on an otherwise healthy session.
+        this.headerDiverged = this.doc !== null
+          && headerOf(this.doc.text) !== headerOf(openParams.textDocument.text);
+        if (this.headerDiverged) void this.restartForHeaderChange();
       } catch (err) {
         if ((err as Error).message !== "__qed64_remount__") {
           this.ui.idle(`Lean failed to start: ${(err as Error).message}`);
@@ -727,9 +754,44 @@ export class WatchdogShim {
       }
       return;
     }
-    if (!this.workerStarted) {
-      this.queue.push(msg);
-      return;
+    if (!this.workerStarted || this.headerDiverged) {
+      // The worker can't answer usefully here — a switch or reboot is in
+      // flight, the tag-2 calm hold is waiting on the import line, the
+      // crash-loop breaker tripped, or the worker's document is stale
+      // behind a withheld header edit (position-fresh requests against
+      // stale text hang inside the worker until the switch settles).
+      // COMPLETION requests must not wait it out: Monaco's suggest widget
+      // awaits every provider, so one hung LSP completion holds the instant
+      // client-side import completions hostage for the whole window. Fail
+      // exactly those fast with ContentModified (-32801), which LSP clients
+      // swallow as "stale, ask again later" — asked at most once per user
+      // gesture, so there is no retry loop. EVERYTHING else keeps its old
+      // queue-or-forward behavior: `$/lean/*` rpc because the InfoView
+      // retries a refused connect immediately (fast-failing it produced a
+      // 20 Hz reject/retry storm), semanticTokens because the client treats
+      // -32801 as a cancellation it never re-requests after (stale
+      // highlighting), and the rest because a late answer beats an error.
+      // The initial boot (`starting`) is exempt too: its queue-and-replay
+      // is what populates the InfoView on first paint. Notifications always
+      // queue — replaying them is how a replacement session learns the
+      // document.
+      const completionish = msg.id !== undefined
+        && (msg.method === "textDocument/completion" || msg.method === "completionItem/resolve");
+      if (completionish && !this.starting) {
+        this.serverSide.postMessage({
+          jsonrpc: "2.0",
+          id: msg.id,
+          error: { code: -32801, message: "QED64: the checker is switching imports; ask again shortly" },
+        });
+        return;
+      }
+      if (this.workerStarted) {
+        // Divergence only: the worker is alive — non-UI traffic (rpc against
+        // its own still-consistent old view, notifications) flows as before.
+      } else {
+        this.queue.push(msg);
+        return;
+      }
     }
     if (msg.method === "textDocument/didChange") {
       const held = this.heldChange;

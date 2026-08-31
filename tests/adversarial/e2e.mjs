@@ -187,7 +187,11 @@ const GOLDEN_7 = {
 // ---------- corpus editor-action scripts -------------------------------------
 // Heavy scenarios accumulate wasm/JS heap in the shared session; a fresh page
 // every few scenarios keeps deaths attributable to the SCENARIO, not the pile.
-const actionItems = corpus.filter((it) => Array.isArray(it.actions) && it.actions.length);
+// --only <regex> narrows the corpus action scripts (isolation reruns of a
+// flaky scenario get a fresh page and no cohort contamination).
+const only = arg("only", "");
+const actionItems = corpus.filter((it) => Array.isArray(it.actions) && it.actions.length)
+  .filter((it) => !only || new RegExp(only).test(it.name));
 let sinceFresh = 0;
 for (const item of actionItems) {
   consoleLog = [];
