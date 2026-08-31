@@ -1,0 +1,87 @@
+From 2d75ec14cf2a946abb361fc5a466cdb8c35d8051 Mon Sep 17 00:00:00 2001
+From: QED64 Toolchain <qed64-toolchain@localhost>
+Date: Mon, 31 Aug 2026 18:39:01 -0400
+Subject: [PATCH] wasm: tolerate legacy (non-module) oleans in the
+ exported-level env cache
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The browser env cache imports at OLeanLevel.exported (only base .olean
+data ships), and the module system forbids importing legacy non-module
+code there. But the entire lean4game ecosystem — GameServer and every
+published game (NNG4, STG4, ...) — is legacy-mode Lean, and their oleans
+are self-contained: the base file carries ALL their data, so nothing is
+actually lost by loading them.
+
+Two changes, both self-scoping (reachable only under this tolerance —
+stock configurations cannot get a legacy module under a module root):
+
+1. importModulesCore's non-module guard is skipped under the wasm
+   target (and under QED64_ALLOW_LEGACY_IMPORTS for native testing).
+2. A legacy module admitted this way gets irPhases := .all — its olean
+   embeds complete IR, so its parsers, initializers, and tactics are
+   phase-unrestricted exactly as under a non-module root. Without this
+   the meta gate refuses to evaluate them ('neither marked nor imported
+   as meta') the moment the game DSL's parsers load.
+
+Proven end-to-end: the TestGame environment (GameServer + game + i18n +
+Batteries over core) bakes into a 1.4 GB snapshot, and Runner-elaborated
+level documents check proofs with hints, inventory gating, and
+completion detection in the browser.
+---
+ src/Lean/Environment.lean | 31 ++++++++++++++++++++++++++-----
+ 1 file changed, 26 insertions(+), 5 deletions(-)
+
+diff --git a/src/Lean/Environment.lean b/src/Lean/Environment.lean
+index 517430b..e1ce694 100644
+--- a/src/Lean/Environment.lean
++++ b/src/Lean/Environment.lean
+@@ -2139,10 +2139,23 @@ partial def importModulesCore
+     ImportStateM Unit := do
+   go imports (importAll := true) (isExported := isExported) (needsData := true) (needsIRTrans := false)
+   if globalLevel < .private then
+-    for i in imports do
+-      if let some mod := (← get).moduleNameMap[i.module]?.bind (·.mainModule?) then
+-        if !mod.isModule then
+-          throw <| IO.userError s!"cannot import non-`module` {i.module} from `module`"
++    -- QED64 wasm runtime: game packages (lean4game's GameServer and every
++    -- published game) are legacy non-`module` packages, and their oleans are
++    -- self-contained — the base `.olean` carries ALL their data, so loading
++    -- them at `.exported` level loses nothing. The batch environment cache
++    -- doesn't rely on module-system visibility purity; gate the tolerance
++    -- behind an env var so stock behavior is untouched unless the host pump
++    -- opts in (node-runner and the game worker set it; the editor does not).
++    -- Under the wasm target the tolerance is unconditional: the browser env
++    -- cache exists to serve editors/games, never to enforce module-system
++    -- purity, and Emscripten's env plumbing is unreliable for a runtime gate.
++    let tolerateLegacy := System.Platform.target.startsWith "wasm" ||
++      (← IO.getEnv "QED64_ALLOW_LEGACY_IMPORTS").isSome
++    unless tolerateLegacy do
++      for i in imports do
++        if let some mod := (← get).moduleNameMap[i.module]?.bind (·.mainModule?) then
++          if !mod.isModule then
++            throw <| IO.userError s!"cannot import non-`module` {i.module} from `module`"
+ /-
+ When the module system is disabled for the root, we import all transitively referenced modules and
+ ignore any module system annotations on the way.
+@@ -2258,7 +2271,15 @@ where
+       -- newly discovered module
+       let parts ← if needsData then loadData i else pure #[]
+       let irParts ← if needsIR then loadIR i else pure #[]
+-      let mod := { i with importAll, isExported, irPhases, parts, irParts, needsIRTrans, hasData := needsData }
++      let mod : ImportedModule :=
++        { i with importAll, isExported, irPhases, parts, irParts, needsIRTrans, hasData := needsData }
++      -- QED64 (patch 0030 companion): a legacy non-`module` olean — reachable
++      -- under a module-system root only via the wasm legacy tolerance above —
++      -- carries complete IR in its base part. Its declarations are
++      -- phase-unrestricted, exactly as under a non-module root; without this
++      -- the meta gate refuses to evaluate its parsers and initializers.
++      let mod : ImportedModule :=
++        if mod.mainModule?.any (!·.isModule) then { mod with irPhases := .all } else mod
+       goRec mod
+       modify fun s => { s with
+         moduleNameMap := s.moduleNameMap.insert i.module mod
+-- 
+2.50.1 (Apple Git-155)
+

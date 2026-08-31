@@ -199,3 +199,13 @@ Gate the rebuild on: garbage input → ≥1 error diagnostic; the defect test in
     refresh forced by 0028's filterMap reshape. Runtime
     wasm64-dca2763359db27e7.
 
+## 0030 — wasm: tolerate legacy (non-`module`) oleans in the exported-level env cache
+
+The lean4game ecosystem (GameServer + every published game) is legacy-mode
+Lean; its oleans are self-contained. Under the wasm target (or
+`QED64_ALLOW_LEGACY_IMPORTS` natively), `importModulesCore` skips the
+non-`module` guard, and admitted legacy modules get `irPhases := .all` so
+their parsers/initializers/tactics evaluate (the meta gate otherwise refuses).
+Both branches are unreachable in stock configurations. Enables the whole
+wasm64-lean4game port: game envs bake into snapshots and Runner-checked
+levels run in the browser.
