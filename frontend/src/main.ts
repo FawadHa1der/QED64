@@ -3,6 +3,7 @@
 // runs in this browser tab on the wasm64 runtime.
 import { LeanMonaco, LeanMonacoEditor, type LeanMonacoOptions } from "lean4monaco";
 import { installArtifacts, newSession, type ProgressInfo, type Qed64Session, type StatusSink } from "./qed64-boot";
+import { registerImportCompletion } from "./import-completion";
 import { WatchdogShim } from "./watchdog-shim";
 
 const editorEl = document.getElementById("editor")! as HTMLElement;
@@ -249,6 +250,7 @@ async function main() {
     },
   };
   await leanMonaco.start(options);
+  registerImportCompletion();
   // Chrome's form-state restore can reset the picker (and fire `change`)
   // long after load — pin it to the content we actually open.
   examplesEl.value = "mathlib";

@@ -225,6 +225,24 @@ for (const item of actionItems) {
   }
 }
 
+// ---------- scenario: import-path completion (live parity) -------------------
+{
+  await setBuffer("");
+  await page.waitForTimeout(4000);
+  await page.click(".monaco-editor .view-lines").catch(() => {});
+  await page.keyboard.type("import Mathlib.Data.Re", { delay: 40 });
+  const rowSel = ".suggest-widget .monaco-list-row";
+  const appeared = await page.waitForSelector(rowSel, { timeout: 10000 }).then(() => true).catch(() => false);
+  await page.waitForTimeout(1500);
+  const focused = appeared ? await page.$eval(`${rowSel}.focused`, (r) => r.getAttribute("aria-label")).catch(() => null) : null;
+  if (appeared) await page.keyboard.press("Tab");
+  await page.waitForTimeout(800);
+  const line1 = await page.evaluate(() => globalThis.qed64.editor.getModel().getValue().split("\n")[0]);
+  const accepted = /^import Mathlib\.Data\.Re[\w.]+$/.test(line1) && line1 !== "import Mathlib.Data.Re";
+  await record("import-completion", "functional", appeared && focused !== null && accepted,
+    `widget=${appeared} focused='${focused}' line1='${line1}'`);
+}
+
 // ---------- recovery drill: hard worker kill ---------------------------------
 {
   await freshPage();
