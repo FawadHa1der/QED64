@@ -279,6 +279,10 @@ async function main() {
     const src = EXAMPLES[examplesEl.value];
     const model = editor.editor?.getModel();
     if (src && model) {
+      // Re-picking the already-loaded example is a no-op: setValue with
+      // identical text emits no change event, so the shim never runs and
+      // nothing would ever clear the busy label — the pill wedged forever.
+      if (model.getValue() === src) return;
       model.setValue(src);
       ui.busy("checking the example");
     }

@@ -21,6 +21,10 @@ const artDir = path.join(root, "work/adversarial/artifacts");
 fs.mkdirSync(artDir, { recursive: true });
 
 const corpus = fs.existsSync(corpusPath) ? JSON.parse(fs.readFileSync(corpusPath, "utf8")).items : [];
+// --only <regex>: run just the matching corpus scenarios (fixed scenarios,
+// import-completion, and the drills are skipped) — the isolation mode for
+// chasing one flaky scenario without cohort contamination.
+const only = arg("only", "");
 const results = [];
 let consoleLog = [];
 
@@ -45,10 +49,13 @@ page = await context.newPage();
 wirePage(page);
 
 const pill = () => page.evaluate(() => (document.getElementById("ptext") || {}).textContent || "");
-const ivText = () => page.evaluate(() => {
-  const f = document.getElementById("infoview")?.querySelector("iframe");
-  return f && f.contentDocument ? f.contentDocument.body.innerText : "";
-});
+const ivText = () => Promise.race([
+  page.evaluate(() => {
+    const f = document.getElementById("infoview")?.querySelector("iframe");
+    return f && f.contentDocument ? f.contentDocument.body.innerText : "";
+  }).catch(() => ""),
+  new Promise((res) => setTimeout(() => res(""), 10000)),
+]);
 async function waitPill(re, timeoutMs, minMs = 0) {
   const t0 = Date.now();
   for (;;) {
@@ -63,14 +70,19 @@ async function setBuffer(text) {
 }
 async function memSample() {
   if (!page || page.isClosed()) return {};
-  return page.evaluate(async () => {
+  // The telemetry request inside goes to the worker — a wedged worker never
+  // answers, and an unresolved evaluate would hang record() (and the run).
+  return Promise.race([
+    new Promise((res) => setTimeout(() => res({ stale: true }), 8000)),
+    page.evaluate(async () => {
     const out = { jsHeapMB: performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null };
     try {
       const tel = await globalThis.qed64.shim.qs.session.request("telemetry", {});
       if (tel.memory) { out.wasmMB = Math.round(tel.memory.currentBytes / 1048576); out.maxGiB = tel.memory.maximumBytes / 1073741824; }
     } catch { /* dead session mid-drill is fine */ }
     return out;
-  });
+  }).catch(() => ({})),
+  ]);
 }
 async function record(name, category, pass, detail, extra = {}) {
   const entry = { name, category, pass, detail, mem: await memSample().catch(() => ({})), ...extra };
@@ -109,7 +121,7 @@ const GOLDEN_7 = {
 }
 
 // ---------- scenario: golden 7-error battery + badge/list consistency --------
-{
+if (!only) {
   consoleLog = [];
   await setBuffer(GOLDEN_7.source);
   await waitPill(/^ready$/, 90000, 2500);
@@ -136,7 +148,7 @@ const GOLDEN_7 = {
 }
 
 // ---------- scenario: introduce/remove error clears (staleness) --------------
-{
+if (!only) {
   await setBuffer("import Mathlib.Data.Real.Basic\n\nexample (a b : ℝ) : a + b = b + a := add_comm a b\n");
   await waitPill(/^ready$/, 60000, 1500);
   await page.evaluate(() => {
@@ -158,7 +170,7 @@ const GOLDEN_7 = {
 }
 
 // ---------- scenario: import composition (calm path) -------------------------
-{
+if (!only) {
   consoleLog = [];
   await setBuffer("");
   await page.waitForTimeout(5000);
@@ -174,7 +186,7 @@ const GOLDEN_7 = {
 }
 
 // ---------- scenario: example switch speed budget ----------------------------
-{
+if (!only) {
   for (const [target, budget] of [["init", 20000], ["mathlib", 25000]]) {
     const t0 = Date.now();
     await page.selectOption("#examples", target);
@@ -187,9 +199,6 @@ const GOLDEN_7 = {
 // ---------- corpus editor-action scripts -------------------------------------
 // Heavy scenarios accumulate wasm/JS heap in the shared session; a fresh page
 // every few scenarios keeps deaths attributable to the SCENARIO, not the pile.
-// --only <regex> narrows the corpus action scripts (isolation reruns of a
-// flaky scenario get a fresh page and no cohort contamination).
-const only = arg("only", "");
 const actionItems = corpus.filter((it) => Array.isArray(it.actions) && it.actions.length)
   .filter((it) => !only || new RegExp(only).test(it.name));
 let sinceFresh = 0;
@@ -231,16 +240,14 @@ for (const item of actionItems) {
     })()]);
   } catch (e) {
     const alive = await aliveProbe();
-    results.push({ name: item.name, category: `editor/${item.category}`, pass: false,
-      detail: `threw: ${String(e).slice(0, 140)} alive=${alive} pageCrashes=${pageCrashes}`,
-      consoleTail: consoleLog.slice(-20) });
-    console.log(`FAIL [editor/${item.category}] ${item.name} — threw (alive=${alive})`);
+    await record(item.name, `editor/${item.category}`, false,
+      `threw: ${String(e).slice(0, 140)} alive=${alive} pageCrashes=${pageCrashes}`);
     if (!alive) await freshPage();
   }
 }
 
 // ---------- scenario: import-path completion (live parity) -------------------
-{
+if (!only) {
   await setBuffer("");
   await page.waitForTimeout(4000);
   await page.click(".monaco-editor .view-lines").catch(() => {});
@@ -258,7 +265,7 @@ for (const item of actionItems) {
 }
 
 // ---------- recovery drill: hard worker kill ---------------------------------
-{
+if (!only) {
   await freshPage();
   await page.selectOption("#examples", "mathlib").catch(() => {});
   await waitPill(/^ready$/, 90000, 2000);
@@ -276,7 +283,7 @@ for (const item of actionItems) {
 }
 
 // ---------- final: memory + stuck-pill sweep ---------------------------------
-{
+if (!only) {
   const mem = await memSample();
   const wasmOk = mem.wasmMB === null || mem.wasmMB === undefined || mem.wasmMB < 3800;
   await record("final-memory", "memory", wasmOk, `wasm=${mem.wasmMB}MB js=${mem.jsHeapMB}MB (budget wasm<3800MB)`);
