@@ -1,0 +1,10 @@
+f058f76022a6b371e25182ac8bc0117ed519b3e8  qed64-wasm64 @ FawadHa1der/lean4
+# Source tree above wasm64-build/ is identical to legacy work/lean4 HEAD 2d75ec1.
+# Bump deliberately; a stage1 rebuild from a new pin REQUIRES rebaking the
+# work/snapshot pairing and, for served artifacts, the full promote flow.
+#
+# Paired build identity (the other half of the invariant — a stage1 rebuilt
+# from any other commit UNPAIRS these and the compiler battery breaks):
+#   runtime        wasm64-303e5c765fc415ed (sha256[:16] of stage1/bin/lean.wasm)
+#   mathlib.snap   1114420853 bytes raw (probe: import QED64.Essential, lib-tree-slim)
+#   init.snap      121481845 bytes raw (lib: core-lib-slim)

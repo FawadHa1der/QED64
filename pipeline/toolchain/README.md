@@ -1,3 +1,10 @@
+> **Kernel home:** the patched Lean source now lives as REAL git history on
+> `github.com/FawadHa1der/lean4` branch `qed64-wasm64` (local checkout:
+> `~/code/wasm64-lean-kernel`), together with its own `wasm64-build/`
+> orchestration + gate. `setup-source.sh` clones that branch at the commit in
+> `KERNEL-PIN`. The `patches/` directory here is retained as provenance of the
+> original mail-patch series but is no longer applied.
+
 # Toolchain pipeline: rebuilding the wasm64 Lean runtime
 
 The app consumes runtime `wasm64-02e0ac24cced25d8` by digest. This directory

@@ -1,18 +1,22 @@
 #!/bin/bash
-# Materialize the patched Lean toolchain source in work/lean4: clone the
-# cauli/lean4 wasm fork, pin the base revision, and apply the QED64 patch
-# series. Idempotent-ish: refuses to touch an existing work/lean4.
+# Materialize the wasm64 kernel source in work/lean4 from its home repo:
+# github.com/FawadHa1der/lean4, branch qed64-wasm64 (cauli's Memory64 base +
+# the QED64 patch series as real git history + the wasm64-build/ tooling).
+# The commit to pin lives in KERNEL-PIN next to this script.
+# Idempotent-ish: refuses to touch an existing work/lean4.
 set -euo pipefail
 T="$(cd "$(dirname "$0")" && pwd)"
-BASE=5732b84bb744383629568dafbb06fd2f86b8be59
+KERNEL_REPO="${QED64_KERNEL_REPO:-https://github.com/FawadHa1der/lean4}"
+KERNEL_BRANCH=qed64-wasm64
+PIN="$(grep -Eo '^[0-9a-f]{40}' "$T/KERNEL-PIN" | head -1)"
 if [ -e "$T/work/lean4" ]; then
   echo "work/lean4 already exists — remove it first to re-materialize" >&2
   exit 1
 fi
 mkdir -p "$T/work"
-git clone https://github.com/cauli/lean4.git "$T/work/lean4"
+git clone --branch "$KERNEL_BRANCH" "$KERNEL_REPO" "$T/work/lean4"
 cd "$T/work/lean4"
-git checkout -q "$BASE"
-git checkout -qb qed64-wasm64
-git am "$T"/patches/*.patch
-echo "source ready: $(git log --oneline -1) ($(git rev-list --count $BASE..HEAD) patches on $BASE)"
+git checkout -q "$PIN"
+echo "source ready: $(git log --oneline -1)"
+echo "REMINDER: any rebuild of stage1 requires rebaking work/snapshot/*.snap"
+echo "(snapshots are binary-paired to the runtime; see docs/REBUILD.md)."
