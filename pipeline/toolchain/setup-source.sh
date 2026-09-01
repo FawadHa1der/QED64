@@ -17,6 +17,11 @@ mkdir -p "$T/work"
 git clone --branch "$KERNEL_BRANCH" "$KERNEL_REPO" "$T/work/lean4"
 cd "$T/work/lean4"
 git checkout -q "$PIN"
+# Trust nothing: the checkout must land exactly on the pin, and the pin must
+# be an ancestor of the branch (a hash that exists but was never on the
+# branch would otherwise slip through silently).
+[ "$(git rev-parse HEAD)" = "$PIN" ] || { echo "pin checkout mismatch" >&2; exit 1; }
+git merge-base --is-ancestor "$PIN" "origin/$KERNEL_BRANCH"   || { echo "KERNEL-PIN $PIN is not on branch $KERNEL_BRANCH" >&2; exit 1; }
 echo "source ready: $(git log --oneline -1)"
 echo "REMINDER: any rebuild of stage1 requires rebaking work/snapshot/*.snap"
 echo "(snapshots are binary-paired to the runtime; see docs/REBUILD.md)."

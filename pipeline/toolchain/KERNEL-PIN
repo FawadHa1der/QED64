@@ -1,4 +1,4 @@
-f058f76022a6b371e25182ac8bc0117ed519b3e8  qed64-wasm64 @ FawadHa1der/lean4
+852d1b9c3af42b4fc7af21ff3887fa402ecc8cc3  qed64-wasm64 @ FawadHa1der/lean4
 # Source tree above wasm64-build/ is identical to legacy work/lean4 HEAD 2d75ec1.
 # Bump deliberately; a stage1 rebuild from a new pin REQUIRES rebaking the
 # work/snapshot pairing and, for served artifacts, the full promote flow.
