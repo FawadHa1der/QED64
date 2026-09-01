@@ -28,7 +28,7 @@ the frontend's `restartForHeaderChange` can retry the in-place path
 resurrect it from git history once this lands) instead of a ~30 s wasm
 reboot that re-verifies the runtime and re-streams snapshots.
 
-## 4. PROXY_TO_PTHREAD resident FileWorker (the headline architectural import)
+## 4. PROXY_TO_PTHREAD resident FileWorker — PLANNED, see docs/RESIDENT-WORKER-PLAN.md
 browser64 runs the REAL, unmodified `lean --worker` main loop on an
 application pthread (`-sPROXY_TO_PTHREAD=1`), fed by a native futex-based
 stdin ring (~150-line io.cpp core in their `lean4-resident-transport.patch`,

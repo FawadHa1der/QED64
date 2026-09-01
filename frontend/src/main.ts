@@ -229,6 +229,8 @@ async function main() {
   shim = new WatchdogShim(artifacts, qs, ui, makeSession);
   window.addEventListener("pagehide", () => shim?.disposeForUnload());
   (globalThis as unknown as Record<string, unknown>).qed64 = { artifacts, shim, ui, get editor() { return editor.editor; } };
+  // The getter re-reads shim.qs each tick, so the meter follows worker reboots.
+  startMemoryMeter(() => (shim as unknown as { qs?: { session?: { request(type: string, payload: Record<string, unknown>): Promise<unknown> } } }).qs?.session ?? null);
 
   ui.busy("starting the editor");
   const leanMonaco = new LeanMonaco();
@@ -287,6 +289,45 @@ async function main() {
       ui.busy("checking the example");
     }
   });
+}
+
+/** Honest memory line: the wasm heap is the page's biggest single block and
+ * the only one we can measure; Chromium's compiled-code space and the
+ * browser's own overhead sit on top (documented in the tooltip). Warn as the
+ * heap nears its cap — growth past it is a recoverable worker abort, but the
+ * OS may kill the whole tab first when other heavy tabs crowd the machine. */
+function startMemoryMeter(getSession: () => { request(type: string, payload: Record<string, unknown>): Promise<unknown> } | null) {
+  const el = document.getElementById("buildinfo");
+  if (!el) return;
+  const base = el.textContent ?? "";
+  let warned = false;
+  const gib = (n: number) => (n / 1073741824).toFixed(1);
+  window.setInterval(() => {
+    const session = getSession();
+    if (!session) return;
+    void Promise.race([
+      session.request("telemetry", {}),
+      new Promise((r) => window.setTimeout(() => r(null), 800)),
+    ]).then((t) => {
+      const mem = (t as { memory?: { currentBytes?: number; maximumBytes?: number; regionBytes?: number; memfsPackBytes?: number } } | null)?.memory;
+      if (!mem?.currentBytes || !mem.maximumBytes) return;
+      const frac = mem.currentBytes / mem.maximumBytes;
+      el.textContent = `${base} · heap ${gib(mem.currentBytes)}/${gib(mem.maximumBytes)} GiB`;
+      el.style.color = frac >= 0.95 ? "#e06c75" : frac >= 0.85 ? "#e2a63d" : "";
+      el.title = [
+        `Lean wasm heap: ${gib(mem.currentBytes)} of ${gib(mem.maximumBytes)} GiB cap`,
+        `· environment snapshot regions inside the heap: ${gib(mem.regionBytes ?? 0)} GiB`,
+        (mem.memfsPackBytes ?? 0) > 0 ? `· library packs copied into worker memory: ${gib(mem.memfsPackBytes ?? 0)} GiB (OPFS unavailable — storage-backed on healthy browsers)` : `· library packs: storage-backed (not in memory)`,
+        `The browser adds compiled-code and UI overhead on top of this heap;`,
+        `near the cap, heavy edits can abort the checker (it restarts itself).`,
+      ].join("\n");
+      if (frac >= 0.85 && !warned) {
+        warned = true;
+        console.warn(`[qed64] wasm heap at ${(frac * 100) | 0}% of its ${gib(mem.maximumBytes)} GiB cap — heavy elaboration may restart the checker`);
+      }
+      if (frac < 0.8) warned = false;
+    });
+  }, 12000);
 }
 
 void main().catch((err) => {

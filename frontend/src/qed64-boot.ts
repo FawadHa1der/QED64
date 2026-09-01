@@ -172,6 +172,49 @@ export async function ensureProfile(
 }
 
 /** Load a named snapshot into the session's runtime (idempotent). */
+/** Make sure the RAW (inflated) region cache exists BEFORE the Lean worker
+ * touches this snapshot. The download and gunzip run in a disposable
+ * prefetch worker whose heap dies on completion — a Lean worker that
+ * streams/inflates itself keeps ~4.6 GB of that era's allocations for its
+ * whole life (measured 9.7 GB vs 5-7 GB steady resident). Failure is
+ * non-fatal: the Lean worker's own streaming path still works. */
+async function ensureRawSnapshotCached(
+  entry: { url: string; bytes: number },
+  name: string,
+  ui: StatusSink,
+): Promise<void> {
+  const cacheKey = snapshotCacheKey(entry as Parameters<typeof snapshotCacheKey>[0]);
+  if (!cacheKey) return;
+  try {
+    const root = await navigator.storage.getDirectory();
+    const dir = await root.getDirectoryHandle("qed64-snapshots", { create: true });
+    try {
+      const f = await (await dir.getFileHandle(`${cacheKey}.raw`)).getFile();
+      if (f.size === entry.bytes) return; // warm — nothing to do
+    } catch { /* not cached */ }
+  } catch { return; } // no OPFS: the worker streams as before
+  const gib = (entry.bytes / 1073741824).toFixed(1);
+  await new Promise<void>((resolve) => {
+    const w = new Worker("/workers/snapshot-prefetch.worker.js");
+    const bail = window.setTimeout(() => { w.terminate(); resolve(); }, 15 * 60 * 1000);
+    w.postMessage({ url: entry.url, cacheKey, rawBytes: entry.bytes });
+    w.onmessage = (e) => {
+      const m = e.data as { status?: string; bytes?: number; total?: number; phase?: string; error?: string };
+      if (m.status === "progress") {
+        ui.progress(`preparing the ${name} environment (${gib} GiB — one-time)`,
+          { phase: "snapshot", loaded: m.bytes ?? 0, total: m.total ?? entry.bytes, unit: "bytes" });
+        return;
+      }
+      if (m.status === "error" || m.status === "unavailable" || m.status === "busy") {
+        console.warn(`[qed64] raw prefetch ${m.status}: ${m.error ?? ""} — the checker will stream it instead`);
+      }
+      window.clearTimeout(bail);
+      w.terminate();
+      resolve();
+    };
+  });
+}
+
 export async function loadSnapshotByName(
   artifacts: Qed64Artifacts,
   qs: Qed64Session,
@@ -181,6 +224,7 @@ export async function loadSnapshotByName(
   if (qs.loadedSnapshots.has(name)) return true;
   const entry = artifacts.snapshots?.snapshots.find((s) => s.name === name);
   if (!entry) return false;
+  await ensureRawSnapshotCached(entry, name, ui);
   const gib = (entry.bytes / 1073741824).toFixed(1);
   ui.busy(`loading the ${name === "mathlib" ? "Mathlib" : name} environment (${gib} GiB unpacked — cached in your browser after the first visit)`);
   try {

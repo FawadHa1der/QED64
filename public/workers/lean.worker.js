@@ -392,6 +392,12 @@ function memCheckpoint(label) {
   } catch { /* telemetry must never break the runtime */ }
 }
 
+// Aggregate accounting for the page's honest memory line: raw region bytes
+// living inside the wasm heap, and pack bytes copied into MEMFS (zero when
+// packs are Blob-backed WORKERFS mounts, the normal healthy-OPFS path).
+let regionBytesTotal = 0;
+let memfsPackBytesTotal = 0;
+
 function memoryTelemetry() {
   try {
     const buffer = M && M.wasmMemory ? M.wasmMemory.buffer : null;
@@ -401,6 +407,8 @@ function memoryTelemetry() {
       initialBytes: bootConfig ? bootConfig.memory.initialBytes : undefined,
       maximumBytes: bootConfig ? bootConfig.memory.maximumBytes : undefined,
       shared: typeof SharedArrayBuffer === "function" && buffer instanceof SharedArrayBuffer,
+      regionBytes: regionBytesTotal,
+      memfsPackBytes: memfsPackBytesTotal,
       checkpoints: memCheckpoints.slice(-16),
     };
   } catch {
@@ -471,6 +479,7 @@ function mountPacks(FS, packs, defaultMountPoint) {
       // region loader copies bytes into the wasm heap on open, exactly as it
       // would from a WORKERFS read.
       const bytes = pack.bytes instanceof Uint8Array ? pack.bytes : new Uint8Array(pack.bytes);
+      memfsPackBytesTotal += bytes.byteLength;
       for (const file of files) validatePackEntry(file, bytes.byteLength, pack.id);
       mkdirp(FS, mountPoint);
       for (const file of files) {
@@ -1105,6 +1114,7 @@ async function loadSnapshot(msg) {
     cacheWriterRef = cacheWriter;
     if (direct) {
       heapPtr = asPtr(M._malloc(asPtr(total)));
+      regionBytesTotal += Number(total);
       if (heapPtr === 0n) throw new Error(`snapshot: could not allocate ${total} bytes in the wasm heap`);
     }
     if (rawSource) {
