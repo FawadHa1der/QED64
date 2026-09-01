@@ -265,16 +265,29 @@ function capabilities() {
     typeof WebAssembly === "object" &&
     typeof BigInt === "function" &&
     WebAssembly.validate(MEMORY64_PROBE);
+  // What boot actually needs is a working SHARED Memory64 — probe by
+  // construction. crossOriginIsolated is normally its precondition, but
+  // proxied environments (cypress strips COOP/COEP) can still grant SAB via
+  // the SharedArrayBuffer feature flag; refusing to boot there only breaks
+  // test harnesses. Report COI honestly, gate on the constructive probe.
+  let sharedMemory64 = false;
+  try {
+    new WebAssembly.Memory({ initial: 1n, maximum: 2n, shared: true, address: "i64" });
+    sharedMemory64 = true;
+  } catch {
+    sharedMemory64 = false;
+  }
   return {
     memory64,
     sharedArrayBuffer: typeof SharedArrayBuffer === "function",
     atomics: typeof Atomics === "object",
     crossOriginIsolated: self.crossOriginIsolated === true,
+    sharedMemory64,
     ok:
       memory64 &&
       typeof SharedArrayBuffer === "function" &&
       typeof Atomics === "object" &&
-      self.crossOriginIsolated === true,
+      sharedMemory64,
   };
 }
 

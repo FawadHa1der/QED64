@@ -390,6 +390,12 @@ export class WatchdogShim {
         this.publishHeaderFailure("the imports could not be resolved — check the module names (details in the browser console)");
         return;
       }
+      // The replaced session never answers requests that were in flight
+      // against it — without this they dangle until the 15 s loss watchdog
+      // (observed as a "response lost" storm and a ~15 s InfoView freeze
+      // after every in-place switch). Same contract as the reboot path:
+      // rpc gets -32900 so the InfoView reconnects immediately.
+      this.failInFlight("the Lean checker switched documents");
       this.workerStarted = true;
       // The worker now holds bootText; diverged only if the header moved on
       // while the switch ran (the go-around below then restarts for it).
