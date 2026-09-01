@@ -2027,6 +2027,45 @@
     ]
    },
    "rationale": "Zero errors, four info diagnostics at lines 3-6 (each anchored on its #check/#eval keyword): 'Nat.succ (n : ℕ) : ℕ', '4', '5', '1024'. Under Mathlib the signature renders with ℕ, not Nat. The ℤ eval proves Mathlib notation/Int arithmetic is live in the resident snapshot — audit re-ran this file on the shipped wasm64 runtime + umbrella snapshot: clean success, 945 ms. All evals are constant-time; guards that info-severity messages surface in the InfoView and clear correctly."
+  },
+  {
+   "name": "mathlib-name-shadow-faithful-compile",
+   "category": "compiler/covering-env",
+   "source": "import Mathlib.Algebra.Algebra.Basic\n\ninductive Tree (α : Type) where\n  | leaf : Tree α\n  | node : Tree α → α → Tree α → Tree α\n\ndef Tree.size : Tree α → Nat\n  | .leaf => 0  \n  | .node l _ r => l.size + r.size + 1\n\ndef Tree.mirror : Tree α → Tree α\n  | .leaf => .leaf\n  | .node l x r => .node r.mirror x l.mirror\n\ntheorem Tree.mirror_size (t : Tree α) : t.mirror.size = t.size := by\n  induction t with\n  | leaf => rfl\n  | node l x r ihl ihr => simp [mirror, size, ihl, ihr]; omega\n",
+   "expect": {
+    "mustSucceed": true,
+    "panicFree": true,
+    "budgetMs": 110000
+   },
+   "notes": "User-reported genre: defining a name (Tree) that full Mathlib already has, under a specific import that does NOT bring it in. Faithful import semantics must be clean (live parity); the covering env used to leak all Mathlib names into scope."
+  },
+  {
+   "name": "mathlib-name-shadow-faithful-switch",
+   "category": "editor-actions",
+   "source": "",
+   "actions": [
+    {
+     "op": "switchExample",
+     "value": "init",
+     "ms": 300
+    },
+    {
+     "op": "pause",
+     "ms": 2000
+    },
+    {
+     "op": "setValue",
+     "text": "import Mathlib.Algebra.Algebra.Basic\n\ninductive Tree (α : Type) where\n  | leaf : Tree α\n  | node : Tree α → α → Tree α → Tree α\n\ndef Tree.size : Tree α → Nat\n  | .leaf => 0  \n  | .node l _ r => l.size + r.size + 1\n\ndef Tree.mirror : Tree α → Tree α\n  | .leaf => .leaf\n  | .node l x r => .node r.mirror x l.mirror\n\ntheorem Tree.mirror_size (t : Tree α) : t.mirror.size = t.size := by\n  induction t with\n  | leaf => rfl\n  | node l x r ihl ihr => simp [mirror, size, ihl, ihr]; omega\n",
+     "ms": 100
+    }
+   ],
+   "expect": {
+    "mustSucceed": true,
+    "panicFree": true,
+    "settleMs": 420000,
+    "zeroErrors": true
+   },
+   "notes": "Same genre in the live pane: paste into the init tab. The covering env first produces 'Tree has already been declared'; the shim must reboot once into faithful imports and settle ready with ZERO errors."
   }
  ]
 }

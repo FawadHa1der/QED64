@@ -215,7 +215,7 @@ for (const item of actionItems) {
   if (sinceFresh >= 4) { await freshPage(); sinceFresh = 0; }
   sinceFresh += 1;
   try {
-    await Promise.race([deadline(240000, item.name), (async () => {
+    await Promise.race([deadline(Math.max(240000, (item.expect.settleMs ?? 0) + 120000), item.name), (async () => {
     for (const a of item.actions) {
       switch (a.op) {
         case "setValue": await setBuffer(a.text ?? ""); break;
@@ -230,13 +230,32 @@ for (const item of actionItems) {
       }
     }
     // settle: alive AND in a terminal state (ready / actionable import note / breaker)
-    const settle = await waitPill(/^ready$|imports (incomplete|failed)|keeps crashing/, 120000, 2000);
+    const settle = await waitPill(/^ready$|imports (incomplete|failed)|keeps crashing/, item.expect.settleMs ?? 120000, 2000);
     const alive = await aliveProbe();
     const panics = panicsInConsole();
+    // zeroErrors: the InfoView's All Messages badge must reach zero errors
+    // (innerText renders "All Messages ( <errs> <warns>)"). Transient error
+    // states are allowed on the way — e.g. the covering env's collision
+    // errors before the faithful reboot lands — so poll until the badge is
+    // clean WITH the pill at ready, up to the scenario's settle budget.
+    let errCount = null;
+    if (item.expect.zeroErrors) {
+      const deadlineAt = Date.now() + (item.expect.settleMs ?? 120000);
+      for (;;) {
+        const iv = await ivText();
+        const m = /All Messages \(\s*(\d+)/.exec(iv);
+        errCount = m ? Number(m[1]) : 0;
+        const p = await pill();
+        if (errCount === 0 && /^ready$/.test(p)) break;
+        if (Date.now() > deadlineAt) break;
+        await page.waitForTimeout(5000);
+      }
+    }
     const pass = alive && settle.ok && (item.expect.panicFree ? panics === 0 : true)
-      && (item.expect.mustSucceed ? /^ready$/.test(settle.s) : true);
+      && (item.expect.mustSucceed ? /^ready$/.test(settle.s) : true)
+      && (item.expect.zeroErrors ? errCount === 0 : true);
     await record(item.name, `editor/${item.category}`, pass,
-      `alive=${alive} settled='${settle.s.slice(0, 40)}'@${settle.ms}ms panics=${panics}`);
+      `alive=${alive} settled='${settle.s.slice(0, 40)}'@${settle.ms}ms panics=${panics}${errCount !== null ? ` errBadge=${errCount}` : ""}`);
     })()]);
   } catch (e) {
     const alive = await aliveProbe();

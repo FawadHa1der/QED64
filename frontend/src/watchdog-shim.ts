@@ -181,6 +181,19 @@ export class WatchdogShim {
   private heldChange: JsonRpc | null = null;
   private changeFlush: number | undefined;
 
+  /** Header (headerOf text) the session was deliberately rebooted to serve
+   * with EXACT imports instead of the covering umbrella env. The covering
+   * env serves any Mathlib-subset header in ~40 ms but makes ALL of
+   * Mathlib's names visible — a user-defined `Tree`/`Point`/`Graph` then
+   * collides with names their imports never requested ("has already been
+   * declared", deprecation strikethrough), while the same file is clean on
+   * live.lean-lang.org. The fork memoizes the covering env under the EXACT
+   * header key, so faithful resolution needs a fresh worker process: boot
+   * without the umbrella, warm-compile the header (real olean imports land
+   * the exact env in the cache), then init. Once per header; a header edit
+   * invalidates it. */
+  private faithfulHeader: string | null = null;
+
   /** The worker's document is BEHIND the editor: a header edit was
    * withheld (the debounce arms a restart instead of forwarding it), so
    * position-fresh requests against the worker would run on stale text —
@@ -267,8 +280,32 @@ export class WatchdogShim {
     };
   }
 
+  /** A dotted (non-alias) Mathlib-family import: the covering env may be
+   * serving names beyond what these actually bring into scope. */
+  private static readonly SPECIFIC_MATHLIB_IMPORT = /^\s*(?:public\s+|private\s+)?(?:meta\s+)?import\s+(?:Mathlib|Batteries|Archive|Counterexamples)\./m;
+
   /** Track elaboration progress for the "working…" indicator. */
   private observeServerMessage(msg: JsonRpc) {
+    if (msg.method === "textDocument/publishDiagnostics" && this.doc && this.workerStarted && !this.restarting) {
+      const diags = (msg.params as { diagnostics?: { message?: string }[] })?.diagnostics ?? [];
+      const header = headerOf(this.doc.text);
+      if (
+        diags.some((d) => /has already been declared/.test(d.message ?? "")) &&
+        this.qs.loadedSnapshots.has("mathlib") &&
+        WatchdogShim.SPECIFIC_MATHLIB_IMPORT.test(header) &&
+        !UMBRELLA_ALIAS_IMPORT.test(header) &&
+        this.faithfulHeader !== header
+      ) {
+        // Set synchronously — later diagnostics for the same header no-op.
+        this.faithfulHeader = header;
+        this.ui.busy("a name collides with preloaded Mathlib — restarting with exactly your imports (this can take minutes)");
+        this.deathTimes = []; // deliberate reboot, not a crash
+        this.workerStarted = false;
+        this.disposeHard();
+        window.setTimeout(() => void this.handleWorkerDeath(), 50);
+        return;
+      }
+    }
     if (msg.method === "$/lean/fileProgress") {
       this.lastProgressAt = performance.now();
       const processing = (msg.params as { processing?: unknown[] })?.processing ?? [];
@@ -332,6 +369,7 @@ export class WatchdogShim {
    * and bring up a replacement on the new text. */
   private async restartForHeaderChange(): Promise<void> {
     if (this.restarting || !this.doc) return;
+    if (this.faithfulHeader !== null && headerOf(this.doc.text) !== this.faithfulHeader) this.faithfulHeader = null;
     this.restarting = true;
     this.workerStarted = false;
     this.heldChange = null;
@@ -488,7 +526,11 @@ export class WatchdogShim {
     // old session's tasks lands (see docs/PATCH-BACKLOG.md), imports
     // changes pay a full worker reboot. Snapshots reload from OPFS, so
     // this is tens of seconds, not the first-visit minutes — say so.
-    this.ui.busy("imports changed — restarting the checker (about half a minute; environments reload from cache)");
+    if (this.faithfulHeader !== null && this.doc && headerOf(this.doc.text) === this.faithfulHeader) {
+      this.ui.busy("importing exactly your header from oleans — names outside your imports leave scope (this can take minutes)");
+    } else {
+      this.ui.busy("imports changed — restarting the checker (about half a minute; environments reload from cache)");
+    }
     // Terminate whatever remains of the previous worker NOW and give the
     // engine a moment to release its heap before the replacement commits
     // multiple GiB — overlapping dying and booting heaps under rapid
@@ -506,7 +548,8 @@ export class WatchdogShim {
     const bootVersion = this.doc.version;
     try {
       const wantsMathlib = /^\s*import\s+(Mathlib|Batteries|MIL\b)/m.test(bootText);
-      const qs = await this.makeSession({ mathlib: wantsMathlib });
+      const faithful = this.faithfulHeader !== null && headerOf(bootText) === this.faithfulHeader;
+      const qs = await this.makeSession({ mathlib: wantsMathlib && !faithful });
       this.attachSession(qs);
       await this.prepareHeader(bootText);
       const r = (await (qs.session as unknown as RpcSession).request("lsp-init", {
@@ -619,12 +662,16 @@ export class WatchdogShim {
       .filter((l) => /^\s*(?:public\s+|private\s+)?(?:meta\s+)?import\s+/.test(l))
       .filter((l) => !/import\s+QED64\.Essential/.test(l));
     const wantsMathlib = /^\s*import\s+(Mathlib|Batteries|MIL\b)/m.test(text);
+    // Faithful mode: the user's names collided with the covering env, so the
+    // exact env must be built from oleans — a covering snapshot would put the
+    // umbrella back in the cache and covering-serve the init again.
+    const faithful = this.faithfulHeader !== null && headerOf(text) === this.faithfulHeader;
     let covered = false;
     const custom = this.policy.coveringSnapshotFor?.(text) ?? null;
-    if (custom) {
+    if (custom && !faithful) {
       covered = await loadSnapshotByName(this.artifacts, this.qs, custom, this.ui);
     }
-    if (!covered && wantsMathlib) {
+    if (!covered && wantsMathlib && !faithful) {
       covered = await loadSnapshotByName(this.artifacts, this.qs, "mathlib", this.ui);
     }
     if (!covered && headerLines.length > 0) {
