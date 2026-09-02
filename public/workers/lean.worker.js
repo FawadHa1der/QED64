@@ -59,13 +59,32 @@ function lspStdoutChunk(text) {
   joined.set(bytes, lspBuf.length);
   lspBuf = joined;
   for (;;) {
-    const head = lspDecoder.decode(lspBuf.subarray(0, Math.min(lspBuf.length, 256)));
-    const m = /Content-Length: (\d+)/i.exec(head);
-    if (!m) return;
+    // Interleaved stdout LOG lines can precede the next frame header (the
+    // resident FileWorker imports on the elaboration thread, and the fork's
+    // "[DEBUG:PROGRESS] …" import progress prints to stdout). Find the header
+    // ANYWHERE in the buffer; bytes before it are logs, not framing.
+    const whole = lspDecoder.decode(lspBuf);
+    const m = /Content-Length: (\d+)/i.exec(whole);
+    if (!m) {
+      // No header yet: shed complete log lines so the buffer stays bounded.
+      const lastNl = whole.lastIndexOf("\n");
+      if (lastNl > 0) {
+        for (const line of whole.slice(0, lastNl).split("\n")) {
+          if (line.trim()) event(null, "log", { stream: "stdout", text: line });
+        }
+        lspBuf = lspBuf.slice(lspEncoder.encode(whole.slice(0, lastNl + 1)).length);
+      }
+      return;
+    }
+    if (m.index > 0) {
+      for (const line of whole.slice(0, m.index).split("\n")) {
+        if (line.trim()) event(null, "log", { stream: "stdout", text: line });
+      }
+    }
     const len = Number(m[1]);
     // Body starts after the header's blank-line separator; print() chunking
     // rewrites \r\n runs, so skip every CR/LF after the header line.
-    let at = head.indexOf(m[0]) + m[0].length;
+    let at = lspEncoder.encode(whole.slice(0, m.index)).length + m[0].length;
     while (at < lspBuf.length) {
       const b = lspBuf[at];
       if (b === 0x0d || b === 0x0a) at += 1;
@@ -89,6 +108,109 @@ function lspStdoutChunk(text) {
     } catch {
       event(null, "log", { stream: "stderr", text: `lsp: unparseable ${len}-byte frame` });
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Resident FileWorker transport (patch 0031, docs/RESIDENT-WORKER-PLAN.md):
+// the REAL `lean --worker` loop runs on the application pthread and reads
+// stdin from a futex ring in shared memory; stdout keeps the normal proxied
+// path, so lspStdoutChunk's framed parser serves both transports unchanged.
+// The pump exports (lspInit/lspSend) coexist — one binary, both modes.
+// ---------------------------------------------------------------------------
+const RESIDENT_RING_CAP = 1 << 20;
+const RESIDENT_IDX = { READ: 0, WRITE: 1, CLOSED: 2, WAKE: 3 };
+let residentRingPtr = 0; // control words at ptr, byte ring at ptr + 16
+let residentMode = false;
+const residentEncoder = new TextEncoder();
+
+function residentViews() {
+  const buf = bootMemory.buffer; // re-take every call: shared-memory growth swaps it
+  return {
+    ctrl: new Int32Array(buf, residentRingPtr, 4),
+    bytes: new Uint8Array(buf, residentRingPtr + 16, RESIDENT_RING_CAP),
+  };
+}
+
+/** Non-blocking ring write. This outer worker IS the Emscripten main thread
+ * (it services proxied stdout/FS from Lean's pthreads), so it must never
+ * Atomics.wait; a full ring is polled instead. Frames are small. */
+function residentRingWrite(payload, done) {
+  let off = 0;
+  const pump = () => {
+    const { ctrl, bytes } = residentViews();
+    while (off < payload.length) {
+      const read = Atomics.load(ctrl, RESIDENT_IDX.READ);
+      const write = Atomics.load(ctrl, RESIDENT_IDX.WRITE);
+      const free = (read - write - 1 + RESIDENT_RING_CAP) % RESIDENT_RING_CAP;
+      if (free === 0) { setTimeout(pump, 2); return; }
+      const n = Math.min(free, RESIDENT_RING_CAP - write, payload.length - off);
+      bytes.set(payload.subarray(off, off + n), write);
+      off += n;
+      Atomics.store(ctrl, RESIDENT_IDX.WRITE, (write + n) % RESIDENT_RING_CAP);
+      Atomics.add(ctrl, RESIDENT_IDX.WAKE, 1);
+      Atomics.notify(ctrl, RESIDENT_IDX.WAKE);
+    }
+    if (done) done();
+  };
+  pump();
+}
+
+function residentFrame(json) {
+  const body = residentEncoder.encode(json);
+  const header = residentEncoder.encode(`Content-Length: ${body.length}\r\n\r\n`);
+  const frame = new Uint8Array(header.length + body.length);
+  frame.set(header, 0);
+  frame.set(body, header.length);
+  return frame;
+}
+
+/** Start the resident FileWorker: ring + callMain("--worker") + the opening
+ * sequence. The FileWorker reads `initialize` then `didOpen` DIRECTLY —
+ * nothing may come between them — and never answers `initialize` (that is
+ * the watchdog's job; the shim answers it to the client itself). */
+function residentInit(msg) {
+  try {
+    if (state !== "ready") throw new Error(`Worker is '${state}', not ready.`);
+    if (typeof M._lean_browser64_configure_input_ring !== "function" ||
+        typeof M._lean_wasm_shell_mark_preinitialized !== "function" ||
+        typeof M.callMain !== "function") {
+      throw new Error("runtime lacks the resident transport exports (patch 0031)");
+    }
+    if (residentMode) throw new Error("resident FileWorker already started in this process");
+    lspMode = true;
+    // Boot already ran the full Lean initialization sequence; main must not
+    // initialize (or ever finalize) again.
+    M._lean_wasm_shell_mark_preinitialized();
+    const raw = M._malloc(asPtr(16 + RESIDENT_RING_CAP));
+    residentRingPtr = Number(asPtr(raw));
+    const status = M._lean_browser64_configure_input_ring(asPtr(raw), RESIDENT_RING_CAP);
+    if (Number(status) !== 0) throw new Error(`resident stdin ring rejected (${status})`);
+    residentMode = true;
+    // reportDelayMs=0: the reporter's first act is IO.sleep(reportDelayMs) on
+    // a task pthread (the pump path sets the same via wasmLspInit).
+    M.callMain(["--worker", "-Dserver.reportDelayMs=0"]);
+    residentRingWrite(residentFrame(JSON.stringify({
+      jsonrpc: "2.0", id: 0, method: "initialize", params: JSON.parse(msg.input.initParams || "{}"),
+    })));
+    residentRingWrite(residentFrame(JSON.stringify({
+      jsonrpc: "2.0", method: "textDocument/didOpen", params: JSON.parse(msg.input.didOpen),
+    })));
+    event(null, "log", { stream: "stderr", text: "[resident] FileWorker started on the application pthread" });
+    post({ type: "result", requestId: msg.requestId, result: { operation: "lsp-resident-init", tag: 0 } });
+  } catch (error) {
+    lspMode = false;
+    fail(msg.requestId, error, "LSP_RESIDENT_INIT_FAILED", false);
+  }
+}
+
+function residentSend(msg) {
+  try {
+    if (!residentMode) throw new Error("resident FileWorker not started");
+    residentRingWrite(residentFrame(msg.input.message));
+    post({ type: "result", requestId: msg.requestId, result: { operation: "lsp-resident-send", tag: 0 } });
+  } catch (error) {
+    fail(msg.requestId, error, "LSP_RESIDENT_SEND_FAILED", false);
   }
 }
 
@@ -678,6 +800,10 @@ async function boot(msg) {
         return p.endsWith(".wasm") ? wasmUrl : new URL(p, scriptUrl).href;
       },
       mainScriptUrlOrBlob: scriptUrl,
+      // Resident mode: `lean --worker`'s main returning (a watchdog-restart
+      // request, a fatal header error) is an EVENT for the shim — the runtime
+      // keepalive keeps every environment resident for a re-init.
+      onExit: (code) => { residentMode = false; event(null, "resident-exit", { code }); },
       print: (v) => (lspMode ? lspStdoutChunk(v) : sink && sink.push("stdout", v)),
       printErr: (v) => {
         if (sink) sink.push("stderr", v);
@@ -1322,6 +1448,12 @@ self.addEventListener("message", (e) => {
     }
     case "lsp-init":
       lspInit(msg);
+      break;
+    case "lsp-resident-init":
+      residentInit(msg);
+      break;
+    case "lsp-resident-send":
+      residentSend(msg);
       break;
     case "lsp-send":
       lspSend(msg);

@@ -52,6 +52,11 @@ export async function installArtifacts(ui: StatusSink): Promise<Qed64Artifacts> 
     const pinned = await fetch(`/runtime/runtime-manifest.${__QED64_BUILD_ID__}.json`);
     if (pinned.ok && (pinned.headers.get("content-type") ?? "").includes("json")) manifestResponse = pinned;
   }
+  // Dev-only override (?runtime=<hash>): boot a runtime that is chunked into
+  // public/runtime but not promoted — the resident-worker campaign tests the
+  // patch-0031 build this way without touching the served manifest.
+  const devRuntime = new URLSearchParams(location.search).get("runtime");
+  if (devRuntime) manifestResponse = await fetch(`/runtime/runtime-manifest.${devRuntime}.json`, { cache: "no-cache" });
   if (!manifestResponse) manifestResponse = await fetch("/runtime/runtime-manifest.json", { cache: "no-cache" });
   if (!manifestResponse.ok) throw new Error(`runtime manifest: HTTP ${manifestResponse.status}`);
   const runtime = (await manifestResponse.json()) as RuntimeManifest;
@@ -72,7 +77,17 @@ export async function installArtifacts(ui: StatusSink): Promise<Qed64Artifacts> 
       ui.progress(`${verb} the Lean core library`, { phase: `core-${p.phase}`, loaded: p.loaded, total: p.total ?? 0, unit: "bytes" });
     }),
   );
-  const snapshots = await fetchSnapshotIndex();
+  // Dev-only override (?snapshots=<dir>): an unpromoted snapshot set served
+  // from public/<dir> (a symlink to a staging bake); the index's urls name
+  // the promoted dir, so they are re-rooted here. Cache keys are content-
+  // addressed, so unpromoted bakes never collide with served ones.
+  const devSnapshots = new URLSearchParams(location.search).get("snapshots");
+  const snapshots = devSnapshots
+    ? await fetchSnapshotIndex(`/${devSnapshots}/index.json`).then((idx) => idx && {
+        ...idx,
+        snapshots: idx.snapshots.map((e) => ({ ...e, url: e.url.replace(/^\/snapshots\//, `/${devSnapshots}/`) })),
+      })
+    : await fetchSnapshotIndex();
   return { runtime, index, installed, snapshots };
 }
 

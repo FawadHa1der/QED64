@@ -231,6 +231,12 @@ export class WatchdogShim {
        * covering snapshot makes file imports (and hence packs) unnecessary. */
       coveringSnapshotFor?: (headerText: string) => string | null;
     } = {},
+    /** Transport mode. `resident` runs the REAL `lean --worker` loop on the
+     * application pthread over a stdin ring (patch 0031): header changes are
+     * forwarded and re-elaborated IN-PROCESS by the worker itself — no probe,
+     * no debounce, no reboot — so the whole restart choreography below is
+     * bypassed in that mode. Pump (default) keeps every existing behavior. */
+    private readonly mode: { resident?: boolean } = {},
   ) {
     const channel = new MessageChannel();
     this.clientPort = channel.port2;
@@ -244,6 +250,15 @@ export class WatchdogShim {
     this.qs = qs;
     const onMessage = (e: MessageEvent) => {
       const d = e.data as { type?: string; kind?: string; msg?: JsonRpc };
+      if (d && d.type === "event" && d.kind === "resident-exit") {
+        // The resident loop's main returned (fatal header error, restart
+        // request): the runtime stays alive but the session is gone — take
+        // the proven reboot path, which re-inits through the resident init.
+        console.warn(`[shim] resident FileWorker exited (code ${(d as { payload?: { code?: number } }).payload?.code}) — rebooting`);
+        this.workerStarted = false;
+        void this.handleWorkerDeath();
+        return;
+      }
       if (d && d.type === "event" && d.kind === "lsp" && d.msg) {
         // Tickler responses are shim-internal (see below) — never forwarded.
         if (typeof d.msg.id === "string" && d.msg.id.startsWith("qed64-tick")) return;
@@ -369,6 +384,23 @@ export class WatchdogShim {
    * and bring up a replacement on the new text. */
   private async restartForHeaderChange(): Promise<void> {
     if (this.restarting || !this.doc) return;
+    if (this.mode.resident && this.workerStarted) {
+      // RESIDENT-GOAROUND: a header that moved while a boot/switch ran is
+      // just another in-process re-elaboration — one full-text didChange,
+      // no re-init (the worker refuses a second lsp-resident-init).
+      await this.flushHeldChange();
+      await this.forward({
+        jsonrpc: "2.0",
+        method: "textDocument/didChange",
+        params: {
+          textDocument: { uri: this.doc.uri, version: this.doc.version },
+          contentChanges: [{ text: rewriteAliasImports(this.doc.text).text }],
+        },
+      });
+      this.headerDiverged = false;
+      this.ui.busy("imports changed — re-elaborating");
+      return;
+    }
     if (this.faithfulHeader !== null && headerOf(this.doc.text) !== this.faithfulHeader) this.faithfulHeader = null;
     this.restarting = true;
     this.workerStarted = false;
@@ -385,7 +417,7 @@ export class WatchdogShim {
     const bootVersion = this.doc.version;
     try {
       const attempt = async (): Promise<{ tag: number }> =>
-        (await (this.qs.session as unknown as RpcSession).request("lsp-init", {
+        (await (this.qs.session as unknown as RpcSession).request(this.initRequestName(), {
           input: {
             initParams: JSON.stringify(this.initParams ?? {}),
             didOpen: JSON.stringify({
@@ -552,7 +584,7 @@ export class WatchdogShim {
       const qs = await this.makeSession({ mathlib: wantsMathlib && !faithful });
       this.attachSession(qs);
       await this.prepareHeader(bootText);
-      const r = (await (qs.session as unknown as RpcSession).request("lsp-init", {
+      const r = (await (qs.session as unknown as RpcSession).request(this.initRequestName(), {
         input: {
           initParams: JSON.stringify(this.initParams ?? {}),
           didOpen: JSON.stringify({
@@ -697,6 +729,13 @@ export class WatchdogShim {
     }
   }
 
+  /** The session init request for the current transport: resident boots the
+   * real FileWorker loop (initialize + didOpen straight into the ring, tag 0
+   * or a hard failure), pump uses the probe-first wasmLspInit. */
+  private initRequestName(): string {
+    return this.mode.resident ? "lsp-resident-init" : "lsp-init";
+  }
+
   private respond(id: number | string, result: unknown) {
     this.serverSide.postMessage({ jsonrpc: "2.0", id, result });
   }
@@ -764,6 +803,24 @@ export class WatchdogShim {
       // neutralized by the runtime keepalive) — the shim detects header
       // edits itself and restarts proactively, replaying the new text. The
       // superseding didOpen makes forwarding this didChange unnecessary.
+      if (this.mode.resident && this.workerStarted && headerOf(this.doc.text) !== headerBefore) {
+        // Resident: the worker re-elaborates a changed header itself, in
+        // process, against its resident environment cache. Umbrella aliases
+        // still need rewriting for the text the WORKER sees, and incremental
+        // ranges can't carry a rewrite — so the header edit goes over as one
+        // full-document replacement (legal under incremental sync).
+        void this.flushHeldChange();
+        void this.forward({
+          jsonrpc: "2.0",
+          method: "textDocument/didChange",
+          params: {
+            textDocument: { uri: this.doc.uri, version: this.doc.version },
+            contentChanges: [{ text: rewriteAliasImports(this.doc.text).text }],
+          },
+        });
+        this.ui.busy("imports changed — re-elaborating");
+        return;
+      }
       if ((headerOf(this.doc.text) !== headerBefore || !this.workerStarted) && !this.restarting) {
         // Debounce: another switch within 2 s replaces this one, so a user
         // flicking through the examples pays for ONE restart, not a chain.
@@ -796,7 +853,7 @@ export class WatchdogShim {
         await this.prepareHeader(this.doc?.text ?? "");
         const openParams = msg.params as { textDocument: { text: string } };
         const rewritten = rewriteAliasImports(openParams.textDocument.text);
-        const r = (await (this.qs.session as unknown as RpcSession).request("lsp-init", {
+        const r = (await (this.qs.session as unknown as RpcSession).request(this.initRequestName(), {
           input: {
             initParams: JSON.stringify(this.initParams ?? {}),
             didOpen: JSON.stringify({
@@ -944,7 +1001,7 @@ export class WatchdogShim {
       this.pendingResponses.set(id, { timer: window.setTimeout(onTimeout, 15000), method });
     }
     try {
-      await (this.qs.session as unknown as RpcSession).request("lsp-send", {
+      await (this.qs.session as unknown as RpcSession).request(this.mode.resident ? "lsp-resident-send" : "lsp-send", {
         input: { message: JSON.stringify(msg) },
       });
     } catch (err) {

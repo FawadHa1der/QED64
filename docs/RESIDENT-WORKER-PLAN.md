@@ -29,23 +29,64 @@ PROVEN:
   pipeline tool that runs `main` (bakes, gate, probes) works under
   PROXY_TO_PTHREAD after a host-path mirror mount in node-runner.
 
-OPEN (phase-1 completion, both are known/predicted, neither fundamental):
-1. **Final-flush + concurrent-read under long elaboration.** After the
-   initial (empty) diagnostics, a longer elaboration's completion
-   diagnostics do not flush, and a tickler `waitForDiagnostics` sent during
-   elaboration gets no response — i.e. the resident `mainLoop` is not
-   interleaving new stdin reads with in-flight elaboration the way the
-   pump path's host loop does. This is risk #1 from the list below
-   (reporter/output timing under proxied pthreads) landing exactly where
-   predicted. Next: study `mainLoop`'s read/elaborate/report interleaving
-   and the reporter's task scheduling under a task pthread; the pump path's
-   reportDelayMs=0 + tickler is a partial analogue.
-2. **Headerless probe imports on the elaboration thread.** A file with no
-   explicit import resolved `[Init]` which did not hit the init snapshot's
-   `#[Init, Init]` covering env, triggering an olean import on the
-   elaboration pthread (the documented can't-import-there hang; ~44 s CPU
-   then idle). The covering matcher needs to also satisfy the implicit-Init
-   case, or the spike must use a probe whose header matches a seeded env.
+RESOLVED (2026-09-02, second pass) — the "open blocker" was two things
+and neither was the reporter:
+- **A harness parser bug, not a runtime stall.** The fork's import progress
+  (`[DEBUG:PROGRESS] …`, `IO.println` in Environment.lean) goes to STDOUT
+  and interleaves with LSP frames; a parser that only scans the first 256
+  bytes for `Content-Length` wedges on the first such line while the worker
+  keeps answering everything. Raw-tap evidence: every tickler answered, the
+  `waitForDiagnostics` burst on elaboration completion, `rpc/connect` and
+  `hover` answered mid-run. Fixed in the spike AND in lean.worker.js (header
+  found anywhere in the buffer; leading bytes surfaced as log events); the
+  fork now prints that progress to stderr.
+- **Task-thread timed sleeps DO wake** (the inlay-hint refresh timer fires
+  every 500 ms); the earlier "never wakes" reading was the same parser
+  artifact. reportDelayMs=0 via `-D` reaches the reporter (verified by the
+  1500 ms variant delaying the initial burst).
+- **Act 1 PASSES**: `RESIDENT PROBE PASS` — full elaboration, drained
+  progress, the deliberate `rfl` type-mismatch diagnostic and `#eval` info
+  delivered through the ring transport.
+- **Header change = in-process re-elaboration, no exit.** The modern worker
+  does not exit on a header change; it re-runs `setupImports`, whose
+  once-per-process guard (`importsLoadedRef` → `IO.sleep 200`; forceExit 2)
+  then blocked the header task (zero CPU). Patch 0031 now bypasses that
+  guard on Emscripten (the pump path's `teardownForReplacement` rationale:
+  environments stay resident, the cache serves switches).
+- **Prebuilt lookup missed for `#[Init]`** against the init snapshot's
+  `#[Init, Init]` key (headerless files have EMPTY imports and matched
+  nothing at all), so the header imported all 629 Init modules on the
+  elaboration thread (~17 s, completed — so on-thread imports are slow, not
+  fatal). The lookup now treats empty imports as `Init`; a stderr trace
+  reports HIT/MISS with the published keys.
+
+STILL OPEN (phase-1 completion, being verified by the current rebuild):
+1. **Act 2 with the guard bypass**: a header change must re-elaborate in
+   process and re-report diagnostics (the spike's act 2 asserts exactly
+   that; before the bypass it blocked at `IO.sleep 200`).
+2. **Prebuilt lookup HIT for `#[Init]` and for headerless files** — the new
+   stderr trace must show HIT; a MISS means the 629-module on-thread import
+   (~17 s) still runs and the phase-3 "covered switch < 1 s" criterion is
+   out of reach.
+3. **The 629-module import's true trigger** if it persists after a HIT:
+   candidates are `finalizeImport` via the `.ir`/server facets for `#eval`/
+   `def` compilation (it fired even for a theorem-only file, so likely not),
+   or an exact-key `getOrCreateWasmEnvFor` somewhere in the fork's worker
+   path. Perf-critical, not correctness-critical.
+
+Dev-testing an unpromoted runtime (how phase 3 runs the browser suite):
+`chunk-runtime.mjs --out work/runtime-<tag>` (NEVER the default `--out
+public/runtime`: it rewrites the tracked default `runtime-manifest.json`, which
+switches every dev boot onto the new binary against the served, unpaired
+snapshots — it did, mid-run), then install only its manifest as
+`public/runtime/runtime-manifest.<buildId>.json` (gitignored; chunks are
+content-addressed under public/runtime/chunks). Snapshots: bake with
+`--out work/snapshot-staging`, expose via the `public/snapshots-0031 →
+../work/snapshot-staging` symlink (in .git/info/exclude). Boot with
+`?resident=1&runtime=<buildId>&snapshots=snapshots-0031` —
+`tests/adversarial/resident-url.sh` prints it; `resident-gate.sh` runs the
+e2e suite, the pump-vs-resident `editing-latency.mjs` benchmark, and the
+compiler battery against that pairing.
 
 Integration lessons already banked (all reused by the browser phase):
 opening sequence is `initialize` then `didOpen` with NOTHING between;

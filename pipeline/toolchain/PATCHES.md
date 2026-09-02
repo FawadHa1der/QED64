@@ -215,11 +215,25 @@ Runs the real `lean --worker` loop on the application pthread; stdin becomes a
 futex ring in shared memory (`lean_browser64_configure_input_ring`), stdout
 keeps the normal proxied path. `MAIN_THREAD_EM_ASM` for lean_main FS setup and
 the getenv shim; a once-guard (`lean_wasm_shell_mark_preinitialized`) so an
-embedder that pre-initialized the runtime can re-enter `main`; a covering-env
-match in `Lean.Language.Lean`'s prebuilt-header lookup. Pump exports coexist —
-one binary, both transports. Ported from browser64
-(org.lean-browser64.resident-transport/v1); its module.cpp and compact.cpp
-hunks stay on the backlog (#5, #6).
+embedder that pre-initialized the runtime can re-enter `main`, with
+`lean::initializer` and the task manager leaked (never finalized) on wasm.
+Lean side: (a) the prebuilt-header lookup in `Lean.Language.Lean` gains the
+pump path's covering rule, treats a headerless file's empty import list as
+`Init`, refreshes the chosen env's extension array (patch-0025 epoch class),
+and prints one `[WASM LSP] prebuilt lookup HIT|MISS` line per header;
+(b) `setupImports`' once-per-process import guard (`importsLoadedRef` →
+`IO.sleep 200` → `forceExit 2`) is bypassed on Emscripten — environments are
+never unloaded and the cache serves switches, so a header change re-runs
+setup in process (this is how the resident worker switches headers with NO
+exit and no reboot); (c) `finalizeImport`'s `[DEBUG:PROGRESS]` lines move
+from stdout to stderr (they interleaved with LSP frames); (d) every snapshot
+load publishes its env to the prebuilt list, not only `wasmLspInit`.
+Exports: +2 (ring configure, preinit marker); −11 stale specializations
+renumbered by the stdout→stderr change (found with a whole-identifier scan of
+`stage1/lib/temp/**/*.c` — never a `(`-suffixed one, which mistakes every
+non-function export for stale). Pump exports coexist — one binary, both
+transports. Ported from browser64 (org.lean-browser64.resident-transport/v1);
+its module.cpp and compact.cpp hunks stay on the backlog (#5, #6).
 
 STATUS: phase 1 of docs/RESIDENT-WORKER-PLAN.md — transport PROVEN
 (bidirectional LSP over the ring), one open blocker (final-flush/concurrent

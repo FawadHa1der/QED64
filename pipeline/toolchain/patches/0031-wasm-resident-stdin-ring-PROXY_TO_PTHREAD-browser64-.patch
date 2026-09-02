@@ -1,4 +1,4 @@
-From 2e06a2f4726e02cfccd65e53a16b52a8ad7be7c6 Mon Sep 17 00:00:00 2001
+From df3644fa9247366e3bc2c600c03d5f04386c5c28 Mon Sep 17 00:00:00 2001
 From: QED64 Toolchain <qed64-toolchain@localhost>
 Date: Tue, 1 Sep 2026 16:55:04 -0400
 Subject: [PATCH] wasm: resident stdin ring + PROXY_TO_PTHREAD (browser64
@@ -28,13 +28,15 @@ hunks remain on the backlog as separate patches.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
- src/CMakeLists.txt          |   2 +-
- src/Lean/Language/Lean.lean |  23 ++++++-
- src/Lean/Shell.lean         |   4 ++
- src/emscripten-exports.txt  |   2 +
- src/runtime/io.cpp          | 128 +++++++++++++++++++++++++++++++++++-
- src/util/shell.cpp          |  35 +++++++++-
- 6 files changed, 190 insertions(+), 4 deletions(-)
+ src/CMakeLists.txt              |   2 +-
+ src/Lean/Environment.lean       |   4 +-
+ src/Lean/Language/Lean.lean     |  37 ++++++++-
+ src/Lean/Server/FileWorker.lean |   9 ++-
+ src/Lean/Shell.lean             |   4 +
+ src/emscripten-exports.txt      |  13 +---
+ src/runtime/io.cpp              | 128 +++++++++++++++++++++++++++++++-
+ src/util/shell.cpp              |  35 ++++++++-
+ 8 files changed, 212 insertions(+), 20 deletions(-)
 
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
 index 9099515..97d7702 100644
@@ -49,42 +51,100 @@ index 9099515..97d7702 100644
    )
  endif()
  
+diff --git a/src/Lean/Environment.lean b/src/Lean/Environment.lean
+index e1ce694..0f0518f 100644
+--- a/src/Lean/Environment.lean
++++ b/src/Lean/Environment.lean
+@@ -2369,12 +2369,12 @@ def finalizeImport (s : ImportState) (imports : Array Import) (opts : Options) (
+     IO Environment := do
+   let modules := s.moduleNames.filterMap (s.moduleNameMap[·]?)
+   if System.Platform.isEmscripten then
+-    IO.println s!"[DEBUG:PROGRESS] Loading {modules.size} modules..."
++    IO.eprintln s!"[DEBUG:PROGRESS] Loading {modules.size} modules..."
+   let moduleData ← modules.mapIdxM fun idx mod => do
+     -- Progress counter for Emscripten (every 50 modules or on error)
+     let i : Nat := idx
+     if System.Platform.isEmscripten && (i % 50 == 0 || i + 1 == modules.size) then
+-      IO.println s!"[DEBUG:PROGRESS] {i + 1}/{modules.size}: {mod.module}"
++      IO.eprintln s!"[DEBUG:PROGRESS] {i + 1}/{modules.size}: {mod.module}"
+     let some data := mod.mainModule? |
+       throw <| IO.userError s!"missing data file for module {mod.module}"
+     return data
 diff --git a/src/Lean/Language/Lean.lean b/src/Lean/Language/Lean.lean
-index e94cc08..44024e3 100644
+index e94cc08..427e08d 100644
 --- a/src/Lean/Language/Lean.lean
 +++ b/src/Lean/Language/Lean.lean
-@@ -511,9 +511,30 @@ where
+@@ -511,9 +511,40 @@ where
        let mut opts := setup.opts
        let prebuilt ← prebuiltHeaderEnvs.get
        let importKey := setup.imports.map (·.module)
 -      let override? : Option Environment :=
+-        if setup.imports.isEmpty then none
+-        else prebuilt.findSome? fun (k, env) => if k == importKey then some env else none
 +      -- Exact-ordered match first; otherwise the SMALLEST published env whose
 +      -- import closure covers the header — the pump path's covering rule
 +      -- (wasmLspInit), without which a resident FileWorker could only ever
 +      -- serve headers whose import list matches a snapshot key verbatim.
 +      -- Umbrella aliases mirror the batch app's table.
++      -- A headerless file imports the prelude implicitly: match it as `Init`
++      -- so the init snapshot's env serves it (an empty key matched nothing,
++      -- and the header then imported all of Init on the elaboration thread).
++      let matchKey := if importKey.isEmpty then #[`Init] else importKey
 +      let mut override? : Option Environment :=
-         if setup.imports.isEmpty then none
-         else prebuilt.findSome? fun (k, env) => if k == importKey then some env else none
-+      if override?.isNone && !setup.imports.isEmpty then
++        prebuilt.findSome? fun (k, env) => if k == matchKey then some env else none
++      if override?.isNone then
 +        let mut best : Option (Nat × Environment) := none
 +        for (_, env) in prebuilt do
 +          let names := env.allImportedModuleNames
 +          let isUmbrella := names.contains `QED64.Essential
 +          let aliasOk (m : Name) : Bool :=
 +            isUmbrella && (m == `Mathlib || m == `Mathlib.Tactic || m == `Batteries || m == `MIL.Common)
-+          if importKey.all (fun m => names.contains m || aliasOk m) then
++          if matchKey.all (fun m => names.contains m || aliasOk m) then
 +            if best.all (names.size < ·.1) then
 +              best := some (names.size, env)
 +        override? := best.map (·.2)
 +      -- A published env may predate extensions registered by a later
 +      -- snapshot's [init] replay; grow its extension array or generic
 +      -- extension access panics (the patch-0025 epoch class).
++      -- One stderr line per header (this fork is wasm-only): HIT/MISS plus
++      -- the published keys — the difference between a 40 ms covered switch
++      -- and a 17 s on-thread import must never be invisible again.
++      unless prebuilt.isEmpty do
++        let hit := if override?.isSome then "HIT" else "MISS"
++        let published := prebuilt.map fun (p : Array Name × Environment) => (p.1, (Environment.allImportedModuleNames p.2).size)
++        IO.eprintln s!"[WASM LSP] prebuilt lookup {hit}: key={matchKey} published={published}"
 +      if let some env := override? then
 +        override? := some (← env.ensureExtensionsSizeForWasm)
        -- allows `headerEnv` to be leaked, which would live until the end of the process anyway
        let (headerEnv, msgLog) ← do
          match override? with
+diff --git a/src/Lean/Server/FileWorker.lean b/src/Lean/Server/FileWorker.lean
+index 08f2ce2..d2916a9 100644
+--- a/src/Lean/Server/FileWorker.lean
++++ b/src/Lean/Server/FileWorker.lean
+@@ -22,6 +22,7 @@ public import Lean.Server.Completion.ImportCompletion
+ public import Lean.Server.CodeActions.UnknownIdentifier
+ 
+ import Init.Data.String.OrderInstances
++import Init.System.Platform
+ 
+ public section
+ 
+@@ -393,7 +394,13 @@ def setupImports
+     (stx         : Elab.HeaderSyntax)
+     : Language.ProcessingT IO (Except Language.Lean.HeaderProcessedSnapshot SetupImportsResult) := do
+   let importsAlreadyLoaded ← importsLoadedRef.modifyGet ((·, true))
+-  if importsAlreadyLoaded then
++  -- WASM (resident FileWorker, patch 0031): the once-per-process guard is
++  -- meaningless here — imports are never unloaded, every imported
++  -- environment stays resident, and headers are served from the environment
++  -- cache (see teardownForReplacement) — so a header change re-runs setup
++  -- in place. The native path's sleep-then-forceExit would instead block
++  -- forever on the header task (timed sleeps on task pthreads) or kill main.
++  if importsAlreadyLoaded && !System.Platform.isEmscripten then
+     -- As we never unload imports in the server, we should not run the code below twice in the
+     -- same process and instead ask the watchdog to restart the worker
+     IO.sleep 200  -- give user time to make further edits before restart
 diff --git a/src/Lean/Shell.lean b/src/Lean/Shell.lean
 index fb1cb21..32fe20b 100644
 --- a/src/Lean/Shell.lean
@@ -101,7 +161,7 @@ index fb1cb21..32fe20b 100644
      return 0
    catch e =>
 diff --git a/src/emscripten-exports.txt b/src/emscripten-exports.txt
-index ed2aec9..061719b 100644
+index ed2aec9..b96a961 100644
 --- a/src/emscripten-exports.txt
 +++ b/src/emscripten-exports.txt
 @@ -1,4 +1,6 @@
@@ -111,6 +171,66 @@ index ed2aec9..061719b 100644
  _initialize_Init
  _initialize_Init_BinderNameHint
  _initialize_Init_BinderPredicates
+@@ -5168,7 +5170,6 @@ _l_IO_ofExcept___at___00__private_Lean_Parser_Extension_0__Lean_Parser_addBuilti
+ _l_IO_ofExcept___boxed
+ _l_IO_ofExcept___redArg___boxed
+ _l_IO_print___at___00IO_println___at___00Lean_Elab_printImports_spec__0_spec__0___boxed
+-_l_IO_print___at___00IO_println___at___00Lean_finalizeImport_spec__3_spec__4___boxed
+ _l_IO_print___at___00IO_println___at___00Lean_printImportsJson_spec__1_spec__1___boxed
+ _l_IO_print___at___00IO_println___at___00__private_Lean_Parser_Module_0__Lean_Parser_testParseModuleAux_parse_spec__0_spec__0___boxed
+ _l_IO_print___at___00IO_println___at___00__private_Lean_Shell_0__Lean_wasmCompile_spec__1_spec__1___boxed
+@@ -5176,7 +5177,6 @@ _l_IO_print___at___00__private_Lean_Language_Basic_0__Lean_Language_reportMessag
+ _l_IO_print___boxed
+ _l_IO_print___redArg___boxed
+ _l_IO_println___at___00Lean_Elab_printImports_spec__0___boxed
+-_l_IO_println___at___00Lean_finalizeImport_spec__3___boxed
+ _l_IO_println___at___00Lean_printImportsJson_spec__1___boxed
+ _l_IO_println___at___00__private_Lean_Language_Basic_0__Lean_Language_reportMessages_spec__3___boxed
+ _l_IO_println___at___00__private_Lean_Parser_Module_0__Lean_Parser_testParseModuleAux_parse_spec__0___boxed
+@@ -39510,8 +39510,6 @@ _l_Lean_SMap_instForInProdOfMonad___boxed
+ _l_Lean_SMap_instForMProdOfMonad___boxed
+ _l_Lean_SMap_instInhabited___boxed
+ _l_Lean_SMap_iter___boxed
+-_l_Lean_SMap_numBuckets___at___00Lean_Environment_displayStats_spec__2___boxed
+-_l_Lean_SMap_numBuckets___at___00Lean_Environment_displayStats_spec__2___redArg___boxed
+ _l_Lean_SMap_numBuckets___boxed
+ _l_Lean_SMap_numBuckets___redArg___boxed
+ _l_Lean_SMap_switch___boxed
+@@ -58353,8 +58351,6 @@ _l_Std_DHashMap_Internal_bucket___redArg___boxed
+ _l_Std_DHashMap_Internal_computeSize___redArg___lam__0___boxed
+ _l_Std_DHashMap_Internal_mkIdx___boxed
+ _l_Std_DHashMap_Internal_mkIdx___redArg___boxed
+-_l_Std_DHashMap_Internal_numBuckets___at___00Lean_SMap_numBuckets___at___00Lean_Environment_displayStats_spec__2_spec__3___boxed
+-_l_Std_DHashMap_Internal_numBuckets___at___00Lean_SMap_numBuckets___at___00Lean_Environment_displayStats_spec__2_spec__3___redArg___boxed
+ _l_Std_DHashMap_Internal_numBuckets___boxed
+ _l_Std_DHashMap_Internal_numBuckets___redArg___boxed
+ _l_Std_DHashMap_Internal_scrambleHash___boxed
+@@ -70572,9 +70568,6 @@ _l___private_Init_Data_Array_Basic_0__Array_foldlMUnsafe_fold___at___00Lean_Elab
+ _l___private_Init_Data_Array_Basic_0__Array_foldlMUnsafe_fold___at___00Lean_Elab_sortDeclLevelParams_spec__5___boxed
+ _l___private_Init_Data_Array_Basic_0__Array_foldlMUnsafe_fold___at___00Lean_Elab_wfRecursion_spec__12___boxed
+ _l___private_Init_Data_Array_Basic_0__Array_foldlMUnsafe_fold___at___00Lean_Elab_wfRecursion_spec__13___boxed
+-_l___private_Init_Data_Array_Basic_0__Array_foldlMUnsafe_fold___at___00Lean_Environment_displayStats_spec__1___boxed
+-_l___private_Init_Data_Array_Basic_0__Array_foldlMUnsafe_fold___at___00Lean_Environment_displayStats_spec__3___boxed
+-_l___private_Init_Data_Array_Basic_0__Array_foldlMUnsafe_fold___at___00Lean_Environment_displayStats_spec__6___boxed
+ _l___private_Init_Data_Array_Basic_0__Array_foldlMUnsafe_fold___at___00Lean_Environment_freeRegions_spec__0___boxed
+ _l___private_Init_Data_Array_Basic_0__Array_foldlMUnsafe_fold___at___00Lean_Expr_NumApps_visit_spec__0___boxed
+ _l___private_Init_Data_Array_Basic_0__Array_foldlMUnsafe_fold___at___00Lean_Firefox_Profile_collide_spec__0___boxed
+@@ -71702,7 +71695,6 @@ _l___private_Init_Data_Array_Basic_0__Array_foldrMUnsafe_fold___at___00Lean_Elab
+ _l___private_Init_Data_Array_Basic_0__Array_foldrMUnsafe_fold___at___00Lean_Elab_Term_elabExplicitUnivs_spec__0___boxed
+ _l___private_Init_Data_Array_Basic_0__Array_foldrMUnsafe_fold___at___00Lean_Elab_Term_elabExplicitUnivs_spec__0___redArg___boxed
+ _l___private_Init_Data_Array_Basic_0__Array_foldrMUnsafe_fold___at___00Lean_Elab_WF_GuessLex_mkProdElem_spec__0___boxed
+-_l___private_Init_Data_Array_Basic_0__Array_foldrMUnsafe_fold___at___00Lean_Environment_displayStats_spec__5___boxed
+ _l___private_Init_Data_Array_Basic_0__Array_foldrMUnsafe_fold___at___00Lean_Environment_replay_spec__2___boxed
+ _l___private_Init_Data_Array_Basic_0__Array_foldrMUnsafe_fold___at___00Lean_MVarId_assertHypotheses_spec__3___boxed
+ _l___private_Init_Data_Array_Basic_0__Array_foldrMUnsafe_fold___at___00Lean_MVarId_tryClearMany_spec__0___boxed
+@@ -75424,7 +75416,6 @@ _l___private_Init_Data_Array_Basic_0__Array_mapMUnsafe_map___at___00Lean_Elab_wf
+ _l___private_Init_Data_Array_Basic_0__Array_mapMUnsafe_map___at___00Lean_Elab_wfRecursion_spec__8___boxed
+ _l___private_Init_Data_Array_Basic_0__Array_mapMUnsafe_map___at___00Lean_EnvExtension_mkInitialExtStates_spec__0___boxed
+ _l___private_Init_Data_Array_Basic_0__Array_mapMUnsafe_map___at___00Lean_EnvironmentHeader_moduleNames_spec__0___boxed
+-_l___private_Init_Data_Array_Basic_0__Array_mapMUnsafe_map___at___00Lean_Environment_displayStats_spec__4___boxed
+ _l___private_Init_Data_Array_Basic_0__Array_mapMUnsafe_map___at___00Lean_Expr_setAppPPExplicitForExposingMVars_spec__0___boxed
+ _l___private_Init_Data_Array_Basic_0__Array_mapMUnsafe_map___at___00Lean_Expr_setAppPPExplicit_spec__0___boxed
+ _l___private_Init_Data_Array_Basic_0__Array_mapMUnsafe_map___at___00Lean_Firefox_Profile_collide_spec__1___boxed
 diff --git a/src/runtime/io.cpp b/src/runtime/io.cpp
 index d21e8f6..37bca4a 100644
 --- a/src/runtime/io.cpp

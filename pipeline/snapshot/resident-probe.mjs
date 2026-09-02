@@ -22,12 +22,17 @@ const budgetMs = Number(arg("budget-ms", "180000"));
 const leanJs = path.join(artifactDir, "bin/lean.js");
 if (!fs.existsSync(leanJs)) { console.error(`error: ${leanJs} not found`); process.exit(2); }
 
-const PROBE = [
+const PROBE = (process.env.PROBE_MINIMAL ? [
+  "import Init",
+  "theorem two_two : (2 : Nat) + 2 = 4 := rfl",
+  "example : (2 : Nat) + 2 = 5 := rfl",
+] : [
+  "import Init",
   "def answer : Nat := 41 + 1",
   "#eval answer",
   "theorem answer_is : answer = 42 := rfl",
   "example : answer = 43 := rfl",
-].join("\n") + "\n";
+]).join("\n") + "\n";
 
 // ---------------------------------------------------------------------------
 // Result tracking
@@ -64,16 +69,32 @@ const dec = new TextDecoder();
 const enc = new TextEncoder();
 let lspBuf = new Uint8Array(0);
 function onStdout(text) {
+  if (process.env.RAW_TAP) log(`RAW print: ${JSON.stringify(String(text).slice(0, 90))}`);
   const bytes = enc.encode(`${text}\n`);
   const joined = new Uint8Array(lspBuf.length + bytes.length);
   joined.set(lspBuf, 0); joined.set(bytes, lspBuf.length);
   lspBuf = joined;
   for (;;) {
-    const head = dec.decode(lspBuf.subarray(0, Math.min(lspBuf.length, 256)));
-    const m = /Content-Length: (\d+)/i.exec(head);
-    if (!m) return;
+    // Interleaved stdout LOG lines (e.g. the fork's "[DEBUG:PROGRESS] …" during
+    // a header import on the elaboration thread) can precede the next frame
+    // header. Find the header ANYWHERE in the buffer; bytes before it are
+    // logs, not framing — surface them and drop them.
+    const whole = dec.decode(lspBuf);
+    const m = /Content-Length: (\d+)/i.exec(whole);
+    if (!m) {
+      // No header yet: shed complete log lines so the buffer can't grow unbounded.
+      const lastNl = whole.lastIndexOf("\n");
+      if (lastNl > 0) {
+        for (const line of whole.slice(0, lastNl).split("\n")) if (line.trim()) log(`stdout-log: ${line.slice(0, 120)}`);
+        lspBuf = lspBuf.slice(enc.encode(whole.slice(0, lastNl + 1)).length);
+      }
+      return;
+    }
+    if (m.index > 0) {
+      for (const line of whole.slice(0, m.index).split("\n")) if (line.trim()) log(`stdout-log: ${line.slice(0, 120)}`);
+    }
     const len = Number(m[1]);
-    let at = head.indexOf(m[0]) + m[0].length;
+    let at = enc.encode(whole.slice(0, m.index)).length + m[0].length;
     while (at < lspBuf.length && (lspBuf[at] === 0x0d || lspBuf[at] === 0x0a)) at += 1;
     if (lspBuf.length < at + len) return;
     const body = dec.decode(lspBuf.subarray(at, at + len));
@@ -84,6 +105,14 @@ function onStdout(text) {
 
 function onMessage(msg) {
   if (process.env.DUMP_MSGS) log(`MSG ${msg.method ?? `resp#${msg.id}`}: ${JSON.stringify(msg).slice(0, 160)}`);
+  // Server→client REQUESTS (id + method, e.g. workspace/inlayHint/refresh):
+  // the reporter awaits the client's answer, and a client that never replies
+  // blocks all further diagnostics. vscode-languageclient answers these
+  // automatically in the product; a harness must too.
+  if (msg.id !== undefined && msg.method !== undefined) {
+    send({ jsonrpc: "2.0", id: msg.id, result: null });
+    return;
+  }
   if (msg.id === 1 && msg.result) {
     // The FileWorker consumes initialize without answering (the watchdog's
     // job in a full server) — an answer here would be a surprise, but count it.
@@ -94,6 +123,7 @@ function onMessage(msg) {
     seen.fileProgressEvents += 1;
     const processing = msg.params?.processing ?? [];
     if (seen.fileProgressEvents > 1 && processing.length === 0) seen.progressDrained = true;
+    checkActs(); // the drained progress can land AFTER the last diagnostic
     return;
   }
   if (msg.method === "textDocument/publishDiagnostics") {
@@ -101,7 +131,15 @@ function onMessage(msg) {
       seen.diags.push(String(d.message).slice(0, 120));
       if (/42/.test(String(d.message)) && d.severity >= 3) seen.evalInfo = true;
     }
-    // Success condition: progress drained AND our deliberate error surfaced.
+    checkActs();
+  }
+}
+
+// Success conditions are evaluated from BOTH the diagnostics and the
+// fileProgress handlers: the burst order between them is not fixed.
+function checkActs() {
+  {
+    // Act 1: progress drained AND our deliberate error surfaced.
     if (seen.act === 1 && seen.progressDrained && seen.diags.some((x) => /rfl|43|mismatch|failed/i.test(x))) {
       log(`act-1 diagnostics: ${JSON.stringify(seen.diags)}`);
       if (!ACT2) {
@@ -114,11 +152,21 @@ function onMessage(msg) {
       // new in-process session against the resident env cache. This is the
       // reboot-killer moment of the whole campaign.
       seen.act = 2;
-      log("act 2: header change via didChange");
+      log("act 2: header change via didChange (expect IN-PROCESS reprocessing: no exit)");
+      // Fresh accounting: act 2 succeeds when the NEW header's session drains
+      // again with the deliberate error re-reported.
+      seen.progressDrained = false; seen.fileProgressEvents = 0; seen.diags = [];
+      seen.act2StartedAt = Date.now();
       send({ jsonrpc: "2.0", method: "textDocument/didChange", params: {
         textDocument: { uri: "file:///workspace/Probe.lean", version: 2 },
         contentChanges: [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } },
           text: "import Init.Data.Queue\n" }] } });
+      return;
+    }
+    if (seen.act === 2 && seen.progressDrained && seen.diags.some((x) => /rfl|43|mismatch|failed/i.test(x))) {
+      log(`act-2 (in-process header switch) diagnostics: ${JSON.stringify(seen.diags.slice(-2))} in ${Date.now() - seen.act2StartedAt} ms`);
+      closeRing();
+      setTimeout(() => finish(true, "act2: in-process header switch clean"), 1500);
     }
     if (seen.act === 2 && seen.fileProgressEvents > 2) {
       // diagnostics for the re-opened session
@@ -271,6 +319,17 @@ globalThis.Module = {
     // DIRECTLY — anything between them corrupts the opening sequence.
     send({ jsonrpc: "2.0", method: "textDocument/didOpen", params: {
       textDocument: { uri: "file:///workspace/Probe.lean", languageId: "lean4", version: 1, text: PROBE } } });
+    // Discriminator experiment (phase-1 blocker): after the reporter goes
+    // quiet, send requests that DON'T depend on the reporter. rpc/connect
+    // answers immediately through the stdout writer; hover needs a body
+    // elaboration snapshot. Their arrival (or not) tells reporter-wedged vs
+    // writer-stalled vs elaboration-stuck apart.
+    setTimeout(() => {
+      log("EXPERIMENT: sending rpc/connect + hover");
+      send({ jsonrpc: "2.0", id: 9001, method: "$/lean/rpc/connect", params: { uri: "file:///workspace/Probe.lean" } });
+      send({ jsonrpc: "2.0", id: 9002, method: "textDocument/hover", params: {
+        textDocument: { uri: "file:///workspace/Probe.lean" }, position: { line: 1, character: 5 } } });
+    }, 12000);
     // Tickler (patch 0022 / the product shim's mechanism): the worker's
     // stdout occasionally leaves the final frame stuck in the TTY buffer
     // until the NEXT write. A periodic cheap request forces that flush —

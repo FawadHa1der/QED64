@@ -226,7 +226,10 @@ async function main() {
     newSession(artifacts, ui, () => void shim?.handleWorkerDeath(), opts);
   // The default example is a Mathlib one — commit the umbrella-sized heap.
   const qs = await makeSession({ mathlib: true });
-  shim = new WatchdogShim(artifacts, qs, ui, makeSession);
+  // ?resident=1 boots the resident FileWorker transport (patch 0031,
+  // docs/RESIDENT-WORKER-PLAN.md phase 3) — the pump path stays the default.
+  const resident = new URLSearchParams(location.search).get("resident") === "1";
+  shim = new WatchdogShim(artifacts, qs, ui, makeSession, {}, { resident });
   window.addEventListener("pagehide", () => shim?.disposeForUnload());
   (globalThis as unknown as Record<string, unknown>).qed64 = { artifacts, shim, ui, get editor() { return editor.editor; } };
   // The getter re-reads shim.qs each tick, so the meter follows worker reboots.
