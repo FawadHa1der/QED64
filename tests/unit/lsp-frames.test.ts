@@ -143,6 +143,58 @@ describe("lsp-frames decoder", () => {
     expect(junk).toEqual(["Content-Length: oops"]);
   });
 
+  // Resync (the successor of the old frame-parser test's "resync" case): a
+  // junk run ends at the first "Content-Length:" inside it, not only at LF.
+  it("recovers from a non-LF stdout write glued to the next header (every later frame kept)", () => {
+    const bodies = ['{"a":1}', '{"b":22}', '{"c":333}'];
+    const junk = "[WASM PROFILE] 12ms"; // no '\n': the shape that killed the channel for good
+    const s = concat([enc.encode(junk), ...bodies.map(frame)]);
+    for (const mode of ["byte", "bulk"] as const) {
+      const r = decodeAll(s, mode);
+      expect(r.frames, mode).toEqual(bodies);
+      expect(r.junk, mode).toEqual([junk]);
+      expect(r.d.stats.junkBytes, mode).toBe(junk.length);
+      expect(r.d.pendingBytes, mode).toBe(0);
+    }
+  });
+
+  it("recovers from junk between a header and its body: that frame is lost, the next ones are not", () => {
+    const junk = "[X] 1"; // inside the frame, so the body is off by its length
+    const s = concat([enc.encode("Content-Length: 7\r\n\r\n"), enc.encode(junk), enc.encode('{"a":1}'), frame('{"b":2}'), frame('{"c":3}')]);
+    const { frames, d } = decodeAll(s);
+    // The corrupted frame's body is whatever 7 bytes followed the header;
+    // everything after the next header decodes normally.
+    expect(frames.slice(-2)).toEqual(['{"b":2}', '{"c":3}']);
+    expect(d.stats.frames).toBe(3);
+    expect(d.pendingBytes).toBe(0);
+  });
+
+  it("resyncs case-insensitively and when the junk run has a false start (\"cc\")", () => {
+    const s = concat([enc.encode("ccontent-length: 2\r\n\r\n{}"), enc.encode("xcONTENT-length: 2\r\n\r\n[]")]);
+    const { frames, junk } = decodeAll(s);
+    expect(frames).toEqual(["{}", "[]"]);
+    expect(junk).toEqual(["c", "x"]);
+  });
+
+  it("keeps a partial header match across the 4096-byte junk cap", () => {
+    // 4090 junk bytes then "Conte" straddles the cap: the flush must keep the
+    // matched tail so the header that completes after it is still found.
+    const s = concat([enc.encode("#".repeat(4090)), frame('{"ok":true}')]);
+    const { frames, junk, d } = decodeAll(s);
+    expect(frames).toEqual(['{"ok":true}']);
+    expect(junk).toEqual(["#".repeat(4090)]);
+    expect(d.stats.junkBytes).toBe(4090);
+  });
+
+  it("flushes a bogus header run that never terminates (the cap applies to header-shaped junk too)", () => {
+    const bogus = `Content-Length: 5 ${"~".repeat(5000)}`;
+    const { frames, d } = decodeAll(concat([enc.encode(bogus), frame("{}")]));
+    expect(frames).toEqual(["{}"]);
+    // Flushed at the cap (line 1); the remainder is a junk run the real header ends (line 2).
+    expect(d.stats.junkLines).toBe(2);
+    expect(d.stats.junkBytes).toBe(bogus.length);
+  });
+
   it("a frame stream with zero junk yields nonFrameStdoutBytes === 0 (the gate assertion)", () => {
     const { d } = decodeAll(concat(Array.from({ length: 50 }, (_, i) => frame(`{"i":${i}}`))), "bulk");
     expect(d.stats.junkBytes).toBe(0);
