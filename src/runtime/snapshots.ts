@@ -21,6 +21,11 @@ export interface SnapshotEntry {
   /** Ordered header imports the snapshot's environment was baked for;
    * empty = the default no-import (Init) header. */
   imports: string[];
+  /** `buildId` of the runtime that baked this region (snapshots are
+   * function-table-paired to one binary). Written by bake-snapshot.mjs;
+   * absent only in indexes that predate the field, which the preflight
+   * reports as "no pairing fact" rather than as a match. */
+  runtime?: string;
 }
 
 export interface SnapshotIndex {
@@ -38,7 +43,8 @@ export async function fetchSnapshotIndex(url = "/snapshots/index.json"): Promise
       if (
         typeof entry.name !== "string" ||
         typeof entry.url !== "string" ||
-        !Array.isArray(entry.imports)
+        !Array.isArray(entry.imports) ||
+        (entry.runtime !== undefined && typeof entry.runtime !== "string")
       ) {
         return null;
       }

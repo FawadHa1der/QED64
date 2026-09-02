@@ -8,6 +8,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
+    "pretest": "npm run typecheck:site",
     "test": "vitest run --exclude '**/integration/**'",
     "test:watch": "vitest --exclude '**/integration/**'",
     "test:integration": "vitest run tests/integration",

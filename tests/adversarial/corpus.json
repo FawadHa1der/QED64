@@ -534,7 +534,6 @@
    ],
    "expect": {
     "panicFree": true,
-    "budgetMs": 90000,
     "mustSucceed": true
    },
    "rationale": "Control scenario: a calm human types a valid linarith theorem in word-sized chunks at 200-300ms cadence against a resolvable Mathlib header (same import+linarith shape as the app's own built-in mathlib example, so known-good in the umbrella env). Baseline that must end at the ready pill — if this fails, every adversarial script's result is uninterpretable. Audit note: setValue actions carry both value and text (the e2e harness reads a.text)."
@@ -721,7 +720,6 @@
    ],
    "expect": {
     "panicFree": true,
-    "budgetMs": 90000,
     "mustSucceed": true
    },
    "rationale": "Composes the import line one character at a time with irregular 60-400ms pauses, so the header passes through ~30 unresolvable prefixes ('impor', 'Mathlib.Da', ...) before resolving. Stresses the imports-incomplete path (audit confirmed 'imports incomplete' is the frontend watchdog-shim's idle surface) and header re-resolution churn; must end fully checked at the ready pill."
@@ -813,7 +811,6 @@
    ],
    "expect": {
     "panicFree": true,
-    "budgetMs": 90000,
     "mustSucceed": true
    },
    "rationale": "Types unbalanced anonymous-constructor/bracket garbage into the middle of a working mil proof (inside 'rw [← mul_assoc]'), lets error diagnostics land, then undo-alls (with extra no-op undos) and pins the exact original source (audit confirmed the setValue is byte-identical to the app's built-in mil example in frontend/src/main.ts). Regression for the stale-diagnostics-never-clearing class: the earlier garbage errors must be gone at settle."
@@ -909,7 +906,6 @@
    ],
    "expect": {
     "panicFree": true,
-    "budgetMs": 90000,
     "mustSucceed": true
    },
    "rationale": "Eight whole-document example switches at ~120ms with garbage appended between them; each switch flips the header set (Mathlib.Data.Real.Basic / MIL.Common / no imports — audit confirmed all three example keys exist in frontend/src/main.ts), retargeting the resident env repeatedly mid-elaboration. Direct regression for the env-extension epoch-panic class; ends on a pristine init example that must check clean."
@@ -982,7 +978,6 @@
    ],
    "expect": {
     "panicFree": true,
-    "budgetMs": 90000,
     "mustSucceed": true
    },
    "rationale": "Three select-all-replace cycles alternating a syntactically horrid garbage blob with the full valid init example (audit confirmed byte-identical to frontend/src/main.ts), each replacement landing while the previous whole-document check is still in flight. Stresses full-document invalidation and diagnostic swaps; ends on the valid source, so lingering garbage-era errors fail it."
@@ -1074,8 +1069,7 @@
     }
    ],
    "expect": {
-    "panicFree": true,
-    "budgetMs": 90000
+    "panicFree": true
    },
    "rationale": "Starts elaboration of the mathlib example, then 250ms in types at line 1 col 1 — mutating the import line itself mid-flight ('-import' -> '--import' -> '-- import', killing the header, then 'yximport'), each time undoing back. Hits header re-resolution racing an in-flight elaboration; survival test (the built-in mathlib example ends in 'example : False := sorry', so no mustSucceed — audit confirmed that final line in frontend/src/main.ts)."
   },
@@ -1254,8 +1248,7 @@
     }
    ],
    "expect": {
-    "panicFree": true,
-    "budgetMs": 90000
+    "panicFree": true
    },
    "rationale": "Fifteen undo/redo cycles at 80ms over three appended edits, then a drain of undos. Every flip is a didChange the worker must replay in order — direct regression for the version-regression-on-didChange-replay class. All reachable end states are valid or comment-only, but undo-stack semantics vary, so panicFree-only."
   },
@@ -1323,7 +1316,6 @@
    ],
    "expect": {
     "panicFree": true,
-    "budgetMs": 90000,
     "mustSucceed": true
    },
    "rationale": "From the working mil file: deletes both import lines (ℝ becomes unknown, whole file errors), undo-restores; then deletes just the MIL.Common line and restores it by retyping rather than undo. Two different header-loss/header-regain transitions against the resident snapshot env; must end fully checked with no residual diagnostics."
@@ -1490,10 +1482,7 @@
    ],
    "expect": {
     "panicFree": true,
-    "budgetMs": 90000,
-    "containsMsgs": [
-     "imports incomplete"
-    ]
+    "terminal": "headerUnresolvable"
    },
    "rationale": "Types 'import Mathlib.Tactic' char-by-char (resolvable alias — a 2s pause lets that header commit and elaboration start), then extends it to 'Mathlib.Tactic.Bogus', flipping the header from resolvable back to unresolvable. Ends parked in the unresolvable state; audit confirmed 'imports incomplete' is the exact watchdog-shim idle text (frontend/src/watchdog-shim.ts) and an accepted terminal settle state in the e2e harness. Deliberately no mustSucceed — the required end state is imports-incomplete, not ready."
   },
@@ -1671,8 +1660,7 @@
     }
    ],
    "expect": {
-    "panicFree": true,
-    "budgetMs": 90000
+    "panicFree": true
    },
    "rationale": "Twenty cursor jumps at 60-150ms starting 250ms into the mathlib example's elaboration (plus five more after a beat), spraying InfoView goal-state and hover requests across every proof line, including past-end-of-line columns that must clamp. Targets the frozen-'elaborating'-pill class; document is never edited, so panicFree plus terminal settle is the assertion (final doc contains the example's built-in sorry, so no mustSucceed)."
   },
@@ -1767,7 +1755,6 @@
    ],
    "expect": {
     "panicFree": true,
-    "budgetMs": 90000,
     "mustSucceed": true
    },
    "rationale": "The garbage-typing-storm class that historically killed the worker via JS stack overflow: twelve 90ms bursts of pathologically nested/unclosed tokens appended to a valid file, a 2.5s window for the parser to choke, then a clean setValue and a long 12s settle. Whether or not the worker died, recovery plus the crash-loop breaker must leave the clean file fully checked. Note: if the worker survives without any PANIC-class console line, panicFree holds; a stack-overflow console line here is exactly the regression this item exists to catch."
@@ -1860,7 +1847,6 @@
    ],
    "expect": {
     "panicFree": true,
-    "budgetMs": 90000,
     "mustSucceed": true
    },
    "rationale": "Interleaves whole-document setValues with incremental typeAt/typeAppend/undo at 40-80ms — full-replace and delta didChanges racing each other is exactly the shape that produced the version-regression-on-didChange-replay bug. Ends deterministically on the valid init source, which must check clean with no diagnostics from any intermediate document generation."

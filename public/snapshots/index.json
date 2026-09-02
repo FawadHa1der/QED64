@@ -1,0 +1,25 @@
+{
+  "schema": "qed64.snapshot-index/v1",
+  "snapshots": [
+    {
+      "name": "init",
+      "url": "/snapshots/init.384cd45baf780ff0.snapz",
+      "digest": "sha256:384cd45baf780ff0138325fcb19381eb0ee5563ff423002c86e8dea82e7fe743",
+      "bytes": 121481845,
+      "transfer": 32643226,
+      "imports": [],
+      "runtime": "wasm64-dca2763359db27e7"
+    },
+    {
+      "name": "mathlib",
+      "url": "/snapshots/mathlib.40dedc1828db6c22.snapz",
+      "digest": "sha256:40dedc1828db6c2212c57090f04d59001a41617b2e1091b3e6d7cc566c122d72",
+      "bytes": 1114420853,
+      "transfer": 319080064,
+      "imports": [
+        "QED64.Essential"
+      ],
+      "runtime": "wasm64-dca2763359db27e7"
+    }
+  ]
+}

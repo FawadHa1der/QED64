@@ -1,17 +1,24 @@
 #!/usr/bin/env node
 // Chunk a built lean.js/lean.wasm pair into the app's verified runtime layout:
-// ≤16 MiB SHA-256-addressed parts under public/runtime/chunks plus a
+// ≤16 MiB SHA-256-addressed parts under <out>/chunks plus a
 // runtime-manifest.json carrying per-chunk and whole-file identities.
+//
+// The output is a STAGING tree (work/staging/<buildId>/runtime by default),
+// never public/: the chunker once ran with `--out public/runtime`, rewrote the
+// tracked default manifest and destroyed the served (gitignored) chunks
+// (HARDENING #32, review C6). Promotion into public/ is a separate, additive
+// step: `npm run promote:staging -- --staging work/staging/<buildId>`.
 //
 // Usage:
 //   node pipeline/toolchain/chunk-runtime.mjs --bin <dir with lean.js+lean.wasm> \
-//        [--lean-version 4.33.0-pre] [--revision <githash>] [--out public/runtime]
+//        [--lean-version 4.33.0-pre] [--revision <githash>] [--out work/staging/<buildId>/runtime]
 
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { execSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { refuseInsidePublic, runtimeBuildId, stagingDir } from "./artifact-paths.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 function arg(name, fallback) {
@@ -19,7 +26,6 @@ function arg(name, fallback) {
   return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : fallback;
 }
 const binDir = path.resolve(arg("bin", ""));
-const outDir = path.resolve(root, arg("out", "public/runtime"));
 const leanVersion = arg("lean-version", "4.33.0-pre");
 // Default the source revision to the fork checkout that (by the pipeline's
 // build-then-chunk sequence) produced the binary being chunked, so every
@@ -44,9 +50,15 @@ const PART = 16 * 1024 * 1024;
 const sha256 = (b) => createHash("sha256").update(b).digest("hex");
 
 const wasmBytes = fs.readFileSync(path.join(binDir, "lean.wasm"));
-const buildId = `wasm64-${sha256(wasmBytes).slice(0, 16)}`;
+const buildId = runtimeBuildId(wasmBytes);
+// The staging default is keyed by the build so two chunk runs never share a
+// tree; an explicit --out inside public/ is refused before anything is written.
+const outDir = path.resolve(root, arg("out", stagingDir(root, buildId, "runtime")));
+refuseInsidePublic(root, outDir, "chunk-runtime");
 
-fs.rmSync(path.join(outDir, "chunks"), { recursive: true, force: true });
+// Additive only: content-addressed chunk names cannot collide across builds,
+// so an existing chunks/ directory is left exactly as it was (review C6:
+// producers never rmSync what a manifest may still reference).
 fs.mkdirSync(path.join(outDir, "chunks"), { recursive: true });
 
 function chunkFile(name) {
@@ -78,4 +90,7 @@ const manifest = {
   },
 };
 fs.writeFileSync(path.join(outDir, "runtime-manifest.json"), JSON.stringify(manifest, null, 2));
+// The per-build copy is what `?runtime=<buildId>` and the pinned shell fetch
+// (qed64-boot.ts:52/:59); promote installs both names under public/runtime.
+fs.writeFileSync(path.join(outDir, `runtime-manifest.${buildId}.json`), JSON.stringify(manifest, null, 2));
 console.log(`runtime ${buildId} → ${outDir}`);

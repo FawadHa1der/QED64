@@ -7,52 +7,88 @@
 // worker-kill recovery drill, memory telemetry per scenario, and speed
 // budgets. Screenshots + console tails on every failure.
 //
+// Harness trust (review C7, phase 0): every row carries an outcome from
+// {pass, fail, infra, refused, aborted} — a page that cannot boot is ONE
+// `infra` row and the run aborts (freshPage throws), never N scenario
+// failures; reports go to a per-run directory
+// work/adversarial/runs/<ts>-<buildId>-<mode>/ (plus the legacy
+// work/adversarial/e2e-report.json for existing scripts); shim stats deltas
+// are recorded per scenario once the shim exposes `stats`.
+//
 // Usage: node tests/adversarial/e2e.mjs [--url http://localhost:5187/] [--corpus corpus.json]
+//        [--only <exact scenario name>] [--run-dir <dir>] [--boot-budget-ms 480000]
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
+import { arg, fetchJson, onlyMatches as onlyMatchesName, resolveTarget, root, runDir, settleClass, teeLog } from "./harness.mjs";
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const arg = (n, d) => { const i = process.argv.indexOf(`--${n}`); return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : d; };
 const url = arg("url", "http://localhost:5187/");
 const corpusPath = arg("corpus", path.join(root, "tests/adversarial/corpus.json"));
-const artDir = path.join(root, "work/adversarial/artifacts");
+const bootBudgetMs = Number(arg("boot-budget-ms", "480000"));
+const target = resolveTarget(url);
+// The run identity (buildId + mode) comes from what the page will boot. An
+// unreachable manifest is an infrastructure refusal, not a scenario result.
+const manifest = await fetchJson(target.manifestUrl).catch((e) => { console.error(`e2e: refused — ${e.message}`); process.exit(3); });
+const buildId = manifest.buildId ?? "unknown";
+const dir = runDir(buildId, target.mode);
+teeLog(dir, "e2e.log");
+const artDir = path.join(dir, "artifacts");
 fs.mkdirSync(artDir, { recursive: true });
+fs.mkdirSync(path.join(root, "work/adversarial"), { recursive: true });
+console.log(`e2e: ${url} → ${buildId} (${target.mode}); reports in ${path.relative(root, dir)}`);
 
 const corpus = fs.existsSync(corpusPath) ? JSON.parse(fs.readFileSync(corpusPath, "utf8")).items : [];
-// --only <regex>: run just the matching corpus scenarios (fixed scenarios,
+// Battery-only keys on an editor-action item are dead here (review C7: four
+// items "passed" at 'keeps crashing' because nothing read them) — refuse
+// the corpus rather than run expectations nobody evaluates.
+for (const it of corpus) {
+  if (!(Array.isArray(it.actions) && it.actions.length)) continue;
+  const dead = ["containsMsgs", "budgetMs", "mustError"].filter((k) => k in (it.expect ?? {}));
+  if (dead.length) { console.error(`corpus: action item ${it.name} carries battery-only keys ${dead.join(", ")} — use expect.terminal/mustSucceed/settleMs (exit 3)`); process.exit(3); }
+  if (it.expect?.terminal && !["ready", "headerUnresolvable", "halted"].includes(it.expect.terminal)) { console.error(`corpus: ${it.name}: unknown terminal ${it.expect.terminal} (exit 3)`); process.exit(3); }
+}
+// --only <name>: run just that corpus scenario (fixed scenarios,
 // import-completion, and the drills are skipped) — the isolation mode for
-// chasing one flaky scenario without cohort contamination.
+// chasing one flaky scenario without cohort contamination. Whole-name
+// matching lives in harness.mjs (pinned by tests/unit/adversarial-harness.test.ts).
 const only = arg("only", "");
+const onlyMatches = (name) => onlyMatchesName(name, only);
 if (only && !corpus.some((it) => onlyMatches(it.name))) {
   console.error(`--only ${JSON.stringify(only)} matches no corpus scenario — refusing (exit 3)`);
   process.exit(3);
 }
 const results = [];
 let consoleLog = [];
+let pageCrashes = 0;
+
+/** Thrown when the page cannot boot: the run is not measuring the product. */
+class InfraError extends Error {}
 
 const browser = await chromium.launch({ args: ["--enable-features=SharedArrayBuffer"] });
 const context = await browser.newContext();
 let page;
-let pageCrashes = 0;
 function wirePage(p) {
   p.on("console", (m) => { consoleLog.push(m.text().slice(0, 300)); if (consoleLog.length > 400) consoleLog.shift(); });
   p.on("pageerror", (e) => consoleLog.push(`PAGEERROR: ${e.message.slice(0, 200)}`));
   p.on("crash", () => { pageCrashes += 1; consoleLog.push("PAGE-CRASHED"); });
 }
+/** A fresh page that MUST boot; anything else is an InfraError that aborts
+ * the run (today's "continuing" turned an unbootable runtime into a cascade
+ * of scenario failures — HARDENING #32/#33). */
 async function freshPage() {
   try { if (page && !page.isClosed()) await page.close(); } catch { /* gone */ }
   page = await context.newPage();
   wirePage(page);
+  const t0 = Date.now();
   await page.goto(url, { waitUntil: "domcontentloaded" });
-  const r = await waitPill(/^ready$/, 480000, 1000);
-  if (!r.ok) console.log(`freshPage: boot did not settle (${r.s.slice(0, 40)}) — continuing`);
+  const r = await waitPill(/^ready$/, bootBudgetMs, 1000);
+  if (!r.ok) throw new InfraError(`fresh page did not boot within ${bootBudgetMs} ms (pill '${r.s.slice(0, 40)}', pageCrashes=${pageCrashes})`);
+  return Date.now() - t0;
 }
 page = await context.newPage();
 wirePage(page);
 
-const pill = () => page.evaluate(() => (document.getElementById("ptext") || {}).textContent || "");
+const pill = () => page.evaluate(() => (document.getElementById("ptext") || {}).textContent || "").catch(() => "");
 const ivText = () => Promise.race([
   page.evaluate(() => {
     const f = document.getElementById("infoview")?.querySelector("iframe");
@@ -69,6 +105,11 @@ async function waitPill(re, timeoutMs, minMs = 0) {
     await page.waitForTimeout(400);
   }
 }
+// Terminal classes the pill can settle in today (pump-era labels, see
+// harness.settleClass). When the shim exposes a phase enum (attacks.txt #3)
+// this becomes a read of `qed64.status().phase`; the corpus keys
+// (`expect.terminal`) already use the enum names so the corpus never changes again.
+const SETTLE_RE = /^ready$|imports (incomplete|failed)|keeps crashing/;
 async function setBuffer(text) {
   await page.evaluate((t) => { globalThis.qed64.editor.getModel().setValue(t); }, text);
 }
@@ -88,9 +129,38 @@ async function memSample() {
   }).catch(() => ({})),
   ]);
 }
-async function record(name, category, pass, detail, extra = {}) {
-  const entry = { name, category, pass, detail, mem: await memSample().catch(() => ({})), ...extra };
-  if (!pass) {
+/** Shim counters (`globalThis.qed64.shim.stats`, landing with the shim
+ * rewrite) — null until they exist; never a reason to fail. */
+async function statsSnap() {
+  if (!page || page.isClosed()) return null;
+  return Promise.race([
+    new Promise((res) => setTimeout(() => res(null), 3000)),
+    page.evaluate(() => {
+      const s = globalThis.qed64?.shim?.stats;
+      return s && typeof s === "object" ? JSON.parse(JSON.stringify(s)) : null;
+    }).catch(() => null),
+  ]);
+}
+const statsDelta = (before, after) => {
+  if (!before || !after) return null;
+  const d = {};
+  for (const k of Object.keys(after)) if (typeof after[k] === "number" && typeof before[k] === "number") d[k] = after[k] - before[k];
+  return d;
+};
+function writeReport(inProgress) {
+  const counts = { total: results.length, failed: results.filter((r) => r.outcome !== "pass").length };
+  for (const o of ["pass", "fail", "infra", "refused", "aborted"]) counts[o] = results.filter((r) => r.outcome === o).length;
+  const report = { lane: "e2e", url, buildId, mode: target.mode, runDir: dir, inProgress, ...counts, results };
+  const text = JSON.stringify(report, null, 2);
+  fs.writeFileSync(path.join(dir, "e2e-report.json"), text);
+  fs.writeFileSync(path.join(root, "work/adversarial/e2e-report.json"), text);
+}
+/** One row per scenario. `outcome` is the verdict; `pass` stays for the
+ * scripts that read the old report shape. */
+async function record(name, category, outcome, detail, extra = {}) {
+  if (typeof outcome === "boolean") outcome = outcome ? "pass" : "fail";
+  const entry = { name, category, outcome, pass: outcome === "pass", detail, mem: outcome === "aborted" ? {} : await memSample().catch(() => ({})), ...extra };
+  if (outcome === "fail" || outcome === "infra") {
     const shot = path.join(artDir, `${name.replace(/[^\w.-]/g, "_")}.png`);
     if (page && !page.isClosed()) await page.screenshot({ path: shot, fullPage: false }).catch(() => {});
     entry.screenshot = shot;
@@ -98,9 +168,8 @@ async function record(name, category, pass, detail, extra = {}) {
   }
   results.push(entry);
   // Flush incrementally: a hung or killed run must not lose its findings.
-  fs.writeFileSync(path.join(root, "work/adversarial/e2e-report.json"),
-    JSON.stringify({ lane: "e2e", url, inProgress: true, total: results.length, failed: results.filter((r) => !r.pass).length, results }, null, 2));
-  console.log(`${pass ? "ok  " : "FAIL"} [${category}] ${name}${pass ? "" : " — " + detail}`);
+  writeReport(true);
+  console.log(`${outcome === "pass" ? "ok  " : outcome.toUpperCase().padEnd(4)} [${category}] ${name}${outcome === "pass" ? "" : " — " + detail}`);
 }
 const panicsInConsole = () => consoleLog.filter((l) => /PANIC|assertion violation|Maximum call stack/.test(l)).length;
 const GOLDEN_7 = {
@@ -109,6 +178,17 @@ const GOLDEN_7 = {
   frags: ["Tactic `rfl` failed", "Type mismatch", "Unknown identifier `unknownIdent`", "declaration uses `sorry`", "proved that the proposition"],
 };
 
+// Scenario names in run order, so an abort can list what it never reached.
+const actionItems = corpus.filter((it) => Array.isArray(it.actions) && it.actions.length)
+  .filter((it) => !only || onlyMatches(it.name));
+const planned = only
+  ? ["boot", ...actionItems.map((it) => it.name)]
+  : ["boot", "golden-7-battery", "error-clear-staleness", "import-composition", "switch-init", "switch-mathlib",
+    ...actionItems.map((it) => it.name), "import-completion", "worker-kill-recovery", "final-memory"];
+const remainingAfter = (name) => planned.slice(planned.indexOf(name) + 1).filter((n) => !results.some((r) => r.name === n));
+let exitCode = 0;
+
+try {
 // ---------- scenario: cold-ish boot with overlay behavior --------------------
 {
   const t0 = Date.now();
@@ -118,10 +198,11 @@ const GOLDEN_7 = {
   const settled = await waitPill(/^ready$/, 300000, 1000);
   const bootMs = Date.now() - t0;
   const overlayGone = await page.evaluate(() => { const b = document.getElementById("boot"); return !b || b.classList.contains("done"); });
-  const pass = iso && interactive.ok && settled.ok && overlayGone && bootMs < 720000;
-  await record("boot", "startup", pass,
-    `isolated=${iso} interactive=${interactive.ok} settled=${settled.ok}@${bootMs}ms overlayGone=${overlayGone}`,
-    { bootMs });
+  const detail = `isolated=${iso} interactive=${interactive.ok} settled=${settled.ok}@${bootMs}ms overlayGone=${overlayGone}`;
+  // A page that never becomes interactive is infrastructure (runtime,
+  // artifacts, headers), and nothing after it measures the product.
+  if (!iso || !interactive.ok) throw new InfraError(`boot: ${detail} (pill '${interactive.s.slice(0, 40)}')`);
+  await record("boot", "startup", settled.ok && overlayGone && bootMs < 720000, detail, { bootMs });
 }
 
 // ---------- scenario: golden 7-error battery + badge/list consistency --------
@@ -191,11 +272,11 @@ if (!only) {
 
 // ---------- scenario: example switch speed budget ----------------------------
 if (!only) {
-  for (const [target, budget] of [["init", 20000], ["mathlib", 25000]]) {
+  for (const [name, budget] of [["init", 20000], ["mathlib", 25000]]) {
     const t0 = Date.now();
-    await page.selectOption("#examples", target);
+    await page.selectOption("#examples", name);
     const r = await waitPill(/^ready$/, budget + 30000, 2500);
-    await record(`switch-${target}`, "speed", r.ok && r.ms < budget + 5000, `readyMs=${r.ms} budget=${budget}`, { switchMs: r.ms });
+    await record(`switch-${name}`, "speed", r.ok && r.ms < budget + 5000, `readyMs=${r.ms} budget=${budget}`, { switchMs: r.ms });
     await page.waitForTimeout(1500);
   }
 }
@@ -203,15 +284,6 @@ if (!only) {
 // ---------- corpus editor-action scripts -------------------------------------
 // Heavy scenarios accumulate wasm/JS heap in the shared session; a fresh page
 // every few scenarios keeps deaths attributable to the SCENARIO, not the pile.
-const actionItems = corpus.filter((it) => Array.isArray(it.actions) && it.actions.length)
-  .filter((it) => !only || onlyMatches(it.name));
-// --only matches a WHOLE scenario name (a plain name exactly; a pattern
-// anchored), never a substring: `--only import-composition` used to also run
-// unresolvable-import-composition, which made single-scenario verdicts lie.
-function onlyMatches(name) {
-  return /[\\^$.*+?()[\]{}|]/.test(only) ? new RegExp(`^(?:${only})$`).test(name) : name === only;
-}
-
 let sinceFresh = 0;
 // A Playwright evaluate on a dead/reloading page never resolves (no default
 // timeout), and one such hang has wedged entire runs — every scenario races
@@ -225,6 +297,7 @@ for (const item of actionItems) {
   consoleLog = [];
   if (sinceFresh >= 4) { await freshPage(); sinceFresh = 0; }
   sinceFresh += 1;
+  const statsBefore = await statsSnap();
   try {
     await Promise.race([deadline(Math.max(240000, (item.expect.settleMs ?? 0) + 120000), item.name), (async () => {
     for (const a of item.actions) {
@@ -241,7 +314,7 @@ for (const item of actionItems) {
       }
     }
     // settle: alive AND in a terminal state (ready / actionable import note / breaker)
-    const settle = await waitPill(/^ready$|imports (incomplete|failed)|keeps crashing/, item.expect.settleMs ?? 120000, 2000);
+    const settle = await waitPill(SETTLE_RE, item.expect.settleMs ?? 120000, 2000);
     const alive = await aliveProbe();
     const panics = panicsInConsole();
     // zeroErrors: the InfoView's All Messages badge must reach zero errors
@@ -262,11 +335,22 @@ for (const item of actionItems) {
         await page.waitForTimeout(5000);
       }
     }
+    const statsAfter = await statsSnap();
+    const delta = statsDelta(statsBefore, statsAfter);
+    // expect.stats: max allowed deltas per counter (e.g. {reboots: 0});
+    // evaluated only once the shim reports stats — silently ignored before.
+    const statsBad = delta && item.expect.stats
+      ? Object.entries(item.expect.stats).filter(([k, max]) => typeof delta[k] === "number" && delta[k] > max).map(([k, max]) => `${k}=${delta[k]}>${max}`)
+      : [];
+    const terminal = settleClass(settle.s);
+    const wantTerminal = item.expect.terminal ?? (item.expect.mustSucceed ? "ready" : null);
     const pass = alive && settle.ok && (item.expect.panicFree ? panics === 0 : true)
-      && (item.expect.mustSucceed ? /^ready$/.test(settle.s) : true)
-      && (item.expect.zeroErrors ? errCount === 0 : true);
+      && (wantTerminal ? terminal === wantTerminal : true)
+      && (item.expect.zeroErrors ? errCount === 0 : true)
+      && statsBad.length === 0;
     await record(item.name, `editor/${item.category}`, pass,
-      `alive=${alive} settled='${settle.s.slice(0, 40)}'@${settle.ms}ms panics=${panics}${errCount !== null ? ` errBadge=${errCount}` : ""}`);
+      `alive=${alive} settled='${settle.s.slice(0, 40)}'@${settle.ms}ms terminal=${terminal}${wantTerminal ? `/${wantTerminal}` : ""} panics=${panics}${errCount !== null ? ` errBadge=${errCount}` : ""}${statsBad.length ? ` stats:${statsBad.join(",")}` : ""}`,
+      { terminal, stats: delta ? { before: statsBefore, after: statsAfter, delta } : undefined });
     })()]);
   } catch (e) {
     const alive = await aliveProbe();
@@ -307,6 +391,7 @@ if (!only) {
   await freshPage();
   await page.selectOption("#examples", "mathlib").catch(() => {});
   await waitPill(/^ready$/, 90000, 2000);
+  const statsBefore = await statsSnap();
   await page.evaluate(() => { globalThis.qed64.shim.qs.session.worker.terminate(); });
   const recovered = await waitPill(/^ready$/, 180000, 4000);
   // give the replayed elaboration a beat to republish diagnostics
@@ -316,8 +401,12 @@ if (!only) {
     if (/2/.test(badge)) break;
     await page.waitForTimeout(1000);
   }
-  await record("worker-kill-recovery", "recovery", recovered.ok && /2/.test(badge),
-    `recovered=${recovered.ok}@${recovered.ms}ms badge='${badge}'`, { recoveryMs: recovered.ms });
+  const delta = statsDelta(statsBefore, await statsSnap());
+  // Once the shim counts deaths, a "recovery" that saw no death is vacuous
+  // (attacks.txt #5) — the drill then also requires workerDeaths === 1.
+  const deathSeen = delta && typeof delta.workerDeaths === "number" ? delta.workerDeaths === 1 : true;
+  await record("worker-kill-recovery", "recovery", recovered.ok && /2/.test(badge) && deathSeen,
+    `recovered=${recovered.ok}@${recovered.ms}ms badge='${badge}'${delta ? ` stats=${JSON.stringify(delta)}` : ""}`, { recoveryMs: recovered.ms, stats: delta ? { delta } : undefined });
 }
 
 // ---------- final: memory + stuck-pill sweep ---------------------------------
@@ -326,9 +415,20 @@ if (!only) {
   const wasmOk = mem.wasmMB === null || mem.wasmMB === undefined || mem.wasmMB < 3800;
   await record("final-memory", "memory", wasmOk, `wasm=${mem.wasmMB}MB js=${mem.jsHeapMB}MB (budget wasm<3800MB)`);
 }
+} catch (e) {
+  // InfraError: the page cannot boot — one infra row, the rest aborted, exit 3.
+  // Anything else is a harness bug: also abort, but say so.
+  const infra = e instanceof InfraError;
+  const failing = planned.find((n) => !results.some((r) => r.name === n)) ?? "run";
+  await record(failing, infra ? "infra" : "harness", infra ? "infra" : "fail", `${infra ? "" : "harness threw: "}${String(e.message ?? e).slice(0, 200)}`);
+  for (const n of remainingAfter(failing)) await record(n, "aborted", "aborted", `not run: ${infra ? "infrastructure refusal" : "harness error"} at ${failing}`);
+  exitCode = infra ? 3 : 1;
+} finally {
+  await browser.close().catch(() => {});
+}
 
-const failed = results.filter((r) => !r.pass);
-fs.writeFileSync(path.join(root, "work/adversarial/e2e-report.json"), JSON.stringify({ lane: "e2e", url, total: results.length, failed: failed.length, results }, null, 2));
-console.log(`\ne2e: ${results.length - failed.length}/${results.length} passed`);
-await browser.close();
-process.exit(failed.length ? 1 : 0);
+const failed = results.filter((r) => r.outcome !== "pass");
+writeReport(false);
+console.log(`\ne2e: ${results.length - failed.length}/${results.length} passed` +
+  ` (fail=${results.filter((r) => r.outcome === "fail").length} infra=${results.filter((r) => r.outcome === "infra").length} aborted=${results.filter((r) => r.outcome === "aborted").length}); report: ${path.relative(root, path.join(dir, "e2e-report.json"))}`);
+process.exit(exitCode || (failed.length ? 1 : 0));
