@@ -50,6 +50,21 @@ const lspEncoder = new TextEncoder();
 const lspDecoder = new TextDecoder();
 
 const lspChunkRing = [];
+/** Byte offset of the next "Content-Length:" header in buf, or -1. Byte-level
+ * so a large buffer is never decoded just to locate a frame. */
+function indexOfHeader(buf) {
+  const C = 0x43; // 'C'
+  for (let i = 0; i + 15 <= buf.length; i++) {
+    if (buf[i] !== C && buf[i] !== 0x63) continue;
+    if ((buf[i + 1] | 32) === 0x6f && (buf[i + 2] | 32) === 0x6e && (buf[i + 3] | 32) === 0x74 &&
+        (buf[i + 4] | 32) === 0x65 && (buf[i + 5] | 32) === 0x6e && (buf[i + 6] | 32) === 0x74 &&
+        buf[i + 7] === 0x2d && (buf[i + 8] | 32) === 0x6c && (buf[i + 9] | 32) === 0x65 &&
+        (buf[i + 10] | 32) === 0x6e && (buf[i + 11] | 32) === 0x67 && (buf[i + 12] | 32) === 0x74 &&
+        (buf[i + 13] | 32) === 0x68 && buf[i + 14] === 0x3a) return i;
+  }
+  return -1;
+}
+
 function lspStdoutChunk(text) {
   lspChunkRing.push(`${Date.now() % 100000}: ${JSON.stringify(String(text).slice(0, 90))}`);
   if (lspChunkRing.length > 24) lspChunkRing.shift();
@@ -60,31 +75,35 @@ function lspStdoutChunk(text) {
   lspBuf = joined;
   for (;;) {
     // Interleaved stdout LOG lines can precede the next frame header (the
-    // resident FileWorker imports on the elaboration thread, and the fork's
-    // "[DEBUG:PROGRESS] …" import progress prints to stdout). Find the header
-    // ANYWHERE in the buffer; bytes before it are logs, not framing.
-    const whole = lspDecoder.decode(lspBuf);
-    const m = /Content-Length: (\d+)/i.exec(whole);
-    if (!m) {
+    // resident FileWorker imports on the elaboration thread, and library
+    // progress prints to stdout). Search the BYTES for the header — decoding
+    // the whole buffer on every iteration is O(n^2) in a diagnostics storm
+    // and allocated megabyte strings per call (it killed memory-heavy pages).
+    const hdrAt = indexOfHeader(lspBuf);
+    if (hdrAt < 0) {
       // No header yet: shed complete log lines so the buffer stays bounded.
-      const lastNl = whole.lastIndexOf("\n");
+      const lastNl = lspBuf.lastIndexOf(0x0a);
       if (lastNl > 0) {
-        for (const line of whole.slice(0, lastNl).split("\n")) {
+        for (const line of lspDecoder.decode(lspBuf.subarray(0, lastNl)).split("\n")) {
           if (line.trim()) event(null, "log", { stream: "stdout", text: line });
         }
-        lspBuf = lspBuf.slice(lspEncoder.encode(whole.slice(0, lastNl + 1)).length);
+        lspBuf = lspBuf.slice(lastNl + 1);
       }
       return;
     }
-    if (m.index > 0) {
-      for (const line of whole.slice(0, m.index).split("\n")) {
+    if (hdrAt > 0) {
+      for (const line of lspDecoder.decode(lspBuf.subarray(0, hdrAt)).split("\n")) {
         if (line.trim()) event(null, "log", { stream: "stdout", text: line });
       }
     }
+    // Decode only the header region to read the declared length.
+    const headSlice = lspDecoder.decode(lspBuf.subarray(hdrAt, Math.min(hdrAt + 128, lspBuf.length)));
+    const m = /Content-Length: (\d+)/i.exec(headSlice);
+    if (!m) return; // header split across reads; wait for more bytes
     const len = Number(m[1]);
     // Body starts after the header's blank-line separator; print() chunking
     // rewrites \r\n runs, so skip every CR/LF after the header line.
-    let at = lspEncoder.encode(whole.slice(0, m.index)).length + m[0].length;
+    let at = hdrAt + m[0].length;
     while (at < lspBuf.length) {
       const b = lspBuf[at];
       if (b === 0x0d || b === 0x0a) at += 1;
