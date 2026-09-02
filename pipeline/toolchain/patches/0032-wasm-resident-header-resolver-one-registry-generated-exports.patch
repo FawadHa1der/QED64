@@ -1,0 +1,1944 @@
+From c9575260f84a6209aa3f4f90f6b38bdc425e3636 Mon Sep 17 00:00:00 2001
+From: QED64 Toolchain <qed64-toolchain@localhost>
+Date: Wed, 2 Sep 2026 17:34:52 -0400
+Subject: [PATCH] wasm: resident header resolver, one environment registry,
+ generated exports (patch 0032)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+K1  FileWorker.setupImports is the ONLY header resolver on wasm: exact key,
+    else the smallest registered environment whose closure covers the
+    header (umbrella aliases count), else REFUSED with a header diagnostic
+    and zero allocation. setupFile (a proxied stat per header) and
+    processHeaderCore (an on-thread olean import that stalls under
+    WORKERFS) are unreachable from a worker on this platform.
+K2  $/qed64/headerStatus {version, mode exact|covered|refused, key,
+    moduleCount, missing, ms} is sent from the same site, versioned and
+    serialized with the document's other notifications.
+K1b One registry: Language.Lean reads the embedder's environment cache
+    through a registered source (Shell registers wasmEnvCache at init);
+    setPrebuiltHeaderEnvs and its three publish sites are gone — the class
+    of 'the publish landed in the loader the browser does not call'.
+    One key function (qed64HeaderKey: Init first, de-duplicated, empty ≡
+    #[Init]) at every cache push, the compile path and the resolver, so a
+    warm-compiled header and the FileWorker's header are the same key and
+    the init bake's #[Init, Init] matches a headerless file.
+K4  src/emscripten-exports.txt is generated at build time from every
+    LEAN_EXPORT definition of the linked roots plus a committed seed of
+    runtime/glue symbols (emscripten-exports.seed.txt); the hand-pinned
+    file leaves the tree (four stale-specialization incidents).
+---
+ .gitignore                                    |   1 +
+ src/Lean/Language/Lean.lean                   | 124 +--
+ src/Lean/Server/FileWorker.lean               |  59 ++
+ src/Lean/Shell.lean                           |  13 +-
+ src/emscripten-exports.seed.txt               | 788 ++++++++++++++++++
+ ...orts.txt => emscripten-exports.wanted.txt} | 785 -----------------
+ 6 files changed, 931 insertions(+), 839 deletions(-)
+ create mode 100644 src/emscripten-exports.seed.txt
+ rename src/{emscripten-exports.txt => emscripten-exports.wanted.txt} (99%)
+
+diff --git a/.gitignore b/.gitignore
+index 752fbe9..6a65eeb 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -34,3 +34,4 @@ wdErr.txt
+ wdIn.txt
+ wdOut.txt
+ .claude/worktrees/
++src/emscripten-exports.txt
+diff --git a/src/Lean/Language/Lean.lean b/src/Lean/Language/Lean.lean
+index 427e08d..473ec06 100644
+--- a/src/Lean/Language/Lean.lean
++++ b/src/Lean/Language/Lean.lean
+@@ -235,17 +235,78 @@ namespace Lean.Language.Lean
+ open Lean.Elab Command
+ open Lean.Parser
+ 
+-/-- Embedder-provided pre-built header environments, keyed by the exact
+-ordered import list. Consulted before `Elab.processHeaderCore` imports from
+-disk: WASM hosts build the environment on the host thread (file reads from
+-elaboration task threads are proxied to the host and can be prohibitively
+-slow) and push it here; a miss falls through to the normal import. -/
+-private initialize prebuiltHeaderEnvs :
+-    IO.Ref (Array (Array Name × Environment)) ← IO.mkRef #[]
+-
+-/-- Publish pre-built header environments (exact-ordered import keys). -/
+-def setPrebuiltHeaderEnvs (envs : Array (Array Name × Environment)) : IO Unit :=
+-  prebuiltHeaderEnvs.set envs
++/-- ONE environment registry (patch 0032, K1b). The embedder registers a
++reader of its environment cache; nothing is ever "published" a second time,
++so there is no second list to forget (the class of bug that left the browser
++importing 629 modules per header while a publish sat in the loader it did
++not call). The resident FileWorker resolves every header through
++`lookupPrebuiltEnv` below and never imports on the elaboration thread. -/
++private initialize prebuiltEnvSource :
++    IO.Ref (IO (Array (Array Name × Environment))) ←
++  IO.mkRef (pure #[] : IO (Array (Array Name × Environment)))
++
++/-- Register the embedder's environment cache as the registry source. -/
++def registerPrebuiltEnvSource (get : IO (Array (Array Name × Environment))) : IO Unit :=
++  prebuiltEnvSource.set get
++
++/-- The registered environments (empty when no embedder registered one). -/
++def getPrebuiltEnvs : IO (Array (Array Name × Environment)) := do
++  (← prebuiltEnvSource.get)
++
++/-- THE header key (K1b): the ordered module list with `Init` first and
++de-duplicated; an empty header is `#[Init]`. Shared by the compile path,
++the cache pushes of every snapshot load, and the resident resolver — so a
++warm-compiled `import X` and the FileWorker's `import X` are the same key,
++and the init snapshot (`#[Init, Init]` as baked) matches a headerless file. -/
++def qed64NormalizeKey (mods : Array Name) : Array Name := Id.run do
++  let mut out : Array Name := #[`Init]
++  for m in mods do
++    unless out.contains m do out := out.push m
++  return out
++
++/-- The header key of an import list (see `qed64NormalizeKey`). -/
++def qed64HeaderKey (imports : Array Import) : Array Name :=
++  qed64NormalizeKey (imports.map (·.module))
++
++/-- The resident resolver's verdict. `mode` is "exact" | "covered" | "refused". -/
++structure PrebuiltLookup where
++  /-- The environment that serves the header, if any. -/
++  env? : Option Environment
++  /-- `"exact"`, `"covered"` or `"refused"`. -/
++  mode : String
++  /-- Size of the chosen environment's import closure (0 when refused). -/
++  moduleCount : Nat
++  /-- Imports that no registered closure contains (empty unless refused). -/
++  missing : Array Name
++
++/-- Resolve a header against the registry: exact key first, else the
++SMALLEST registered environment whose import closure covers every import
++(umbrella aliases count as covered by the umbrella), else refused with the
++imports no closure contains. Pure lookup: allocates nothing beyond the
++extension-size refresh of the chosen env (the patch-0025 epoch class). -/
++def lookupPrebuiltEnv (key : Array Name) : IO PrebuiltLookup := do
++  let key := qed64NormalizeKey key
++  let envs ← getPrebuiltEnvs
++  if let some env := envs.findSome? fun (k, env) => if qed64NormalizeKey k == key then some env else none then
++    return { env? := some (← env.ensureExtensionsSizeForWasm), mode := "exact",
++             moduleCount := env.allImportedModuleNames.size, missing := #[] }
++  let mut best : Option (Nat × Environment) := none
++  let mut covered : Array Name := #[]
++  for (_, env) in envs do
++    let names := env.allImportedModuleNames
++    let isUmbrella := names.contains `QED64.Essential
++    let aliasOk (m : Name) : Bool :=
++      isUmbrella && (m == `Mathlib || m == `Mathlib.Tactic || m == `Batteries || m == `MIL.Common)
++    for m in key do
++      if (names.contains m || aliasOk m) && !covered.contains m then covered := covered.push m
++    if key.all (fun m => names.contains m || aliasOk m) then
++      if best.all (names.size < ·.1) then
++        best := some (names.size, env)
++  match best with
++  | some (n, env) =>
++    return { env? := some (← env.ensureExtensionsSizeForWasm), mode := "covered", moduleCount := n, missing := #[] }
++  | none =>
++    return { env? := none, mode := "refused", moduleCount := 0, missing := key.filter (!covered.contains ·) }
+ 
+ 
+ /-- Lean-specific processing context. -/
+@@ -311,6 +372,9 @@ structure SetupImportsResult where
+   trustLevel : UInt32 := 0
+   /-- Pre-resolved artifacts of transitively imported modules. -/
+   importArts : NameMap ImportArtifacts := {}
++  /-- Patch 0032 (K1): the environment the resident resolver chose for this
++  header; `processHeader` uses it instead of importing. -/
++  prebuiltEnv? : Option Environment := none
+   /-- Lean plugins to load as part of the environment setup. -/
+   plugins : Array Plugin := #[]
+ 
+@@ -509,45 +573,9 @@ where
+ 
+       let startTime := (← IO.monoNanosNow).toFloat / 1000000000
+       let mut opts := setup.opts
+-      let prebuilt ← prebuiltHeaderEnvs.get
+-      let importKey := setup.imports.map (·.module)
+-      -- Exact-ordered match first; otherwise the SMALLEST published env whose
+-      -- import closure covers the header — the pump path's covering rule
+-      -- (wasmLspInit), without which a resident FileWorker could only ever
+-      -- serve headers whose import list matches a snapshot key verbatim.
+-      -- Umbrella aliases mirror the batch app's table.
+-      -- A headerless file imports the prelude implicitly: match it as `Init`
+-      -- so the init snapshot's env serves it (an empty key matched nothing,
+-      -- and the header then imported all of Init on the elaboration thread).
+-      let matchKey := if importKey.isEmpty then #[`Init] else importKey
+-      let mut override? : Option Environment :=
+-        prebuilt.findSome? fun (k, env) => if k == matchKey then some env else none
+-      if override?.isNone then
+-        let mut best : Option (Nat × Environment) := none
+-        for (_, env) in prebuilt do
+-          let names := env.allImportedModuleNames
+-          let isUmbrella := names.contains `QED64.Essential
+-          let aliasOk (m : Name) : Bool :=
+-            isUmbrella && (m == `Mathlib || m == `Mathlib.Tactic || m == `Batteries || m == `MIL.Common)
+-          if matchKey.all (fun m => names.contains m || aliasOk m) then
+-            if best.all (names.size < ·.1) then
+-              best := some (names.size, env)
+-        override? := best.map (·.2)
+-      -- A published env may predate extensions registered by a later
+-      -- snapshot's [init] replay; grow its extension array or generic
+-      -- extension access panics (the patch-0025 epoch class).
+-      -- One stderr line per header (this fork is wasm-only): HIT/MISS plus
+-      -- the published keys — the difference between a 40 ms covered switch
+-      -- and a 17 s on-thread import must never be invisible again.
+-      unless prebuilt.isEmpty do
+-        let hit := if override?.isSome then "HIT" else "MISS"
+-        let published := prebuilt.map fun (p : Array Name × Environment) => (p.1, (Environment.allImportedModuleNames p.2).size)
+-        IO.eprintln s!"[WASM LSP] prebuilt lookup {hit}: key={matchKey} published={published}"
+-      if let some env := override? then
+-        override? := some (← env.ensureExtensionsSizeForWasm)
+       -- allows `headerEnv` to be leaked, which would live until the end of the process anyway
+       let (headerEnv, msgLog) ← do
+-        match override? with
++        match setup.prebuiltEnv? with
+         | some env => pure (env.setMainModule setup.mainModuleName, MessageLog.empty)
+         | none =>
+           Elab.processHeaderCore (leakEnv := true)
+diff --git a/src/Lean/Server/FileWorker.lean b/src/Lean/Server/FileWorker.lean
+index d2916a9..b2dd4bf 100644
+--- a/src/Lean/Server/FileWorker.lean
++++ b/src/Lean/Server/FileWorker.lean
+@@ -152,6 +152,31 @@ section Elab
+     let param := { version := m.version, references, decls }
+     return { method, param }
+ 
++  /-- Patch 0032 (K2): the resident resolver's verdict for one header setup,
++  versioned like every other per-document notification on this channel. -/
++  structure Qed64HeaderStatusParams where
++    /-- Document version this header setup belongs to. -/
++    version : Int
++    /-- `"exact"`, `"covered"` or `"refused"`. -/
++    mode : String
++    /-- The normalized header key that was resolved. -/
++    key : Array String
++    /-- Size of the serving environment's import closure. -/
++    moduleCount : Nat
++    /-- Imports no registered closure contains. -/
++    missing : Array String
++    /-- Resolution time in milliseconds. -/
++    ms : Nat
++    deriving ToJson
++
++  private def mkQed64HeaderStatusNotification (m : DocumentMeta) (mode : String)
++      (key : Array Name) (moduleCount : Nat) (missing : Array Name) (ms : Nat) :
++      JsonRpc.Notification Qed64HeaderStatusParams := {
++    method := "$/qed64/headerStatus"
++    param := { version := m.version, mode, key := key.map toString, moduleCount,
++               missing := missing.map toString, ms }
++  }
++
+   private def mkIleanHeaderSetupInfoNotification (m : DocumentMeta)
+       (directImports : Array ImportInfo) (isSetupFailure : Bool) :
+       JsonRpc.Notification Lsp.LeanILeanHeaderSetupInfoParams := {
+@@ -410,6 +435,40 @@ def setupImports
+     return .error { diagnostics := .empty, result? := none, metaSnap := default }
+ 
+   let header := stx.toModuleHeader
++  -- Patch 0032 (K1): on wasm this is the ONLY header resolver. Exact key,
++  -- else the smallest covering registered environment, else REFUSED — with a
++  -- header diagnostic and zero allocation. `setupFile` (a proxied `stat` per
++  -- header) and `processHeaderCore` (an on-thread olean import that stalls
++  -- under WORKERFS) are never reached from a worker on this platform.
++  if System.Platform.isEmscripten then
++    let t0 ← IO.monoMsNow
++    let key := Language.Lean.qed64HeaderKey header.imports
++    let verdict ← Language.Lean.lookupPrebuiltEnv key
++    let ms := (← IO.monoMsNow) - t0
++    chanOut.sync.send <| .ofMsg <|
++      mkQed64HeaderStatusNotification doc verdict.mode key verdict.moduleCount verdict.missing ms
++    chanOut.sync.send <| .ofMsg <|
++      mkIleanHeaderSetupInfoNotification doc (collectImports stx) verdict.env?.isNone
++    match verdict.env? with
++    | some env =>
++      IO.eprintln s!"[WASM LSP] header {verdict.mode}: key={key} ({verdict.moduleCount} modules) in {ms} ms"
++      let opts := Elab.async.setIfNotSet cmdlineOpts true
++      let opts := Elab.inServer.set opts true
++      return .ok {
++        mainModuleName := doc.mod
++        isModule := header.isModule
++        imports := header.imports
++        opts
++        prebuiltEnv? := some env
++      }
++    | none =>
++      IO.eprintln s!"[WASM LSP] header refused: key={key} missing={verdict.missing}"
++      let msg := s!"modules {verdict.missing} are not loaded in this session — use \"Load exact imports\""
++      return .error {
++        diagnostics := (← diagnosticsOfHeaderError msg)
++        result? := none
++        metaSnap := default
++      }
+   let fileSetupResult ← setupFile doc header fun stderrLine => do
+     let progressDiagnostic := {
+       range      := ⟨⟨0, 0⟩, ⟨1, 0⟩⟩
+diff --git a/src/Lean/Shell.lean b/src/Lean/Shell.lean
+index b23d5fa..b42f340 100644
+--- a/src/Lean/Shell.lean
++++ b/src/Lean/Shell.lean
+@@ -61,11 +61,15 @@ its own cached environment, so `import Std …` (or any imports) is slow only on
+ its first compile and fast on every repeat, just like Init-only code. -/
+ private initialize wasmEnvCache : IO.Ref (Array (Array Name × Environment)) ← IO.mkRef #[]
+ 
++/-- Patch 0032 (K1b): the environment cache IS the registry the resident
++resolver reads; registered once, at process initialization. -/
++builtin_initialize Language.Lean.registerPrebuiltEnvSource wasmEnvCache.get
++
+ /-- Get or create the cached WASM environment for the given header `imports`.
+ The first compile with a given import set imports it (slow); later compiles with
+ the same set reuse the cached environment (fast). -/
+ def getOrCreateWasmEnvFor (imports : Array Import) : IO Environment := do
+-  let key := imports.map (·.module)
++  let key := Language.Lean.qed64HeaderKey imports
+   for (k, env) in (← wasmEnvCache.get) do
+     if k == key then
+       IO.eprintln "[WASM DEBUG] getOrCreateWasmEnvFor: returning cached env"
+@@ -237,12 +241,11 @@ def wasmLoadSnapshot (path : String) : IO UInt32 := do
+     withImporting do
+       unsafe runInitAttrsForModules env initModIdxs {}
+     unsafe enableInitializersExecution
+-    let key := env.header.imports.map (·.module)
++    let key := Language.Lean.qed64HeaderKey env.header.imports
+     wasmEnvCache.modify (·.push (key, env))
+     -- The resident FileWorker (patch 0031) runs the REAL header-processing
+     -- path, which consults the prebuilt list — publish on every snapshot
+     -- load, not only in wasmLspInit, so resident sessions see covering envs.
+-    Language.Lean.setPrebuiltHeaderEnvs (← wasmEnvCache.get)
+     IO.eprintln s!"[WASM DEBUG] wasmLoadSnapshot: cached env for {key}"
+     return 0
+   catch e =>
+@@ -297,14 +300,13 @@ def wasmLoadSnapshotMem (ptr size flags : USize) : IO UInt32 := do
+         if h : modIdx < env.header.modules.size then
+           IO.eprintln s!"[WASM PROFILE] init {env.header.modules[modIdx].module}: {d} ms"
+     unsafe enableInitializersExecution
+-    let key := env.header.imports.map (·.module)
++    let key := Language.Lean.qed64HeaderKey env.header.imports
+     wasmEnvCache.modify (·.push (key, env))
+     -- The RESIDENT FileWorker (patch 0031) reads `prebuiltHeaderEnvs` when it
+     -- processes a header; without this publish the list is empty, the covering
+     -- override is never found, and the header imports its whole closure on the
+     -- elaboration thread (629 Init modules ≈ 17 s per switch). The non-mem
+     -- loader already published; the browser and the spike both use THIS path.
+-    Language.Lean.setPrebuiltHeaderEnvs (← wasmEnvCache.get)
+     let t4 ← IO.monoMsNow
+     IO.eprintln s!"[WASM PROFILE] snapshot load stages: region read+materialize {t1-t0} ms · setMainModule {t2-t1} ms · init replay ({replayModIdxs.size} modules) {t3-t2} ms · cache {t4-t3} ms"
+     IO.eprintln s!"[WASM DEBUG] wasmLoadSnapshotMem: cached env for {key}"
+@@ -414,7 +416,6 @@ def wasmLspInit (initParamsJson : String) (didOpenJson : String) : IO UInt32 :=
+       Server.FileWorker.teardownForReplacement (← oldStRef.get)
+     -- Publish every cached env (incl. the fresh prebuild) for the worker's
+     -- header processing to find.
+-    Language.Lean.setPrebuiltHeaderEnvs (← wasmEnvCache.get)
+     -- Timed sleeps on dedicated pthreads never wake under this Emscripten
+     -- build (an `IO.sleep` as the reporter's first statement silenced the
+     -- whole server); a zero report delay makes `IO.sleep 0` return
+diff --git a/src/emscripten-exports.seed.txt b/src/emscripten-exports.seed.txt
+new file mode 100644
+index 0000000..111b7b6
+--- /dev/null
++++ b/src/emscripten-exports.seed.txt
+@@ -0,0 +1,788 @@
++# Runtime C API + glue symbols exported for dlsym/JS (patch 0032). Everything the
++# Lean compiler emits (LEAN_EXPORT l_*/initialize_*) is generated at build time by
++# pipeline/toolchain/gen-exports.py; only non-generated names live here.
++_free
++_lean_browser64_configure_input_ring
++_lean_wasm_shell_mark_preinitialized
++_lean_add_alias
++_lean_add_decl
++_lean_add_decl_without_checking
++_lean_alloc_object
++_lean_apply_1
++_lean_apply_10
++_lean_apply_11
++_lean_apply_12
++_lean_apply_13
++_lean_apply_14
++_lean_apply_15
++_lean_apply_16
++_lean_apply_2
++_lean_apply_3
++_lean_apply_4
++_lean_apply_5
++_lean_apply_6
++_lean_apply_7
++_lean_apply_8
++_lean_apply_9
++_lean_apply_m
++_lean_apply_n
++_lean_array_get_panic
++_lean_array_mk
++_lean_array_push
++_lean_array_set_panic
++_lean_array_to_list
++_lean_array_to_list_impl
++_lean_assign_lmvar
++_lean_assign_mvar
++_lean_attribute_application_time
++_lean_axiom_val_is_unsafe
++_lean_big_int64_to_int
++_lean_big_int_to_int
++_lean_big_int_to_nat
++_lean_big_size_t_to_int
++_lean_big_uint64_to_nat
++_lean_big_usize_to_nat
++_lean_byte_array_copy_slice
++_lean_byte_array_data
++_lean_byte_array_hash
++_lean_byte_array_mk
++_lean_byte_array_push
++_lean_byteslice_beq
++_lean_checked_assign
++_lean_chmod
++_lean_closure_max_args
++_lean_compacted_region_free
++_lean_compacted_region_read
++_lean_compacted_region_save
++_lean_constructor_val_is_unsafe
++_lean_copy_byte_array
++_lean_copy_expand_array
++_lean_copy_expand_array_nonlinear
++_lean_copy_float_array
++_lean_copy_sarray
++_lean_cstr_to_int
++_lean_cstr_to_nat
++_lean_cutsat_eq_cnstr_to_proof
++_lean_cutsat_propagate_nonlinear
++_lean_data_value_beq
++_lean_data_value_bool
++_lean_data_value_to_string
++_lean_dbg_sleep
++_lean_dbg_stack_trace
++_lean_dbg_trace
++_lean_dbg_trace_if_shared
++_lean_dec_ref_cold
++_lean_decl_get_sorry_dep
++_lean_decode_io_error
++_lean_decode_lossy_utf8
++_lean_decode_uv_error
++_lean_definition_val_get_safety
++_lean_delayed_mvar_assignment_fvars
++_lean_delayed_mvar_assignment_mvar_id_pending
++_lean_demangle_bt_line_cstr
++_lean_display_cumulative_profiling_times
++_lean_dsimp
++_lean_dynlib_get
++_lean_dynlib_load
++_lean_dynlib_symbol_run_as_init
++_lean_elab_add_decl
++_lean_elab_add_decl_without_checking
++_lean_elab_environment_of_kernel_env
++_lean_elab_environment_to_kernel_env
++_lean_elab_environment_update_base_after_kernel_add
++_lean_emit_llvm
++_lean_enable_initializer_execution
++_lean_environment_add
++_lean_environment_find
++_lean_environment_free_regions
++_lean_environment_mark_quot_init
++_lean_environment_quot_init
++_lean_erase_macro_scopes
++_lean_eval_check_meta
++_lean_eval_const
++_lean_eval_main
++_lean_eval_suggest_tactic
++_lean_expr_abstract
++_lean_expr_abstract_range
++_lean_expr_binder_info
++_lean_expr_consume_type_annotations
++_lean_expr_dbg_to_string
++_lean_expr_equal
++_lean_expr_eqv
++_lean_expr_has_expr_mvar
++_lean_expr_has_fvar
++_lean_expr_has_level_mvar
++_lean_expr_has_level_param
++_lean_expr_has_loose_bvar
++_lean_expr_has_mvar
++_lean_expr_hash
++_lean_expr_instantiate
++_lean_expr_instantiate1
++_lean_expr_instantiate_range
++_lean_expr_instantiate_rev
++_lean_expr_instantiate_rev_range
++_lean_expr_is_have
++_lean_expr_lift_loose_bvars
++_lean_expr_loose_bvar_range
++_lean_expr_lower_loose_bvars
++_lean_expr_lt
++_lean_expr_mk_app
++_lean_expr_mk_app_data
++_lean_expr_mk_bvar
++_lean_expr_mk_const
++_lean_expr_mk_data
++_lean_expr_mk_forall
++_lean_expr_mk_fvar
++_lean_expr_mk_lambda
++_lean_expr_mk_let
++_lean_expr_mk_lit
++_lean_expr_mk_mdata
++_lean_expr_mk_mvar
++_lean_expr_mk_proj
++_lean_expr_mk_sort
++_lean_expr_quick_lt
++_lean_finalize_task_manager
++_lean_finalize_thread
++_lean_find_expr
++_lean_find_ext_expr
++_lean_float32_frexp
++_lean_float32_isfinite
++_lean_float32_isinf
++_lean_float32_isnan
++_lean_float32_of_bits
++_lean_float32_of_nat
++_lean_float32_once_cold
++_lean_float32_scaleb
++_lean_float32_to_bits
++_lean_float32_to_string
++_lean_float_array_data
++_lean_float_array_mk
++_lean_float_array_push
++_lean_float_frexp
++_lean_float_isfinite
++_lean_float_isinf
++_lean_float_isnan
++_lean_float_of_bits
++_lean_float_of_nat
++_lean_float_once_cold
++_lean_float_scaleb
++_lean_float_to_bits
++_lean_float_to_string
++_lean_free_object
++_lean_get_congr_match_equations_for
++_lean_get_current_time
++_lean_get_delayed_mvar_assignment
++_lean_get_export_name_for
++_lean_get_githash
++_lean_get_init_fn_name_for
++_lean_get_internal_linker_flags
++_lean_get_ir_extra_const_names
++_lean_get_leanc_extra_flags
++_lean_get_leanc_internal_flags
++_lean_get_linker_flags
++_lean_get_lmvar_assignment
++_lean_get_match_equations_for
++_lean_get_mvar_assignment
++_lean_get_num_attributes
++_lean_get_option_decls_array
++_lean_get_profiler
++_lean_get_profiler_threshold
++_lean_get_reducibility_status
++_lean_get_regular_init_fn_name_for
++_lean_get_set_stderr
++_lean_get_set_stdin
++_lean_get_set_stdout
++_lean_get_stderr
++_lean_get_stdin
++_lean_get_stdout
++_lean_get_structural_rec_arg_pos
++_lean_get_symbol_stem
++_lean_get_windows_local_timezone_id_at
++_lean_grind_cutsat_assert_eq
++_lean_grind_cutsat_assert_le
++_lean_grind_cutsat_mk_var
++_lean_grind_internalize
++_lean_grind_mk_eq_proof
++_lean_grind_mk_heq_proof
++_lean_grind_normalize
++_lean_grind_preprocess
++_lean_grind_process_new_facts
++_lean_has_compile_error
++_lean_has_match_pattern_attribute
++_lean_has_out_params
++_lean_idbg_client_loop
++_lean_inc_heartbeat
++_lean_inductive_val_is_rec
++_lean_inductive_val_is_reflexive
++_lean_inductive_val_is_unsafe
++_lean_infer_type
++_lean_init_llvm
++_lean_init_search_path
++_lean_init_task_manager
++_lean_init_task_manager_using
++_lean_initialize
++_lean_initialize_runtime_module
++_lean_initialize_thread
++_lean_instantiate_expr_mvars
++_lean_instantiate_level_mvars
++_lean_int16_of_big_int
++_lean_int32_of_big_int
++_lean_int64_of_big_int
++_lean_int8_of_big_int
++_lean_int_big_add
++_lean_int_big_div
++_lean_int_big_div_exact
++_lean_int_big_ediv
++_lean_int_big_emod
++_lean_int_big_eq
++_lean_int_big_le
++_lean_int_big_lt
++_lean_int_big_mod
++_lean_int_big_mul
++_lean_int_big_neg
++_lean_int_big_nonneg
++_lean_int_big_sub
++_lean_internal_enable_debug
++_lean_internal_get_believer_trust_level
++_lean_internal_get_build_type
++_lean_internal_get_default_max_heartbeat
++_lean_internal_get_default_max_memory
++_lean_internal_get_default_options
++_lean_internal_get_default_verbose
++_lean_internal_get_hardware_concurrency
++_lean_internal_has_address_sanitizer
++_lean_internal_has_llvm_backend
++_lean_internal_is_debug
++_lean_internal_is_multi_thread
++_lean_internal_panic
++_lean_internal_panic_out_of_memory
++_lean_internal_panic_overflow
++_lean_internal_panic_rc_overflow
++_lean_internal_panic_unreachable
++_lean_internal_set_exit_on_panic
++_lean_internal_set_max_heartbeat
++_lean_internal_set_max_memory
++_lean_internal_set_thread_stack_size
++_lean_io_allocprof
++_lean_io_app_path
++_lean_io_as_task
++_lean_io_basemutex_lock
++_lean_io_basemutex_new
++_lean_io_basemutex_try_lock
++_lean_io_basemutex_unlock
++_lean_io_baserecmutex_lock
++_lean_io_baserecmutex_new
++_lean_io_baserecmutex_try_lock
++_lean_io_baserecmutex_unlock
++_lean_io_basesharedmutex_new
++_lean_io_basesharedmutex_read
++_lean_io_basesharedmutex_try_read
++_lean_io_basesharedmutex_try_write
++_lean_io_basesharedmutex_unlock_read
++_lean_io_basesharedmutex_unlock_write
++_lean_io_basesharedmutex_write
++_lean_io_bind_task
++_lean_io_cancel
++_lean_io_cancel_core
++_lean_io_cancel_token_is_set
++_lean_io_check_canceled
++_lean_io_check_canceled_core
++_lean_io_condvar_new
++_lean_io_condvar_notify_all
++_lean_io_condvar_notify_one
++_lean_io_condvar_wait
++_lean_io_create_dir
++_lean_io_create_tempdir
++_lean_io_create_tempfile
++_lean_io_current_dir
++_lean_io_eprint
++_lean_io_eprintln
++_lean_io_error_to_string
++_lean_io_exit
++_lean_io_force_exit
++_lean_io_get_num_heartbeats
++_lean_io_get_random_bytes
++_lean_io_get_task_state
++_lean_io_get_task_state_core
++_lean_io_get_tid
++_lean_io_getenv
++_lean_io_hard_link
++_lean_io_initializing
++_lean_io_map_task
++_lean_io_mark_end_initialization
++_lean_io_metadata
++_lean_io_mono_ms_now
++_lean_io_mono_nanos_now
++_lean_io_prim_handle_flush
++_lean_io_prim_handle_get_line
++_lean_io_prim_handle_is_eof
++_lean_io_prim_handle_is_tty
++_lean_io_prim_handle_lock
++_lean_io_prim_handle_mk
++_lean_io_prim_handle_put_str
++_lean_io_prim_handle_read
++_lean_io_prim_handle_rewind
++_lean_io_prim_handle_truncate
++_lean_io_prim_handle_try_lock
++_lean_io_prim_handle_unlock
++_lean_io_prim_handle_write
++_lean_io_process_child_kill
++_lean_io_process_child_pid
++_lean_io_process_child_take_stdin
++_lean_io_process_child_try_wait
++_lean_io_process_child_wait
++_lean_io_process_get_current_dir
++_lean_io_process_get_pid
++_lean_io_process_set_current_dir
++_lean_io_process_spawn
++_lean_io_promise_new
++_lean_io_promise_resolve
++_lean_io_promise_result_opt
++_lean_io_read_dir
++_lean_io_realpath
++_lean_io_remove_dir
++_lean_io_remove_file
++_lean_io_rename
++_lean_io_result_show_error
++_lean_io_set_heartbeats
++_lean_io_symlink_metadata
++_lean_io_timeit
++_lean_io_wait
++_lean_io_wait_any
++_lean_io_wait_any_core
++_lean_ir_emit_llvm
++_lean_ir_export_entries
++_lean_ir_find_env_decl
++_lean_ir_find_env_decl_boxed
++_lean_ir_format_fn_body_head
++_lean_is_attribute
++_lean_is_class
++_lean_is_expr_def_eq
++_lean_is_inaccessible_user_name
++_lean_is_level_def_eq
++_lean_is_matcher
++_lean_is_out_param
++_lean_is_private_name
++_lean_is_reserved_name
++_lean_is_trace_class_enabled
++_lean_is_unsafe_inductive_decl
++_lean_isize_of_big_int
++_lean_kernel_check
++_lean_kernel_diag_is_enabled
++_lean_kernel_get_diag
++_lean_kernel_is_def_eq
++_lean_kernel_record_unfold
++_lean_kernel_set_diag
++_lean_kernel_whnf
++_lean_level_depth
++_lean_level_eq
++_lean_level_eqv
++_lean_level_has_mvar
++_lean_level_has_param
++_lean_level_hash
++_lean_level_mk_data
++_lean_level_mk_imax
++_lean_level_mk_max
++_lean_level_mk_mvar
++_lean_level_mk_param
++_lean_level_mk_succ
++_lean_level_mk_zero
++_lean_libuv_version
++_lean_list_to_array
++_lean_lit_type
++_lean_llvm_add_attribute_at_index
++_lean_llvm_add_case
++_lean_llvm_add_function
++_lean_llvm_add_global
++_lean_llvm_append_basic_block_in_context
++_lean_llvm_array_type
++_lean_llvm_build_add
++_lean_llvm_build_alloca
++_lean_llvm_build_br
++_lean_llvm_build_call2
++_lean_llvm_build_cond_br
++_lean_llvm_build_gep2
++_lean_llvm_build_global_string
++_lean_llvm_build_icmp
++_lean_llvm_build_inbounds_gep2
++_lean_llvm_build_load2
++_lean_llvm_build_mul
++_lean_llvm_build_not
++_lean_llvm_build_ptr_to_int
++_lean_llvm_build_ret
++_lean_llvm_build_ret_void
++_lean_llvm_build_sext
++_lean_llvm_build_sext_or_trunc
++_lean_llvm_build_store
++_lean_llvm_build_sub
++_lean_llvm_build_switch
++_lean_llvm_build_unreachable
++_lean_llvm_build_zext
++_lean_llvm_clear_insertion_position
++_lean_llvm_const_array
++_lean_llvm_const_int
++_lean_llvm_const_pointer_null
++_lean_llvm_const_string
++_lean_llvm_count_basic_blocks
++_lean_llvm_create_builder_in_context
++_lean_llvm_create_context
++_lean_llvm_create_memory_buffer_with_contents_of_file
++_lean_llvm_create_module
++_lean_llvm_create_string_attribute
++_lean_llvm_create_target_machine
++_lean_llvm_dispose_module
++_lean_llvm_dispose_target_machine
++_lean_llvm_double_type_in_context
++_lean_llvm_float_type_in_context
++_lean_llvm_function_type
++_lean_llvm_get_basic_block_parent
++_lean_llvm_get_default_target_triple
++_lean_llvm_get_entry_basic_block
++_lean_llvm_get_first_function
++_lean_llvm_get_first_global
++_lean_llvm_get_first_instruction
++_lean_llvm_get_insert_block
++_lean_llvm_get_named_function
++_lean_llvm_get_named_global
++_lean_llvm_get_next_function
++_lean_llvm_get_next_global
++_lean_llvm_get_target_from_triple
++_lean_llvm_get_undef
++_lean_llvm_get_value_name2
++_lean_llvm_initialize_target_info
++_lean_llvm_int_type_in_context
++_lean_llvm_link_modules
++_lean_llvm_module_to_string
++_lean_llvm_opaque_pointer_type_in_context
++_lean_llvm_parse_bitcode
++_lean_llvm_pointer_type
++_lean_llvm_position_builder_at_end
++_lean_llvm_position_builder_before
++_lean_llvm_print_module_to_file
++_lean_llvm_print_module_to_string
++_lean_llvm_set_dll_storage_class
++_lean_llvm_set_initializer
++_lean_llvm_set_linkage
++_lean_llvm_set_tail_call
++_lean_llvm_set_visibility
++_lean_llvm_target_machine_emit_to_file
++_lean_llvm_type_of
++_lean_llvm_verify_module
++_lean_llvm_void_type_in_context
++_lean_llvm_write_bitcode_to_file
++_lean_load_dynlib
++_lean_load_plugin
++_lean_local_ctx_erase
++_lean_local_ctx_find
++_lean_local_ctx_is_empty
++_lean_local_ctx_mk_let_decl
++_lean_local_ctx_mk_local_decl
++_lean_local_ctx_num_indices
++_lean_local_decl_binder_info
++_lean_main
++_lean_mark_mt
++_lean_mark_persistent
++_lean_max_small_nat
++_lean_mk_antiquot_formatter
++_lean_mk_antiquot_parenthesizer
++_lean_mk_array
++_lean_mk_ascii_string_unchecked
++_lean_mk_axiom_val
++_lean_mk_bool_data_value
++_lean_mk_cases_on
++_lean_mk_constructor_val
++_lean_mk_definition_val
++_lean_mk_empty_environment
++_lean_mk_empty_local_ctx
++_lean_mk_inductive_decl
++_lean_mk_inductive_val
++_lean_mk_io_error_already_exists
++_lean_mk_io_error_already_exists_file
++_lean_mk_io_error_eof
++_lean_mk_io_error_hardware_fault
++_lean_mk_io_error_illegal_operation
++_lean_mk_io_error_inappropriate_type
++_lean_mk_io_error_inappropriate_type_file
++_lean_mk_io_error_interrupted
++_lean_mk_io_error_invalid_argument
++_lean_mk_io_error_invalid_argument_file
++_lean_mk_io_error_no_file_or_directory
++_lean_mk_io_error_no_such_thing
++_lean_mk_io_error_no_such_thing_file
++_lean_mk_io_error_other_error
++_lean_mk_io_error_permission_denied
++_lean_mk_io_error_permission_denied_file
++_lean_mk_io_error_protocol_error
++_lean_mk_io_error_resource_busy
++_lean_mk_io_error_resource_exhausted
++_lean_mk_io_error_resource_exhausted_file
++_lean_mk_io_error_resource_vanished
++_lean_mk_io_error_time_expired
++_lean_mk_io_error_unsatisfied_constraints
++_lean_mk_io_error_unsupported_operation
++_lean_mk_io_user_error
++_lean_mk_let_decl
++_lean_mk_local_decl
++_lean_mk_mangled_boxed_name
++_lean_mk_opaque_val
++_lean_mk_outparam_args_implicit
++_lean_mk_projection_info
++_lean_mk_quot_val
++_lean_mk_recursor_val
++_lean_mk_reducibility_hints_regular
++_lean_mk_string
++_lean_mk_string_from_bytes
++_lean_mk_string_from_bytes_unchecked
++_lean_mk_string_unchecked
++_lean_mk_syntax_ident
++_lean_mk_theorem_val
++_lean_name_append_after
++_lean_name_append_before
++_lean_name_append_index_after
++_lean_name_eq
++_lean_name_hash_exported
++_lean_name_mk_numeral
++_lean_name_mk_string
++_lean_nat_big_add
++_lean_nat_big_div
++_lean_nat_big_div_exact
++_lean_nat_big_eq
++_lean_nat_big_land
++_lean_nat_big_le
++_lean_nat_big_lor
++_lean_nat_big_lt
++_lean_nat_big_mod
++_lean_nat_big_mul
++_lean_nat_big_shiftr
++_lean_nat_big_sub
++_lean_nat_big_succ
++_lean_nat_big_xor
++_lean_nat_gcd
++_lean_nat_log2
++_lean_nat_overflow_mul
++_lean_nat_pow
++_lean_nat_shiftl
++_lean_notify_assert
++_lean_obj_once_cold
++_lean_object_byte_size
++_lean_object_data_byte_size
++_lean_opaque_val_is_unsafe
++_lean_openssl_version
++_lean_option_get_or_block
++_lean_options_get_bool
++_lean_options_get_empty
++_lean_options_update_bool
++_lean_panic
++_lean_panic_fn
++_lean_panic_fn_borrowed
++_lean_pretty_printer_formatter_interpret_parser_descr
++_lean_pretty_printer_parenthesizer_interpret_parser_descr
++_lean_private_prefix
++_lean_private_to_user_name
++_lean_profileit
++_lean_projection_info_from_class
++_lean_quot_val_kind
++_lean_recursor_is_unsafe
++_lean_recursor_k
++_lean_reducibility_hints_get_height
++_lean_register_external_class
++_lean_register_option
++_lean_replace_expr
++_lean_run_init
++_lean_run_init_attrs
++_lean_run_main
++_lean_run_mod_init_core
++_lean_runtime_forget
++_lean_runtime_mark_multi_threaded
++_lean_runtime_mark_persistent
++_lean_sarray_ensure_capacity
++_lean_sarray_eq_cold
++_lean_set_exit_on_panic
++_lean_set_initializing
++_lean_set_panic_messages
++_lean_set_reducibility_status
++_lean_setup_args
++_lean_sharecommon_eq
++_lean_sharecommon_hash
++_lean_sharecommon_quick
++_lean_shell_main
++_lean_shell_options_get_num_threads
++_lean_shell_options_get_profiler
++_lean_shell_options_get_run
++_lean_shell_options_mk
++_lean_shell_options_process
++_lean_simp
++_lean_simp_macro_scopes
++_lean_slice_dec_lt
++_lean_slice_hash
++_lean_smap_foreach_test
++_lean_sorry
++_lean_st_mk_ref
++_lean_st_ref_get
++_lean_st_ref_ptr_eq
++_lean_st_ref_set
++_lean_st_ref_swap
++_lean_st_ref_take
++_lean_state_sharecommon
++_lean_stream_of_handle
++_lean_string_any
++_lean_string_append
++_lean_string_capitalize
++_lean_string_compare
++_lean_string_contains
++_lean_string_data
++_lean_string_drop
++_lean_string_dropright
++_lean_string_eq_cold
++_lean_string_foldl
++_lean_string_from_utf8_unchecked
++_lean_string_front
++_lean_string_hash
++_lean_string_intercalate
++_lean_string_is_valid_pos
++_lean_string_isempty
++_lean_string_isprefixof
++_lean_string_lt
++_lean_string_memcmp
++_lean_string_mk
++_lean_string_nextwhile
++_lean_string_of_usize
++_lean_string_offsetofpos
++_lean_string_pos_min
++_lean_string_pos_sub
++_lean_string_posof
++_lean_string_push
++_lean_string_pushn
++_lean_string_to_utf8
++_lean_string_trim
++_lean_string_utf8_extract
++_lean_string_utf8_get
++_lean_string_utf8_get_bang
++_lean_string_utf8_get_fast_cold
++_lean_string_utf8_get_opt
++_lean_string_utf8_next
++_lean_string_utf8_next_fast_cold
++_lean_string_utf8_prev
++_lean_string_utf8_set
++_lean_string_validate_utf8
++_lean_substring_all
++_lean_substring_beq
++_lean_substring_drop
++_lean_substring_extract
++_lean_substring_front
++_lean_substring_get
++_lean_substring_isempty
++_lean_substring_prev
++_lean_substring_takewhile
++_lean_substring_tostring
++_lean_sym_def_eq
++_lean_sym_dsimp
++_lean_sym_simp
++_lean_synth_pending
++_lean_system_platform_emscripten
++_lean_system_platform_nbits
++_lean_system_platform_osx
++_lean_system_platform_windows
++_lean_task_bind_core
++_lean_task_get
++_lean_task_map_core
++_lean_task_pure
++_lean_task_spawn_core
++_lean_thunk_get_core
++_lean_uint16_of_big_nat
++_lean_uint16_once_cold
++_lean_uint32_of_big_nat
++_lean_uint32_once_cold
++_lean_uint64_mix_hash
++_lean_uint64_of_big_nat
++_lean_uint64_once_cold
++_lean_uint8_of_big_nat
++_lean_uint8_once_cold
++_lean_update_env_attributes
++_lean_usize_of_big_nat
++_lean_usize_once_cold
++_lean_utf8_n_strlen
++_lean_utf8_strlen
++_lean_uv_chdir
++_lean_uv_cpu_info
++_lean_uv_cwd
++_lean_uv_dns_get_info
++_lean_uv_dns_get_name
++_lean_uv_event_loop_alive
++_lean_uv_event_loop_configure
++_lean_uv_exepath
++_lean_uv_get_available_memory
++_lean_uv_get_constrained_memory
++_lean_uv_get_free_memory
++_lean_uv_get_process_title
++_lean_uv_get_total_memory
++_lean_uv_getrusage
++_lean_uv_hrtime
++_lean_uv_interface_addresses
++_lean_uv_ntop_v4
++_lean_uv_ntop_v6
++_lean_uv_os_environ
++_lean_uv_os_get_group
++_lean_uv_os_get_passwd
++_lean_uv_os_getenv
++_lean_uv_os_gethostname
++_lean_uv_os_getpid
++_lean_uv_os_getppid
++_lean_uv_os_getpriority
++_lean_uv_os_homedir
++_lean_uv_os_setenv
++_lean_uv_os_setpriority
++_lean_uv_os_tmpdir
++_lean_uv_os_uname
++_lean_uv_os_unsetenv
++_lean_uv_pton_v4
++_lean_uv_pton_v6
++_lean_uv_random
++_lean_uv_set_process_title
++_lean_uv_signal_cancel
++_lean_uv_signal_mk
++_lean_uv_signal_next
++_lean_uv_signal_stop
++_lean_uv_tcp_accept
++_lean_uv_tcp_bind
++_lean_uv_tcp_cancel_accept
++_lean_uv_tcp_connect
++_lean_uv_tcp_getpeername
++_lean_uv_tcp_getsockname
++_lean_uv_tcp_keepalive
++_lean_uv_tcp_listen
++_lean_uv_tcp_new
++_lean_uv_tcp_nodelay
++_lean_uv_tcp_recv
++_lean_uv_tcp_send
++_lean_uv_tcp_shutdown
++_lean_uv_timer_cancel
++_lean_uv_timer_mk
++_lean_uv_timer_next
++_lean_uv_timer_reset
++_lean_uv_timer_stop
++_lean_uv_udp_bind
++_lean_uv_udp_connect
++_lean_uv_udp_getpeername
++_lean_uv_udp_getsockname
++_lean_uv_udp_new
++_lean_uv_udp_recv
++_lean_uv_udp_send
++_lean_uv_udp_set_broadcast
++_lean_uv_udp_set_membership
++_lean_uv_udp_set_multicast_interface
++_lean_uv_udp_set_multicast_loop
++_lean_uv_udp_set_multicast_ttl
++_lean_uv_udp_set_ttl
++_lean_uv_uptime
++_lean_wasm_compile
++_lean_wasm_lsp_init
++_lean_wasm_lsp_send
++_lean_wasm_load_snapshot
++_lean_wasm_load_snapshot_mem
++_lean_wasm_reset
++_lean_whnf
++_lean_windows_get_next_transition
++_main
++_malloc
++_initialize_libuv
+diff --git a/src/emscripten-exports.txt b/src/emscripten-exports.wanted.txt
+similarity index 99%
+rename from src/emscripten-exports.txt
+rename to src/emscripten-exports.wanted.txt
+index b96a961..f627cd1 100644
+--- a/src/emscripten-exports.txt
++++ b/src/emscripten-exports.wanted.txt
+@@ -1,6 +1,3 @@
+-_free
+-_lean_browser64_configure_input_ring
+-_lean_wasm_shell_mark_preinitialized
+ _initialize_Init
+ _initialize_Init_BinderNameHint
+ _initialize_Init_BinderPredicates
+@@ -2309,7 +2306,6 @@ _initialize_Std_Time_Zoned_Database_Windows
+ _initialize_Std_Time_Zoned_RecurringRule
+ _initialize_Std_Time_Zoned_TimeZone
+ _initialize_Std_Time_Zoned_ZoneRules
+-_initialize_libuv
+ _l_Array___aux__Init__Data__Array__Mem______macroRules__Array__tacticArray__get__dec__1___boxed
+ _l_Array___aux__Init__Data__Array__Mem______macroRules__Array__tacticArray__mem__dec__1___boxed
+ _l_Array___aux__Init__Data__Array__Mem______macroRules__tacticDecreasing__trivial__1___boxed
+@@ -99266,787 +99262,6 @@ _l_withPtrEqDecEq___boxed
+ _l_withPtrEqDecEq___redArg___boxed
+ _l_withPtrEqUnsafe___boxed
+ _l_withPtrEqUnsafe___redArg___boxed
+-_lean_add_alias
+-_lean_add_decl
+-_lean_add_decl_without_checking
+-_lean_alloc_object
+-_lean_apply_1
+-_lean_apply_10
+-_lean_apply_11
+-_lean_apply_12
+-_lean_apply_13
+-_lean_apply_14
+-_lean_apply_15
+-_lean_apply_16
+-_lean_apply_2
+-_lean_apply_3
+-_lean_apply_4
+-_lean_apply_5
+-_lean_apply_6
+-_lean_apply_7
+-_lean_apply_8
+-_lean_apply_9
+-_lean_apply_m
+-_lean_apply_n
+-_lean_array_get_panic
+-_lean_array_mk
+-_lean_array_push
+-_lean_array_set_panic
+-_lean_array_to_list
+-_lean_array_to_list_impl
+-_lean_assign_lmvar
+-_lean_assign_mvar
+-_lean_attribute_application_time
+-_lean_axiom_val_is_unsafe
+-_lean_big_int64_to_int
+-_lean_big_int_to_int
+-_lean_big_int_to_nat
+-_lean_big_size_t_to_int
+-_lean_big_uint64_to_nat
+-_lean_big_usize_to_nat
+-_lean_byte_array_copy_slice
+-_lean_byte_array_data
+-_lean_byte_array_hash
+-_lean_byte_array_mk
+-_lean_byte_array_push
+-_lean_byteslice_beq
+-_lean_checked_assign
+-_lean_chmod
+-_lean_closure_max_args
+-_lean_compacted_region_free
+-_lean_compacted_region_read
+-_lean_compacted_region_save
+-_lean_constructor_val_is_unsafe
+-_lean_copy_byte_array
+-_lean_copy_expand_array
+-_lean_copy_expand_array_nonlinear
+-_lean_copy_float_array
+-_lean_copy_sarray
+-_lean_cstr_to_int
+-_lean_cstr_to_nat
+-_lean_cutsat_eq_cnstr_to_proof
+-_lean_cutsat_propagate_nonlinear
+-_lean_data_value_beq
+-_lean_data_value_bool
+-_lean_data_value_to_string
+-_lean_dbg_sleep
+-_lean_dbg_stack_trace
+-_lean_dbg_trace
+-_lean_dbg_trace_if_shared
+-_lean_dec_ref_cold
+-_lean_decl_get_sorry_dep
+-_lean_decode_io_error
+-_lean_decode_lossy_utf8
+-_lean_decode_uv_error
+-_lean_definition_val_get_safety
+-_lean_delayed_mvar_assignment_fvars
+-_lean_delayed_mvar_assignment_mvar_id_pending
+-_lean_demangle_bt_line_cstr
+-_lean_display_cumulative_profiling_times
+-_lean_dsimp
+-_lean_dynlib_get
+-_lean_dynlib_load
+-_lean_dynlib_symbol_run_as_init
+-_lean_elab_add_decl
+-_lean_elab_add_decl_without_checking
+-_lean_elab_environment_of_kernel_env
+-_lean_elab_environment_to_kernel_env
+-_lean_elab_environment_update_base_after_kernel_add
+-_lean_emit_llvm
+-_lean_enable_initializer_execution
+-_lean_environment_add
+-_lean_environment_find
+-_lean_environment_free_regions
+-_lean_environment_mark_quot_init
+-_lean_environment_quot_init
+-_lean_erase_macro_scopes
+-_lean_eval_check_meta
+-_lean_eval_const
+-_lean_eval_main
+-_lean_eval_suggest_tactic
+-_lean_expr_abstract
+-_lean_expr_abstract_range
+-_lean_expr_binder_info
+-_lean_expr_consume_type_annotations
+-_lean_expr_dbg_to_string
+-_lean_expr_equal
+-_lean_expr_eqv
+-_lean_expr_has_expr_mvar
+-_lean_expr_has_fvar
+-_lean_expr_has_level_mvar
+-_lean_expr_has_level_param
+-_lean_expr_has_loose_bvar
+-_lean_expr_has_mvar
+-_lean_expr_hash
+-_lean_expr_instantiate
+-_lean_expr_instantiate1
+-_lean_expr_instantiate_range
+-_lean_expr_instantiate_rev
+-_lean_expr_instantiate_rev_range
+-_lean_expr_is_have
+-_lean_expr_lift_loose_bvars
+-_lean_expr_loose_bvar_range
+-_lean_expr_lower_loose_bvars
+-_lean_expr_lt
+-_lean_expr_mk_app
+-_lean_expr_mk_app_data
+-_lean_expr_mk_bvar
+-_lean_expr_mk_const
+-_lean_expr_mk_data
+-_lean_expr_mk_forall
+-_lean_expr_mk_fvar
+-_lean_expr_mk_lambda
+-_lean_expr_mk_let
+-_lean_expr_mk_lit
+-_lean_expr_mk_mdata
+-_lean_expr_mk_mvar
+-_lean_expr_mk_proj
+-_lean_expr_mk_sort
+-_lean_expr_quick_lt
+-_lean_finalize_task_manager
+-_lean_finalize_thread
+-_lean_find_expr
+-_lean_find_ext_expr
+-_lean_float32_frexp
+-_lean_float32_isfinite
+-_lean_float32_isinf
+-_lean_float32_isnan
+-_lean_float32_of_bits
+-_lean_float32_of_nat
+-_lean_float32_once_cold
+-_lean_float32_scaleb
+-_lean_float32_to_bits
+-_lean_float32_to_string
+-_lean_float_array_data
+-_lean_float_array_mk
+-_lean_float_array_push
+-_lean_float_frexp
+-_lean_float_isfinite
+-_lean_float_isinf
+-_lean_float_isnan
+-_lean_float_of_bits
+-_lean_float_of_nat
+-_lean_float_once_cold
+-_lean_float_scaleb
+-_lean_float_to_bits
+-_lean_float_to_string
+-_lean_free_object
+-_lean_get_congr_match_equations_for
+-_lean_get_current_time
+-_lean_get_delayed_mvar_assignment
+-_lean_get_export_name_for
+-_lean_get_githash
+-_lean_get_init_fn_name_for
+-_lean_get_internal_linker_flags
+-_lean_get_ir_extra_const_names
+-_lean_get_leanc_extra_flags
+-_lean_get_leanc_internal_flags
+-_lean_get_linker_flags
+-_lean_get_lmvar_assignment
+-_lean_get_match_equations_for
+-_lean_get_mvar_assignment
+-_lean_get_num_attributes
+-_lean_get_option_decls_array
+-_lean_get_profiler
+-_lean_get_profiler_threshold
+-_lean_get_reducibility_status
+-_lean_get_regular_init_fn_name_for
+-_lean_get_set_stderr
+-_lean_get_set_stdin
+-_lean_get_set_stdout
+-_lean_get_stderr
+-_lean_get_stdin
+-_lean_get_stdout
+-_lean_get_structural_rec_arg_pos
+-_lean_get_symbol_stem
+-_lean_get_windows_local_timezone_id_at
+-_lean_grind_cutsat_assert_eq
+-_lean_grind_cutsat_assert_le
+-_lean_grind_cutsat_mk_var
+-_lean_grind_internalize
+-_lean_grind_mk_eq_proof
+-_lean_grind_mk_heq_proof
+-_lean_grind_normalize
+-_lean_grind_preprocess
+-_lean_grind_process_new_facts
+-_lean_has_compile_error
+-_lean_has_match_pattern_attribute
+-_lean_has_out_params
+-_lean_idbg_client_loop
+-_lean_inc_heartbeat
+-_lean_inductive_val_is_rec
+-_lean_inductive_val_is_reflexive
+-_lean_inductive_val_is_unsafe
+-_lean_infer_type
+-_lean_init_llvm
+-_lean_init_search_path
+-_lean_init_task_manager
+-_lean_init_task_manager_using
+-_lean_initialize
+-_lean_initialize_runtime_module
+-_lean_initialize_thread
+-_lean_instantiate_expr_mvars
+-_lean_instantiate_level_mvars
+-_lean_int16_of_big_int
+-_lean_int32_of_big_int
+-_lean_int64_of_big_int
+-_lean_int8_of_big_int
+-_lean_int_big_add
+-_lean_int_big_div
+-_lean_int_big_div_exact
+-_lean_int_big_ediv
+-_lean_int_big_emod
+-_lean_int_big_eq
+-_lean_int_big_le
+-_lean_int_big_lt
+-_lean_int_big_mod
+-_lean_int_big_mul
+-_lean_int_big_neg
+-_lean_int_big_nonneg
+-_lean_int_big_sub
+-_lean_internal_enable_debug
+-_lean_internal_get_believer_trust_level
+-_lean_internal_get_build_type
+-_lean_internal_get_default_max_heartbeat
+-_lean_internal_get_default_max_memory
+-_lean_internal_get_default_options
+-_lean_internal_get_default_verbose
+-_lean_internal_get_hardware_concurrency
+-_lean_internal_has_address_sanitizer
+-_lean_internal_has_llvm_backend
+-_lean_internal_is_debug
+-_lean_internal_is_multi_thread
+-_lean_internal_panic
+-_lean_internal_panic_out_of_memory
+-_lean_internal_panic_overflow
+-_lean_internal_panic_rc_overflow
+-_lean_internal_panic_unreachable
+-_lean_internal_set_exit_on_panic
+-_lean_internal_set_max_heartbeat
+-_lean_internal_set_max_memory
+-_lean_internal_set_thread_stack_size
+-_lean_io_allocprof
+-_lean_io_app_path
+-_lean_io_as_task
+-_lean_io_basemutex_lock
+-_lean_io_basemutex_new
+-_lean_io_basemutex_try_lock
+-_lean_io_basemutex_unlock
+-_lean_io_baserecmutex_lock
+-_lean_io_baserecmutex_new
+-_lean_io_baserecmutex_try_lock
+-_lean_io_baserecmutex_unlock
+-_lean_io_basesharedmutex_new
+-_lean_io_basesharedmutex_read
+-_lean_io_basesharedmutex_try_read
+-_lean_io_basesharedmutex_try_write
+-_lean_io_basesharedmutex_unlock_read
+-_lean_io_basesharedmutex_unlock_write
+-_lean_io_basesharedmutex_write
+-_lean_io_bind_task
+-_lean_io_cancel
+-_lean_io_cancel_core
+-_lean_io_cancel_token_is_set
+-_lean_io_check_canceled
+-_lean_io_check_canceled_core
+-_lean_io_condvar_new
+-_lean_io_condvar_notify_all
+-_lean_io_condvar_notify_one
+-_lean_io_condvar_wait
+-_lean_io_create_dir
+-_lean_io_create_tempdir
+-_lean_io_create_tempfile
+-_lean_io_current_dir
+-_lean_io_eprint
+-_lean_io_eprintln
+-_lean_io_error_to_string
+-_lean_io_exit
+-_lean_io_force_exit
+-_lean_io_get_num_heartbeats
+-_lean_io_get_random_bytes
+-_lean_io_get_task_state
+-_lean_io_get_task_state_core
+-_lean_io_get_tid
+-_lean_io_getenv
+-_lean_io_hard_link
+-_lean_io_initializing
+-_lean_io_map_task
+-_lean_io_mark_end_initialization
+-_lean_io_metadata
+-_lean_io_mono_ms_now
+-_lean_io_mono_nanos_now
+-_lean_io_prim_handle_flush
+-_lean_io_prim_handle_get_line
+-_lean_io_prim_handle_is_eof
+-_lean_io_prim_handle_is_tty
+-_lean_io_prim_handle_lock
+-_lean_io_prim_handle_mk
+-_lean_io_prim_handle_put_str
+-_lean_io_prim_handle_read
+-_lean_io_prim_handle_rewind
+-_lean_io_prim_handle_truncate
+-_lean_io_prim_handle_try_lock
+-_lean_io_prim_handle_unlock
+-_lean_io_prim_handle_write
+-_lean_io_process_child_kill
+-_lean_io_process_child_pid
+-_lean_io_process_child_take_stdin
+-_lean_io_process_child_try_wait
+-_lean_io_process_child_wait
+-_lean_io_process_get_current_dir
+-_lean_io_process_get_pid
+-_lean_io_process_set_current_dir
+-_lean_io_process_spawn
+-_lean_io_promise_new
+-_lean_io_promise_resolve
+-_lean_io_promise_result_opt
+-_lean_io_read_dir
+-_lean_io_realpath
+-_lean_io_remove_dir
+-_lean_io_remove_file
+-_lean_io_rename
+-_lean_io_result_show_error
+-_lean_io_set_heartbeats
+-_lean_io_symlink_metadata
+-_lean_io_timeit
+-_lean_io_wait
+-_lean_io_wait_any
+-_lean_io_wait_any_core
+-_lean_ir_emit_llvm
+-_lean_ir_export_entries
+-_lean_ir_find_env_decl
+-_lean_ir_find_env_decl_boxed
+-_lean_ir_format_fn_body_head
+-_lean_is_attribute
+-_lean_is_class
+-_lean_is_expr_def_eq
+-_lean_is_inaccessible_user_name
+-_lean_is_level_def_eq
+-_lean_is_matcher
+-_lean_is_out_param
+-_lean_is_private_name
+-_lean_is_reserved_name
+-_lean_is_trace_class_enabled
+-_lean_is_unsafe_inductive_decl
+-_lean_isize_of_big_int
+-_lean_kernel_check
+-_lean_kernel_diag_is_enabled
+-_lean_kernel_get_diag
+-_lean_kernel_is_def_eq
+-_lean_kernel_record_unfold
+-_lean_kernel_set_diag
+-_lean_kernel_whnf
+-_lean_level_depth
+-_lean_level_eq
+-_lean_level_eqv
+-_lean_level_has_mvar
+-_lean_level_has_param
+-_lean_level_hash
+-_lean_level_mk_data
+-_lean_level_mk_imax
+-_lean_level_mk_max
+-_lean_level_mk_mvar
+-_lean_level_mk_param
+-_lean_level_mk_succ
+-_lean_level_mk_zero
+-_lean_libuv_version
+-_lean_list_to_array
+-_lean_lit_type
+-_lean_llvm_add_attribute_at_index
+-_lean_llvm_add_case
+-_lean_llvm_add_function
+-_lean_llvm_add_global
+-_lean_llvm_append_basic_block_in_context
+-_lean_llvm_array_type
+-_lean_llvm_build_add
+-_lean_llvm_build_alloca
+-_lean_llvm_build_br
+-_lean_llvm_build_call2
+-_lean_llvm_build_cond_br
+-_lean_llvm_build_gep2
+-_lean_llvm_build_global_string
+-_lean_llvm_build_icmp
+-_lean_llvm_build_inbounds_gep2
+-_lean_llvm_build_load2
+-_lean_llvm_build_mul
+-_lean_llvm_build_not
+-_lean_llvm_build_ptr_to_int
+-_lean_llvm_build_ret
+-_lean_llvm_build_ret_void
+-_lean_llvm_build_sext
+-_lean_llvm_build_sext_or_trunc
+-_lean_llvm_build_store
+-_lean_llvm_build_sub
+-_lean_llvm_build_switch
+-_lean_llvm_build_unreachable
+-_lean_llvm_build_zext
+-_lean_llvm_clear_insertion_position
+-_lean_llvm_const_array
+-_lean_llvm_const_int
+-_lean_llvm_const_pointer_null
+-_lean_llvm_const_string
+-_lean_llvm_count_basic_blocks
+-_lean_llvm_create_builder_in_context
+-_lean_llvm_create_context
+-_lean_llvm_create_memory_buffer_with_contents_of_file
+-_lean_llvm_create_module
+-_lean_llvm_create_string_attribute
+-_lean_llvm_create_target_machine
+-_lean_llvm_dispose_module
+-_lean_llvm_dispose_target_machine
+-_lean_llvm_double_type_in_context
+-_lean_llvm_float_type_in_context
+-_lean_llvm_function_type
+-_lean_llvm_get_basic_block_parent
+-_lean_llvm_get_default_target_triple
+-_lean_llvm_get_entry_basic_block
+-_lean_llvm_get_first_function
+-_lean_llvm_get_first_global
+-_lean_llvm_get_first_instruction
+-_lean_llvm_get_insert_block
+-_lean_llvm_get_named_function
+-_lean_llvm_get_named_global
+-_lean_llvm_get_next_function
+-_lean_llvm_get_next_global
+-_lean_llvm_get_target_from_triple
+-_lean_llvm_get_undef
+-_lean_llvm_get_value_name2
+-_lean_llvm_initialize_target_info
+-_lean_llvm_int_type_in_context
+-_lean_llvm_link_modules
+-_lean_llvm_module_to_string
+-_lean_llvm_opaque_pointer_type_in_context
+-_lean_llvm_parse_bitcode
+-_lean_llvm_pointer_type
+-_lean_llvm_position_builder_at_end
+-_lean_llvm_position_builder_before
+-_lean_llvm_print_module_to_file
+-_lean_llvm_print_module_to_string
+-_lean_llvm_set_dll_storage_class
+-_lean_llvm_set_initializer
+-_lean_llvm_set_linkage
+-_lean_llvm_set_tail_call
+-_lean_llvm_set_visibility
+-_lean_llvm_target_machine_emit_to_file
+-_lean_llvm_type_of
+-_lean_llvm_verify_module
+-_lean_llvm_void_type_in_context
+-_lean_llvm_write_bitcode_to_file
+-_lean_load_dynlib
+-_lean_load_plugin
+-_lean_local_ctx_erase
+-_lean_local_ctx_find
+-_lean_local_ctx_is_empty
+-_lean_local_ctx_mk_let_decl
+-_lean_local_ctx_mk_local_decl
+-_lean_local_ctx_num_indices
+-_lean_local_decl_binder_info
+-_lean_main
+-_lean_mark_mt
+-_lean_mark_persistent
+-_lean_max_small_nat
+-_lean_mk_antiquot_formatter
+-_lean_mk_antiquot_parenthesizer
+-_lean_mk_array
+-_lean_mk_ascii_string_unchecked
+-_lean_mk_axiom_val
+-_lean_mk_bool_data_value
+-_lean_mk_cases_on
+-_lean_mk_constructor_val
+-_lean_mk_definition_val
+-_lean_mk_empty_environment
+-_lean_mk_empty_local_ctx
+-_lean_mk_inductive_decl
+-_lean_mk_inductive_val
+-_lean_mk_io_error_already_exists
+-_lean_mk_io_error_already_exists_file
+-_lean_mk_io_error_eof
+-_lean_mk_io_error_hardware_fault
+-_lean_mk_io_error_illegal_operation
+-_lean_mk_io_error_inappropriate_type
+-_lean_mk_io_error_inappropriate_type_file
+-_lean_mk_io_error_interrupted
+-_lean_mk_io_error_invalid_argument
+-_lean_mk_io_error_invalid_argument_file
+-_lean_mk_io_error_no_file_or_directory
+-_lean_mk_io_error_no_such_thing
+-_lean_mk_io_error_no_such_thing_file
+-_lean_mk_io_error_other_error
+-_lean_mk_io_error_permission_denied
+-_lean_mk_io_error_permission_denied_file
+-_lean_mk_io_error_protocol_error
+-_lean_mk_io_error_resource_busy
+-_lean_mk_io_error_resource_exhausted
+-_lean_mk_io_error_resource_exhausted_file
+-_lean_mk_io_error_resource_vanished
+-_lean_mk_io_error_time_expired
+-_lean_mk_io_error_unsatisfied_constraints
+-_lean_mk_io_error_unsupported_operation
+-_lean_mk_io_user_error
+-_lean_mk_let_decl
+-_lean_mk_local_decl
+-_lean_mk_mangled_boxed_name
+-_lean_mk_opaque_val
+-_lean_mk_outparam_args_implicit
+-_lean_mk_projection_info
+-_lean_mk_quot_val
+-_lean_mk_recursor_val
+-_lean_mk_reducibility_hints_regular
+-_lean_mk_string
+-_lean_mk_string_from_bytes
+-_lean_mk_string_from_bytes_unchecked
+-_lean_mk_string_unchecked
+-_lean_mk_syntax_ident
+-_lean_mk_theorem_val
+-_lean_name_append_after
+-_lean_name_append_before
+-_lean_name_append_index_after
+-_lean_name_eq
+-_lean_name_hash_exported
+-_lean_name_mk_numeral
+-_lean_name_mk_string
+-_lean_nat_big_add
+-_lean_nat_big_div
+-_lean_nat_big_div_exact
+-_lean_nat_big_eq
+-_lean_nat_big_land
+-_lean_nat_big_le
+-_lean_nat_big_lor
+-_lean_nat_big_lt
+-_lean_nat_big_mod
+-_lean_nat_big_mul
+-_lean_nat_big_shiftr
+-_lean_nat_big_sub
+-_lean_nat_big_succ
+-_lean_nat_big_xor
+-_lean_nat_gcd
+-_lean_nat_log2
+-_lean_nat_overflow_mul
+-_lean_nat_pow
+-_lean_nat_shiftl
+-_lean_notify_assert
+-_lean_obj_once_cold
+-_lean_object_byte_size
+-_lean_object_data_byte_size
+-_lean_opaque_val_is_unsafe
+-_lean_openssl_version
+-_lean_option_get_or_block
+-_lean_options_get_bool
+-_lean_options_get_empty
+-_lean_options_update_bool
+-_lean_panic
+-_lean_panic_fn
+-_lean_panic_fn_borrowed
+-_lean_pretty_printer_formatter_interpret_parser_descr
+-_lean_pretty_printer_parenthesizer_interpret_parser_descr
+-_lean_private_prefix
+-_lean_private_to_user_name
+-_lean_profileit
+-_lean_projection_info_from_class
+-_lean_quot_val_kind
+-_lean_recursor_is_unsafe
+-_lean_recursor_k
+-_lean_reducibility_hints_get_height
+-_lean_register_external_class
+-_lean_register_option
+-_lean_replace_expr
+-_lean_run_init
+-_lean_run_init_attrs
+-_lean_run_main
+-_lean_run_mod_init_core
+-_lean_runtime_forget
+-_lean_runtime_mark_multi_threaded
+-_lean_runtime_mark_persistent
+-_lean_sarray_ensure_capacity
+-_lean_sarray_eq_cold
+-_lean_set_exit_on_panic
+-_lean_set_initializing
+-_lean_set_panic_messages
+-_lean_set_reducibility_status
+-_lean_setup_args
+-_lean_sharecommon_eq
+-_lean_sharecommon_hash
+-_lean_sharecommon_quick
+-_lean_shell_main
+-_lean_shell_options_get_num_threads
+-_lean_shell_options_get_profiler
+-_lean_shell_options_get_run
+-_lean_shell_options_mk
+-_lean_shell_options_process
+-_lean_simp
+-_lean_simp_macro_scopes
+-_lean_slice_dec_lt
+-_lean_slice_hash
+-_lean_smap_foreach_test
+-_lean_sorry
+-_lean_st_mk_ref
+-_lean_st_ref_get
+-_lean_st_ref_ptr_eq
+-_lean_st_ref_set
+-_lean_st_ref_swap
+-_lean_st_ref_take
+-_lean_state_sharecommon
+-_lean_stream_of_handle
+-_lean_string_any
+-_lean_string_append
+-_lean_string_capitalize
+-_lean_string_compare
+-_lean_string_contains
+-_lean_string_data
+-_lean_string_drop
+-_lean_string_dropright
+-_lean_string_eq_cold
+-_lean_string_foldl
+-_lean_string_from_utf8_unchecked
+-_lean_string_front
+-_lean_string_hash
+-_lean_string_intercalate
+-_lean_string_is_valid_pos
+-_lean_string_isempty
+-_lean_string_isprefixof
+-_lean_string_lt
+-_lean_string_memcmp
+-_lean_string_mk
+-_lean_string_nextwhile
+-_lean_string_of_usize
+-_lean_string_offsetofpos
+-_lean_string_pos_min
+-_lean_string_pos_sub
+-_lean_string_posof
+-_lean_string_push
+-_lean_string_pushn
+-_lean_string_to_utf8
+-_lean_string_trim
+-_lean_string_utf8_extract
+-_lean_string_utf8_get
+-_lean_string_utf8_get_bang
+-_lean_string_utf8_get_fast_cold
+-_lean_string_utf8_get_opt
+-_lean_string_utf8_next
+-_lean_string_utf8_next_fast_cold
+-_lean_string_utf8_prev
+-_lean_string_utf8_set
+-_lean_string_validate_utf8
+-_lean_substring_all
+-_lean_substring_beq
+-_lean_substring_drop
+-_lean_substring_extract
+-_lean_substring_front
+-_lean_substring_get
+-_lean_substring_isempty
+-_lean_substring_prev
+-_lean_substring_takewhile
+-_lean_substring_tostring
+-_lean_sym_def_eq
+-_lean_sym_dsimp
+-_lean_sym_simp
+-_lean_synth_pending
+-_lean_system_platform_emscripten
+-_lean_system_platform_nbits
+-_lean_system_platform_osx
+-_lean_system_platform_windows
+-_lean_task_bind_core
+-_lean_task_get
+-_lean_task_map_core
+-_lean_task_pure
+-_lean_task_spawn_core
+-_lean_thunk_get_core
+-_lean_uint16_of_big_nat
+-_lean_uint16_once_cold
+-_lean_uint32_of_big_nat
+-_lean_uint32_once_cold
+-_lean_uint64_mix_hash
+-_lean_uint64_of_big_nat
+-_lean_uint64_once_cold
+-_lean_uint8_of_big_nat
+-_lean_uint8_once_cold
+-_lean_update_env_attributes
+-_lean_usize_of_big_nat
+-_lean_usize_once_cold
+-_lean_utf8_n_strlen
+-_lean_utf8_strlen
+-_lean_uv_chdir
+-_lean_uv_cpu_info
+-_lean_uv_cwd
+-_lean_uv_dns_get_info
+-_lean_uv_dns_get_name
+-_lean_uv_event_loop_alive
+-_lean_uv_event_loop_configure
+-_lean_uv_exepath
+-_lean_uv_get_available_memory
+-_lean_uv_get_constrained_memory
+-_lean_uv_get_free_memory
+-_lean_uv_get_process_title
+-_lean_uv_get_total_memory
+-_lean_uv_getrusage
+-_lean_uv_hrtime
+-_lean_uv_interface_addresses
+-_lean_uv_ntop_v4
+-_lean_uv_ntop_v6
+-_lean_uv_os_environ
+-_lean_uv_os_get_group
+-_lean_uv_os_get_passwd
+-_lean_uv_os_getenv
+-_lean_uv_os_gethostname
+-_lean_uv_os_getpid
+-_lean_uv_os_getppid
+-_lean_uv_os_getpriority
+-_lean_uv_os_homedir
+-_lean_uv_os_setenv
+-_lean_uv_os_setpriority
+-_lean_uv_os_tmpdir
+-_lean_uv_os_uname
+-_lean_uv_os_unsetenv
+-_lean_uv_pton_v4
+-_lean_uv_pton_v6
+-_lean_uv_random
+-_lean_uv_set_process_title
+-_lean_uv_signal_cancel
+-_lean_uv_signal_mk
+-_lean_uv_signal_next
+-_lean_uv_signal_stop
+-_lean_uv_tcp_accept
+-_lean_uv_tcp_bind
+-_lean_uv_tcp_cancel_accept
+-_lean_uv_tcp_connect
+-_lean_uv_tcp_getpeername
+-_lean_uv_tcp_getsockname
+-_lean_uv_tcp_keepalive
+-_lean_uv_tcp_listen
+-_lean_uv_tcp_new
+-_lean_uv_tcp_nodelay
+-_lean_uv_tcp_recv
+-_lean_uv_tcp_send
+-_lean_uv_tcp_shutdown
+-_lean_uv_timer_cancel
+-_lean_uv_timer_mk
+-_lean_uv_timer_next
+-_lean_uv_timer_reset
+-_lean_uv_timer_stop
+-_lean_uv_udp_bind
+-_lean_uv_udp_connect
+-_lean_uv_udp_getpeername
+-_lean_uv_udp_getsockname
+-_lean_uv_udp_new
+-_lean_uv_udp_recv
+-_lean_uv_udp_send
+-_lean_uv_udp_set_broadcast
+-_lean_uv_udp_set_membership
+-_lean_uv_udp_set_multicast_interface
+-_lean_uv_udp_set_multicast_loop
+-_lean_uv_udp_set_multicast_ttl
+-_lean_uv_udp_set_ttl
+-_lean_uv_uptime
+-_lean_wasm_compile
+-_lean_wasm_lsp_init
+-_lean_wasm_lsp_send
+-_lean_wasm_load_snapshot
+-_lean_wasm_load_snapshot_mem
+-_lean_wasm_reset
+-_lean_whnf
+-_lean_windows_get_next_transition
+-_main
+-_malloc
+ _meta_initialize_Init
+ _meta_initialize_Init_BinderNameHint
+ _meta_initialize_Init_BinderPredicates
+-- 
+2.50.1 (Apple Git-155)
+
