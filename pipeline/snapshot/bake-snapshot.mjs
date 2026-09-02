@@ -6,6 +6,12 @@
 // lean.js/lean.wasm the browser runs. The app preloads the result to replace
 // the first import with a seconds-long region load.
 //
+// Output is a STAGING tree (work/staging/<buildId>/snapshots by default, where
+// <buildId> is the identity of the artifact's lean.wasm — the same function
+// chunk-runtime.mjs uses), and every index entry records that `runtime`, so
+// the pairing is a datum rather than prose (review C6). `--out` inside
+// public/ is refused before the runner starts; promotion is a separate step.
+//
 // Usage: node pipeline/snapshot/bake-snapshot.mjs [--name init] [--probe '#check 2+2'] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--out <dir>]
 
 import { execFileSync, execFile } from "node:child_process";
@@ -15,6 +21,7 @@ import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { createGzip } from "node:zlib";
 import { fileURLToPath } from "node:url";
+import { buildIdOfArtifact, refuseInsidePublic, stagingDir } from "../toolchain/artifact-paths.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "../..");
@@ -24,6 +31,40 @@ function arg(name, fallback) {
 }
 const name = arg("name", "init");
 const probe = arg("probe", "#check (2 + 2 : Nat)");
+const artifact = arg("artifact", null);
+// The runtime identity comes from the artifact that will do the baking (the
+// runner's own default when --artifact is absent), never from a manifest in
+// public/ — a bake must not inherit whatever the served tree happens to say.
+const artifactDir = path.resolve(artifact ?? process.env.QED64_LEAN_ARTIFACT ?? path.join(root, "pipeline/toolchain/work/build/stage1"));
+const buildId = buildIdOfArtifact(artifactDir);
+if (!buildId) {
+  console.error(`bake-snapshot: no lean.wasm under ${artifactDir} — pass --artifact <stage1 dir>`);
+  process.exit(2);
+}
+const out = path.resolve(root, arg("out", stagingDir(root, buildId, "snapshots")));
+refuseInsidePublic(root, out, "bake-snapshot");
+
+// The index this bake will upsert into is ONE pairing, checked before the
+// runner starts (a refusal after a 20-minute bake is the expensive kind):
+// entries baked by another runtime must not survive next to this one (they
+// would be served under this manifest and trap in the browser), and entries
+// with no `runtime` at all (pre-field bakes) would leave promote refusing
+// with "none recorded" and the user guessing which names to rebake.
+const indexPath = path.join(out, "index.json");
+let index = { schema: "qed64.snapshot-index/v1", snapshots: [] };
+try { index = JSON.parse(fs.readFileSync(indexPath, "utf8")); } catch {}
+const siblings = index.snapshots.filter((s) => s.name !== name);
+const foreign = siblings.filter((s) => s.runtime && s.runtime !== buildId);
+if (foreign.length) {
+  console.error(`bake-snapshot: ${indexPath} already holds entries for runtime ${foreign[0].runtime} (${foreign.map((s) => s.name).join(", ")}) — refusing to mix pairings`);
+  process.exit(2);
+}
+const unpaired = siblings.filter((s) => !s.runtime);
+if (unpaired.length) {
+  console.error(`bake-snapshot: ${indexPath} holds entries with no runtime pairing (${unpaired.map((s) => s.name).join(", ")}) — rebake ${unpaired.map((s) => `--name ${s.name}`).join(", ")} against this runtime first, or bake into an empty --out (promote refuses an unpaired index)`);
+  process.exit(2);
+}
+
 const work = path.join(root, "work/snapshot");
 fs.mkdirSync(work, { recursive: true });
 fs.writeFileSync(path.join(work, "probe.lean"), `${probe}\n`);
@@ -32,8 +73,10 @@ const runnerArgs = [
   path.join(root, "pipeline/snapshot/node-runner.mjs"),
   "--work", work,
 ];
-const artifact = arg("artifact", null);
-if (artifact) runnerArgs.push("--artifact", artifact);
+// Always the RESOLVED artifact: node-runner falls back to a sibling checkout
+// when the default stage1 lacks bin/lean.js, and then the `runtime` stamped
+// below (from artifactDir's lean.wasm) would name a binary that did not bake.
+runnerArgs.push("--artifact", artifactDir);
 const lib = arg("lib", null);
 if (lib) runnerArgs.push("--lib", lib);
 runnerArgs.push("--", `--incr-header-save=/work/${name}.snap`, "/work/probe.lean");
@@ -43,7 +86,7 @@ runnerArgs.push("--", `--incr-header-save=/work/${name}.snap`, "/work/probe.lean
 // and new buffers to coexist — more than the 16 GiB wasm64 space holds next
 // to the environment itself (toolchain patch 0011).
 const reserve = arg("reserve", String(3.5 * 1024 ** 3));
-console.log(`baking ${name}.snap (probe: ${JSON.stringify(probe)}; compactor reserve ${(Number(reserve) / 1024 ** 3).toFixed(1)} GiB) …`);
+console.log(`baking ${name}.snap for runtime ${buildId} (probe: ${JSON.stringify(probe)}; compactor reserve ${(Number(reserve) / 1024 ** 3).toFixed(1)} GiB) → ${out}`);
 // Patch 0031 (PROXY_TO_PTHREAD): the runner's process EXIT wedges — the
 // proxied exit is swallowed by the 0020 mailbox keepalive — while the actual
 // bake (save + probe) completes fine. Supervise: once the target .snap has
@@ -91,7 +134,6 @@ if (!fs.existsSync(snap)) {
   console.error("FAIL: snapshot file was not produced");
   process.exit(1);
 }
-const out = path.resolve(root, arg("out", "public/snapshots"));
 fs.mkdirSync(out, { recursive: true });
 try { fs.rmSync(`${snap}.deps`); } catch {}
 const snapBytes = fs.statSync(snap).size;
@@ -120,18 +162,15 @@ const digest = hasher.digest("hex");
 const gzName = `${name}.${digest.slice(0, 16)}.snapz`;
 const gzPath = path.join(out, gzName);
 fs.renameSync(tmpPath, gzPath);
-// Supersede any raw-served copy and every older bake of this logical name.
-try { fs.rmSync(path.join(out, `${name}.snap`)); } catch {}
-for (const f of fs.readdirSync(out)) {
-  if (f !== gzName && (f === `${name}.snapz` || new RegExp(`^${name}\\.[0-9a-f]{16}\\.snapz$`).test(f))) {
-    fs.rmSync(path.join(out, f));
-  }
-}
+// Older bakes of the same logical name are LEFT IN PLACE: content-addressed
+// files never collide, and a producer that unlinks is how the served tree was
+// lost (review C6: additive only; garbage-collect deliberately, later).
 const transferBytes = fs.statSync(gzPath).size;
 
 // Upsert the snapshot index the app consumes: each entry records the ORDERED
 // header imports its environment was baked for (the runtime keys its env
-// cache by exactly that list; empty = the default no-import header).
+// cache by exactly that list; empty = the default no-import header) and the
+// `runtime` it is binary-paired with.
 const importsOf = (source) => {
   const found = [];
   for (const line of source.split("\n")) {
@@ -140,9 +179,6 @@ const importsOf = (source) => {
   }
   return found;
 };
-const indexPath = path.join(out, "index.json");
-let index = { schema: "qed64.snapshot-index/v1", snapshots: [] };
-try { index = JSON.parse(fs.readFileSync(indexPath, "utf8")); } catch {}
 const entry = {
   name,
   url: `/snapshots/${gzName}`,
@@ -150,10 +186,13 @@ const entry = {
   bytes: snapBytes,
   transfer: transferBytes,
   imports: importsOf(probe),
+  runtime: buildId,
 };
+// Re-read: a concurrent bake of a sibling name may have upserted meanwhile.
+try { index = JSON.parse(fs.readFileSync(indexPath, "utf8")); } catch {}
 index.snapshots = index.snapshots.filter((s) => s.name !== name).concat([entry]);
 fs.writeFileSync(indexPath, JSON.stringify(index, null, 2));
 console.log(
   `baked ${gzPath} (${transferBytes} bytes transfer, ${snapBytes} raw); ` +
-    `index updated (imports: [${entry.imports.join(", ")}])`,
+    `index updated (imports: [${entry.imports.join(", ")}], runtime ${buildId})`,
 );

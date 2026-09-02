@@ -10,7 +10,14 @@
 
 const ARTIFACT_PREFIXES = ["/runtime/", "/profiles/", "/snapshots/"];
 
-function isImmutable(pathname) {
+export function isImmutable(pathname) {
+  // Every manifest and index revalidates, INCLUDING the per-build
+  // runtime-manifest.wasm64-<16hex>.json: the buildId is sha256(lean.wasm)
+  // alone (artifact-paths.mjs), so a relink that changes only lean.js keeps
+  // the name and rewrites the chunk digests inside — a year-long immutable
+  // cache would hand the pinned shell stale digests and fail boot
+  // verification (migration phase 1).
+  if (/\/runtime-manifest(\.[^/]*)?\.json$/.test(pathname) || /\/index\.json$/.test(pathname)) return false;
   // Digest- or size-named files never change under the same name.
   return /(\.part-\d+|\.snapz|\.chunk\.|[0-9a-f]{16,})/.test(pathname);
 }
