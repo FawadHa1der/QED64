@@ -2,9 +2,11 @@
 // the real vscode-lean4 InfoView) with zero servers — the Lean file worker
 // runs in this browser tab on the wasm64 runtime.
 import { LeanMonaco, LeanMonacoEditor, type LeanMonacoOptions } from "lean4monaco";
-import { installArtifacts, newSession, type ProgressInfo, type Qed64Session, type StatusSink } from "./qed64-boot";
+import { installArtifacts, loadSnapshotByName, newSession, type ProgressInfo, type Qed64Artifacts, type Qed64Session, type StatusSink } from "./qed64-boot";
 import { registerImportCompletion } from "./import-completion";
 import { WatchdogShim } from "./watchdog-shim";
+import { LspRelay, type RelaySession, type RelayStatus, type RestartOptions } from "./lsp-relay";
+import { LeanSession, memoryCandidates, type JsonRpcMessage, type LibraryPack, type WorkerStatus } from "../../src/runtime/client";
 
 const editorEl = document.getElementById("editor")! as HTMLElement;
 const infoviewEl = document.getElementById("infoview")! as HTMLElement;
@@ -161,6 +163,78 @@ const ui: StatusSink = {
   },
 };
 
+// ---- Resident preview (?resident=1): relay instead of shim -----------------
+// The pill is `render(status)` — one enum from the worker (§2.2(e)), no label
+// strings to regex over (C10). The overlay goes at the first phase in which
+// the workspace is actionable: `ready`, or `headerRefused` (a restored buffer
+// with a half-typed import needs editing, so it must be visible).
+const PHASE_LABEL: Record<RelayStatus["phase"], string> = {
+  booting: "starting Lean",
+  starting: "starting the Lean checker",
+  elaborating: "elaborating",
+  ready: "ready",
+  headerRefused: "imports incomplete — finish the import line to continue",
+  dead: "the checker crashed — restarting (~15 s)",
+  halted: "the checker keeps crashing on this content — edit the file to retry",
+};
+function renderStatus(s: RelayStatus) {
+  const label = PHASE_LABEL[s.phase];
+  if (s.phase === "booting" || s.phase === "starting" || s.phase === "elaborating" || s.phase === "dead") ui.busy(label);
+  else ui.idle(label);
+  if (s.phase === "ready" || s.phase === "headerRefused") bootFinish();
+}
+
+/** Day-5 session adapter (§2.2 L4; §7 day 5). A Worker exists from
+ * construction — the relay always has a target and a booting worker queues
+ * every frame (§6 amendment 20) — and `start()` runs the boot that
+ * qed64-boot.ts's `newSession` performs for the pump path, on the same
+ * artifacts. The sync-create/async-boot split moves INTO qed64-boot.ts at
+ * S3b (week 2); until then the boot inputs live here: the umbrella-sized
+ * initial commit and the boot-only snapshot list — a default session is
+ * covered by init + mathlib, and K1 serves exact keys first, so no page-side
+ * header reading chooses them. */
+class ResidentSession implements RelaySession {
+  readonly lean = new LeanSession();
+  readonly id: string;
+  constructor(private readonly artifacts: Qed64Artifacts, private readonly opts: RestartOptions) {
+    this.id = this.lean.id;
+    this.lean.onLog = (stream, text) => console.debug(`[lean:${stream}] ${text}`);
+    this.lean.onProgress = (p) => ui.progress(p.label ?? p.phase, { phase: p.phase, loaded: p.loaded, total: p.total, unit: p.unit });
+  }
+  get onLsp() { return this.lean.onLsp; }
+  set onLsp(f: (msg: JsonRpcMessage) => void) { this.lean.onLsp = f; }
+  get onStatus() { return this.lean.onStatus; }
+  set onStatus(f: (s: WorkerStatus) => void) { this.lean.onStatus = f; }
+  get onDied() { return this.lean.onDied; }
+  set onDied(f: (code: number | null, reason: string, message: string) => void) { this.lean.onDied = f; }
+  lsp(msg: JsonRpcMessage, replay?: boolean) { this.lean.lsp(msg, replay); }
+  dispose() { this.lean.dispose(); }
+  async start(): Promise<void> {
+    const a = this.artifacts;
+    // Memory-backed segments are consumed by the worker they were transferred
+    // to (newSession reinstalls them); a resident session boots on the
+    // storage-backed ones and reports the rest instead of throwing PACK_CONSUMED.
+    const packs: LibraryPack[] = [...a.installed.values()].flatMap((p) =>
+      p.segments
+        .filter((seg) => !(seg.bytes && seg.bytes.buffer.byteLength === 0))
+        .map((segment, i) => ({ id: `${p.id}#${i}`, ...(segment.blob ? { blob: segment.blob } : {}), ...(segment.bytes ? { bytes: segment.bytes } : {}), metadata: segment.metadata, mountPoint: `/lib/packs/${p.id}` })),
+    );
+    const cap = 6 * 1073741824;
+    const under = memoryCandidates().filter((b) => b <= cap);
+    ui.busy("starting Lean");
+    await this.lean.boot({
+      runtime: a.runtime,
+      memory: { initialBytes: 2048 * 1048576, maximumCandidates: under.length ? under : [cap] },
+      leanPath: [...a.installed.keys()].map((id) => `/lib/packs/${id}`).join(":"),
+      packs,
+    });
+    const qs: Qed64Session = { session: this.lean, loadedSnapshots: new Set() };
+    for (const name of this.opts.snapshots ?? ["init", "mathlib"]) {
+      if (!(await loadSnapshotByName(a, qs, name, ui))) throw new Error(`snapshot '${name}' failed to load`);
+    }
+  }
+}
+
 // ---- Examples -------------------------------------------------------------
 const EXAMPLES: Record<string, string> = {
   mathlib: `import Mathlib.Data.Real.Basic
@@ -222,18 +296,47 @@ async function main() {
     }
   }
   let shim: WatchdogShim | null = null;
-  const makeSession = (opts?: { mathlib?: boolean }): Promise<Qed64Session> =>
-    newSession(artifacts, ui, () => void shim?.handleWorkerDeath(), opts);
-  // The default example is a Mathlib one — commit the umbrella-sized heap.
-  const qs = await makeSession({ mathlib: true });
-  // ?resident=1 boots the resident FileWorker transport (patch 0031,
-  // docs/RESIDENT-WORKER-PLAN.md phase 3) — the pump path stays the default.
+  let relay: LspRelay | null = null;
+  let clientPort: MessagePort;
+  // ?resident=1 (§7 day 5, S3a): the resident front door + relay, a flagged
+  // preview on the R1 kernel. The pump path (WatchdogShim) stays the default
+  // and is untouched.
   const resident = new URLSearchParams(location.search).get("resident") === "1";
-  shim = new WatchdogShim(artifacts, qs, ui, makeSession, {}, { resident });
-  window.addEventListener("pagehide", () => shim?.disposeForUnload());
-  (globalThis as unknown as Record<string, unknown>).qed64 = { artifacts, shim, ui, get editor() { return editor.editor; } };
-  // The getter re-reads shim.qs each tick, so the meter follows worker reboots.
-  startMemoryMeter(() => (shim as unknown as { qs?: { session?: { request(type: string, payload: Record<string, unknown>): Promise<unknown> } } }).qs?.session ?? null);
+  type Tel = { request(type: string, payload: Record<string, unknown>): Promise<unknown> };
+  let telemetrySession: () => Tel | null;
+  if (resident) {
+    relay = new LspRelay(
+      (opts) => new ResidentSession(artifacts, opts ?? {}),
+      { status: renderStatus },
+      () => new Promise((r) => window.setTimeout(r, 1500)),
+    );
+    clientPort = relay.clientPort;
+    const r = relay;
+    window.addEventListener("pagehide", () => r.unload());
+    telemetrySession = () => (r.session as ResidentSession).lean as unknown as Tel;
+  } else {
+    const makeSession = (opts?: { mathlib?: boolean }): Promise<Qed64Session> =>
+      newSession(artifacts, ui, () => void shim?.handleWorkerDeath(), opts);
+    // The default example is a Mathlib one — commit the umbrella-sized heap.
+    const qs = await makeSession({ mathlib: true });
+    shim = new WatchdogShim(artifacts, qs, ui, makeSession, {}, {});
+    clientPort = shim.clientPort;
+    const s = shim;
+    window.addEventListener("pagehide", () => s.disposeForUnload());
+    // The getter re-reads shim.qs each tick, so the meter follows worker reboots.
+    telemetrySession = () => (s as unknown as { qs?: { session?: Tel } }).qs?.session ?? null;
+  }
+  // `qed64.status()` is the harness's one oracle on both transports (C7):
+  // the same enum from the relay's worker status or the shim's flag→enum getter.
+  (globalThis as unknown as Record<string, unknown>).qed64 = {
+    artifacts,
+    shim,
+    relay,
+    ui,
+    status: () => (relay ? relay.status() : shim!.status()),
+    get editor() { return editor.editor; },
+  };
+  startMemoryMeter(telemetrySession);
 
   ui.busy("starting the editor");
   const leanMonaco = new LeanMonaco();
@@ -247,7 +350,7 @@ async function main() {
     websocket: {
       $type: "WorkerDirect",
       worker: { postMessage() {} },
-      messagePort: shim.clientPort,
+      messagePort: clientPort,
     } as unknown as { url: string },
     vscode: {
       "workbench.colorTheme": "Visual Studio Light",

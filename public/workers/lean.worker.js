@@ -54,7 +54,10 @@ let sink = null;
 // The decoder is shared with Node's resident-probe (one parser, not two that
 // drift — architecture review A1). Absent only under the vitest vm harness,
 // which loads lsp-frames.js into the sandbox itself.
-if (typeof importScripts === "function") importScripts("lsp-frames.js");
+if (typeof importScripts === "function") {
+  importScripts("lsp-frames.js");
+  importScripts("lsp-front-door.js");
+}
 let lspMode = false;
 let lspFrames = null; // Qed64LspFrames.LspFrameDecoder, created by installStdoutTap
 
@@ -77,11 +80,18 @@ function installStdoutTap() {
   }
   lspFrames = new Qed64LspFrames.LspFrameDecoder({
     onFrame: (body) => {
+      let msg;
       try {
-        event(null, "lsp", { msg: JSON.parse(body) });
+        msg = JSON.parse(body);
       } catch {
         event(null, "log", { stream: "stderr", text: `lsp: unparseable ${body.length}-char frame` });
+        return;
       }
+      // Front-door sessions see every server frame through the machine
+      // (inbound version rebasing, status from fileProgress/headerStatus —
+      // §2.2(e)); the pump / lsp-resident-init transports get it raw.
+      if (frontDoor) frontDoorApply({ kind: "server", msg });
+      else event(null, "lsp", { msg });
     },
     onJunk: (line) => event(null, "log", { stream: "stdout", text: line }),
   });
@@ -156,7 +166,14 @@ function residentPump() {
       const read = Atomics.load(ctrl, RESIDENT_IDX.READ);
       const write = Atomics.load(ctrl, RESIDENT_IDX.WRITE);
       const free = (read - write - 1 + RESIDENT_RING_CAP) % RESIDENT_RING_CAP;
-      if (free === 0) { setTimeout(residentPump, 2); return; } // stay pumping; resume this item
+      if (free === 0) {
+        // Parked: the front door holds later didChanges (newest wins) until
+        // the ring drains instead of queueing one elaboration per keystroke
+        // behind a full ring (§2.4). Stay pumping; resume this item.
+        if (frontDoor && !ringBusy) { ringBusy = true; frontDoorApply({ kind: "ring", busy: true }); }
+        setTimeout(residentPump, 2);
+        return;
+      }
       const n = Math.min(free, RESIDENT_RING_CAP - write, item.payload.length - item.off);
       bytes.set(item.payload.subarray(item.off, item.off + n), write);
       item.off += n;
@@ -168,6 +185,9 @@ function residentPump() {
     if (item.done) item.done();
   }
   residentPumping = false;
+  // Drained after a park: release the front door's backlog (it re-enters
+  // residentRingWrite → residentPump, which is fine now that pumping is off).
+  if (ringBusy) { ringBusy = false; if (frontDoor) frontDoorApply({ kind: "ring", busy: false }); }
 }
 
 function residentFrame(json) {
@@ -179,31 +199,38 @@ function residentFrame(json) {
   return frame;
 }
 
+/** Open the resident loop: ring + callMain("--worker"). Shared by the
+ * lsp-resident-init transport and the front door (§2.4 Ready → Open); the
+ * caller writes the opening sequence. Throws before any state change. */
+function residentOpenLoop() {
+  if (state !== "ready") throw new Error(`Worker is '${state}', not ready.`);
+  if (typeof M._lean_browser64_configure_input_ring !== "function" ||
+      typeof M._lean_wasm_shell_mark_preinitialized !== "function" ||
+      typeof M.callMain !== "function") {
+    throw new Error("runtime lacks the resident transport exports (patch 0031)");
+  }
+  if (residentMode) throw new Error("resident FileWorker already started in this process");
+  lspMode = true;
+  // Boot already ran the full Lean initialization sequence; main must not
+  // initialize (or ever finalize) again.
+  M._lean_wasm_shell_mark_preinitialized();
+  const raw = M._malloc(asPtr(16 + RESIDENT_RING_CAP));
+  residentRingPtr = Number(asPtr(raw));
+  const status = M._lean_browser64_configure_input_ring(asPtr(raw), RESIDENT_RING_CAP);
+  if (Number(status) !== 0) throw new Error(`resident stdin ring rejected (${status})`);
+  residentMode = true;
+  // reportDelayMs=0: the reporter's first act is IO.sleep(reportDelayMs) on
+  // a task pthread (the pump path sets the same via wasmLspInit).
+  M.callMain(["--worker", "-Dserver.reportDelayMs=0"]);
+}
+
 /** Start the resident FileWorker: ring + callMain("--worker") + the opening
  * sequence. The FileWorker reads `initialize` then `didOpen` DIRECTLY —
  * nothing may come between them — and never answers `initialize` (that is
  * the watchdog's job; the shim answers it to the client itself). */
 function residentInit(msg) {
   try {
-    if (state !== "ready") throw new Error(`Worker is '${state}', not ready.`);
-    if (typeof M._lean_browser64_configure_input_ring !== "function" ||
-        typeof M._lean_wasm_shell_mark_preinitialized !== "function" ||
-        typeof M.callMain !== "function") {
-      throw new Error("runtime lacks the resident transport exports (patch 0031)");
-    }
-    if (residentMode) throw new Error("resident FileWorker already started in this process");
-    lspMode = true;
-    // Boot already ran the full Lean initialization sequence; main must not
-    // initialize (or ever finalize) again.
-    M._lean_wasm_shell_mark_preinitialized();
-    const raw = M._malloc(asPtr(16 + RESIDENT_RING_CAP));
-    residentRingPtr = Number(asPtr(raw));
-    const status = M._lean_browser64_configure_input_ring(asPtr(raw), RESIDENT_RING_CAP);
-    if (Number(status) !== 0) throw new Error(`resident stdin ring rejected (${status})`);
-    residentMode = true;
-    // reportDelayMs=0: the reporter's first act is IO.sleep(reportDelayMs) on
-    // a task pthread (the pump path sets the same via wasmLspInit).
-    M.callMain(["--worker", "-Dserver.reportDelayMs=0"]);
+    residentOpenLoop();
     residentRingWrite(residentFrame(JSON.stringify({
       jsonrpc: "2.0", id: 0, method: "initialize", params: JSON.parse(msg.input.initParams || "{}"),
     })));
@@ -235,6 +262,81 @@ function residentSend(msg) {
     const oversize = error && typeof error.bytes === "number";
     fail(msg.requestId, error, "LSP_RESIDENT_SEND_FAILED", oversize, oversize ? { bytes: error.bytes } : undefined);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Resident front door (§2.4; pure machine in lsp-front-door.js). The page's
+// `lsp` request is fire-and-forget — no requestId, no per-message ack: the
+// machine queues from script load, opens the loop on the first didOpen, and
+// this host performs exactly the effects `step` returns. The host also owns
+// the two data the machine cannot know — ring backpressure and the pthread
+// pool — and merges them into one `status` event per change (§2.2(e)) plus
+// a 2 s heartbeat once the loop is open (§2.2(f)); their loss is the ONLY
+// death signal the page derives from time (§2.2 L2).
+// ---------------------------------------------------------------------------
+let frontDoor = null; // machine state; null until the page speaks `lsp`
+let ringBusy = false;
+let heartbeat = null;
+let hostStatus = { phase: "booting", version: null, header: null, dropped: 0 };
+let lastStatusJson = "";
+let ringRefused = 0; // frames over cap/2 the ring refused (a > 2 MB document)
+
+function poolSample() {
+  const PT = typeof PThread !== "undefined" ? PThread : null;
+  return {
+    unused: PT && PT.unusedWorkers ? PT.unusedWorkers.length : -1,
+    running: PT ? Object.keys(PT.pthreads || {}).length : -1,
+  };
+}
+
+function ringQueuedBytes() {
+  return residentQueue.reduce((n, item) => n + item.payload.length - item.off, 0);
+}
+
+function emitStatus(delta) {
+  if (delta) Object.assign(hostStatus, delta);
+  const s = { ...hostStatus, ring: { bytesQueued: ringQueuedBytes(), refused: ringRefused }, pool: poolSample() };
+  const json = JSON.stringify(s);
+  if (json === lastStatusJson) return;
+  lastStatusJson = json;
+  event(null, "status", s);
+}
+
+function frontDoorApply(frame) {
+  const FD = Qed64LspFrontDoor;
+  if (frontDoor === null) {
+    frontDoor = FD.initialState();
+    // The page may speak `lsp` before or after boot; the machine starts in
+    // Booting either way and moves on with the fact it missed.
+    if (state === "ready" && frame.kind !== "booted") frontDoor = FD.step(frontDoor, { kind: "booted" }).state;
+    else if (state === "dead") frontDoor = FD.step(frontDoor, { kind: "died" }).state;
+  }
+  const r = FD.step(frontDoor, frame);
+  frontDoor = r.state;
+  if (r.startLoop) {
+    try {
+      residentOpenLoop();
+      heartbeat = setInterval(() => {
+        event(null, "heartbeat", { t: Math.round(performance.now()) });
+        emitStatus(null);
+      }, 2000);
+    } catch (error) {
+      // The loop never opened: that is a session death, not a request error.
+      event(null, "log", { stream: "stderr", text: `[front-door] loop start failed: ${error && error.message}` });
+      die(null, "start", error && error.message ? error.message : String(error));
+      return;
+    }
+  }
+  for (const msg of r.replies) event(null, "lsp", { msg });
+  for (const msg of r.ringWrites) {
+    try {
+      residentRingWrite(residentFrame(JSON.stringify(msg)));
+    } catch (error) {
+      ringRefused += 1;
+      event(null, "log", { stream: "stderr", text: `[front-door] frame refused: ${error && error.message}` });
+    }
+  }
+  emitStatus(r.statusDelta);
 }
 
 function lspInit(msg) {
@@ -337,6 +439,8 @@ function die(code, reason, message) {
   if (died) return;
   died = true;
   residentMode = false;
+  if (heartbeat !== null) { clearInterval(heartbeat); heartbeat = null; }
+  if (frontDoor) frontDoorApply({ kind: "died" });
   event(null, "died", { code, reason, message });
 }
 
@@ -826,6 +930,8 @@ async function boot(msg) {
             mode: "persistent",
           },
         });
+        // Booting → Ready: frames queued since script load may now open the loop.
+        if (frontDoor) frontDoorApply({ kind: "booted" });
       } else {
         state = "dead";
         fail(requestId, error || new Error("Lean runtime failed to initialize."), "INIT_FAILED", false);
@@ -946,6 +1052,13 @@ async function boot(msg) {
 // ---------------------------------------------------------------------------
 
 function compile(msg) {
+  if (residentMode) {
+    // K-i: once the loop is open the header verdict must stay a pure function
+    // of the header text — no publish, no compile on the main thread that the
+    // loop's pthreads are proxying through. Exact sessions compile BEFORE open.
+    fail(msg.requestId, new Error("the resident loop is open; compile is pre-open only."), "BAD_STATE", true);
+    return;
+  }
   if (state !== "ready") {
     fail(msg.requestId, new Error(`Worker is '${state}', not ready.`), "BAD_STATE", state === "compiling");
     return;
@@ -1226,6 +1339,12 @@ async function beginSnapshotCacheWrite(cacheKey) {
 }
 
 async function loadSnapshot(msg) {
+  if (residentMode) {
+    // K-i (see compile): a snapshot published after open would change the
+    // verdict for a header Lean already elaborated and reused (`unchanged`).
+    fail(msg.requestId, new Error("the resident loop is open; loadSnapshot is pre-open only."), "BAD_STATE", true);
+    return;
+  }
   if (state !== "ready") {
     fail(msg.requestId, new Error(`Worker is '${state}', not ready.`), "BAD_STATE", true);
     return;
@@ -1474,6 +1593,12 @@ async function loadSnapshot(msg) {
 
 self.addEventListener("message", (e) => {
   const msg = e.data;
+  // `lsp` is fire-and-forget (§2.2 L2 "postMessage, no promise"): no
+  // requestId, no reply — the machine queues it until the loop is open.
+  if (msg && msg.protocol === PROTOCOL && msg.type === "lsp") {
+    if (msg.msg && typeof msg.msg === "object") frontDoorApply({ kind: "client", msg: msg.msg, replay: msg.replay === true });
+    return;
+  }
   if (!msg || msg.protocol !== PROTOCOL || typeof msg.requestId !== "string") {
     fail(undefined, new Error("Malformed worker message."), "INVALID_MESSAGE", false);
     return;
@@ -1495,7 +1620,7 @@ self.addEventListener("message", (e) => {
       post({
         type: "result",
         requestId: msg.requestId,
-        result: { operation: "telemetry", state, memory: memoryTelemetry() },
+        result: { operation: "telemetry", state, memory: memoryTelemetry(), status: frontDoor ? { ...hostStatus } : undefined },
       });
       break;
     case "lsp-threads": {
@@ -1561,6 +1686,12 @@ self.__qed64TestExports = {
     residentRingWrite,
     residentSend,
     residentFrame,
+  },
+  // Front-door host wiring under test (tests/unit/front-door.test.ts): the
+  // machine's state and the merged status, read-only.
+  frontDoor: {
+    state: () => frontDoor,
+    status: () => ({ ...hostStatus }),
   },
 };
 
