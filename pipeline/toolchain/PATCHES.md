@@ -209,3 +209,23 @@ their parsers/initializers/tactics evaluate (the meta gate otherwise refuses).
 Both branches are unreachable in stock configurations. Enables the whole
 wasm64-lean4game port: game envs bake into snapshots and Runner-checked
 levels run in the browser.
+
+## 0031 — resident stdin ring + PROXY_TO_PTHREAD (browser64 transport port) — EXPERIMENTAL, UNPROMOTED
+Runs the real `lean --worker` loop on the application pthread; stdin becomes a
+futex ring in shared memory (`lean_browser64_configure_input_ring`), stdout
+keeps the normal proxied path. `MAIN_THREAD_EM_ASM` for lean_main FS setup and
+the getenv shim; a once-guard (`lean_wasm_shell_mark_preinitialized`) so an
+embedder that pre-initialized the runtime can re-enter `main`; a covering-env
+match in `Lean.Language.Lean`'s prebuilt-header lookup. Pump exports coexist —
+one binary, both transports. Ported from browser64
+(org.lean-browser64.resident-transport/v1); its module.cpp and compact.cpp
+hunks stay on the backlog (#5, #6).
+
+STATUS: phase 1 of docs/RESIDENT-WORKER-PLAN.md — transport PROVEN
+(bidirectional LSP over the ring), one open blocker (final-flush/concurrent
+-read under long elaboration). **NOT promoted**: the served public/runtime and
+public/snapshots still predate 0031, and KERNEL-PIN documents that pre-0031
+pairing. Do not promote until the plan's phase-3 exit criteria are met. The
+patch is additive — it does not change the pump/library path the product uses
+(verified: the compiler battery is 49/49 on the 0031 pairing, byte-identical
+diagnostics), so carrying it in the series is safe even while unpromoted.

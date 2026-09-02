@@ -107,6 +107,11 @@ globalThis.Module = {
       for (const dir of ["/lib/lean", "/work", "/bin", "/workspace"]) mkdirTree(dir);
       FS.mount(NODEFS, { root: libLean }, "/lib/lean");
       FS.mount(NODEFS, { root: workDir }, "/work");
+      // Patch 0031 runs main on a pthread whose Node context derives the app
+      // path from HOST argv; Lean then stats that host path inside the VFS.
+      // Mirror the stage1 tree at its own host path so discovery succeeds.
+      mkdirTree(artifactDir);
+      try { FS.mount(NODEFS, { root: artifactDir }, artifactDir); } catch { /* mounted */ }
       globalThis.Module.ENV.LEAN_PATH = "/lib/lean";
       // Game packages (lean4game ecosystem) are legacy non-`module` Lean
       // packages; patch 0030's gate lets the exported-level wasm env cache

@@ -1,8 +1,58 @@
 # Resident FileWorker — the plan (PATCH-BACKLOG #4, promoted)
 
-Status: PLANNED (2026-09-02). This is the campaign that retires the
-reboot-per-header-change architecture. Written after the 2026-09-01/02 crash
-investigation, whose measurements set the targets below.
+Status: PHASE 1 IN PROGRESS (2026-09-02). This is the campaign that retires
+the reboot-per-header-change architecture. Written after the 2026-09-01/02
+crash investigation, whose measurements set the targets below.
+
+## Phase-1 spike results (2026-09-02) — transport PROVEN, one blocker open
+
+Patch 0031 (`pipeline/toolchain/patches/`, committed to work/lean4 and the
+kernel repo; EXPERIMENTAL, NOT promoted — served public/runtime still
+predates it) ports browser64's resident transport: PROXY_TO_PTHREAD=1, a
+futex stdin ring (`lean_browser64_configure_input_ring`), a once-guard on
+`lean_main` init for re-entry (`lean_wasm_shell_mark_preinitialized`),
+`MAIN_THREAD_EM_ASM` for FS/getenv under a proxied main, and a covering-env
+match in `Lean.Language.Lean`'s prebuilt-header lookup (so a resident session
+serves any Mathlib-subset header from a snapshot, not just exact-key matches).
+
+The Node spike `pipeline/snapshot/resident-probe.mjs` boots the patch-0031
+artifact, seeds the init snapshot, configures the ring, and `callMain
+--worker` — the REAL Lean FileWorker loop on the application pthread.
+
+PROVEN:
+- **Bidirectional transport works.** Input ring drains fully (read==write);
+  the worker emits framed LSP back over stdout: `$/lean/fileProgress`,
+  `$/lean/ileanHeaderSetupInfo`, and `textDocument/publishDiagnostics` all
+  observed arriving and parsing. So the proxied-pthread stdout path flushes
+  (at least while writes keep coming) — the reporter runs.
+- The build links cleanly (no export-specialization breakage), and every
+  pipeline tool that runs `main` (bakes, gate, probes) works under
+  PROXY_TO_PTHREAD after a host-path mirror mount in node-runner.
+
+OPEN (phase-1 completion, both are known/predicted, neither fundamental):
+1. **Final-flush + concurrent-read under long elaboration.** After the
+   initial (empty) diagnostics, a longer elaboration's completion
+   diagnostics do not flush, and a tickler `waitForDiagnostics` sent during
+   elaboration gets no response — i.e. the resident `mainLoop` is not
+   interleaving new stdin reads with in-flight elaboration the way the
+   pump path's host loop does. This is risk #1 from the list below
+   (reporter/output timing under proxied pthreads) landing exactly where
+   predicted. Next: study `mainLoop`'s read/elaborate/report interleaving
+   and the reporter's task scheduling under a task pthread; the pump path's
+   reportDelayMs=0 + tickler is a partial analogue.
+2. **Headerless probe imports on the elaboration thread.** A file with no
+   explicit import resolved `[Init]` which did not hit the init snapshot's
+   `#[Init, Init]` covering env, triggering an olean import on the
+   elaboration pthread (the documented can't-import-there hang; ~44 s CPU
+   then idle). The covering matcher needs to also satisfy the implicit-Init
+   case, or the spike must use a probe whose header matches a seeded env.
+
+Integration lessons already banked (all reused by the browser phase):
+opening sequence is `initialize` then `didOpen` with NOTHING between;
+PROXY_TO_PTHREAD leaks host argv paths on Node (mirror-mount fix);
+loading a snapshot needs full `lean_initialize` first; re-entering `main`
+needs the once-guard; the bake exit wedges under the 0020 mailbox
+keepalive (supervisor reaps on stable-output + quiet).
 
 ## Why now — what the crash campaign measured
 

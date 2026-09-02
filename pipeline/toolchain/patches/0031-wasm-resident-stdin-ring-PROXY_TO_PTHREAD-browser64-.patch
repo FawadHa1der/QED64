@@ -1,0 +1,357 @@
+From 2e06a2f4726e02cfccd65e53a16b52a8ad7be7c6 Mon Sep 17 00:00:00 2001
+From: QED64 Toolchain <qed64-toolchain@localhost>
+Date: Tue, 1 Sep 2026 16:55:04 -0400
+Subject: [PATCH] wasm: resident stdin ring + PROXY_TO_PTHREAD (browser64
+ transport port)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Run the real 'lean --worker' main loop on the application pthread:
+-sPROXY_TO_PTHREAD=1 (the 24-thread pool absorbs the proxy slot), and a
+futex-based stdin ring in shared wasm memory so the loop's blocking
+reads are legal without occupying the outer runtime Worker. The outer
+worker mallocs control words + a byte ring, calls
+lean_browser64_configure_input_ring before callMain, then writes LSP
+frames and Atomics.notifies the wake word; stdin reads drain the ring
+with exact-fill semantics (Lean's readJson reads Content-Length bytes
+in one Stream.read — a short non-EOF read would corrupt framing).
+stdout/stderr and every other file keep Emscripten's normal path.
+lean_main's FS setup and the getenv shim proxy to the JS main thread
+(MAIN_THREAD_EM_ASM*): under a proxied main they otherwise run on a
+pthread with no FS/ENV. The pump-mode exports are untouched — both
+transports coexist in one binary.
+
+Ported from browser64's lean4-resident-transport.patch (contract
+org.lean-browser64.resident-transport/v1); its module.cpp/compact.cpp
+hunks remain on the backlog as separate patches.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ src/CMakeLists.txt          |   2 +-
+ src/Lean/Language/Lean.lean |  23 ++++++-
+ src/Lean/Shell.lean         |   4 ++
+ src/emscripten-exports.txt  |   2 +
+ src/runtime/io.cpp          | 128 +++++++++++++++++++++++++++++++++++-
+ src/util/shell.cpp          |  35 +++++++++-
+ 6 files changed, 190 insertions(+), 4 deletions(-)
+
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 9099515..97d7702 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -937,7 +937,7 @@ if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
+   # physical allocation. wasm64 uses 128MB initially and may grow to 12GB.
+   string(
+     APPEND LEAN_EXE_LINKER_FLAGS
+-    " ${LIB}/temp/libleanshell.a ${TOOLCHAIN_STATIC_LINKER_FLAGS} ${EMSCRIPTEN_SETTINGS} ${EMSCRIPTEN_LINK_SETTINGS} -lnodefs.js -lworkerfs.js -s EXIT_RUNTIME=1 -s MAIN_MODULE=2 -s ERROR_ON_UNDEFINED_SYMBOLS=0 -sEXPORTED_FUNCTIONS=@${LEAN_SOURCE_DIR}/emscripten-exports.txt -sEXPORTED_RUNTIME_METHODS=ccall,callMain,FS,ENV,getValue,setValue,stringToNewUTF8,UTF8ToString -s STACK_SIZE=16777216 -sINITIAL_MEMORY=${EMSCRIPTEN_INITIAL_MEMORY} -sMAXIMUM_MEMORY=${EMSCRIPTEN_MAXIMUM_MEMORY} -sPTHREAD_POOL_SIZE=24 -sDEFAULT_PTHREAD_STACK_SIZE=8388608"
++    " ${LIB}/temp/libleanshell.a ${TOOLCHAIN_STATIC_LINKER_FLAGS} ${EMSCRIPTEN_SETTINGS} ${EMSCRIPTEN_LINK_SETTINGS} -lnodefs.js -lworkerfs.js -s EXIT_RUNTIME=1 -s MAIN_MODULE=2 -s ERROR_ON_UNDEFINED_SYMBOLS=0 -sEXPORTED_FUNCTIONS=@${LEAN_SOURCE_DIR}/emscripten-exports.txt -sEXPORTED_RUNTIME_METHODS=ccall,callMain,FS,ENV,getValue,setValue,stringToNewUTF8,UTF8ToString -s STACK_SIZE=16777216 -sINITIAL_MEMORY=${EMSCRIPTEN_INITIAL_MEMORY} -sMAXIMUM_MEMORY=${EMSCRIPTEN_MAXIMUM_MEMORY} -sPTHREAD_POOL_SIZE=24 -sDEFAULT_PTHREAD_STACK_SIZE=8388608 -sPROXY_TO_PTHREAD=1"
+   )
+ endif()
+ 
+diff --git a/src/Lean/Language/Lean.lean b/src/Lean/Language/Lean.lean
+index e94cc08..44024e3 100644
+--- a/src/Lean/Language/Lean.lean
++++ b/src/Lean/Language/Lean.lean
+@@ -511,9 +511,30 @@ where
+       let mut opts := setup.opts
+       let prebuilt ← prebuiltHeaderEnvs.get
+       let importKey := setup.imports.map (·.module)
+-      let override? : Option Environment :=
++      -- Exact-ordered match first; otherwise the SMALLEST published env whose
++      -- import closure covers the header — the pump path's covering rule
++      -- (wasmLspInit), without which a resident FileWorker could only ever
++      -- serve headers whose import list matches a snapshot key verbatim.
++      -- Umbrella aliases mirror the batch app's table.
++      let mut override? : Option Environment :=
+         if setup.imports.isEmpty then none
+         else prebuilt.findSome? fun (k, env) => if k == importKey then some env else none
++      if override?.isNone && !setup.imports.isEmpty then
++        let mut best : Option (Nat × Environment) := none
++        for (_, env) in prebuilt do
++          let names := env.allImportedModuleNames
++          let isUmbrella := names.contains `QED64.Essential
++          let aliasOk (m : Name) : Bool :=
++            isUmbrella && (m == `Mathlib || m == `Mathlib.Tactic || m == `Batteries || m == `MIL.Common)
++          if importKey.all (fun m => names.contains m || aliasOk m) then
++            if best.all (names.size < ·.1) then
++              best := some (names.size, env)
++        override? := best.map (·.2)
++      -- A published env may predate extensions registered by a later
++      -- snapshot's [init] replay; grow its extension array or generic
++      -- extension access panics (the patch-0025 epoch class).
++      if let some env := override? then
++        override? := some (← env.ensureExtensionsSizeForWasm)
+       -- allows `headerEnv` to be leaked, which would live until the end of the process anyway
+       let (headerEnv, msgLog) ← do
+         match override? with
+diff --git a/src/Lean/Shell.lean b/src/Lean/Shell.lean
+index fb1cb21..32fe20b 100644
+--- a/src/Lean/Shell.lean
++++ b/src/Lean/Shell.lean
+@@ -239,6 +239,10 @@ def wasmLoadSnapshot (path : String) : IO UInt32 := do
+     unsafe enableInitializersExecution
+     let key := env.header.imports.map (·.module)
+     wasmEnvCache.modify (·.push (key, env))
++    -- The resident FileWorker (patch 0031) runs the REAL header-processing
++    -- path, which consults the prebuilt list — publish on every snapshot
++    -- load, not only in wasmLspInit, so resident sessions see covering envs.
++    Language.Lean.setPrebuiltHeaderEnvs (← wasmEnvCache.get)
+     IO.eprintln s!"[WASM DEBUG] wasmLoadSnapshot: cached env for {key}"
+     return 0
+   catch e =>
+diff --git a/src/emscripten-exports.txt b/src/emscripten-exports.txt
+index ed2aec9..061719b 100644
+--- a/src/emscripten-exports.txt
++++ b/src/emscripten-exports.txt
+@@ -1,4 +1,6 @@
+ _free
++_lean_browser64_configure_input_ring
++_lean_wasm_shell_mark_preinitialized
+ _initialize_Init
+ _initialize_Init_BinderNameHint
+ _initialize_Init_BinderPredicates
+diff --git a/src/runtime/io.cpp b/src/runtime/io.cpp
+index d21e8f6..37bca4a 100644
+--- a/src/runtime/io.cpp
++++ b/src/runtime/io.cpp
+@@ -17,6 +17,7 @@ Authors: Leonardo de Moura, Sebastian Ullrich
+ #else
+ #if defined(LEAN_EMSCRIPTEN)
+ #include <emscripten.h>
++#include <emscripten/threading.h>
+ #endif
+ // Linux include files
+ #include <unistd.h> // NOLINT
+@@ -31,6 +32,9 @@ Authors: Leonardo de Moura, Sebastian Ullrich
+ #endif
+ #include <dirent.h>
+ #include <fcntl.h>
++#include <algorithm>
++#include <climits>
++#include <cstring>
+ #include <iostream>
+ #include <chrono>
+ #include <sstream>
+@@ -159,6 +163,111 @@ static FILE * io_get_handle(lean_object * hfile) {
+     return static_cast<FILE *>(lean_get_external_data(hfile));
+ }
+ 
++#if defined(LEAN_EMSCRIPTEN)
++namespace {
++
++// The resident FileWorker runs as the application pthread (PROXY_TO_PTHREAD).
++// Its stdin cannot use Emscripten's JS FS proxy: a blocking read would occupy
++// the outer runtime Worker and prevent stdout from being proxied back through
++// that same Worker. Keep only stdin in shared wasm memory; ordinary files,
++// stdout, stderr, and WORKERFS retain Emscripten's normal path.
++// (Ported from browser64's lean4-resident-transport.patch, contract
++// org.lean-browser64.resident-transport/v1.)
++constexpr uint32_t BROWSER64_INPUT_READ = 0;
++constexpr uint32_t BROWSER64_INPUT_WRITE = 1;
++constexpr uint32_t BROWSER64_INPUT_CLOSED = 2;
++constexpr uint32_t BROWSER64_INPUT_WAKE = 3;
++constexpr uint32_t BROWSER64_INPUT_CONTROL_WORDS = 4;
++
++static uint32_t * g_browser64_input_control = nullptr;
++static uint8_t * g_browser64_input_bytes = nullptr;
++static uint32_t g_browser64_input_capacity = 0;
++
++static uint32_t browser64_input_load(uint32_t index) {
++    return __atomic_load_n(g_browser64_input_control + index, __ATOMIC_ACQUIRE);
++}
++
++static void browser64_input_store(uint32_t index, uint32_t value) {
++    __atomic_store_n(g_browser64_input_control + index, value, __ATOMIC_RELEASE);
++}
++
++static bool browser64_input_enabled(FILE * fp) {
++    return fp == stdin && g_browser64_input_control != nullptr;
++}
++
++// Lean's LSP readJson/readUTF8 performs one Stream.read for the declared
++// Content-Length and parses that result immediately. A short non-EOF read
++// would corrupt framing; fill the requested body exactly unless CLOSED is
++// observed after all published bytes have been drained.
++static size_t browser64_input_read(uint8_t * destination, size_t requested) {
++    size_t copied = 0;
++    while (copied < requested) {
++        uint32_t read = browser64_input_load(BROWSER64_INPUT_READ);
++        uint32_t write = browser64_input_load(BROWSER64_INPUT_WRITE);
++        if (read != write) {
++            uint32_t available = read < write
++                ? write - read
++                : g_browser64_input_capacity - read;
++            size_t count = std::min(
++                static_cast<size_t>(available),
++                requested - copied);
++            memcpy(destination + copied, g_browser64_input_bytes + read, count);
++            copied += count;
++            browser64_input_store(
++                BROWSER64_INPUT_READ,
++                (read + static_cast<uint32_t>(count)) % g_browser64_input_capacity);
++            // Page-side writers wait on the read cursor when the bounded ring
++            // is full. Wake them as soon as bytes become reusable.
++            emscripten_futex_wake(
++                g_browser64_input_control + BROWSER64_INPUT_READ,
++                INT_MAX);
++            continue;
++        }
++
++        if (browser64_input_load(BROWSER64_INPUT_CLOSED) != 0) {
++            return copied;
++        }
++
++        // The wake counter prevents a lost notification between observing an
++        // empty ring and sleeping; futex_wait re-checks the value as part of
++        // the wait operation.
++        uint32_t wake = browser64_input_load(BROWSER64_INPUT_WAKE);
++        if (read != browser64_input_load(BROWSER64_INPUT_WRITE) ||
++            browser64_input_load(BROWSER64_INPUT_CLOSED) != 0) {
++            continue;
++        }
++        emscripten_futex_wait(
++            g_browser64_input_control + BROWSER64_INPUT_WAKE,
++            wake,
++            INFINITY);
++    }
++    return copied;
++}
++
++}
++
++// Called by the outer runtime Worker before PROXY_TO_PTHREAD starts Lean.
++// `address` is a malloc-aligned offset into the shared WebAssembly.Memory.
++extern "C" LEAN_EXPORT uint32_t lean_browser64_configure_input_ring(
++    uint8_t * address,
++    uint32_t capacity) {
++    if (address == nullptr ||
++        (reinterpret_cast<uintptr_t>(address) % alignof(uint32_t)) != 0 ||
++        capacity < 2 || capacity > INT32_MAX) {
++        return EINVAL;
++    }
++    auto * control = reinterpret_cast<uint32_t *>(address);
++    for (uint32_t index = 0; index < BROWSER64_INPUT_CONTROL_WORDS; ++index) {
++        __atomic_store_n(control + index, 0, __ATOMIC_RELAXED);
++    }
++    g_browser64_input_control = control;
++    g_browser64_input_bytes = address + BROWSER64_INPUT_CONTROL_WORDS * sizeof(uint32_t);
++    g_browser64_input_capacity = capacity;
++    return 0;
++}
++#endif
++
++
+ extern "C" LEAN_EXPORT obj_res lean_decode_io_error(int errnum, b_lean_obj_arg fname) {
+     object * details = mk_string(strerror(errnum));
+     // Keep in sync with lean_decode_uv_error below
+@@ -592,6 +701,13 @@ extern "C" LEAN_EXPORT obj_res lean_io_prim_handle_read(b_obj_arg h, usize nbyte
+         // std::fread doesn't handle 0 reads well, see https://github.com/leanprover/lean4/issues/12138
+         return io_result_mk_ok(res);
+     }
++#if defined(LEAN_EMSCRIPTEN)
++    if (browser64_input_enabled(fp)) {
++        usize n = browser64_input_read(lean_sarray_cptr(res), nbytes);
++        lean_sarray_set_size(res, n);
++        return io_result_mk_ok(res);
++    }
++#endif
+     usize n = std::fread(lean_sarray_cptr(res), 1, nbytes, fp);
+     if (n > 0) {
+         lean_sarray_set_size(res, n);
+@@ -637,6 +753,16 @@ extern "C" LEAN_EXPORT obj_res lean_io_prim_handle_get_line(b_obj_arg h) {
+     FILE * fp = io_get_handle(h);
+ 
+     std::string result;
++#if defined(LEAN_EMSCRIPTEN)
++    if (browser64_input_enabled(fp)) {
++        uint8_t c8;
++        while (browser64_input_read(&c8, 1) == 1) {
++            result.push_back(static_cast<char>(c8));
++            if (c8 == '\n') break;
++        }
++        return io_result_mk_ok(mk_string(result));
++    }
++#endif
+     int c; // Note: int, not char, required to handle EOF
+     LEAN_IO_LOCK_FILE(fp);
+     while ((c = LEAN_IO_GETC_UNLOCKED(fp)) != EOF) {
+@@ -972,7 +1098,7 @@ extern "C" LEAN_EXPORT obj_res lean_io_getenv(b_obj_arg env_var) {
+ #if defined(LEAN_EMSCRIPTEN)
+     // HACK(WN): getenv doesn't seem to work in Emscripten even though it should
+     // see https://emscripten.org/docs/porting/connecting_cpp_and_javascript/Interacting-with-code.html#interacting-with-code-environment-variables
+-    char* val = reinterpret_cast<char*>(EM_ASM_PTR({
++    char* val = reinterpret_cast<char*>(MAIN_THREAD_EM_ASM_PTR({
+         var envVar = UTF8ToString($0);
+         var val = ENV[envVar];
+         if (val) {
+diff --git a/src/util/shell.cpp b/src/util/shell.cpp
+index 07f7385..cd54229 100644
+--- a/src/util/shell.cpp
++++ b/src/util/shell.cpp
+@@ -283,12 +283,23 @@ static void report_task_get_blocked_time(std::chrono::nanoseconds d) {
+     }
+ }
+ 
++#if defined(LEAN_EMSCRIPTEN)
++static bool g_wasm_shell_initialized = false;
++static bool g_wasm_shell_task_manager = false;
++// The embedder pre-initialized the runtime (and task manager) through the
++// C API before calling main — lean_main must not initialize again.
++extern "C" LEAN_EXPORT void lean_wasm_shell_mark_preinitialized() {
++    g_wasm_shell_initialized = true;
++    g_wasm_shell_task_manager = true;
++}
++#endif
++
+ extern "C" LEAN_EXPORT int lean_main(int argc, char ** argv) {
+ #ifdef LEAN_EMSCRIPTEN
+     // Set up the virtual filesystem based on the runtime environment.
+     // Node.js: Use NODEFS to access the real filesystem.
+     // Browser: Use MEMFS (default) with pre-created directories.
+-    EM_ASM(
++    MAIN_THREAD_EM_ASM(
+         var isNode = (typeof process !== "undefined") && 
+                      (process.release && process.release.name === "node");
+         
+@@ -349,7 +360,20 @@ extern "C" LEAN_EXPORT int lean_main(int argc, char ** argv) {
+     SetConsoleOutputCP(CP_UTF8);
+ #endif
+     auto init_start = std::chrono::steady_clock::now();
++#if defined(LEAN_EMSCRIPTEN)
++    // Resident-embedding contract (patch 0031): the embedder may pre-
++    // initialize Lean (snapshot seeding runs before main) and re-enter main
++    // for in-process session replacement, so initialization is once per
++    // process and finalization never happens. First CLI entry initializes as
++    // before; an embedder that pre-initialized marks readiness via
++    // lean_wasm_shell_mark_preinitialized().
++    if (!g_wasm_shell_initialized) {
++        g_wasm_shell_initialized = true;
++        new lean::initializer(); // deliberately leaked: resident runtime
++    }
++#else
+     lean::initializer init;
++#endif
+     second_duration init_time = std::chrono::steady_clock::now() - init_start;
+ 
+     try {
+@@ -386,7 +410,16 @@ extern "C" LEAN_EXPORT int lean_main(int argc, char ** argv) {
+         report_profiling_time("initialization", init_time);
+     }
+ 
++#if defined(LEAN_EMSCRIPTEN)
++    // Once per process, never torn down (see the initializer note above); a
++    // pre-initialized embedder brought its own task manager.
++    if (!g_wasm_shell_task_manager) {
++        g_wasm_shell_task_manager = true;
++        new scoped_task_manager(get_shell_num_threads(shell_opts)); // leaked
++    }
++#else
+     scoped_task_manager scope_task_man(get_shell_num_threads(shell_opts));
++#endif
+ 
+     try {
+         return run_shell_main(argc - optind, argv + optind, shell_opts);
+-- 
+2.50.1 (Apple Git-155)
+

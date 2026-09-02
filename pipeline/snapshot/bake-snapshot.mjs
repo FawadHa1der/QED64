@@ -8,7 +8,7 @@
 //
 // Usage: node pipeline/snapshot/bake-snapshot.mjs [--name init] [--probe '#check 2+2'] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--out <dir>]
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -44,9 +44,46 @@ runnerArgs.push("--", `--incr-header-save=/work/${name}.snap`, "/work/probe.lean
 // to the environment itself (toolchain patch 0011).
 const reserve = arg("reserve", String(3.5 * 1024 ** 3));
 console.log(`baking ${name}.snap (probe: ${JSON.stringify(probe)}; compactor reserve ${(Number(reserve) / 1024 ** 3).toFixed(1)} GiB) …`);
-execFileSync("node", ["--stack-size=8192", ...runnerArgs], {
-  stdio: "inherit",
-  env: { ...process.env, LEAN_COMPACTOR_RESERVE: reserve },
+// Patch 0031 (PROXY_TO_PTHREAD): the runner's process EXIT wedges — the
+// proxied exit is swallowed by the 0020 mailbox keepalive — while the actual
+// bake (save + probe) completes fine. Supervise: once the target .snap has
+// been stable for a while after the runner goes quiet, reap the child.
+// The bake must start CLEAN: a stale target satisfies the stability check
+// before the new save even begins (it cost two silently-skipped bakes).
+try { fs.rmSync(path.join(work, `${name}.snap`)); } catch { /* absent */ }
+await new Promise((resolve, reject) => {
+  const child = execFile("node", ["--stack-size=8192", ...runnerArgs], {
+    env: { ...process.env, LEAN_COMPACTOR_RESERVE: reserve },
+    maxBuffer: 64 * 1024 * 1024,
+  }, () => {});
+  child.stdout.pipe(process.stdout);
+  child.stderr.pipe(process.stderr);
+  let lastActivity = Date.now();
+  child.stdout.on("data", () => { lastActivity = Date.now(); });
+  child.stderr.on("data", () => { lastActivity = Date.now(); });
+  const target = path.join(work, `${name}.snap`);
+  let lastSize = -1;
+  let stableSince = 0;
+  const watch = setInterval(() => {
+    const size = fs.existsSync(target) ? fs.statSync(target).size : -1;
+    if (size !== lastSize) { lastSize = size; stableSince = Date.now(); }
+    // The compactor is CPU-silent for many minutes between the last import
+    // line and the finished save — quiet alone means nothing, and stability
+    // only counts because the target was unlinked at bake start.
+    const quiet = Date.now() - lastActivity > 300000;
+    const stable = size > 0 && Date.now() - stableSince > 120000;
+    if (quiet && stable) {
+      clearInterval(watch);
+      console.log(`bake output stable (${size} bytes) with runner quiet — reaping the wedged exit`);
+      child.kill("SIGKILL");
+      resolve();
+    }
+  }, 5000);
+  child.on("exit", (code) => {
+    clearInterval(watch);
+    if (code === 0 || code === null) resolve();
+    else reject(new Error(`runner exited ${code}`));
+  });
 });
 
 const snap = path.join(work, `${name}.snap`);
