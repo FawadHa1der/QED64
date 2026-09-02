@@ -13,6 +13,7 @@ import path from "node:path";
 import vm from "node:vm";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import "../../public/workers/lsp-frames.js"; // publishes globalThis.Qed64LspFrames
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const arg = (n, d) => { const i = process.argv.indexOf(`--${n}`); return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : d; };
@@ -55,6 +56,8 @@ function finish(ok, why) {
     diagnostics: seen.diags.length,
     sawExpectedError: seen.diags.some((d) => /rfl|43|Type mismatch|failed/i.test(d)),
     evalInfo: seen.evalInfo,
+    frames: frames.stats.frames,
+    nonFrameStdoutBytes: frames.stats.junkBytes,
     wallMs: Date.now() - t0,
   };
   console.log(`RESIDENT PROBE ${ok ? "PASS" : "FAIL"} ${JSON.stringify(verdict)}`);
@@ -63,54 +66,44 @@ function finish(ok, why) {
 setTimeout(() => finish(false, "budget exceeded"), budgetMs).unref?.();
 
 // ---------------------------------------------------------------------------
-// Framed-LSP stdout parser (cribbed from lean.worker.js — print() is line-y)
+// Framed-LSP stdout: the SAME byte-level decoder the product worker uses
+// (public/workers/lsp-frames.js, spec W1) — a verbatim copy here once drifted
+// from the worker's and cost hours (architecture review A1). Bytes reach it
+// through a per-byte TTY sink installed right before `--worker` starts; the
+// glue's default sink line-buffers, which is why the last frame of a burst
+// used to sit in the TTY until the next write (the tickler's reason to exist).
 // ---------------------------------------------------------------------------
-const dec = new TextDecoder();
 const enc = new TextEncoder();
-let lspBuf = new Uint8Array(0);
-function indexOfHeader(buf) {
-  for (let i = 0; i + 15 <= buf.length; i++) {
-    if ((buf[i] | 32) !== 0x63) continue;
-    if ((buf[i+1]|32)===0x6f && (buf[i+2]|32)===0x6e && (buf[i+3]|32)===0x74 && (buf[i+4]|32)===0x65 &&
-        (buf[i+5]|32)===0x6e && (buf[i+6]|32)===0x74 && buf[i+7]===0x2d && (buf[i+8]|32)===0x6c &&
-        (buf[i+9]|32)===0x65 && (buf[i+10]|32)===0x6e && (buf[i+11]|32)===0x67 && (buf[i+12]|32)===0x74 &&
-        (buf[i+13]|32)===0x68 && buf[i+14]===0x3a) return i;
-  }
-  return -1;
+const { LspFrameDecoder } = globalThis.Qed64LspFrames;
+const frames = new LspFrameDecoder({
+  onFrame(body) {
+    try { onMessage(JSON.parse(body)); } catch { log(`unparseable frame: ${body.slice(0, 80)}`); }
+  },
+  // Non-frame stdout: zero once the kernel's trace import (spec K3) routes
+  // library progress off stdout; gate.mjs asserts `nonFrameStdoutBytes === 0`.
+  onJunk(line) { log(`stdout-log: ${line.slice(0, 120)}`); },
+});
+
+/** Swap the stdout TTY's ops for a per-byte sink. /dev/stdout is a symlink to
+ * /dev/tty (device 5,0); `TTY.stream_ops.write` calls `ops.put_char` once per
+ * byte, and pthread writes are proxied to this (main) context first, so the
+ * FileWorker's frames land here byte-exact. Same hook as the worker's
+ * installStdoutTap; `Module.stdout` is not honoured by this glue. */
+function installStdoutTap() {
+  const M = globalThis.Module;
+  const tty = globalThis.TTY?.ttys?.[M.FS.makedev(5, 0)];
+  if (!tty?.ops?.put_char) return finish(false, "stdout tap: TTY for /dev/stdout not in scope");
+  const orig = tty.ops;
+  tty.ops = { ...orig, put_char(t, val) {
+    if (t.output?.length > 0) orig.fsync(t); // a line begun before the tap stays on the line path
+    if (val !== null && val !== 0) frames.push(val);
+  } };
 }
 
+// Pre-tap stdout (snapshot load, Lean init) still arrives as lines via print().
 function onStdout(text) {
   if (process.env.RAW_TAP) log(`RAW print: ${JSON.stringify(String(text).slice(0, 90))}`);
-  const bytes = enc.encode(`${text}\n`);
-  const joined = new Uint8Array(lspBuf.length + bytes.length);
-  joined.set(lspBuf, 0); joined.set(bytes, lspBuf.length);
-  lspBuf = joined;
-  for (;;) {
-    // Byte-level header search: decoding the whole buffer each iteration is
-    // O(n^2) under heavy output (it ballooned the page heap in the browser).
-    const hdrAt = indexOfHeader(lspBuf);
-    if (hdrAt < 0) {
-      const lastNl = lspBuf.lastIndexOf(0x0a);
-      if (lastNl > 0) {
-        for (const line of dec.decode(lspBuf.subarray(0, lastNl)).split("\n")) if (line.trim()) log(`stdout-log: ${line.slice(0, 120)}`);
-        lspBuf = lspBuf.slice(lastNl + 1);
-      }
-      return;
-    }
-    if (hdrAt > 0) {
-      for (const line of dec.decode(lspBuf.subarray(0, hdrAt)).split("\n")) if (line.trim()) log(`stdout-log: ${line.slice(0, 120)}`);
-    }
-    const headSlice = dec.decode(lspBuf.subarray(hdrAt, Math.min(hdrAt + 128, lspBuf.length)));
-    const m = /Content-Length: (\d+)/i.exec(headSlice);
-    if (!m) return;
-    const len = Number(m[1]);
-    let at = hdrAt + m[0].length;
-    while (at < lspBuf.length && (lspBuf[at] === 0x0d || lspBuf[at] === 0x0a)) at += 1;
-    if (lspBuf.length < at + len) return;
-    const body = dec.decode(lspBuf.subarray(at, at + len));
-    lspBuf = lspBuf.slice(at + len);
-    try { onMessage(JSON.parse(body)); } catch { log(`unparseable frame: ${body.slice(0, 80)}`); }
-  }
+  for (const line of String(text).split("\n")) if (line.trim()) log(`stdout-log: ${line.slice(0, 120)}`);
 }
 
 function onMessage(msg) {
@@ -309,6 +302,7 @@ globalThis.Module = {
     const status = M._lean_browser64_configure_input_ring(rawPtr, CAP);
     if (status !== 0) return finish(false, `ring rejected: ${status}`);
     log("ring configured — callMain --worker");
+    installStdoutTap(); // from here on stdout is frames (plus counted junk), byte by byte
     M.callMain(["--worker", "-Dserver.reportDelayMs=0"]);
     // reportDelayMs=0: the reporter's first IO.sleep on a task pthread never
     // wakes under this emsdk (the pump path's wasmLspInit sets the same).
@@ -340,18 +334,8 @@ globalThis.Module = {
       send({ jsonrpc: "2.0", id: 9002, method: "textDocument/hover", params: {
         textDocument: { uri: "file:///workspace/Probe.lean" }, position: { line: 1, character: 5 } } });
     }, 12000);
-    // Tickler (patch 0022 / the product shim's mechanism): the worker's
-    // stdout occasionally leaves the final frame stuck in the TTY buffer
-    // until the NEXT write. A periodic cheap request forces that flush —
-    // its response write drains any stuck diagnostics frame. Without it the
-    // resident session elaborates fully (seconds of CPU) but the last
-    // fileProgress/diagnostics never reaches the page.
-    let tick = 0;
-    setInterval(() => {
-      tick += 1;
-      send({ jsonrpc: "2.0", id: `tick-${tick}`, method: "textDocument/waitForDiagnostics",
-        params: { uri: "file:///workspace/Probe.lean", version: 0 } });
-    }, 1500);
+    // No tickler: with the per-byte sink nothing can stay stuck in the TTY,
+    // so a probe that needs a nudge to see its last frame is a real finding.
   },
   onExit: (code) => {
     log(`main exited code=${code}`);
