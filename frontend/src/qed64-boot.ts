@@ -97,6 +97,22 @@ export interface SessionOptions {
    * the snapshot is where nondeterministic renderer crashes were observed;
    * one large initial commit sidesteps the repeated-grow path. */
   mathlib?: boolean;
+  /** Ceiling for the shared Memory64 reservation ladder (bytes). The
+   * editor's default is 6 GiB — 2.5x headroom over its heaviest measured
+   * session; a host whose sessions peak lower (a game environment stays
+   * under 2 GiB) should pass a tighter cap: the reservation is what a
+   * dead-but-not-yet-reclaimed page keeps holding across reloads, so a
+   * smaller cap directly shrinks the stacked-heap window that kills
+   * renderers under reload + switch storms. */
+  maximumBytes?: number;
+}
+
+/** The device-derived candidate ladder capped at `cap`; a cap below every
+ * rung becomes the sole candidate, so a small cap never yields an empty
+ * ladder (which would make boot fail instead of reserving less). */
+function candidatesUnder(cap: number): number[] {
+  const under = memoryCandidates().filter((b) => b <= cap);
+  return under.length ? under : [cap];
 }
 
 export async function newSession(
@@ -155,7 +171,7 @@ export async function newSession(
     // after a full library search).
     memory: {
       initialBytes: (opts.mathlib ? 2048 : 256) * 1048576,
-      maximumCandidates: memoryCandidates().filter((b) => b <= 6 * 1073741824),
+      maximumCandidates: candidatesUnder(opts.maximumBytes ?? 6 * 1073741824),
     },
     leanPath: searchPath,
     packs,
