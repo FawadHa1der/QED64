@@ -7,7 +7,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { chromium } from "playwright";
-import { fetchJson, resolveTarget, root, runDir } from "./harness.mjs";
+import { fetchJson, resolveTarget, root, runDir, settleClass } from "./harness.mjs";
 const positional = process.argv.slice(2).filter((a, i, all) => !a.startsWith("--") && !(i > 0 && all[i - 1].startsWith("--")));
 const URL = positional[0] ?? "http://localhost:5184/";
 const MINUTES = Number(positional[1] ?? 3);
@@ -83,15 +83,17 @@ try {
       }
     }
   } catch (e) { push(`[${ts()}s] driver threw: ${String(e).slice(0, 120)}`); }
-  // settle verdict: give the machinery a fair window to reach a terminal state
+  // settle verdict: give the machinery a fair window to reach a terminal
+  // state — the class comes from harness.settleClass (one grammar for e2e
+  // and the gauntlet, so the phase-enum tap of attacks.txt #3 is one edit).
   for (let i = 0; i < 60; i++) {
     const p = await page.evaluate(() => document.querySelector("#ptext")?.textContent ?? "").catch(() => "DEAD");
-    if (/^ready$|imports (incomplete|failed)|keeps crashing|DEAD/.test(p)) break;
+    if (p === "DEAD" || settleClass(p)) break;
     await page.waitForTimeout(2000);
   }
   alive = await page.evaluate(() => !!globalThis.qed64).catch(() => false);
   finalPill = await page.evaluate(() => document.querySelector("#ptext")?.textContent ?? "").catch(() => "DEAD");
-  halted = /keeps crashing/.test(finalPill);
+  halted = settleClass(finalPill) === "halted";
 } catch (e) {
   push(`[${ts()}s] gauntlet threw: ${String(e).slice(0, 160)}`);
 } finally {

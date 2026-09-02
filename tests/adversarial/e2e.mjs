@@ -47,14 +47,17 @@ for (const it of corpus) {
   if (dead.length) { console.error(`corpus: action item ${it.name} carries battery-only keys ${dead.join(", ")} — use expect.terminal/mustSucceed/settleMs (exit 3)`); process.exit(3); }
   if (it.expect?.terminal && !["ready", "headerUnresolvable", "halted"].includes(it.expect.terminal)) { console.error(`corpus: ${it.name}: unknown terminal ${it.expect.terminal} (exit 3)`); process.exit(3); }
 }
-// --only <name>: run just that corpus scenario (fixed scenarios,
-// import-completion, and the drills are skipped) — the isolation mode for
-// chasing one flaky scenario without cohort contamination. Whole-name
-// matching lives in harness.mjs (pinned by tests/unit/adversarial-harness.test.ts).
+// --only <name>: run just that scenario — a corpus item OR one of the fixed
+// scenarios below (boot always runs: it is the precondition) — the isolation
+// mode for chasing one flaky scenario without cohort contamination.
+// Whole-name matching lives in harness.mjs (pinned by
+// tests/unit/adversarial-harness.test.ts).
+const FIXED = ["golden-7-battery", "error-clear-staleness", "import-composition", "switch-init", "switch-mathlib", "import-completion", "worker-kill-recovery", "final-memory"];
 const only = arg("only", "");
 const onlyMatches = (name) => onlyMatchesName(name, only);
-if (only && !corpus.some((it) => onlyMatches(it.name))) {
-  console.error(`--only ${JSON.stringify(only)} matches no corpus scenario — refusing (exit 3)`);
+const runs = (name) => !only || onlyMatches(name);
+if (only && !corpus.some((it) => onlyMatches(it.name)) && !FIXED.some(onlyMatches)) {
+  console.error(`--only ${JSON.stringify(only)} matches no corpus or fixed scenario (${FIXED.join(", ")}) — refusing (exit 3)`);
   process.exit(3);
 }
 const results = [];
@@ -74,21 +77,30 @@ function wirePage(p) {
 }
 /** A fresh page that MUST boot; anything else is an InfraError that aborts
  * the run (today's "continuing" turned an unbootable runtime into a cascade
- * of scenario failures — HARDENING #32/#33). */
+ * of scenario failures — HARDENING #32/#33). Infra means the page never
+ * became INTERACTIVE (`ready…`) — a page that is alive but slow to settle
+ * under machine load (kernel builds push pump boots past 400 s) is not an
+ * environment refusal; it is logged and the scenario judges it. */
 async function freshPage() {
   try { if (page && !page.isClosed()) await page.close(); } catch { /* gone */ }
   page = await context.newPage();
   wirePage(page);
   const t0 = Date.now();
   await page.goto(url, { waitUntil: "domcontentloaded" });
-  const r = await waitPill(/^ready$/, bootBudgetMs, 1000);
-  if (!r.ok) throw new InfraError(`fresh page did not boot within ${bootBudgetMs} ms (pill '${r.s.slice(0, 40)}', pageCrashes=${pageCrashes})`);
+  const interactive = await waitPill(/^ready/, bootBudgetMs, 1000);
+  if (!interactive.ok) throw new InfraError(`fresh page did not boot within ${bootBudgetMs} ms (pill '${interactive.s.slice(0, 40)}', pageCrashes=${pageCrashes})`);
+  const settled = await waitPill(/^ready$/, bootBudgetMs, 0);
+  if (!settled.ok) console.log(`fresh page: interactive at ${interactive.ms} ms but not settled after ${bootBudgetMs} ms more (pill '${settled.s.slice(0, 40)}') — continuing`);
   return Date.now() - t0;
 }
 page = await context.newPage();
 wirePage(page);
 
-const pill = () => page.evaluate(() => (document.getElementById("ptext") || {}).textContent || "").catch(() => "");
+// A rejected evaluate is a page that is gone (crashed, closed, navigated
+// away) — waitPill must see that in one poll, not after the full settle
+// budget (up to 420 s) elapses on an empty string.
+const DEAD = "\0dead";
+const pill = () => page.evaluate(() => (document.getElementById("ptext") || {}).textContent || "").catch(() => DEAD);
 const ivText = () => Promise.race([
   page.evaluate(() => {
     const f = document.getElementById("infoview")?.querySelector("iframe");
@@ -98,8 +110,17 @@ const ivText = () => Promise.race([
 ]);
 async function waitPill(re, timeoutMs, minMs = 0) {
   const t0 = Date.now();
+  let deadPolls = 0;
   for (;;) {
     const s = await pill();
+    // Two consecutive rejections a second apart: the page is dead, not
+    // mid-navigation. Short-circuit so the alive probe + freshPage run now.
+    if (s === DEAD) {
+      if (++deadPolls >= 2) return { ok: false, ms: Date.now() - t0, s: "dead", dead: true };
+      await new Promise((r) => setTimeout(r, 1000));
+      continue;
+    }
+    deadPolls = 0;
     if (Date.now() - t0 >= minMs && re.test(s)) return { ok: true, ms: Date.now() - t0, s };
     if (Date.now() - t0 > timeoutMs) return { ok: false, ms: Date.now() - t0, s };
     await page.waitForTimeout(400);
@@ -181,10 +202,7 @@ const GOLDEN_7 = {
 // Scenario names in run order, so an abort can list what it never reached.
 const actionItems = corpus.filter((it) => Array.isArray(it.actions) && it.actions.length)
   .filter((it) => !only || onlyMatches(it.name));
-const planned = only
-  ? ["boot", ...actionItems.map((it) => it.name)]
-  : ["boot", "golden-7-battery", "error-clear-staleness", "import-composition", "switch-init", "switch-mathlib",
-    ...actionItems.map((it) => it.name), "import-completion", "worker-kill-recovery", "final-memory"];
+const planned = ["boot", ...FIXED.slice(0, 5).filter(runs), ...actionItems.map((it) => it.name), ...FIXED.slice(5).filter(runs)];
 const remainingAfter = (name) => planned.slice(planned.indexOf(name) + 1).filter((n) => !results.some((r) => r.name === n));
 let exitCode = 0;
 
@@ -206,7 +224,7 @@ try {
 }
 
 // ---------- scenario: golden 7-error battery + badge/list consistency --------
-if (!only) {
+if (runs("golden-7-battery")) {
   consoleLog = [];
   await setBuffer(GOLDEN_7.source);
   await waitPill(/^ready$/, 90000, 2500);
@@ -233,7 +251,7 @@ if (!only) {
 }
 
 // ---------- scenario: introduce/remove error clears (staleness) --------------
-if (!only) {
+if (runs("error-clear-staleness")) {
   await setBuffer("import Mathlib.Data.Real.Basic\n\nexample (a b : ℝ) : a + b = b + a := add_comm a b\n");
   await waitPill(/^ready$/, 60000, 1500);
   await page.evaluate(() => {
@@ -255,7 +273,7 @@ if (!only) {
 }
 
 // ---------- scenario: import composition (calm path) -------------------------
-if (!only) {
+if (runs("import-composition")) {
   consoleLog = [];
   await setBuffer("");
   await page.waitForTimeout(5000);
@@ -271,8 +289,8 @@ if (!only) {
 }
 
 // ---------- scenario: example switch speed budget ----------------------------
-if (!only) {
-  for (const [name, budget] of [["init", 20000], ["mathlib", 25000]]) {
+for (const [name, budget] of [["init", 20000], ["mathlib", 25000]]) {
+  if (runs(`switch-${name}`)) {
     const t0 = Date.now();
     await page.selectOption("#examples", name);
     const r = await waitPill(/^ready$/, budget + 30000, 2500);
@@ -315,7 +333,7 @@ for (const item of actionItems) {
     }
     // settle: alive AND in a terminal state (ready / actionable import note / breaker)
     const settle = await waitPill(SETTLE_RE, item.expect.settleMs ?? 120000, 2000);
-    const alive = await aliveProbe();
+    const alive = settle.dead ? false : await aliveProbe();
     const panics = panicsInConsole();
     // zeroErrors: the InfoView's All Messages badge must reach zero errors
     // (innerText renders "All Messages ( <errs> <warns>)"). Transient error
@@ -330,7 +348,7 @@ for (const item of actionItems) {
         const m = /All Messages \(\s*(\d+)/.exec(iv);
         errCount = m ? Number(m[1]) : 0;
         const p = await pill();
-        if (errCount === 0 && /^ready$/.test(p)) break;
+        if (p === DEAD || (errCount === 0 && /^ready$/.test(p))) break;
         if (Date.now() > deadlineAt) break;
         await page.waitForTimeout(5000);
       }
@@ -369,7 +387,7 @@ if (!(await page.evaluate(() => !!globalThis.qed64).catch(() => false))) {
 }
 
 // ---------- scenario: import-path completion (live parity) -------------------
-if (!only) {
+if (runs("import-completion")) {
   await setBuffer("");
   await page.waitForTimeout(4000);
   await page.click(".monaco-editor .view-lines").catch(() => {});
@@ -387,7 +405,7 @@ if (!only) {
 }
 
 // ---------- recovery drill: hard worker kill ---------------------------------
-if (!only) {
+if (runs("worker-kill-recovery")) {
   await freshPage();
   await page.selectOption("#examples", "mathlib").catch(() => {});
   await waitPill(/^ready$/, 90000, 2000);
@@ -410,7 +428,7 @@ if (!only) {
 }
 
 // ---------- final: memory + stuck-pill sweep ---------------------------------
-if (!only) {
+if (runs("final-memory")) {
   const mem = await memSample();
   const wasmOk = mem.wasmMB === null || mem.wasmMB === undefined || mem.wasmMB < 3800;
   await record("final-memory", "memory", wasmOk, `wasm=${mem.wasmMB}MB js=${mem.jsHeapMB}MB (budget wasm<3800MB)`);

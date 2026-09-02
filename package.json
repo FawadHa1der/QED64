@@ -8,7 +8,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "pretest": "npm run typecheck:site",
+    "pretest": "if [ -d frontend/node_modules ]; then npm run typecheck:site; else echo \"pretest: frontend/node_modules absent — skipping typecheck:site (run: npm --prefix frontend ci)\"; fi",
     "test": "vitest run --exclude '**/integration/**'",
     "test:watch": "vitest --exclude '**/integration/**'",
     "test:integration": "vitest run tests/integration",

@@ -44,6 +44,27 @@ if (!buildId) {
 const out = path.resolve(root, arg("out", stagingDir(root, buildId, "snapshots")));
 refuseInsidePublic(root, out, "bake-snapshot");
 
+// The index this bake will upsert into is ONE pairing, checked before the
+// runner starts (a refusal after a 20-minute bake is the expensive kind):
+// entries baked by another runtime must not survive next to this one (they
+// would be served under this manifest and trap in the browser), and entries
+// with no `runtime` at all (pre-field bakes) would leave promote refusing
+// with "none recorded" and the user guessing which names to rebake.
+const indexPath = path.join(out, "index.json");
+let index = { schema: "qed64.snapshot-index/v1", snapshots: [] };
+try { index = JSON.parse(fs.readFileSync(indexPath, "utf8")); } catch {}
+const siblings = index.snapshots.filter((s) => s.name !== name);
+const foreign = siblings.filter((s) => s.runtime && s.runtime !== buildId);
+if (foreign.length) {
+  console.error(`bake-snapshot: ${indexPath} already holds entries for runtime ${foreign[0].runtime} (${foreign.map((s) => s.name).join(", ")}) — refusing to mix pairings`);
+  process.exit(2);
+}
+const unpaired = siblings.filter((s) => !s.runtime);
+if (unpaired.length) {
+  console.error(`bake-snapshot: ${indexPath} holds entries with no runtime pairing (${unpaired.map((s) => s.name).join(", ")}) — rebake ${unpaired.map((s) => `--name ${s.name}`).join(", ")} against this runtime first, or bake into an empty --out (promote refuses an unpaired index)`);
+  process.exit(2);
+}
+
 const work = path.join(root, "work/snapshot");
 fs.mkdirSync(work, { recursive: true });
 fs.writeFileSync(path.join(work, "probe.lean"), `${probe}\n`);
@@ -52,7 +73,10 @@ const runnerArgs = [
   path.join(root, "pipeline/snapshot/node-runner.mjs"),
   "--work", work,
 ];
-if (artifact) runnerArgs.push("--artifact", artifact);
+// Always the RESOLVED artifact: node-runner falls back to a sibling checkout
+// when the default stage1 lacks bin/lean.js, and then the `runtime` stamped
+// below (from artifactDir's lean.wasm) would name a binary that did not bake.
+runnerArgs.push("--artifact", artifactDir);
 const lib = arg("lib", null);
 if (lib) runnerArgs.push("--lib", lib);
 runnerArgs.push("--", `--incr-header-save=/work/${name}.snap`, "/work/probe.lean");
@@ -155,9 +179,6 @@ const importsOf = (source) => {
   }
   return found;
 };
-const indexPath = path.join(out, "index.json");
-let index = { schema: "qed64.snapshot-index/v1", snapshots: [] };
-try { index = JSON.parse(fs.readFileSync(indexPath, "utf8")); } catch {}
 const entry = {
   name,
   url: `/snapshots/${gzName}`,
@@ -167,13 +188,8 @@ const entry = {
   imports: importsOf(probe),
   runtime: buildId,
 };
-// An index is one pairing: entries baked by another runtime must not survive
-// in it (they would be served under this manifest and trap in the browser).
-const foreign = index.snapshots.filter((s) => s.runtime && s.runtime !== buildId);
-if (foreign.length) {
-  console.error(`bake-snapshot: ${indexPath} already holds entries for runtime ${foreign[0].runtime} (${foreign.map((s) => s.name).join(", ")}) — refusing to mix pairings`);
-  process.exit(2);
-}
+// Re-read: a concurrent bake of a sibling name may have upserted meanwhile.
+try { index = JSON.parse(fs.readFileSync(indexPath, "utf8")); } catch {}
 index.snapshots = index.snapshots.filter((s) => s.name !== name).concat([entry]);
 fs.writeFileSync(indexPath, JSON.stringify(index, null, 2));
 console.log(

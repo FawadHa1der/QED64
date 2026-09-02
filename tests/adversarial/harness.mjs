@@ -7,10 +7,11 @@
 //     so a report is never overwritten by the next lane;
 //   - teeLog(): console output mirrored into that directory;
 //   - coolDown(): the between-browser-lanes discipline of HARDENING #34
-//     (kill stray chrome-headless-shell, wait for free+inactive memory).
+//     (refuse while a chrome-headless-shell exists — `--kill-strays` to kill
+//     them instead — then wait for free+inactive memory).
 // CLI (for shell callers such as resident-gate.sh):
 //   node tests/adversarial/harness.mjs run-dir --url <url>     → prints the run dir
-//   node tests/adversarial/harness.mjs cooldown [--cooldown-gb 6] [--cooldown-max-s 180]
+//   node tests/adversarial/harness.mjs cooldown [--cooldown-gb 6] [--cooldown-max-s 180] [--kill-strays]
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -101,21 +102,30 @@ export function reclaimableBytes() {
   } catch { return os.freemem(); }
 }
 
-export const strayBrowsers = () => (spawnSync("pgrep", ["-f", "chrome-headless-shell"], { encoding: "utf8" }).stdout || "").split("\n").filter(Boolean);
+/** `pid cmdline` lines of every live chrome-headless-shell (pgrep -fl prints
+ * the full argument list on both BSD and procps). */
+export const strayBrowsers = () => (spawnSync("pgrep", ["-fl", "chrome-headless-shell"], { encoding: "utf8" }).stdout || "").split("\n").filter(Boolean);
 
-/** Between browser lanes: no lane of ours is running, so every
- * chrome-headless-shell is a leak from a probe that died before
- * browser.close(); kill them, then wait for memory to come back. Returns
- * false (and logs why) when the machine is not fit to start a browser. */
-export async function coolDown({ minFreeGB = Number(arg("cooldown-gb", "6")), maxWaitS = Number(arg("cooldown-max-s", "180")), log = console.log } = {}) {
-  const strays = strayBrowsers();
-  if (strays.length) {
-    log(`cool-down: killing ${strays.length} stray chrome-headless-shell process(es)`);
+/** Between browser lanes: a chrome-headless-shell that is not ours is either
+ * a leak from a probe that died before browser.close() (HARDENING #34) or a
+ * SIBLING RUN's live browser — parallel worktree tracks and interactive
+ * sessions run Playwright on this machine at the same time, so the default
+ * is to refuse (the spec's rule) and list what is there; `--kill-strays`
+ * opts into SIGKILL for the unattended re-run case. Then wait for memory to
+ * come back. Returns false (and logs why) when the machine is not fit to
+ * start a browser. */
+export async function coolDown({ minFreeGB = Number(arg("cooldown-gb", "6")), maxWaitS = Number(arg("cooldown-max-s", "180")), killStrays = has("--kill-strays"), log = console.log } = {}) {
+  let strays = strayBrowsers();
+  if (strays.length && killStrays) {
+    log(`cool-down: --kill-strays — SIGKILL ${strays.length} chrome-headless-shell process(es):\n  ${strays.map((s) => s.slice(0, 160)).join("\n  ")}`);
     spawnSync("pkill", ["-9", "-f", "chrome-headless-shell"]);
     await new Promise((r) => setTimeout(r, 2000));
+    strays = strayBrowsers();
   }
-  const left = strayBrowsers();
-  if (left.length) { log(`cool-down: ${left.length} chrome-headless-shell process(es) survived SIGKILL — refusing to start a browser lane`); return false; }
+  if (strays.length) {
+    log(`cool-down: ${strays.length} chrome-headless-shell process(es) alive${killStrays ? " after SIGKILL" : " (another run's, or a leak — pass --kill-strays to kill leaks)"} — refusing to start a browser lane:\n  ${strays.map((s) => s.slice(0, 160)).join("\n  ")}`);
+    return false;
+  }
   const need = minFreeGB * 1024 ** 3;
   const t0 = Date.now();
   for (;;) {

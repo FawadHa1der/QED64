@@ -14,6 +14,7 @@
 // Usage: node pipeline/release/promote-staging.mjs --staging work/staging/<buildId>
 //        [--public public] [--dry-run]
 
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,6 +30,16 @@ const publicDir = path.resolve(root, arg("public", "public"));
 const stagedRuntime = path.join(staging, "runtime");
 const stagedSnapshots = path.join(staging, "snapshots");
 const fail = (why) => { console.error(`promote: ${why}`); process.exit(2); };
+// Every staged file is re-derived against the digest its manifest/index
+// carries (files are ≤ 16 MiB chunks and gzip snapshots — cheap): a
+// truncated or half-written staging file would otherwise be promoted and
+// fail only in the browser's verification, one boot later.
+const sha256File = (file) => createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+const verifyDigest = (file, expected, what) => {
+  if (!expected) return;
+  const got = sha256File(file);
+  if (got !== expected) fail(`${what}: ${path.relative(root, file)} has sha256 ${got.slice(0, 16)}…, manifest says ${expected.slice(0, 16)}… — restage it`);
+};
 for (const required of [
   path.join(stagedRuntime, "runtime-manifest.json"),
   path.join(stagedSnapshots, "index.json"),
@@ -45,6 +56,8 @@ for (const [name, file] of Object.entries(manifest.files ?? {})) {
     const base = path.basename(chunk.url);
     const staged = path.join(stagedRuntime, "chunks", base);
     if (!fs.existsSync(staged)) fail(`manifest lists ${chunk.url} (${name}) but ${staged} is absent`);
+    if (typeof chunk.bytes === "number" && fs.statSync(staged).size !== chunk.bytes) fail(`chunk ${base} (${name}) is ${fs.statSync(staged).size} bytes, manifest says ${chunk.bytes}`);
+    verifyDigest(staged, chunk.sha256, `chunk ${base} (${name})`);
     chunkFiles.push({ base, from: staged });
   }
 }
@@ -59,6 +72,7 @@ for (const entry of index.snapshots ?? []) {
   if (entry.runtime !== manifest.buildId) {
     fail(`snapshot ${entry.name} is paired with runtime ${entry.runtime ?? "(none recorded)"}, not ${manifest.buildId} — rebake it against this runtime`);
   }
+  verifyDigest(file, typeof entry.digest === "string" ? entry.digest.replace(/^sha256:/, "") : null, `snapshot ${entry.name}`);
   snapshotFiles.push({ base, from: file });
 }
 

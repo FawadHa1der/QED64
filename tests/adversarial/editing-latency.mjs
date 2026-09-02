@@ -57,6 +57,10 @@ try {
     const mark = await progressClock();
     let t0 = Date.now();
     await editLine(1, r % 2 === 0 ? "import Mathlib.Data.Nat.Basic" : "import Mathlib.Data.Real.Basic");
+    // `progressClock`: the shim's lastProgressAt; `busy-label`: the fallback
+    // (15 s ceiling, cannot see a covered switch) — recorded so a shim that
+    // stops exposing the clock degrades VISIBLY in the report.
+    R.progressClockSource = mark !== null ? "shim.lastProgressAt" : "busy-label";
     R.switchBusySeenMs = mark !== null ? await waitFirstProgressAfter(mark, 15000) : await waitPill(/imports|checking|elaborating|re-elaborating/, 15000);
     const ready = await waitPill(/^ready$/, 180000, 500);
     R.headerSwitchMs = ready >= 0 ? Date.now() - t0 : -1;

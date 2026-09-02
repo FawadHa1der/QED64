@@ -10,6 +10,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { isInsidePublic, runtimeBuildId } from "../../pipeline/toolchain/artifact-paths.mjs";
+import { isImmutable } from "../../infra/worker.js";
 import { fetchSnapshotIndex } from "../../src/runtime/snapshots";
 
 const root = path.resolve(__dirname, "../..");
@@ -83,16 +84,58 @@ describe("chunk-runtime.mjs", () => {
   });
 });
 
+describe("infra/worker.js cache rule", () => {
+  test("manifests and indexes revalidate; digest-named chunks and snapshots are immutable", () => {
+    // The per-build manifest carries 16 hex chars in its NAME but its
+    // contents change on a lean.js-only relink (buildId = sha256(lean.wasm)).
+    expect(isImmutable("/runtime/runtime-manifest.wasm64-dca2763359db27e7.json")).toBe(false);
+    expect(isImmutable("/runtime/runtime-manifest.json")).toBe(false);
+    expect(isImmutable("/snapshots/index.json")).toBe(false);
+    expect(isImmutable("/profiles/index.json")).toBe(false);
+    expect(isImmutable(`/runtime/chunks/lean.js.${"a1b2c3d4e5f6a7b8c9d0"}.part-000`)).toBe(true);
+    expect(isImmutable(`/runtime/chunks/${"0".repeat(64)}.bin`)).toBe(true);
+    expect(isImmutable("/snapshots/init.dca2763359db27e7.snapz")).toBe(true);
+    expect(isImmutable("/index.html")).toBe(false);
+  });
+});
+
 describe("bake-snapshot.mjs", () => {
-  test("refuses --out inside public/ before the runner starts", () => {
-    const art = path.join(tmp, "stage1-fake");
+  function fakeArtifact(tag: string): string {
+    const art = path.join(tmp, `stage1-${tag}`);
     fs.mkdirSync(path.join(art, "bin"), { recursive: true });
-    fs.writeFileSync(path.join(art, "bin/lean.wasm"), Buffer.from("\0asmfake"));
+    fs.writeFileSync(path.join(art, "bin/lean.wasm"), Buffer.from(`\0asm${tag}`));
+    return art;
+  }
+  test("refuses --out inside public/ before the runner starts", () => {
     const t0 = Date.now();
-    const r = run(baker, ["--artifact", art, "--out", "public/snapshots"]);
+    const r = run(baker, ["--artifact", fakeArtifact("fake"), "--out", "public/snapshots"]);
     expect(r.status).toBe(2);
     expect(r.stderr).toMatch(/refusing --out .*public/);
     expect(Date.now() - t0).toBeLessThan(10_000); // no runner was launched
+  });
+
+  test("refuses an index with foreign or unpaired siblings before the runner starts, naming what to rebake", () => {
+    const art = fakeArtifact("pair");
+    const mine = runtimeBuildId(Buffer.from("\0asmpair"));
+    const write = (dir: string, snapshots: Record<string, unknown>[]) => {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, "index.json"), JSON.stringify({ schema: "qed64.snapshot-index/v1", snapshots }));
+    };
+    const foreign = path.join(tmp, "idx-foreign");
+    write(foreign, [{ name: "mathlib", url: "/snapshots/mathlib.x.snapz", runtime: "wasm64-0000000000000000" }]);
+    const t0 = Date.now();
+    const f = run(baker, ["--artifact", art, "--name", "init", "--out", foreign]);
+    expect(f.status).toBe(2);
+    expect(f.stderr).toMatch(/entries for runtime wasm64-0000000000000000 \(mathlib\)/);
+    const unpaired = path.join(tmp, "idx-unpaired");
+    write(unpaired, [{ name: "mathlib", url: "/snapshots/mathlib.x.snapz" }, { name: "init", url: "/snapshots/init.x.snapz" }]);
+    const u = run(baker, ["--artifact", art, "--name", "init", "--out", unpaired]);
+    expect(u.status).toBe(2);
+    expect(u.stderr).toMatch(/no runtime pairing \(mathlib\).*rebake --name mathlib/);
+    expect(Date.now() - t0).toBeLessThan(10_000);
+    // The entry being rebaked is not a sibling, and a paired sibling is fine
+    // (that bake would proceed to the runner, so it is not exercised here).
+    expect(mine).toMatch(/^wasm64-[0-9a-f]{16}$/);
   });
 });
 
@@ -144,6 +187,25 @@ describe("promote-staging.mjs", () => {
     const idx = JSON.parse(fs.readFileSync(path.join(pub, "snapshots/index.json"), "utf8"));
     expect(idx.snapshots[0].runtime).toBe(neu.manifest.buildId);
     expect(fs.readdirSync(path.join(pub, "runtime")).filter((f) => f.endsWith(".tmp"))).toEqual([]);
+  });
+
+  test("refuses a staged chunk or snapshot whose bytes do not match its recorded digest", () => {
+    const pub = path.join(tmp, "public-3");
+    const stage = path.join(tmp, "stage-truncated");
+    const { manifest, snapshotFile } = stageRuntime(stage, "tr");
+    const firstFile = Object.values(manifest.files as Record<string, { chunks: { url: string }[] }>)[0]!;
+    const chunk = path.join(stage, "runtime/chunks", path.basename(firstFile.chunks[0]!.url));
+    const whole = fs.readFileSync(chunk);
+    fs.writeFileSync(chunk, whole.subarray(0, whole.length - 1)); // truncated by one byte
+    const r = run(promote, ["--staging", stage, "--public", pub, "--dry-run"]);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toMatch(/chunk .* is \d+ bytes, manifest says|has sha256/);
+    expect(fs.existsSync(pub)).toBe(false);
+    fs.writeFileSync(chunk, whole);
+    fs.appendFileSync(path.join(stage, "snapshots", snapshotFile), "!"); // snapshot digest drift
+    const s = run(promote, ["--staging", stage, "--public", pub, "--dry-run"]);
+    expect(s.status).toBe(2);
+    expect(s.stderr).toMatch(/snapshot init: .* has sha256/);
   });
 
   test("refuses an index whose entries are paired with another runtime, or with none", () => {

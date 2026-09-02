@@ -15,4 +15,4 @@ export function runDir(buildId: string, mode: string, explicit?: string): string
 export function teeLog(dir: string, name: string): string;
 export function reclaimableBytes(): number;
 export function strayBrowsers(): string[];
-export function coolDown(opts?: { minFreeGB?: number; maxWaitS?: number; log?: (s: string) => void }): Promise<boolean>;
+export function coolDown(opts?: { minFreeGB?: number; maxWaitS?: number; killStrays?: boolean; log?: (s: string) => void }): Promise<boolean>;

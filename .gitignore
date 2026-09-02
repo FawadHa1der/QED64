@@ -6,5 +6,6 @@ public/profiles/*.part-*
 work/
 *.log
 .DS_Store
-public/snapshots/
+public/snapshots/*
+!public/snapshots/index.json
 public/runtime/runtime-manifest.wasm64-*.json
