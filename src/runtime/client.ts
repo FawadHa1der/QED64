@@ -247,8 +247,9 @@ export class LeanSession {
     name?: string,
     expectedBytes?: number,
     cacheKey?: string,
+    runtime?: string
   ): Promise<{ success: boolean; elapsedMs: number }> {
-    return this.exclusive(() => this.request("loadSnapshot", { input: { url, name, expectedBytes, cacheKey } }));
+    return this.exclusive(() => this.request("loadSnapshot", { input: { url, name, expectedBytes, cacheKey, runtime} }));
   }
 
   telemetry(): Promise<{ state: string; memory?: MemoryTelemetry }> {

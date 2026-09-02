@@ -259,7 +259,10 @@ export async function loadSnapshotByName(
   const gib = (entry.bytes / 1073741824).toFixed(1);
   ui.busy(`loading the ${name === "mathlib" ? "Mathlib" : name} environment (${gib} GiB unpacked — cached in your browser after the first visit)`);
   try {
-    const r = await qs.session.loadSnapshot(entry.url, `${name}.snap`, entry.bytes, snapshotCacheKey(entry));
+    // The index entry's `runtime` (buildId that baked it) rides along so the worker
+    // can refuse an unpaired snapshot with SNAPSHOT_UNPAIRED instead of trapping
+    // (snapshots are binary-paired to the runtime; artifact discipline, review C6).
+    const r = await qs.session.loadSnapshot(entry.url, `${name}.snap`, entry.bytes, snapshotCacheKey(entry), entry.runtime);
     if (r.success) qs.loadedSnapshots.add(name);
     return r.success;
   } catch (err) {
