@@ -96,7 +96,7 @@ function installStdoutTap() {
   const orig = tty.ops;
   tty.ops = { ...orig, put_char(t, val) {
     if (t.output?.length > 0) orig.fsync(t); // a line begun before the tap stays on the line path
-    if (val !== null && val !== 0) frames.push(val);
+    if (val !== null) frames.push(val); // null = the glue's flush signal; NUL is a byte (as in the worker)
   } };
 }
 
@@ -181,7 +181,16 @@ function checkActs() {
 // ---------------------------------------------------------------------------
 // Stdin ring writer (contract org.lean-browser64.resident-transport/v1)
 // ---------------------------------------------------------------------------
-const CAP = 1 << 20;
+// The product's ring size (lean.worker.js RESIDENT_RING_CAP, spec W4) so the
+// probe exercises the shipped geometry; the two are asserted equal at startup
+// because the worker is a classic script the probe cannot import.
+const CAP = 4 << 20;
+{
+  const src = fs.readFileSync(new URL("../../public/workers/lean.worker.js", import.meta.url), "utf8");
+  const m = /const RESIDENT_RING_CAP = (\d+) << (\d+);/.exec(src);
+  const workerCap = m ? Number(m[1]) << Number(m[2]) : NaN;
+  if (workerCap !== CAP) throw new Error(`resident-probe CAP ${CAP} != lean.worker.js RESIDENT_RING_CAP ${workerCap}`);
+}
 let ring = null; // { ctrlPtr, mem }
 const IDX = { READ: 0, WRITE: 1, CLOSED: 2, WAKE: 3 };
 function views() {

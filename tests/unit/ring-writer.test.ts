@@ -10,16 +10,26 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
 
+interface FakeModule {
+  _lean_browser64_configure_input_ring(ptr: bigint, cap: number): bigint;
+  _lean_wasm_shell_mark_preinitialized(): void;
+  _malloc(n: bigint): bigint;
+  callMain(argv: string[]): void;
+}
 interface ResidentHooks {
   RESIDENT_RING_CAP: number;
   attachRing(memory: { buffer: SharedArrayBuffer }, ctrlPtr: number): void;
-  residentRingWrite(payload: Uint8Array, done?: () => void): void;
+  attachRuntime(fake: FakeModule, memory: { buffer: SharedArrayBuffer }): void;
+  residentRingWrite(payload: Uint8Array, done?: () => void, abort?: (e: Error) => void): void;
   residentSend(msg: { requestId: string; input: { message: string } }): void;
+  residentInit(msg: { requestId: string; input: { initParams?: string; didOpen: string } }): void;
   residentFrame(json: string): Uint8Array;
+  die(code: number | null, reason: string, message: string): void;
+  snapshot(): { died: boolean; residentMode: boolean; lspMode: boolean; queued: number; pumping: boolean };
 }
 
 let R: ResidentHooks;
-let posted: Array<{ type: string; requestId?: string; result?: unknown; error?: { code: string; bytes?: number; recoverable: boolean } }>;
+let posted: Array<{ type: string; kind?: string; requestId?: string; result?: unknown; mode?: string; reason?: string; error?: { code: string; bytes?: number; recoverable: boolean; message: string } }>;
 let ctrl: Int32Array;
 let bytes: Uint8Array;
 let CAP: number;
@@ -178,5 +188,86 @@ describe("resident ring writer", () => {
     // The ring is still usable afterwards.
     R.residentSend({ requestId: "ok", input: { message: "{}" } });
     expect(posted[1]).toMatchObject({ type: "result", requestId: "ok" });
+  });
+});
+
+/** A fake runtime recording the transport calls residentInit makes; the ring
+ * it "allocates" is the sandbox's shared buffer at offset 0 (freshRing's layout). */
+function fakeRuntime() {
+  const calls: string[] = [];
+  const fake: FakeModule = {
+    _lean_wasm_shell_mark_preinitialized: () => { calls.push("preinit"); },
+    _malloc: () => { calls.push("malloc"); return 0n; },
+    _lean_browser64_configure_input_ring: () => { calls.push("ring"); return 0n; },
+    callMain: (argv) => { calls.push(`main ${argv.join(" ")}`); },
+  };
+  posted = [];
+  const memory = { buffer: new SharedArrayBuffer(16 + CAP) };
+  ctrl = new Int32Array(memory.buffer, 0, 4);
+  bytes = new Uint8Array(memory.buffer, 16, CAP);
+  R.attachRuntime(fake, memory);
+  return calls;
+}
+
+describe("residentInit preflight", () => {
+  test("an oversized didOpen is refused BEFORE the runtime is touched, recoverably, and a retry works", async () => {
+    const calls = fakeRuntime();
+    const didOpen = JSON.stringify({ textDocument: { uri: "file:///x.lean", text: "z".repeat(CAP >> 1) } });
+    R.residentInit({ requestId: "i1", input: { didOpen } });
+    expect(posted).toHaveLength(1);
+    expect(posted[0]).toMatchObject({ type: "error", requestId: "i1", error: { code: "LSP_RESIDENT_INIT_FAILED", recoverable: true } });
+    expect(posted[0]!.error!.bytes).toBeGreaterThan(CAP / 2);
+    // Nothing ran and no mode latched: the worker is exactly as it was.
+    expect(calls).toEqual([]);
+    expect(R.snapshot()).toMatchObject({ residentMode: false, lspMode: false, queued: 0 });
+    // The same worker then starts normally with a small document.
+    const small = JSON.stringify({ textDocument: { uri: "file:///x.lean", text: "theorem t : 1 = 1 := rfl" } });
+    R.residentInit({ requestId: "i2", input: { initParams: "{}", didOpen: small } });
+    expect(calls).toEqual(["preinit", "malloc", "ring", "main --worker -Dserver.reportDelayMs=0"]);
+    const opening = concat([
+      R.residentFrame(JSON.stringify({ jsonrpc: "2.0", id: 0, method: "initialize", params: {} })),
+      R.residentFrame(JSON.stringify({ jsonrpc: "2.0", method: "textDocument/didOpen", params: JSON.parse(small) })),
+    ]);
+    const drained = await drain(opening.length, 64 * 1024);
+    expect(sameBytes(drained, opening)).toBe(true);
+    expect(posted.filter((m) => m.type === "result")).toEqual([
+      expect.objectContaining({ requestId: "i2", result: { operation: "lsp-resident-init", tag: 0 } }),
+    ]);
+    expect(R.snapshot()).toMatchObject({ residentMode: true, lspMode: true });
+  });
+});
+
+describe("death (W2)", () => {
+  // These run LAST: `died` is a per-worker latch and the sandbox is one worker.
+  test("die() fails every queued ack, stops the parked pump, emits one tagged `died`, and refuses re-init", async () => {
+    freshRing();
+    // Two cap/2 fillers park the pump; a send and an init-shaped write queue behind them.
+    for (const f of [pattern(CAP >> 1, 1), pattern(CAP >> 1, 2)]) R.residentRingWrite(f);
+    R.residentSend({ requestId: "s-hung", input: { message: "{}" } });
+    expect(posted).toEqual([]);
+    expect(R.snapshot()).toMatchObject({ queued: 2, pumping: true });
+
+    R.die(1, "exit", "lean --worker exited with code 1");
+    R.die(null, "abort", "second death must be swallowed by the latch");
+    const died = posted.filter((m) => m.type === "event" && m.kind === "died");
+    expect(died).toHaveLength(1);
+    expect(died[0]).toMatchObject({ code: 1, reason: "exit", mode: "resident" });
+    // The pending ack failed, non-recoverably, instead of hanging.
+    const failed = posted.find((m) => m.type === "error" && m.requestId === "s-hung")!;
+    expect(failed.error).toMatchObject({ code: "LSP_RESIDENT_SEND_FAILED", recoverable: false });
+    expect(failed.error!.message).toContain("died (exit 1)");
+    // Queue cleared; the parked timer finds nothing and stops re-arming.
+    expect(R.snapshot()).toMatchObject({ died: true, residentMode: false, queued: 0 });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(R.snapshot().pumping).toBe(false);
+
+    // After death: sends and inits are refused (one worker, one session).
+    posted = [];
+    R.residentSend({ requestId: "after", input: { message: "{}" } });
+    expect(posted[0]).toMatchObject({ type: "error", requestId: "after", error: { code: "LSP_RESIDENT_SEND_FAILED", recoverable: false } });
+    fakeRuntime();
+    R.residentInit({ requestId: "re", input: { didOpen: JSON.stringify({ textDocument: { text: "" } }) } });
+    expect(posted[0]).toMatchObject({ type: "error", requestId: "re", error: { code: "LSP_RESIDENT_INIT_FAILED", recoverable: false } });
+    expect(posted[0]!.error!.message).toContain("already died");
   });
 });

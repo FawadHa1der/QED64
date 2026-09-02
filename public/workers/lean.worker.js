@@ -53,8 +53,21 @@ let sink = null;
 // ---------------------------------------------------------------------------
 // The decoder is shared with Node's resident-probe (one parser, not two that
 // drift — architecture review A1). Absent only under the vitest vm harness,
-// which loads lsp-frames.js into the sandbox itself.
-if (typeof importScripts === "function") importScripts("lsp-frames.js");
+// which loads lsp-frames.js into the sandbox itself. The sibling file must be
+// served next to this script: a consumer that copies lean.worker.js alone
+// (the game's asset stager did, for one pin) gets a worker whose load throws
+// before {type:"boot"} and every session hangs at boot (HARDENING #35 class).
+// Make that loud: a structured, non-recoverable error reaches the port (its
+// error handler marks the session dead and rejects the queued boot), then
+// the load error propagates as it would have anyway.
+if (typeof importScripts === "function") {
+  try {
+    importScripts("lsp-frames.js");
+  } catch (error) {
+    fail(undefined, new Error(`lean.worker.js needs lsp-frames.js served beside it: ${error && error.message ? error.message : error}`), "WORKER_DEP_MISSING", false);
+    throw error;
+  }
+}
 let lspMode = false;
 let lspFrames = null; // Qed64LspFrames.LspFrameDecoder, created by installStdoutTap
 
@@ -95,7 +108,11 @@ function installStdoutTap() {
       }
       // A line begun before LSP mode started still belongs to the line path.
       if (t.output && t.output.length > 0) orig.fsync(t);
-      if (val !== null && val !== 0) lspFrames.push(val);
+      // `null` is the glue's flush signal, never data; every other value is
+      // one stream byte — NUL included, unlike the glue's default sink, so
+      // Content-Length accounting stays byte-exact (Json.compress escapes
+      // control characters today; the invariant is kept explicit anyway).
+      if (val !== null) lspFrames.push(val);
     },
   };
 }
@@ -133,18 +150,27 @@ function residentViews() {
 // frame and the worker's LSP stream was corrupted (architecture review C11).
 const residentQueue = [];
 let residentPumping = false;
-/** Enqueue one whole frame; `done` fires after its LAST byte is in the ring
- * (the completion ack, spec W4). Throws (with `.bytes`) for a frame larger
- * than half the ring: such a frame could never be written without the
- * consumer draining mid-frame, and a parked pump blocks every later send. */
-function residentRingWrite(payload, done) {
+/** A frame larger than half the ring could never be written without the
+ * consumer draining mid-frame, and a parked pump blocks every later send:
+ * refuse it (with `.bytes`) before it is queued — and, for the opening
+ * sequence, before the runtime is touched (see residentInit). */
+function residentCheckFrame(payload) {
   if (payload.length > RESIDENT_RING_CAP / 2) {
     throw Object.assign(
       new Error(`frame of ${payload.length} bytes exceeds half the ${RESIDENT_RING_CAP}-byte stdin ring`),
       { bytes: payload.length },
     );
   }
-  residentQueue.push({ payload, done, off: 0 });
+  return payload;
+}
+/** Enqueue one whole frame; `done` fires after its LAST byte is in the ring
+ * (the completion ack, spec W4). `abort(error)` fires instead if the worker
+ * dies while the frame is queued or parked — the ack must FAIL then, not
+ * hang until the port terminates the worker. */
+function residentRingWrite(payload, done, abort) {
+  residentCheckFrame(payload);
+  if (died) throw new Error("resident FileWorker is dead; dispose and boot a new worker");
+  residentQueue.push({ payload, done, abort, off: 0 });
   if (!residentPumping) residentPump();
 }
 function residentPump() {
@@ -186,12 +212,26 @@ function residentFrame(json) {
 function residentInit(msg) {
   try {
     if (state !== "ready") throw new Error(`Worker is '${state}', not ready.`);
+    // One worker, one session (W2): after `died` the runtime's session is
+    // gone and the latch has fired, so a second session here could never
+    // report its own death — refuse rather than swallow it (the C10 class).
+    if (died) throw new Error("worker already died; dispose and boot a new worker");
+    if (residentMode) throw new Error("resident FileWorker already started in this process");
     if (typeof M._lean_browser64_configure_input_ring !== "function" ||
         typeof M._lean_wasm_shell_mark_preinitialized !== "function" ||
         typeof M.callMain !== "function") {
       throw new Error("runtime lacks the resident transport exports (patch 0031)");
     }
-    if (residentMode) throw new Error("resident FileWorker already started in this process");
+    // Build and size-check BOTH opening frames before the runtime is touched:
+    // a didOpen over cap/2 is refused with the worker exactly as it was, not
+    // after mark_preinitialized + ring + callMain have left a FileWorker
+    // running whose frames go nowhere and whose next init is "already started".
+    const initFrame = residentCheckFrame(residentFrame(JSON.stringify({
+      jsonrpc: "2.0", id: 0, method: "initialize", params: JSON.parse(msg.input.initParams || "{}"),
+    })));
+    const openFrame = residentCheckFrame(residentFrame(JSON.stringify({
+      jsonrpc: "2.0", method: "textDocument/didOpen", params: JSON.parse(msg.input.didOpen),
+    })));
     lspMode = true;
     // Boot already ran the full Lean initialization sequence; main must not
     // initialize (or ever finalize) again.
@@ -204,19 +244,19 @@ function residentInit(msg) {
     // reportDelayMs=0: the reporter's first act is IO.sleep(reportDelayMs) on
     // a task pthread (the pump path sets the same via wasmLspInit).
     M.callMain(["--worker", "-Dserver.reportDelayMs=0"]);
-    residentRingWrite(residentFrame(JSON.stringify({
-      jsonrpc: "2.0", id: 0, method: "initialize", params: JSON.parse(msg.input.initParams || "{}"),
-    })));
-    // Acked only once the whole opening sequence is in the ring (W4).
-    residentRingWrite(residentFrame(JSON.stringify({
-      jsonrpc: "2.0", method: "textDocument/didOpen", params: JSON.parse(msg.input.didOpen),
-    })), () => {
+    residentRingWrite(initFrame);
+    // Acked only once the whole opening sequence is in the ring (W4); a death
+    // meanwhile fails the init instead of leaving it pending.
+    residentRingWrite(openFrame, () => {
       event(null, "log", { stream: "stderr", text: "[resident] FileWorker started on the application pthread" });
       post({ type: "result", requestId: msg.requestId, result: { operation: "lsp-resident-init", tag: 0 } });
-    });
+    }, (error) => fail(msg.requestId, error, "LSP_RESIDENT_INIT_FAILED", false));
   } catch (error) {
     lspMode = false;
-    fail(msg.requestId, error, "LSP_RESIDENT_INIT_FAILED", false, error && error.bytes ? { bytes: error.bytes } : undefined);
+    // An oversized opening frame was refused before anything ran: the worker
+    // is intact, so the port may retry with a smaller document (recoverable).
+    const oversize = error && typeof error.bytes === "number";
+    fail(msg.requestId, error, "LSP_RESIDENT_INIT_FAILED", oversize, oversize ? { bytes: error.bytes } : undefined);
   }
 }
 
@@ -225,10 +265,11 @@ function residentSend(msg) {
     if (!residentMode) throw new Error("resident FileWorker not started");
     // The result is the completion ack: posted inside the FIFO's `done`, i.e.
     // after the frame's last byte is in the ring (spec W4; the old immediate
-    // ack let the port believe a parked frame had been delivered).
+    // ack let the port believe a parked frame had been delivered). If the
+    // worker dies first the ack fails (non-recoverable) instead of hanging.
     residentRingWrite(residentFrame(msg.input.message), () => {
       post({ type: "result", requestId: msg.requestId, result: { operation: "lsp-resident-send", tag: 0 } });
-    });
+    }, (error) => fail(msg.requestId, error, "LSP_RESIDENT_SEND_FAILED", false));
   } catch (error) {
     // An oversized frame is refused, not fatal: the session is intact and the
     // port can decide what to do with `bytes` — so it is recoverable.
@@ -332,12 +373,24 @@ function fail(requestId, error, code, recoverable, extra) {
 // whichever of onAbort (post-boot), onExit, or an unhandled rejection fires
 // first. It replaces `resident-exit`; pre-boot failures keep their error
 // replies (the boot's settled-once guard) and are not deaths of a session.
+// The payload carries `mode` because not every death is a crashed LSP
+// session: `reason:"exit"` with code 0 is `lean --worker` returning normally
+// (a watchdog restart request), and mode "batch" means no session existed —
+// the port must key on {mode, reason, code}, not on the event's presence.
 let died = false;
 function die(code, reason, message) {
   if (died) return;
   died = true;
+  const mode = residentMode ? "resident" : lspMode ? "pump" : "batch";
   residentMode = false;
-  event(null, "died", { code, reason, message });
+  // The consumer is gone: nothing queued for the ring will ever drain. Fail
+  // every pending ack now (the port's FailPending-on-Died covers requests it
+  // tracks; these are the ones only the worker knows about) and let a parked
+  // pump find an empty queue instead of re-arming its 2 ms timer forever.
+  const stranded = residentQueue.splice(0, residentQueue.length);
+  const cause = new Error(`resident FileWorker died (${reason}${code === null || code === undefined ? "" : ` ${code}`}): ${message}`);
+  for (const item of stranded) if (item.abort) item.abort(cause);
+  event(null, "died", { code, reason, message, mode });
 }
 
 // A rejection nobody awaits (e.g. an allocation failure inside Emscripten's
@@ -363,8 +416,11 @@ self.addEventListener("unhandledrejection", (e) => {
   } else {
     // Post-boot with nothing in flight: a fact the port must hear once (W2)
     // rather than a log line it cannot act on. No exit code exists here.
+    // Only a worker with an LSP session (pump or resident) can die of it — a
+    // batch worker's stray rejection (an OPFS tee, until W5 deletes it) is a
+    // log line, not a false death.
     event(null, "log", { stream: "stderr", text: `unhandled rejection: ${error.message}` });
-    if (state !== "idle" && state !== "booting") die(null, "unhandled", error.message);
+    if (lspMode && state !== "idle" && state !== "booting") die(null, "unhandled", error.message);
   }
 });
 
@@ -1558,9 +1614,22 @@ self.__qed64TestExports = {
       residentRingPtr = ctrlPtr;
       residentMode = true;
     },
+    // A fake Emscripten module with the three transport exports plus _malloc,
+    // and the `ready` state, so residentInit's preflight/refusal paths run
+    // against the real code without a runtime.
+    attachRuntime(fakeModule, memory) {
+      M = fakeModule;
+      bootMemory = memory;
+      state = "ready";
+      residentMode = false;
+      lspMode = false;
+    },
     residentRingWrite,
     residentSend,
+    residentInit,
     residentFrame,
+    die,
+    snapshot: () => ({ died, residentMode, lspMode, queued: residentQueue.length, pumping: residentPumping }),
   },
 };
 
