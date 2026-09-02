@@ -1,10 +1,13 @@
 # Resident FileWorker — the plan (PATCH-BACKLOG #4, promoted)
 
-Status: PHASE 1 IN PROGRESS (2026-09-02). This is the campaign that retires
+Status: PHASE 3 REACHED (2026-09-02 afternoon) — resident boots in the
+browser behind `?resident=1`, the full pyramid runs in both modes on one
+binary; phase-4 memory discipline and the kernel-side "MISS ⇒ header error"
+invariant are the open work (see the architecture re-evaluation report). This is the campaign that retires
 the reboot-per-header-change architecture. Written after the 2026-09-01/02
 crash investigation, whose measurements set the targets below.
 
-## Phase-1 spike results (2026-09-02) — transport PROVEN, one blocker open
+## Phase-1 spike results (2026-09-02) — transport PROVEN; all blockers resolved by the afternoon
 
 Patch 0031 (`pipeline/toolchain/patches/`, committed to work/lean4 and the
 kernel repo; EXPERIMENTAL, NOT promoted — served public/runtime still
@@ -60,25 +63,47 @@ and neither was the reporter:
   fatal). The lookup now treats empty imports as `Init`; a stderr trace
   reports HIT/MISS with the published keys.
 
-STILL OPEN (phase-1 completion, being verified by the current rebuild):
-1. **Act 2 with the guard bypass**: a header change must re-elaborate in
-   process and re-report diagnostics (the spike's act 2 asserts exactly
-   that; before the bypass it blocked at `IO.sleep 200`).
-2. **Prebuilt lookup HIT for `#[Init]` and for headerless files** — the new
-   stderr trace must show HIT; a MISS means the 629-module on-thread import
-   (~17 s) still runs and the phase-3 "covered switch < 1 s" criterion is
-   out of reach.
-3. **The 629-module import's true trigger** if it persists after a HIT:
-   candidates are `finalizeImport` via the `.ir`/server facets for `#eval`/
-   `def` compilation (it fired even for a theorem-only file, so likely not),
-   or an exact-key `getOrCreateWasmEnvFor` somewhere in the fork's worker
-   path. Perf-critical, not correctness-critical.
+RESOLVED (afternoon rebuild, patch 0031 final):
+1. **Act 2 in process** — a header change re-elaborates without exit (the
+   guard bypass holds); the browser switches headers with no reboot.
+2. **Prebuilt lookup HIT** — `[WASM LSP] prebuilt lookup HIT` for `#[Init]`
+   and umbrella-covered headers; IMPORT629 = 0.
+3. **The 629-module import's true trigger** was the publish landing in
+   `wasmLoadSnapshot` while the browser and the spike load through
+   `wasmLoadSnapshotMem`; publishing from both loaders cut the spike from
+   ~23 s to 6.0 s.
+
+Phase-3 findings (browser, 2026-09-02 afternoon):
+- Resident boot to `ready` in-browser; normal editing and diagnostics correct.
+- Two shim defects found by the e2e suite and a replay harness
+  (`work/repro-unresolvable.mjs`): per-keystroke header re-elaboration
+  crashed the tab (fixed: 2 s debounce, as the pump path); body edits
+  forwarded incrementally while header edits were held corrupted the
+  worker's document copy (fixed: `residentUnsynced` holds EVERY edit until
+  one full-text didChange goes out).
+- An unresolvable header (`Mathlib.Tactic.Bogus`) fails fast in the Node
+  spike (`isSetupFailure`) but STALLS the elaboration pthread in the browser
+  (WORKERFS lookup with the Mathlib pack mounted). Fixed client-side for now:
+  `unknownImports` refuses headers whose modules are not installed (umbrella
+  counts as installed once its snapshot is resident) and shows the pump
+  path's calm hold; the durable fix is kernel-side — a covering-lookup MISS
+  must raise a header error, never import on the elaboration thread.
+- Latency on COVERED headers is identical in both modes (~2.07 s, debounce-
+  dominated; ~70 ms of real work). The architectural win is confined to
+  uncovered/unresolvable headers and to the removal of the reboot machinery.
 
 Dev-testing an unpromoted runtime (how phase 3 runs the browser suite):
-`chunk-runtime.mjs --out work/runtime-<tag>` (NEVER the default `--out
-public/runtime`: it rewrites the tracked default `runtime-manifest.json`, which
-switches every dev boot onto the new binary against the served, unpaired
-snapshots — it did, mid-run), then install only its manifest as
+`chunk-runtime.mjs --out work/runtime-<tag>`. **NEVER `--out public/runtime`**:
+besides rewriting the tracked default `runtime-manifest.json`, it REPLACES
+`public/runtime/chunks/`, destroying the previous runtime's chunks. Those are
+gitignored, so `git checkout` restores the manifest but NOT the chunks — the
+default/served build then cannot boot locally at all (`lean.js chunk 0: 6373
+bytes, expected 16777216` — vite's SPA fallback for the missing file), and
+recovering it means rebuilding that exact binary or re-fetching the published
+artifacts. This happened mid-run and silently invalidated a whole e2e gate:
+every `freshPage()` after it failed to boot, which read as scenario failures
+and then as an uncaught crash. Deployed artifacts are unaffected (they are
+served from the upload, not this tree). Install only the manifest as
 `public/runtime/runtime-manifest.<buildId>.json` (gitignored; chunks are
 content-addressed under public/runtime/chunks). Snapshots: bake with
 `--out work/snapshot-staging`, expose via the `public/snapshots-0031 →
@@ -137,6 +162,16 @@ Run the REAL, unmodified `lean --worker` main loop on an application pthread
   those handled a failure mode that no longer exists as a routine event.
 
 ## Phases
+
+> **Superseded on 2026-09-02 by the architecture re-evaluation**
+> (`docs/ARCHITECTURE-REEVALUATION-2026-09-02.md`, phases 0–8): harness trust
+> and artifact discipline first (phases 0–1), then shipped-path shim safety
+> (full-text sync + session ids, phase 2), the phase enum and explicit faithful
+> action (3), two kernel rebuilds (build hygiene 4; single resolver with bounded
+> environments — a covering-lookup MISS refuses instead of importing — 5), the
+> resident cutover (6), retiring the pump transport (7), and regrouping the
+> kernel series (8). The phases below are the original plan, kept for the
+> reasoning trail; phases 1–3 here are done.
 
 1. **Transport spike (Docker, no product wiring)** — apply the transport
    patch onto the current 30-series (kernel repo `FawadHa1der/lean4`,

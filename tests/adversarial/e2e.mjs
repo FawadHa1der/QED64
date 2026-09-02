@@ -25,6 +25,10 @@ const corpus = fs.existsSync(corpusPath) ? JSON.parse(fs.readFileSync(corpusPath
 // import-completion, and the drills are skipped) — the isolation mode for
 // chasing one flaky scenario without cohort contamination.
 const only = arg("only", "");
+if (only && !corpus.some((it) => onlyMatches(it.name))) {
+  console.error(`--only ${JSON.stringify(only)} matches no corpus scenario — refusing (exit 3)`);
+  process.exit(3);
+}
 const results = [];
 let consoleLog = [];
 
@@ -200,7 +204,14 @@ if (!only) {
 // Heavy scenarios accumulate wasm/JS heap in the shared session; a fresh page
 // every few scenarios keeps deaths attributable to the SCENARIO, not the pile.
 const actionItems = corpus.filter((it) => Array.isArray(it.actions) && it.actions.length)
-  .filter((it) => !only || new RegExp(only).test(it.name));
+  .filter((it) => !only || onlyMatches(it.name));
+// --only matches a WHOLE scenario name (a plain name exactly; a pattern
+// anchored), never a substring: `--only import-composition` used to also run
+// unresolvable-import-composition, which made single-scenario verdicts lie.
+function onlyMatches(name) {
+  return /[\\^$.*+?()[\]{}|]/.test(only) ? new RegExp(`^(?:${only})$`).test(name) : name === only;
+}
+
 let sinceFresh = 0;
 // A Playwright evaluate on a dead/reloading page never resolves (no default
 // timeout), and one such hang has wedged entire runs — every scenario races
@@ -263,6 +274,14 @@ for (const item of actionItems) {
       `threw: ${String(e).slice(0, 140)} alive=${alive} pageCrashes=${pageCrashes}`);
     if (!alive) await freshPage();
   }
+}
+
+// A corpus scenario can leave the page dead (an OOM kill). The fixed
+// scenarios below used to call setBuffer on it and throw UNCAUGHT, aborting
+// the run and silently skipping everything after — recover first.
+if (!(await page.evaluate(() => !!globalThis.qed64).catch(() => false))) {
+  console.log("page is dead after the corpus loop — recovering with a fresh page");
+  await freshPage();
 }
 
 // ---------- scenario: import-path completion (live parity) -------------------

@@ -9,6 +9,8 @@
 // snapshots, replay didOpen with the current text". The Monaco client stays
 // attached to the same MessagePort and never notices.
 import type { LeanSession } from "../../src/runtime/client";
+import { fetchManifest, parseImports } from "../../src/install/profiles";
+import { UMBRELLA_MODULE } from "../../src/runtime/umbrella";
 import {
   ensureProfile,
   loadSnapshotByName,
@@ -181,6 +183,36 @@ export class WatchdogShim {
   private heldChange: JsonRpc | null = null;
   private changeFlush: number | undefined;
 
+  /** Resident mode: the worker's copy of the document is BEHIND the editor's.
+   * Set the moment a header keystroke lands (header edits are never forwarded
+   * incrementally); cleared only when a full-text didChange goes out. While
+   * set, NO edit is forwarded — an incremental body change would land at
+   * offsets computed against text the worker does not have. Measured before
+   * this hold: typing past a changed import corrupted the worker's document
+   * and re-elaborated garbage per keystroke until the tab died. */
+  private residentUnsynced = false;
+  /** Version of the last document text the worker actually received (didOpen
+   * or didChange). The editor can move past it while a session boots or
+   * restarts — the debounce branch returns without queueing — and every
+   * incremental change after that lands on a stale base (measured: silently
+   * lost body edits during boot). On every session entry, if this lags
+   * `doc.version` and the header is unchanged, one full-text didChange
+   * resyncs; a changed header is handled by the header go-around instead. */
+  private workerVersion = -1;
+  /** Resident mode: every module the resident session can serve WITHOUT an
+   * on-thread import — the core profile's modules plus the umbrella's closure
+   * (read from the essential MANIFEST, which is served even when the 993 MB
+   * pack is not installed: a fresh page loads the umbrella snapshot only, so
+   * `artifacts.installed` knows nothing about Mathlib names — measured: every
+   * specific Mathlib import was refused as "unknown"). Resolved once. */
+  private coveredModules: Promise<Set<string>> | null = null;
+
+  /** Resident mode: the worker reported the current header as unresolvable
+   * (`$/lean/ileanHeaderSetupInfo` with isSetupFailure). Sticky until the
+   * next header goes out, so the drain-to-idle shows the calm hold, not
+   * "ready". This is the worker's own verdict — no client-side re-resolution. */
+  private headerSetupFailed = false;
+
   /** Header (headerOf text) the session was deliberately rebooted to serve
    * with EXACT imports instead of the covering umbrella env. The covering
    * env serves any Mathlib-subset header in ~40 ms but makes ALL of
@@ -248,6 +280,7 @@ export class WatchdogShim {
   private attachSession(qs: Qed64Session) {
     this.detachSession?.();
     this.qs = qs;
+    if (this.mode.resident) void this.unknownImports(""); // warm the covered-module set
     const onMessage = (e: MessageEvent) => {
       const d = e.data as { type?: string; kind?: string; msg?: JsonRpc };
       if (d && d.type === "event" && d.kind === "resident-exit") {
@@ -321,6 +354,18 @@ export class WatchdogShim {
         return;
       }
     }
+    if (this.mode.resident && msg.method === "$/lean/ileanHeaderSetupInfo") {
+      const info = msg.params as { isSetupFailure?: boolean };
+      if (info?.isSetupFailure) {
+        // The worker tried the header and could not resolve it (a half-typed
+        // or unknown module). It drains its progress right after; the sticky
+        // flag turns that drain into the calm hold the pump path shows.
+        this.headerSetupFailed = true;
+        this.ui.idle("imports incomplete — finish the import line to continue");
+        this.publishHeaderFailure("these imports do not resolve yet — check or finish the module name");
+      }
+      return;
+    }
     if (msg.method === "$/lean/fileProgress") {
       this.lastProgressAt = performance.now();
       const processing = (msg.params as { processing?: unknown[] })?.processing ?? [];
@@ -347,7 +392,7 @@ export class WatchdogShim {
         if (this.doc && /\b(exact\?|apply\?|rw\?)/.test(this.doc.text) && performance.now() - this.busySince > 15000) {
           this.searchIndexWarm = true;
         }
-        this.ui.idle("ready");
+        this.ui.idle(this.headerSetupFailed ? "imports incomplete — finish the import line to continue" : "ready");
       }
     }
   }
@@ -467,6 +512,7 @@ export class WatchdogShim {
       // rpc gets -32900 so the InfoView reconnects immediately.
       this.failInFlight("the Lean checker switched documents");
       this.workerStarted = true;
+      this.workerVersion = bootVersion;
       // The worker now holds bootText; diverged only if the header moved on
       // while the switch ran (the go-around below then restarts for it).
       this.headerDiverged = headerOf(this.doc.text) !== headerOf(bootText);
@@ -485,6 +531,7 @@ export class WatchdogShim {
       // nothing but this line would ever clear it (a wedged-true flag keeps
       // failing completions on a healthy session).
       this.headerDiverged = headerOf(this.doc.text) !== headerOf(bootText);
+      await this.resyncIfBehind();
       if (this.headerDiverged) {
         this.restarting = false;
         this.deathPending = false; // superseded: the next round handles state
@@ -611,6 +658,7 @@ export class WatchdogShim {
       // are now orphans — fail them so the InfoView reconnects.
       this.failInFlight("the Lean checker switched documents");
       this.workerStarted = true;
+      this.workerVersion = bootVersion;
       this.headerDiverged = headerOf(this.doc.text) !== headerOf(bootText);
       this.ui.idle("ready");
       const queued = this.queue;
@@ -630,6 +678,7 @@ export class WatchdogShim {
       // built for bootText's imports — go around for the new header rather
       // than serving it mixed.
       this.headerDiverged = headerOf(this.doc.text) !== headerOf(bootText);
+      await this.resyncIfBehind();
       if (this.headerDiverged) {
         this.restarting = false;
         void this.restartForHeaderChange();
@@ -664,6 +713,46 @@ export class WatchdogShim {
 
   /** Show an import/boot failure as a diagnostic on the document's first
    * import line so the user can see and fix it in place. */
+  /** Imports the resident session cannot serve in process (see coveredModules).
+   * Alias imports are checked after the rewrite the worker sees; the umbrella
+   * module itself counts as covered once its snapshot is resident. */
+  private async unknownImports(text: string): Promise<string[]> {
+    if (!this.coveredModules) {
+      this.coveredModules = (async () => {
+        const known = new Set<string>();
+        for (const profile of this.artifacts.installed.values()) for (const m of profile.moduleNames) known.add(m);
+        const essential = this.artifacts.index.profiles.find((p) => p.id === "essential");
+        if (essential) {
+          try {
+            const manifest = await fetchManifest(essential.manifest);
+            for (const m of Object.keys(manifest.content.modules)) known.add(m);
+          } catch (e) {
+            console.warn("[qed64] essential manifest unavailable — resident gate falls back to installed profiles", e);
+          }
+        }
+        return known;
+      })();
+    }
+    const known = await this.coveredModules;
+    const umbrellaResident = this.qs.loadedSnapshots.has("mathlib");
+    return [...new Set(parseImports(rewriteAliasImports(text).text))]
+      .filter((m) => !known.has(m) && !(umbrellaResident && m === UMBRELLA_MODULE));
+  }
+
+  /** See workerVersion. Header-unchanged only; alias rewrite rides along. */
+  private async resyncIfBehind(): Promise<void> {
+    if (!this.doc || !this.workerStarted || this.headerDiverged) return;
+    if (this.doc.version === this.workerVersion) return;
+    await this.forward({
+      jsonrpc: "2.0",
+      method: "textDocument/didChange",
+      params: {
+        textDocument: { uri: this.doc.uri, version: this.doc.version },
+        contentChanges: [{ text: rewriteAliasImports(this.doc.text).text }],
+      },
+    });
+  }
+
   private publishHeaderFailure(message: string): void {
     if (!this.doc) return;
     const lines = this.doc.text.split("\n");
@@ -803,22 +892,52 @@ export class WatchdogShim {
       // neutralized by the runtime keepalive) — the shim detects header
       // edits itself and restarts proactively, replaying the new text. The
       // superseding didOpen makes forwarding this didChange unnecessary.
-      if (this.mode.resident && this.workerStarted && headerOf(this.doc.text) !== headerBefore) {
+      const residentHeaderChanged = headerOf(this.doc.text) !== headerBefore;
+      if (this.mode.resident && this.workerStarted && (residentHeaderChanged || this.residentUnsynced || this.headerSetupFailed)) {
         // Resident: the worker re-elaborates a changed header itself, in
         // process, against its resident environment cache. Umbrella aliases
         // still need rewriting for the text the WORKER sees, and incremental
         // ranges can't carry a rewrite — so the header edit goes over as one
         // full-document replacement (legal under incremental sync).
-        void this.flushHeldChange();
-        void this.forward({
-          jsonrpc: "2.0",
-          method: "textDocument/didChange",
-          params: {
-            textDocument: { uri: this.doc.uri, version: this.doc.version },
-            contentChanges: [{ text: rewriteAliasImports(this.doc.text).text }],
-          },
-        });
-        this.ui.busy("imports changed — re-elaborating");
+        //
+        // DEBOUNCE, exactly as the pump path does: a resident worker never
+        // unloads environments, so one re-elaboration per KEYSTROKE while an
+        // import line is typed imports a fresh closure per character and the
+        // page dies of accumulated environments (measured: import-char-by-
+        // char crashed the tab). One switch per settled header instead.
+        window.clearTimeout(this.restartDebounce);
+        this.headerDiverged = true;
+        this.residentUnsynced = true;
+        this.ui.busy("imports changed — updating…");
+        this.restartDebounce = window.setTimeout(async () => {
+          if (!this.doc || !this.workerStarted) return;
+          // GATE before the worker sees it: an import that is not installed
+          // cannot be resolved in process, and the elaboration pthread stalls
+          // on the filesystem lookup (WORKERFS from a pthread — patch 0021's
+          // finding; reproduced: the pill never drained). The pump path's
+          // probe protocol gives this exact calm hold; the worker's document
+          // stays at the last good header, so edits keep being held.
+          const unknown = await this.unknownImports(this.doc.text);
+          if (!this.doc || !this.workerStarted || !this.residentUnsynced) return; // superseded while awaiting
+          if (unknown.length > 0) {
+            this.headerSetupFailed = true;
+            this.ui.idle("imports incomplete — finish the import line to continue");
+            this.publishHeaderFailure(`unknown module${unknown.length > 1 ? "s" : ""}: ${unknown.join(", ")}`);
+            return;
+          }
+          this.residentUnsynced = false;
+          this.headerSetupFailed = false;
+          void this.forward({
+            jsonrpc: "2.0",
+            method: "textDocument/didChange",
+            params: {
+              textDocument: { uri: this.doc.uri, version: this.doc.version },
+              contentChanges: [{ text: rewriteAliasImports(this.doc.text).text }],
+            },
+          });
+          this.headerDiverged = false;
+          this.ui.busy("imports changed — re-elaborating");
+        }, 2000);
         return;
       }
       if ((headerOf(this.doc.text) !== headerBefore || !this.workerStarted) && !this.restarting) {
@@ -872,6 +991,7 @@ export class WatchdogShim {
         this.headerDiverged = false; // recomputed below once the replay lands
         this.ui.idle("ready");
         const openVersion = (openParams as unknown as { textDocument: { version?: number } }).textDocument.version ?? 0;
+        this.workerVersion = openVersion;
         const queued = this.queue;
         this.queue = [];
         for (const q of queued) {
@@ -890,6 +1010,7 @@ export class WatchdogShim {
         // failing every completion on an otherwise healthy session.
         this.headerDiverged = this.doc !== null
           && headerOf(this.doc.text) !== headerOf(openParams.textDocument.text);
+        await this.resyncIfBehind();
         if (this.headerDiverged) void this.restartForHeaderChange();
       } catch (err) {
         if ((err as Error).message !== "__qed64_remount__") {
@@ -967,6 +1088,10 @@ export class WatchdogShim {
   }
 
   private async forward(msg: JsonRpc): Promise<void> {
+    if (msg.method === "textDocument/didChange") {
+      const v = (msg.params as { textDocument?: { version?: number } })?.textDocument?.version;
+      if (typeof v === "number") this.workerVersion = v;
+    }
     // A response frame is occasionally lost in the worker's output stream
     // (a half-written frame is unrecoverable — the resync guard drops it).
     // A promise the client never settles wedges the whole InfoView, so

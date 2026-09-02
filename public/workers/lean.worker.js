@@ -154,25 +154,37 @@ function residentViews() {
 /** Non-blocking ring write. This outer worker IS the Emscripten main thread
  * (it services proxied stdout/FS from Lean's pthreads), so it must never
  * Atomics.wait; a full ring is polled instead. Frames are small. */
+// FIFO: frames are written whole and in order. A frame that meets a full ring
+// parks the pump (setTimeout) and NOTHING else may write meanwhile — without
+// the queue, the next send's bytes landed between two halves of the parked
+// frame and the worker's LSP stream was corrupted (architecture review C11).
+const residentQueue = [];
+let residentPumping = false;
 function residentRingWrite(payload, done) {
-  let off = 0;
-  const pump = () => {
-    const { ctrl, bytes } = residentViews();
-    while (off < payload.length) {
+  residentQueue.push({ payload, done, off: 0 });
+  if (!residentPumping) residentPump();
+}
+function residentPump() {
+  residentPumping = true;
+  const { ctrl, bytes } = residentViews();
+  while (residentQueue.length > 0) {
+    const item = residentQueue[0];
+    while (item.off < item.payload.length) {
       const read = Atomics.load(ctrl, RESIDENT_IDX.READ);
       const write = Atomics.load(ctrl, RESIDENT_IDX.WRITE);
       const free = (read - write - 1 + RESIDENT_RING_CAP) % RESIDENT_RING_CAP;
-      if (free === 0) { setTimeout(pump, 2); return; }
-      const n = Math.min(free, RESIDENT_RING_CAP - write, payload.length - off);
-      bytes.set(payload.subarray(off, off + n), write);
-      off += n;
+      if (free === 0) { setTimeout(residentPump, 2); return; } // stay pumping; resume this item
+      const n = Math.min(free, RESIDENT_RING_CAP - write, item.payload.length - item.off);
+      bytes.set(item.payload.subarray(item.off, item.off + n), write);
+      item.off += n;
       Atomics.store(ctrl, RESIDENT_IDX.WRITE, (write + n) % RESIDENT_RING_CAP);
       Atomics.add(ctrl, RESIDENT_IDX.WAKE, 1);
       Atomics.notify(ctrl, RESIDENT_IDX.WAKE);
     }
-    if (done) done();
-  };
-  pump();
+    residentQueue.shift();
+    if (item.done) item.done();
+  }
+  residentPumping = false;
 }
 
 function residentFrame(json) {
