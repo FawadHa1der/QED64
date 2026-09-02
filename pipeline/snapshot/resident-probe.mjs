@@ -68,6 +68,17 @@ setTimeout(() => finish(false, "budget exceeded"), budgetMs).unref?.();
 const dec = new TextDecoder();
 const enc = new TextEncoder();
 let lspBuf = new Uint8Array(0);
+function indexOfHeader(buf) {
+  for (let i = 0; i + 15 <= buf.length; i++) {
+    if ((buf[i] | 32) !== 0x63) continue;
+    if ((buf[i+1]|32)===0x6f && (buf[i+2]|32)===0x6e && (buf[i+3]|32)===0x74 && (buf[i+4]|32)===0x65 &&
+        (buf[i+5]|32)===0x6e && (buf[i+6]|32)===0x74 && buf[i+7]===0x2d && (buf[i+8]|32)===0x6c &&
+        (buf[i+9]|32)===0x65 && (buf[i+10]|32)===0x6e && (buf[i+11]|32)===0x67 && (buf[i+12]|32)===0x74 &&
+        (buf[i+13]|32)===0x68 && buf[i+14]===0x3a) return i;
+  }
+  return -1;
+}
+
 function onStdout(text) {
   if (process.env.RAW_TAP) log(`RAW print: ${JSON.stringify(String(text).slice(0, 90))}`);
   const bytes = enc.encode(`${text}\n`);
@@ -75,26 +86,25 @@ function onStdout(text) {
   joined.set(lspBuf, 0); joined.set(bytes, lspBuf.length);
   lspBuf = joined;
   for (;;) {
-    // Interleaved stdout LOG lines (e.g. the fork's "[DEBUG:PROGRESS] …" during
-    // a header import on the elaboration thread) can precede the next frame
-    // header. Find the header ANYWHERE in the buffer; bytes before it are
-    // logs, not framing — surface them and drop them.
-    const whole = dec.decode(lspBuf);
-    const m = /Content-Length: (\d+)/i.exec(whole);
-    if (!m) {
-      // No header yet: shed complete log lines so the buffer can't grow unbounded.
-      const lastNl = whole.lastIndexOf("\n");
+    // Byte-level header search: decoding the whole buffer each iteration is
+    // O(n^2) under heavy output (it ballooned the page heap in the browser).
+    const hdrAt = indexOfHeader(lspBuf);
+    if (hdrAt < 0) {
+      const lastNl = lspBuf.lastIndexOf(0x0a);
       if (lastNl > 0) {
-        for (const line of whole.slice(0, lastNl).split("\n")) if (line.trim()) log(`stdout-log: ${line.slice(0, 120)}`);
-        lspBuf = lspBuf.slice(enc.encode(whole.slice(0, lastNl + 1)).length);
+        for (const line of dec.decode(lspBuf.subarray(0, lastNl)).split("\n")) if (line.trim()) log(`stdout-log: ${line.slice(0, 120)}`);
+        lspBuf = lspBuf.slice(lastNl + 1);
       }
       return;
     }
-    if (m.index > 0) {
-      for (const line of whole.slice(0, m.index).split("\n")) if (line.trim()) log(`stdout-log: ${line.slice(0, 120)}`);
+    if (hdrAt > 0) {
+      for (const line of dec.decode(lspBuf.subarray(0, hdrAt)).split("\n")) if (line.trim()) log(`stdout-log: ${line.slice(0, 120)}`);
     }
+    const headSlice = dec.decode(lspBuf.subarray(hdrAt, Math.min(hdrAt + 128, lspBuf.length)));
+    const m = /Content-Length: (\d+)/i.exec(headSlice);
+    if (!m) return;
     const len = Number(m[1]);
-    let at = enc.encode(whole.slice(0, m.index)).length + m[0].length;
+    let at = hdrAt + m[0].length;
     while (at < lspBuf.length && (lspBuf[at] === 0x0d || lspBuf[at] === 0x0a)) at += 1;
     if (lspBuf.length < at + len) return;
     const body = dec.decode(lspBuf.subarray(at, at + len));
@@ -318,7 +328,7 @@ globalThis.Module = {
     // NO 'initialized' here: initAndRunWorker reads initialize then didOpen
     // DIRECTLY — anything between them corrupts the opening sequence.
     send({ jsonrpc: "2.0", method: "textDocument/didOpen", params: {
-      textDocument: { uri: "file:///workspace/Probe.lean", languageId: "lean4", version: 1, text: PROBE } } });
+      textDocument: { uri: "file:///workspace/Probe.lean", languageId: "lean4", version: 1, text: (process.env.PROBE_HEADER ? process.env.PROBE_HEADER + "\n" : "") + PROBE } } });
     // Discriminator experiment (phase-1 blocker): after the reporter goes
     // quiet, send requests that DON'T depend on the reporter. rpc/connect
     // answers immediately through the stdout writer; hover needs a body

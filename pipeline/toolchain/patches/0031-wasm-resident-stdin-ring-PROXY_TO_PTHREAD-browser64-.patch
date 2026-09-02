@@ -1,4 +1,4 @@
-From df3644fa9247366e3bc2c600c03d5f04386c5c28 Mon Sep 17 00:00:00 2001
+From 6df3af4f82bb9c00ea2d5b0ef79427af66ecbf8c Mon Sep 17 00:00:00 2001
 From: QED64 Toolchain <qed64-toolchain@localhost>
 Date: Tue, 1 Sep 2026 16:55:04 -0400
 Subject: [PATCH] wasm: resident stdin ring + PROXY_TO_PTHREAD (browser64
@@ -32,11 +32,11 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
  src/Lean/Environment.lean       |   4 +-
  src/Lean/Language/Lean.lean     |  37 ++++++++-
  src/Lean/Server/FileWorker.lean |   9 ++-
- src/Lean/Shell.lean             |   4 +
+ src/Lean/Shell.lean             |  10 +++
  src/emscripten-exports.txt      |  13 +---
  src/runtime/io.cpp              | 128 +++++++++++++++++++++++++++++++-
  src/util/shell.cpp              |  35 ++++++++-
- 8 files changed, 212 insertions(+), 20 deletions(-)
+ 8 files changed, 218 insertions(+), 20 deletions(-)
 
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
 index 9099515..97d7702 100644
@@ -146,7 +146,7 @@ index 08f2ce2..d2916a9 100644
      -- same process and instead ask the watchdog to restart the worker
      IO.sleep 200  -- give user time to make further edits before restart
 diff --git a/src/Lean/Shell.lean b/src/Lean/Shell.lean
-index fb1cb21..32fe20b 100644
+index fb1cb21..b23d5fa 100644
 --- a/src/Lean/Shell.lean
 +++ b/src/Lean/Shell.lean
 @@ -239,6 +239,10 @@ def wasmLoadSnapshot (path : String) : IO UInt32 := do
@@ -160,6 +160,19 @@ index fb1cb21..32fe20b 100644
      IO.eprintln s!"[WASM DEBUG] wasmLoadSnapshot: cached env for {key}"
      return 0
    catch e =>
+@@ -295,6 +299,12 @@ def wasmLoadSnapshotMem (ptr size flags : USize) : IO UInt32 := do
+     unsafe enableInitializersExecution
+     let key := env.header.imports.map (·.module)
+     wasmEnvCache.modify (·.push (key, env))
++    -- The RESIDENT FileWorker (patch 0031) reads `prebuiltHeaderEnvs` when it
++    -- processes a header; without this publish the list is empty, the covering
++    -- override is never found, and the header imports its whole closure on the
++    -- elaboration thread (629 Init modules ≈ 17 s per switch). The non-mem
++    -- loader already published; the browser and the spike both use THIS path.
++    Language.Lean.setPrebuiltHeaderEnvs (← wasmEnvCache.get)
+     let t4 ← IO.monoMsNow
+     IO.eprintln s!"[WASM PROFILE] snapshot load stages: region read+materialize {t1-t0} ms · setMainModule {t2-t1} ms · init replay ({replayModIdxs.size} modules) {t3-t2} ms · cache {t4-t3} ms"
+     IO.eprintln s!"[WASM DEBUG] wasmLoadSnapshotMem: cached env for {key}"
 diff --git a/src/emscripten-exports.txt b/src/emscripten-exports.txt
 index ed2aec9..b96a961 100644
 --- a/src/emscripten-exports.txt

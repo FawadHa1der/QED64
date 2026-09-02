@@ -227,7 +227,10 @@ never unloaded and the cache serves switches, so a header change re-runs
 setup in process (this is how the resident worker switches headers with NO
 exit and no reboot); (c) `finalizeImport`'s `[DEBUG:PROGRESS]` lines move
 from stdout to stderr (they interleaved with LSP frames); (d) every snapshot
-load publishes its env to the prebuilt list, not only `wasmLspInit`.
+load publishes its env to the prebuilt list, not only `wasmLspInit` — from
+BOTH loaders (`wasmLoadSnapshot` and the `wasmLoadSnapshotMem` path the
+browser and the spike actually use; the first pass published from one loader
+only and the covering lookup was silently never consulted).
 Exports: +2 (ring configure, preinit marker); −11 stale specializations
 renumbered by the stdout→stderr change (found with a whole-identifier scan of
 `stage1/lib/temp/**/*.c` — never a `(`-suffixed one, which mistakes every
