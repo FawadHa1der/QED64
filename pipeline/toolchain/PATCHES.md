@@ -246,3 +246,35 @@ pairing. Do not promote until the plan's phase-3 exit criteria are met. The
 patch is additive — it does not change the pump/library path the product uses
 (verified: the compiler battery is 49/49 on the 0031 pairing, byte-identical
 diagnostics), so carrying it in the series is safe even while unpromoted.
+
+## 0032 — resident header resolver, one environment registry, generated exports — EXPERIMENTAL, UNPROMOTED
+K1 `FileWorker.setupImports` is the ONLY header resolver on wasm: exact key,
+else the smallest registered environment whose import closure covers the
+header (umbrella aliases count), else REFUSED with one header diagnostic and
+zero allocation. `setupFile` (a proxied stat per header) and
+`Elab.processHeaderCore` (an on-thread olean import that stalls under WORKERFS)
+are unreachable from a worker on this platform; `processHeader` collapses to
+`match setup.prebuiltEnv? with | some env => … | none => processHeaderCore …`.
+K2 `$/qed64/headerStatus {version, mode: exact|covered|refused, key,
+moduleCount, missing, ms}` is sent from the same site, versioned and serialized
+with the document's other notifications. K1b one registry: `Language.Lean`
+reads Shell's `wasmEnvCache` through a registered source
+(`registerPrebuiltEnvSource`, registered by a `builtin_initialize` in Shell);
+`setPrebuiltHeaderEnvs` and its three publish sites are gone. One key
+function (`qed64HeaderKey`: `Init` first, de-duplicated, empty ≡ `#[Init]`) at
+every cache push, the compile path and the resolver — a warm-compiled header
+and the FileWorker's header are the same key, and the init bake's
+`#[Init, Init]` matches a headerless file (the pump path's empty-document wedge
+was exactly that mismatch). K4 `src/emscripten-exports.txt` leaves the tree:
+`pipeline/toolchain/gen-exports.py` writes it at build time as
+seed ∪ (wanted ∩ defined) — `emscripten-exports.seed.txt` (785 runtime/glue
+names) plus whatever of the committed `emscripten-exports.wanted.txt` the
+compiled C still defines; a renamed specialization drops out instead of
+failing the link (four incidents). Exporting every `LEAN_EXPORT` definition was
+measured (+18 MB wasm, glue 48 → 102 MB) and rejected.
+Validated on runtime `wasm64-5dcdda005a7c5ae0`: `import Mathlib.Bogus` →
+refused, `missing=[Mathlib.Bogus]`, 0 ms; headerless → exact hit (629 modules)
+0 ms; act 1 PASS. Build notes: the stdlib builds with warnings-as-errors, so
+every public def/field needs a doc string; a modifier-misuse refusal
+(`meta`/`import all` outside `module`) was tried and removed — `toModuleHeader`
+flags legacy files' imports, so it refused every header.
