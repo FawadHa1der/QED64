@@ -119,7 +119,11 @@ async function waitTerminal(ms, minMs = 0) {
   for (;;) {
     const s = await pill();
     const ph = await phaseNow();
-    const terminal = ph !== null ? settleClassFromPhase(ph) : settleClass(s);
+    // Either source may carry the terminal fact: the pump shim's status() getter
+    // can report a non-terminal phase while its pill already shows the calm hold
+    // (measured: unresolvable-import-composition, cursor-thrash-during-elab timed
+    // out at 120 s with the right pill). Prefer the phase, fall back to the pill.
+    const terminal = (ph !== null ? settleClassFromPhase(ph) : null) ?? settleClass(s);
     if (Date.now() - t0 >= minMs && terminal) return { ok: true, ms: Date.now() - t0, s, terminal };
     if (Date.now() - t0 > ms) return { ok: false, ms: Date.now() - t0, s, terminal: null };
     await page.waitForTimeout(100);
