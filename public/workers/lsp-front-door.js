@@ -175,6 +175,17 @@
       r.replies.push({ jsonrpc: "2.0", id: msg.id, result: null });
       return;
     }
+    if (isRequest && msg.method === "textDocument/completion" && s.header && s.header.mode === "refused") {
+      // K3 (in-memory import completion) is not built yet: a completion request
+      // on a document whose header was REFUSED has no environment to answer
+      // from and the FileWorker holds it; Monaco's suggest widget waits for
+      // every provider, so the client-side import-path provider's items never
+      // show (measured: import-completion, widget=false). Fail fast, as the
+      // pump shim does while a header is in flight (-32801).
+      s.dropped += 1;
+      r.replies.push({ jsonrpc: "2.0", id: msg.id, error: { code: -32801, message: "QED64: the header is unresolved; completion is unavailable until it resolves" } });
+      return;
+    }
     if (s.phase === "dead") {
       s.dropped += 1;
       return;
@@ -259,8 +270,10 @@
     // AND the last header verdict for this setup is not a refusal (§2.2(e);
     // §6 first pass 12). A body keystroke takes Lean's `unchanged` path and
     // emits no headerStatus, so the verdict is per header setup, not per version.
-    if (s.progress.version === s.lastVersion && s.progress.processing === 0) {
-      return s.header && s.header.mode === "refused" ? "headerRefused" : "ready";
+    if (s.progress.version === s.lastVersion && (s.progress.processing === 0 || s.progress.fatal)) {
+      // A fatal-error progress entry means the header failed (a refusal, or an
+      // import error) — the document is settled, not elaborating.
+      return (s.header && s.header.mode === "refused") || s.progress.fatal ? "headerRefused" : "ready";
     }
     return "elaborating";
   }
@@ -290,7 +303,14 @@
         const msg = shiftVersions(frame.msg, -s.base);
         const p = msg.params;
         if (msg.method === "$/lean/fileProgress" && raw && raw.textDocument && typeof raw.textDocument.version === "number") {
-          s.progress = { version: raw.textDocument.version, processing: Array.isArray(raw.processing) ? raw.processing.length : 0 };
+          // FileProgressKind: 1 = processing, 2 = fatalError. After a refused header the
+        // FileWorker reports ONE kind-2 entry for the whole file and never clears it,
+        // so a drain that counts entries never comes and the phase would sit at
+        // "elaborating" forever (measured: unresolvable-import-composition, and a
+        // fresh page booting with a persisted bogus header). Fatal entries are
+        // terminal, not work in flight.
+        const entries = Array.isArray(raw.processing) ? raw.processing : [];
+        s.progress = { version: raw.textDocument.version, processing: entries.filter((e) => !e || e.kind !== 2).length, fatal: entries.some((e) => e && e.kind === 2) };
         } else if (msg.method === "$/qed64/headerStatus" && p) {
           s.header = p;
         }

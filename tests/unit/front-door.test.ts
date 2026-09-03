@@ -398,3 +398,33 @@ describe("front door: worker host wiring (lean.worker.js)", () => {
     expect(Atomics.load(new Int32Array(memory.buffer, 0, 4), 1)).toBe(written);
   });
 });
+
+describe("front door: refused headers are terminal (pyramid 2026-09-03 fixes)", () => {
+  const open = (): Frame[] => [
+    { kind: "booted" },
+    { kind: "client", msg: initialize(1) },
+    { kind: "client", msg: didOpen(1, "import Mathlib.Bogus\n") },
+  ];
+  const fatalProgress = (version: number): Msg => ({ jsonrpc: "2.0", method: "$/lean/fileProgress", params: { textDocument: { uri: URI, version }, processing: [{ range: {}, kind: 2 }] } });
+
+  it("a kind-2 (fatalError) progress entry settles the document as headerRefused instead of elaborating forever", () => {
+    const r = run([
+      ...open(),
+      { kind: "server", msg: headerStatus(1, "refused") },
+      { kind: "server", msg: fileProgress(1, 1) },
+      { kind: "server", msg: fatalProgress(1) },
+    ]);
+    expect(r.status.phase).toBe("headerRefused");
+  });
+
+  it("a completion request while the header is refused is failed fast with -32801 and never reaches the ring", () => {
+    const prelude = run([...open(), { kind: "server", msg: headerStatus(1, "refused") }, { kind: "server", msg: fatalProgress(1) }]);
+    const before = prelude.ring.length;
+    const r = run([{ kind: "client", msg: request(9, "textDocument/completion") }], prelude.state);
+    expect(r.ring).toHaveLength(0);
+    expect(r.replies).toHaveLength(1);
+    expect(r.replies[0]!.id).toBe(9);
+    expect((r.replies[0] as { error?: { code: number } }).error?.code).toBe(-32801);
+    expect(before).toBeGreaterThan(0); // the prelude did write the opening frames
+  });
+});
