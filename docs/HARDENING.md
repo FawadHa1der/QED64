@@ -210,3 +210,5 @@ regression-pinned where testable. They will save the next person days.
 
 40. **A session loss kills background work and its watchers silently.** When the Claude Code process exits, `vite`, a running pyramid and every Monitor die with it; the next session finds partial report files whose rows have no `outcome`. Treat any report without `PYRAMID…-DONE` as void and rerun; keep the state needed to resume (branch, commit, buildId, staging dir) in memory, not in the conversation.
 
+41. **Never pipe a stage that starts a background server through `tee | grep`.** `bash resident-gate.sh | tee log | grep …` hung for five hours after the gate printed `GATE-DONE`: the gate's `nohup npx vite … &` child kept the pipe's write end open, `tee` never saw EOF, `grep` never exited, and the wrapper never reached the next lane — while every test process was gone and a watcher reported nothing wrong. Write each stage to a file (`> stage.log 2>&1 < /dev/null`) and grep the file afterwards; a wrapper's liveness check must look for the *test* processes, not for the wrapper itself.
+
