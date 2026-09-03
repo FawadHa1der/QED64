@@ -277,6 +277,43 @@ export class WatchdogShim {
     this.attachSession(qs);
   }
 
+  /** Day-1 status tap (docs/ARCHITECTURE-REEVALUATION-2-2026-09-02.md §2.2
+   * L4, §7 day 1, bug class C7): the shim's flags rendered as the SAME enum
+   * the resident relay reports, so the harness reads `qed64.status().phase`
+   * on both transports instead of regexing pill labels. Read-only and
+   * additive — the shipped pump behaviour is untouched; the whole file goes
+   * at S6. `header`/`ring`/`pool` are worker facts the pump has no source
+   * for, so they are null here rather than invented. */
+  status(): {
+    phase: "booting" | "starting" | "elaborating" | "ready" | "headerRefused" | "dead" | "halted";
+    version: number | null;
+    header: null;
+    ring: null;
+    pool: null;
+    dropped: number;
+    transport: "pump";
+    stats: { recentDeaths: number; pendingRequests: number; queued: number };
+  } {
+    const sessionState = (this.qs.session as unknown as { state?: string }).state;
+    const phase = this.crashLoopHalted ? "halted"
+      : sessionState === "dead" ? "dead"
+      : this.starting || this.restarting ? "booting"
+      : this.headerSetupFailed ? "headerRefused"
+      : !this.workerStarted ? "starting"
+      : this.processingCount > 0 || this.headerDiverged || this.residentUnsynced || this.heldChange !== null ? "elaborating"
+      : "ready";
+    return {
+      phase,
+      version: this.doc?.version ?? null,
+      header: null,
+      ring: null,
+      pool: null,
+      dropped: 0,
+      transport: "pump",
+      stats: { recentDeaths: this.deathTimes.length, pendingRequests: this.pendingResponses.size, queued: this.queue.length },
+    };
+  }
+
   private attachSession(qs: Qed64Session) {
     this.detachSession?.();
     this.qs = qs;
