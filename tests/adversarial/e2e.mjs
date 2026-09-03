@@ -20,7 +20,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { chromium } from "playwright";
-import { arg, fetchJson, onlyMatches as onlyMatchesName, resolveTarget, root, runDir, settleClass, teeLog } from "./harness.mjs";
+import { arg, fetchJson, onlyMatches as onlyMatchesName, resolveTarget, root, runDir, settleClass, settleClassFromPhase, teeLog } from "./harness.mjs";
 
 const url = arg("url", "http://localhost:5187/");
 const corpusPath = arg("corpus", path.join(root, "tests/adversarial/corpus.json"));
@@ -87,9 +87,9 @@ async function freshPage() {
   wirePage(page);
   const t0 = Date.now();
   await page.goto(url, { waitUntil: "domcontentloaded" });
-  const interactive = await waitPill(/^ready/, bootBudgetMs, 1000);
+  const interactive = await (async () => { const t0 = Date.now(); for (;;) { const s = await pill(); const ph = await phaseNow(); if (Date.now() - t0 >= 1000 && (/^ready/.test(s) || ph === "ready" || ph === "headerRefused")) return { ok: true, ms: Date.now() - t0, s }; if (Date.now() - t0 > bootBudgetMs) return { ok: false, ms: Date.now() - t0, s }; await page.waitForTimeout(250); } })();
   if (!interactive.ok) throw new InfraError(`fresh page did not boot within ${bootBudgetMs} ms (pill '${interactive.s.slice(0, 40)}', pageCrashes=${pageCrashes})`);
-  const settled = await waitPill(/^ready$/, bootBudgetMs, 0);
+  const settled = await waitTerminal(bootBudgetMs, 0);
   if (!settled.ok) console.log(`fresh page: interactive at ${interactive.ms} ms but not settled after ${bootBudgetMs} ms more (pill '${settled.s.slice(0, 40)}') — continuing`);
   return Date.now() - t0;
 }
@@ -108,6 +108,23 @@ const ivText = () => Promise.race([
   }).catch(() => ""),
   new Promise((res) => setTimeout(() => res(""), 10000)),
 ]);
+/** The page's status phase, or null when the page does not expose status(). */
+async function phaseNow() {
+  return page.evaluate(() => { try { return globalThis.qed64?.status?.()?.phase ?? null; } catch { return null; } }).catch(() => null);
+}
+/** Wait for a TERMINAL state: the phase enum when exposed (ready / headerRefused
+ * / halted), else the pill labels. Returns {ok, ms, s, terminal}. */
+async function waitTerminal(ms, minMs = 0) {
+  const t0 = Date.now();
+  for (;;) {
+    const s = await pill();
+    const ph = await phaseNow();
+    const terminal = ph !== null ? settleClassFromPhase(ph) : settleClass(s);
+    if (Date.now() - t0 >= minMs && terminal) return { ok: true, ms: Date.now() - t0, s, terminal };
+    if (Date.now() - t0 > ms) return { ok: false, ms: Date.now() - t0, s, terminal: null };
+    await page.waitForTimeout(100);
+  }
+}
 async function waitPill(re, timeoutMs, minMs = 0) {
   const t0 = Date.now();
   let deadPolls = 0;
@@ -278,7 +295,7 @@ if (runs("import-composition")) {
   await setBuffer("");
   await page.waitForTimeout(5000);
   await page.evaluate(() => globalThis.qed64.editor.getModel().applyEdits([{ range: { startLineNumber: 1, startColumn: 1, endLineNumber: 1, endColumn: 1 }, text: "import Mathlib.Da" }]));
-  const incomplete = await waitPill(/imports incomplete/, 30000);
+  const incomplete = await (async () => { const t0 = Date.now(); for (;;) { const ph = await phaseNow(); const s = await pill(); if (ph === "headerRefused" || /imports incomplete/.test(s)) return { ok: true, ms: Date.now() - t0, s }; if (Date.now() - t0 > 30000) return { ok: false, ms: Date.now() - t0, s }; await page.waitForTimeout(100); } })();
   const noChurn = !consoleLog.some((l) => /Starting the Emscripten runtime/.test(l));
   await page.evaluate(() => { const m = globalThis.qed64.editor.getModel(); const c = m.getLineMaxColumn(1);
     m.applyEdits([{ range: { startLineNumber: 1, startColumn: c, endLineNumber: 1, endColumn: c }, text: "ta.Real.Basic\n\nexample (a b : ℝ) : a + b = b + a := add_comm a b\n" }]); });
@@ -332,7 +349,7 @@ for (const item of actionItems) {
       }
     }
     // settle: alive AND in a terminal state (ready / actionable import note / breaker)
-    const settle = await waitPill(SETTLE_RE, item.expect.settleMs ?? 120000, 2000);
+    const settle = await waitTerminal(item.expect.settleMs ?? 120000, 2000);
     const alive = settle.dead ? false : await aliveProbe();
     const panics = panicsInConsole();
     // zeroErrors: the InfoView's All Messages badge must reach zero errors
@@ -360,7 +377,7 @@ for (const item of actionItems) {
     const statsBad = delta && item.expect.stats
       ? Object.entries(item.expect.stats).filter(([k, max]) => typeof delta[k] === "number" && delta[k] > max).map(([k, max]) => `${k}=${delta[k]}>${max}`)
       : [];
-    const terminal = settleClass(settle.s);
+    const terminal = settle.terminal ?? settleClass(settle.s);
     const wantTerminal = item.expect.terminal ?? (item.expect.mustSucceed ? "ready" : null);
     const pass = alive && settle.ok && (item.expect.panicFree ? panics === 0 : true)
       && (wantTerminal ? terminal === wantTerminal : true)

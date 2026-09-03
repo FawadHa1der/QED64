@@ -61,9 +61,28 @@ try {
     // (15 s ceiling, cannot see a covered switch) — recorded so a shim that
     // stops exposing the clock degrades VISIBLY in the report.
     R.progressClockSource = mark !== null ? "shim.lastProgressAt" : "busy-label";
-    R.switchBusySeenMs = mark !== null ? await waitFirstProgressAfter(mark, 15000) : await waitPill(/imports|checking|elaborating|re-elaborating/, 15000);
-    const ready = await waitPill(/^ready$/, 180000, 500);
-    R.headerSwitchMs = ready >= 0 ? Date.now() - t0 : -1;
+    // Header switch = edit → the worker's NEXT header verdict for this document
+    // has landed AND the phase is ready. Reads the status tap (front door / shim
+    // status()); a page without one falls back to the pill (pump era, 500 ms floor).
+    const status = () => page.evaluate(() => { try { return globalThis.qed64?.status?.() ?? null; } catch { return null; } }).catch(() => null);
+    const st0 = await status();
+    if (st0 && st0.header !== undefined) {
+      const hv0 = st0.header ? st0.header.version : null;
+      let firstMove = -1, done = -1;
+      for (let i = 0; i < 3600; i++) {
+        const st = await status();
+        if (st) {
+          if (firstMove < 0 && (st.phase !== "ready" || (st.header && st.header.version !== hv0))) firstMove = Date.now() - t0;
+          if (st.header && st.header.version !== hv0 && st.phase === "ready") { done = Date.now() - t0; break; }
+        }
+        await page.waitForTimeout(50);
+      }
+      R.switchBusySeenMs = firstMove; R.headerSwitchMs = done; R.progressClockSource = "status()";
+    } else {
+      R.switchBusySeenMs = mark !== null ? await waitFirstProgressAfter(mark, 15000) : await waitPill(/imports|checking|elaborating|re-elaborating/, 15000);
+      const ready = await waitPill(/^ready$/, 180000, 500);
+      R.headerSwitchMs = ready >= 0 ? Date.now() - t0 : -1;
+    }
     // 2) completion during a switch: retype the import segment and look for the widget
     t0 = Date.now();
     await editLine(1, "import Mathlib.Data.Re");

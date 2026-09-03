@@ -63,6 +63,10 @@ export function onlyMatches(name, pattern) {
 /** The terminal class a pill label settles in (pump-era labels); the enum
  * names are the ones `expect.terminal` uses so the corpus survives the move
  * to a phase enum tap (attacks.txt #3). */
+/** Terminal class of a status phase (the enum the front door / shim report). */
+export function settleClassFromPhase(phase) {
+  return phase === "ready" ? "ready" : phase === "headerRefused" ? "headerUnresolvable" : phase === "halted" ? "halted" : null;
+}
 export function settleClass(pill) {
   return /^ready$/.test(pill) ? "ready" : /imports (incomplete|failed)/.test(pill) ? "headerUnresolvable" : /keeps crashing/.test(pill) ? "halted" : null;
 }
