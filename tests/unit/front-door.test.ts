@@ -14,6 +14,7 @@ type Msg = { jsonrpc: "2.0"; id?: number | string; method?: string; params?: unk
 type Frame = { kind: "client"; msg: Msg; replay?: boolean } | { kind: "server"; msg: Msg } | { kind: "booted" } | { kind: "ring"; busy: boolean } | { kind: "died" };
 interface Status { phase: string; version: number | null; header: { mode: string } | null; dropped: number }
 interface Result { state: unknown; ringWrites: Msg[]; replies: Msg[]; startLoop: boolean; statusDelta: Status }
+type Posted = { protocol?: number; type: string; kind?: string; msg?: Msg; requestId?: string; phase?: string; result?: { operation: string; open?: boolean }; error?: { code: string; recoverable: boolean } };
 interface FrontDoor {
   initialState(): unknown;
   step(state: unknown, frame: Frame): Result;
@@ -173,6 +174,29 @@ describe("front door: re-open rebasing (§6 second pass 1)", () => {
     expect(versionOf(r.replies[0]!)).toBe(3);
     expect(r.status.phase).toBe("ready");
   });
+  it("a re-open at the SAME client version after a drain is not ready until the NEW version drains (no false ready on a level switch)", () => {
+    // Level 1 opened at v1 and fully elaborated; level 2 re-opens at v1.
+    const drained = run([{ kind: "booted" }, { kind: "client", msg: didOpen(1, "L1") }, { kind: "server", msg: fileProgress(1, 0) }]);
+    expect(drained.status.phase).toBe("ready");
+    const reopened = run([{ kind: "client", msg: didOpen(1, "L2", "file:///level2.lean") }], drained.state);
+    expect(reopened.ring.map((m) => m.method)).toEqual(["textDocument/didChange"]);
+    expect(versionOf(reopened.ring[0]!)).toBe(2); // worker space: lastVersion 1 + 1
+    expect(reopened.status.phase).toBe("elaborating");
+    expect(reopened.status.version).toBe(1);
+    // A late drain for the OLD document (worker v1) must not read as ready either.
+    expect(run([{ kind: "server", msg: fileProgress(1, 0) }], reopened.state).status.phase).toBe("elaborating");
+    // Only the new version's drain (worker v2 = client v1) is ready.
+    const ready = run([{ kind: "server", msg: fileProgress(2, 0) }], reopened.state);
+    expect(ready.status.phase).toBe("ready");
+    expect(versionOf(ready.replies[0]!)).toBe(1);
+    // The same with edits in between: level 1 drained at v3, level 2 opened at v1 and edited to v3.
+    const l1 = run([{ kind: "booted" }, { kind: "client", msg: didOpen(1, "A") }, { kind: "client", msg: didChange(3, "ABC") }, { kind: "server", msg: fileProgress(3, 0) }]);
+    expect(l1.status.phase).toBe("ready");
+    const l2 = run([{ kind: "client", msg: didOpen(1, "B", "file:///level2.lean") }, { kind: "client", msg: didChange(3, "BCD", "file:///level2.lean") }], l1.state);
+    expect(l2.status.phase).toBe("elaborating");
+    expect(versionOf(l2.ring[1]!)).toBe(6); // base 3: client v3 → worker v6
+    expect(run([{ kind: "server", msg: fileProgress(6, 0) }], l2.state).status.phase).toBe("ready");
+  });
 });
 
 describe("front door: allowlist (§5 Watchdog Parity; K-iv)", () => {
@@ -247,42 +271,130 @@ describe("front door: status (§2.2(e); §4 row 8)", () => {
 });
 
 describe("front door: worker host wiring (lean.worker.js)", () => {
-  let posted: Array<{ type: string; kind?: string; msg?: Msg; requestId?: string; error?: { code: string } }>;
+  let posted: Posted[];
   let deliver: (data: unknown) => void;
-  let hooks: { frontDoor: { state(): { phase: string; queue: unknown[] } | null; status(): { phase: string } } };
+  let imported: string[];
+  interface Hooks {
+    frontDoor: {
+      state(): { phase: string; queue: unknown[] } | null;
+      status(): { phase: string };
+      armed(): boolean;
+      open(): boolean;
+      host(h: { state?: string; M?: unknown; memory?: unknown }): void;
+    };
+    resident: { RESIDENT_RING_CAP: number };
+  }
+  let hooks: Hooks;
   beforeAll(() => {
     posted = [];
+    imported = [];
     const workers = path.resolve(__dirname, "../../public/workers");
     const listeners: Record<string, (e: { data: unknown }) => void> = {};
     const sandbox: Record<string, unknown> = {
       crypto, performance, Blob, URL, WebAssembly, SharedArrayBuffer, Atomics, TextEncoder, TextDecoder, BigInt, console,
-      setTimeout, clearTimeout, setInterval, clearInterval,
+      setTimeout, clearTimeout, clearInterval,
+      // The heartbeat the open loop starts must not pin the test process.
+      setInterval: (fn: () => void, ms: number) => { const t = setInterval(fn, ms); t.unref(); return t; },
       fetch: () => Promise.reject(new Error("no network in unit tests")),
     };
     sandbox.self = sandbox;
-    sandbox.postMessage = (m: unknown) => posted.push(m as (typeof posted)[number]);
+    sandbox.postMessage = (m: unknown) => posted.push(m as Posted);
     sandbox.addEventListener = (type: string, fn: (e: { data: unknown }) => void) => { listeners[type] = fn; };
     sandbox.crossOriginIsolated = true;
+    // A real `importScripts` (synchronous, like the browser's): the worker's own
+    // loads — the unconditional decoder and the LAZY front door — run here, and
+    // the spy records exactly what it asked for and when.
+    sandbox.importScripts = (name: string) => {
+      imported.push(name);
+      vm.runInContext(readFileSync(path.join(workers, name), "utf8"), sandbox, { filename: name });
+    };
     vm.createContext(sandbox);
-    for (const f of ["lsp-frames.js", "lsp-front-door.js", "lean.worker.js"]) {
-      vm.runInContext(readFileSync(path.join(workers, f), "utf8"), sandbox, { filename: f });
-    }
-    hooks = (sandbox as { __qed64TestExports?: typeof hooks }).__qed64TestExports!;
+    vm.runInContext(readFileSync(path.join(workers, "lean.worker.js"), "utf8"), sandbox, { filename: "lean.worker.js" });
+    hooks = (sandbox as { __qed64TestExports?: Hooks }).__qed64TestExports!;
     deliver = (data) => listeners.message!({ data });
   });
-  it("dispatches `lsp` without a requestId, answers initialize as an `lsp` event, queues the rest, and reports status once per change", () => {
+  it("imports only lsp-frames.js at script load; the front door loads lazily on the first `lsp` (a pump-only consumer never loads it)", () => {
+    // lean4game vendors lean.worker.js + snapshot-prefetch.worker.js + lsp-frames.js
+    // as a fixed closure and only ever speaks the pump requests: an unconditional
+    // import of lsp-front-door.js would throw before {type:"boot"} and hang every game session.
+    expect(imported).toEqual(["lsp-frames.js"]);
+    expect(posted.filter((m) => m.type === "boot")).toHaveLength(1);
+    // Every request the pump path sends is dispatched without the front door.
+    deliver({ protocol: 1, requestId: "c1", type: "capabilities" });
+    expect(posted.find((m) => m.requestId === "c1")).toMatchObject({ type: "result" });
+    expect(imported).toEqual(["lsp-frames.js"]);
+  });
+  it("dispatches `lsp` without a requestId while a snapshot loads: answers initialize as an `lsp` event, queues the rest, reports status once per change, and does NOT open the loop", () => {
     posted.length = 0;
+    // lean4monaco's initialize/didOpen land while the page's loadSnapshot('init')
+    // owns the runtime (`state === "compiling"`) — the ordering that broke the boot.
+    hooks.frontDoor.host({ state: "compiling" });
     deliver({ protocol: 1, type: "lsp", msg: initialize(11) });
+    expect(imported).toEqual(["lsp-frames.js", "lsp-front-door.js"]);
     deliver({ protocol: 1, type: "lsp", msg: didOpen(1, "A") });
     deliver({ protocol: 1, type: "lsp", msg: didOpen(1, "A") }); // no status change → no second status event
     const lsp = posted.filter((m) => m.type === "event" && m.kind === "lsp");
     expect(lsp).toHaveLength(1);
     expect(lsp[0]!.msg!.id).toBe(11);
     expect(posted.filter((m) => m.type === "error")).toEqual([]);
+    expect(posted.filter((m) => m.type === "event" && m.kind === "died")).toEqual([]);
     const status = posted.filter((m) => m.type === "event" && m.kind === "status");
     expect(status).toHaveLength(1);
-    expect((status[0] as unknown as { phase: string }).phase).toBe("booting");
+    expect(status[0]!.phase).toBe("booting");
     expect(hooks.frontDoor.state()!.phase).toBe("booting");
-    expect(hooks.frontDoor.state()!.queue).toHaveLength(1); // the didOpen waits for boot (never comes here)
+    expect(hooks.frontDoor.state()!.queue).toHaveLength(1); // the didOpen waits for the ARM, not for the wasm boot
+    expect(hooks.frontDoor.open()).toBe(false);
+  });
+  it("`lsp-arm` is refused BAD_STATE while the runtime is owned; once ready it opens the loop exactly once with initialize + didOpen, after which loadSnapshot is BAD_STATE (K-i)", () => {
+    posted.length = 0;
+    deliver({ protocol: 1, requestId: "a1", type: "lsp-arm" });
+    expect(posted).toHaveLength(1);
+    expect(posted[0]).toMatchObject({ type: "error", requestId: "a1", error: { code: "BAD_STATE", recoverable: true } });
+    expect(hooks.frontDoor.armed()).toBe(false);
+    expect(hooks.frontDoor.state()!.phase).toBe("booting");
+    expect(hooks.frontDoor.open()).toBe(false);
+    // The page's snapshot loads finish: the host is ready and holds the runtime
+    // (a fake with the four resident-transport exports and a fake shared heap).
+    const CAP = hooks.resident.RESIDENT_RING_CAP;
+    const memory = { buffer: new SharedArrayBuffer(16 + CAP) };
+    const calls: string[] = [];
+    hooks.frontDoor.host({
+      state: "ready",
+      memory,
+      M: {
+        _malloc: () => 0n,
+        _lean_browser64_configure_input_ring: () => { calls.push("ring"); return 0; },
+        _lean_wasm_shell_mark_preinitialized: () => { calls.push("preinit"); },
+        callMain: (argv: string[]) => { calls.push(`main ${argv.join(" ")}`); },
+      },
+    });
+    posted.length = 0;
+    deliver({ protocol: 1, requestId: "a2", type: "lsp-arm" });
+    expect(posted.find((m) => m.requestId === "a2")).toMatchObject({ type: "result", result: { operation: "lsp-arm", open: true } });
+    expect(calls).toEqual(["preinit", "ring", "main --worker -Dserver.reportDelayMs=0"]);
+    expect(hooks.frontDoor.armed()).toBe(true);
+    expect(hooks.frontDoor.open()).toBe(true);
+    expect(hooks.frontDoor.state()!.phase).toBe("open");
+    expect(hooks.frontDoor.state()!.queue).toHaveLength(0);
+    expect(posted.filter((m) => m.type === "event" && m.kind === "died")).toEqual([]);
+    // The opening sequence is in the ring, in order, with nothing between.
+    const written = Atomics.load(new Int32Array(memory.buffer, 0, 4), 1);
+    const frames = new TextDecoder().decode(new Uint8Array(memory.buffer, 16, written))
+      .split("Content-Length: ").filter(Boolean)
+      .map((f) => JSON.parse(f.slice(f.indexOf("\r\n\r\n") + 4)) as Msg);
+    expect(frames.map((f) => f.method)).toEqual(["initialize", "textDocument/didOpen"]);
+    expect(frames[0]!.id).toBe(11);
+    expect(textOf(frames[1]!)).toBe("A");
+    const status = posted.filter((m) => m.type === "event" && m.kind === "status");
+    expect(status.at(-1)!.phase).toBe("starting");
+    // K-i: a snapshot published under a live loop would change a verdict Lean already reused.
+    posted.length = 0;
+    deliver({ protocol: 1, requestId: "s1", type: "loadSnapshot", input: { url: "/snapshots/x.raw" } });
+    expect(posted[0]).toMatchObject({ type: "error", requestId: "s1", error: { code: "BAD_STATE" } });
+    // A repeated arm is idempotent: no second opening sequence.
+    deliver({ protocol: 1, requestId: "a3", type: "lsp-arm" });
+    expect(posted.find((m) => m.requestId === "a3")).toMatchObject({ type: "result", result: { operation: "lsp-arm", open: true } });
+    expect(calls).toHaveLength(3);
+    expect(Atomics.load(new Int32Array(memory.buffer, 0, 4), 1)).toBe(written);
   });
 });

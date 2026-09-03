@@ -7,6 +7,7 @@ import { registerImportCompletion } from "./import-completion";
 import { WatchdogShim } from "./watchdog-shim";
 import { LspRelay, type RelaySession, type RelayStatus, type RestartOptions } from "./lsp-relay";
 import { LeanSession, memoryCandidates, type JsonRpcMessage, type LibraryPack, type WorkerStatus } from "../../src/runtime/client";
+import { installProfile } from "../../src/install/profiles";
 
 const editorEl = document.getElementById("editor")! as HTMLElement;
 const infoviewEl = document.getElementById("infoview")! as HTMLElement;
@@ -188,11 +189,14 @@ function renderStatus(s: RelayStatus) {
  * construction — the relay always has a target and a booting worker queues
  * every frame (§6 amendment 20) — and `start()` runs the boot that
  * qed64-boot.ts's `newSession` performs for the pump path, on the same
- * artifacts. The sync-create/async-boot split moves INTO qed64-boot.ts at
- * S3b (week 2); until then the boot inputs live here: the umbrella-sized
- * initial commit and the boot-only snapshot list — a default session is
- * covered by init + mathlib, and K1 serves exact keys first, so no page-side
- * header reading chooses them. */
+ * artifacts, and leaves the worker's loop CLOSED: the relay arms it
+ * (`arm()`) only after its BootOk replay (§2.3), so the machine's `booted`
+ * fact can never precede the snapshot loads below (§2.4 Booting → Ready is
+ * the page's fact, not the wasm boot's). The sync-create/async-boot split
+ * moves INTO qed64-boot.ts at S3b (week 2); until then the boot inputs live
+ * here: the umbrella-sized initial commit and the boot-only snapshot list —
+ * a default session is covered by init + mathlib, and K1 serves exact keys
+ * first, so no page-side header reading chooses them. */
 class ResidentSession implements RelaySession {
   readonly lean = new LeanSession();
   readonly id: string;
@@ -208,16 +212,25 @@ class ResidentSession implements RelaySession {
   get onDied() { return this.lean.onDied; }
   set onDied(f: (code: number | null, reason: string, message: string) => void) { this.lean.onDied = f; }
   lsp(msg: JsonRpcMessage, replay?: boolean) { this.lean.lsp(msg, replay); }
+  arm() { return this.lean.arm(); }
   dispose() { this.lean.dispose(); }
   async start(): Promise<void> {
     const a = this.artifacts;
-    // Memory-backed segments are consumed by the worker they were transferred
-    // to (newSession reinstalls them); a resident session boots on the
-    // storage-backed ones and reports the rest instead of throwing PACK_CONSUMED.
+    // Memory-backed segments were TRANSFERRED to the worker that booted them
+    // and are detached page-side; a reboot reinstalls them exactly as
+    // newSession does (an OPFS install revalidates in ms; memory mode
+    // re-downloads). Skipping them silently booted a worker with the pack's
+    // mount on LEAN_PATH but none of its bytes; one not in the index any
+    // more is dropped from LEAN_PATH and said so, never mounted empty.
+    for (const [id, profile] of [...a.installed]) {
+      if (!profile.segments.some((seg) => seg.bytes && seg.bytes.buffer.byteLength === 0)) continue;
+      const entry = a.index.profiles.find((p) => p.id === id);
+      if (!entry) { a.installed.delete(id); console.warn(`[qed64] pack ${id} was consumed by the previous worker and is not in the index; dropped from LEAN_PATH`); continue; }
+      ui.busy(`re-preparing the ${id} library for the new session`);
+      a.installed.set(id, await installProfile(entry, (p) => ui.progress(`${p.phase} ${id}`, { phase: `pack-${p.phase}`, loaded: p.loaded, total: p.total ?? 0, unit: "bytes" })));
+    }
     const packs: LibraryPack[] = [...a.installed.values()].flatMap((p) =>
-      p.segments
-        .filter((seg) => !(seg.bytes && seg.bytes.buffer.byteLength === 0))
-        .map((segment, i) => ({ id: `${p.id}#${i}`, ...(segment.blob ? { blob: segment.blob } : {}), ...(segment.bytes ? { bytes: segment.bytes } : {}), metadata: segment.metadata, mountPoint: `/lib/packs/${p.id}` })),
+      p.segments.map((segment, i) => ({ id: `${p.id}#${i}`, ...(segment.blob ? { blob: segment.blob } : {}), ...(segment.bytes ? { bytes: segment.bytes } : {}), metadata: segment.metadata, mountPoint: `/lib/packs/${p.id}` })),
     );
     const cap = 6 * 1073741824;
     const under = memoryCandidates().filter((b) => b <= cap);
@@ -232,6 +245,7 @@ class ResidentSession implements RelaySession {
     for (const name of this.opts.snapshots ?? ["init", "mathlib"]) {
       if (!(await loadSnapshotByName(a, qs, name, ui))) throw new Error(`snapshot '${name}' failed to load`);
     }
+    // Deliberately no arm() here: the relay arms after its replay (§2.3 BootOk).
   }
 }
 

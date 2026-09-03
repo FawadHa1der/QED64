@@ -19,6 +19,10 @@ class FakeSession implements RelaySession {
   lastFullText: string | null = null;
   disposed = false;
   started = false;
+  armed = false;
+  /** `sent.length` when arm() was called: proves the BootOk replay preceded the arm (§2.3 → §2.4 Ready → Open). */
+  armedAfter = -1;
+  armFails = false;
   bootOk!: () => void;
   bootFailed!: (e: Error) => void;
   private readonly booted = new Promise<void>((resolve, reject) => { this.bootOk = resolve; this.bootFailed = reject; });
@@ -27,6 +31,12 @@ class FakeSession implements RelaySession {
   onDied: (code: number | null, reason: string, message: string) => void = () => {};
   constructor(readonly opts?: RestartOptions) { FakeSession.all.push(this); }
   start() { this.started = true; return this.booted; }
+  arm() {
+    this.armedAfter = this.sent.length;
+    if (this.armFails) return Promise.reject(new Error("Worker is 'compiling', not ready"));
+    this.armed = true;
+    return Promise.resolve();
+  }
   lsp(msg: Msg, replay = false) {
     if (this.disposed) return;
     this.sent.push({ msg, replay });
@@ -42,6 +52,8 @@ class FakeSession implements RelaySession {
     this.onLsp = () => {};
     this.onStatus = () => {};
     this.onDied = () => {};
+    // Like LeanSession.dispose(): an in-flight boot is rejected (DISPOSED).
+    if (this.started) this.bootFailed(new Error("Session disposed."));
   }
   methods() { return this.sent.map((s) => `${s.msg.method}${s.replay ? "(replay)" : ""}`); }
 }
@@ -115,10 +127,18 @@ describe("relay: serving", () => {
     relay.fromClient(didOpen(1, "A"));
     await bootCurrent();
     expect(relay.state.kind).toBe("serving");
-    // BootOk replays what the relay recorded (§2.3 BootOk): initialize(replay) + didOpen(lastText).
+    // BootOk replays what the relay recorded (§2.3 BootOk): initialize(replay) + didOpen(lastText),
+    // and only THEN arms the worker, so the replay is in its queue when the loop opens once (§2.4).
     expect(current().methods()).toEqual(["initialize", "textDocument/didOpen", "initialize(replay)", "textDocument/didOpen"]);
+    expect(current().armed).toBe(true);
+    expect(current().armedAfter).toBe(4);
     relay.fromClient(didChange(2, "AB"));
     expect(current().lastFullText).toBe("AB");
+    // A ranged didChange (a client ignoring change = 1) cannot update lastText; it is forwarded and counted.
+    relay.fromClient({ jsonrpc: "2.0", method: "textDocument/didChange", params: { textDocument: { uri: URI, version: 3 }, contentChanges: [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }, text: "X" }] } });
+    expect(relay.lastText).toBe("AB");
+    expect(relay.stats.rangedChanges).toBe(1);
+    relay.fromClient(didChange(4, "XAB"));
     // Server frames go straight to the client; responses clear the pending id.
     relay.fromClient(request(5, "textDocument/hover"));
     expect(relay.pending.get(5)).toBe("textDocument/hover");
@@ -215,6 +235,31 @@ describe("relay: deaths (§2.3 SessionDied; §3 rows 9-11)", () => {
     expect(relay.deaths).toEqual([]);
     expect(FakeSession.all).toHaveLength(4);
     expect(current().methods()).toEqual(["textDocument/didChange"]);
+    await bootCurrent();
+    expect(relay.state.kind).toBe("serving");
+  });
+  it("an arm the worker refuses is a BootFailed death (counted once), and the next session serves", async () => {
+    relay.fromClient(didOpen(1, "A"));
+    await settle();
+    const first = current();
+    first.armFails = true;
+    first.bootOk();
+    await settle();
+    expect(first.disposed).toBe(true);
+    expect(relay.state).toEqual({ kind: "rebooting", reason: "bootFailed" });
+    expect(relay.stats).toMatchObject({ workerDeaths: 1, reboots: 1, staleDeaths: 0 });
+    expect(FakeSession.all).toHaveLength(2);
+    await bootCurrent();
+    expect(relay.state.kind).toBe("serving");
+    expect(current().armedAfter).toBe(current().sent.length);
+  });
+  it("a death mid-boot is one death: the disposed session's rejected start() is not counted as stale", async () => {
+    relay.fromClient(didOpen(1, "A"));
+    await settle();
+    current().onDied(null, "crash", "INIT_FAILED");
+    await settle();
+    expect(relay.state).toEqual({ kind: "rebooting", reason: "crash" });
+    expect(relay.stats).toMatchObject({ workerDeaths: 1, staleDeaths: 0, reboots: 1 });
     await bootCurrent();
     expect(relay.state.kind).toBe("serving");
   });

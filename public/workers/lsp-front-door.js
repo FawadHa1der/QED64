@@ -74,12 +74,24 @@
       phase: "booting", // booting | ready (loop closed) | open | dead
       initialize: null, // the client's initialize request, cached for the loop start / a replay
       queue: [], // frames from script load until the loop is open
-      backlog: [], // outbound frames held while the ring is parked (§2.4: didChange coalesces, newest wins)
+      // Outbound frames held while the ring is parked (§2.4: didChange
+      // coalesces, newest wins). Scope note: only frames that ARRIVE after the
+      // host reports the park are coalesced here; frames already in the
+      // host's FIFO behind the parked item are written one by one. That is
+      // the day-5 subset of §6 amendment 8, not the full "any queued didChange"
+      // semantics — a later pass may drain the host FIFO into this backlog.
+      backlog: [],
       ringBusy: false,
       doc: null, // {uri, languageId, version} in CLIENT version space
       base: 0, // worker version = client version + base (§2.2(b) rebasing)
       lastVersion: -1, // last worker-space version written (didOpen / didChange)
-      progress: null, // {version (client space), processing} from the last $/lean/fileProgress
+      // {version, processing} from the last $/lean/fileProgress, in WORKER
+      // version space (the raw frame, before the inbound shift): `ready` is
+      // decided by `progress.version === lastVersion`, which no re-open can
+      // fake — a drain reported for the previous document is < the new
+      // lastVersion, so a level switch onto a live loop reads `elaborating`
+      // until the FileWorker drains the NEW version (§2.2(e); review fix 2).
+      progress: null,
       header: null, // the last $/qed64/headerStatus params (per header setup, not per version — §2.2(e))
       dropped: 0,
     };
@@ -179,6 +191,9 @@
         // one document, so this becomes a full-text didChange; the version
         // continues the worker's sequence and later client versions are
         // rebased by the same offset both ways (§6 second pass 1).
+        // `progress` is left as is on purpose: it is in worker space, and the
+        // emit below bumps lastVersion past it, so the phase is `elaborating`
+        // (never a false `ready`) until the new version's drain arrives.
         s.base = s.lastVersion + 1 - td.version;
         s.doc = { uri: td.uri, languageId: td.languageId, version: td.version };
         emit(s, r, { jsonrpc: "2.0", method: DID_CHANGE, params: { textDocument: { uri: td.uri, version: td.version }, contentChanges: [{ text: td.text }] } });
@@ -239,11 +254,12 @@
     if (s.phase === "dead") return "dead";
     if (s.phase === "booting") return "booting";
     if (s.phase === "ready" || !s.progress || !s.doc) return "starting";
-    // `ready` iff fileProgress drained at the editor's version AND the last
-    // header verdict for this setup is not a refusal (§2.2(e); §6 first
-    // pass 12). A body keystroke takes Lean's `unchanged` path and emits no
-    // headerStatus, so the verdict is per header setup, not per version.
-    if (s.progress.version === s.doc.version && s.progress.processing === 0) {
+    // `ready` iff fileProgress drained at the last version WRITTEN (worker
+    // space on both sides, so a re-open's rebase cannot alias an old drain)
+    // AND the last header verdict for this setup is not a refusal (§2.2(e);
+    // §6 first pass 12). A body keystroke takes Lean's `unchanged` path and
+    // emits no headerStatus, so the verdict is per header setup, not per version.
+    if (s.progress.version === s.lastVersion && s.progress.processing === 0) {
       return s.header && s.header.mode === "refused" ? "headerRefused" : "ready";
     }
     return "elaborating";
@@ -270,10 +286,11 @@
         admit(s, r, frame.msg, frame.replay === true);
         break;
       case "server": {
+        const raw = frame.msg.params; // worker version space — what `progress` stores
         const msg = shiftVersions(frame.msg, -s.base);
         const p = msg.params;
-        if (msg.method === "$/lean/fileProgress" && p && p.textDocument && typeof p.textDocument.version === "number") {
-          s.progress = { version: p.textDocument.version, processing: Array.isArray(p.processing) ? p.processing.length : 0 };
+        if (msg.method === "$/lean/fileProgress" && raw && raw.textDocument && typeof raw.textDocument.version === "number") {
+          s.progress = { version: raw.textDocument.version, processing: Array.isArray(raw.processing) ? raw.processing.length : 0 };
         } else if (msg.method === "$/qed64/headerStatus" && p) {
           s.header = p;
         }

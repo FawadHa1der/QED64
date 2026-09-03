@@ -238,7 +238,9 @@ export class LeanSession {
         if (msg.kind === "progress") this.onProgress(msg as ProgressEvent & { kind: string });
         else if (msg.kind === "log") this.onLog(msg.stream, msg.text);
         else if (msg.kind === "lsp") this.onLsp(msg.msg as JsonRpcMessage);
-        else if (msg.kind === "status") this.onStatus(msg as WorkerStatus);
+        // The declared fields only — the event envelope (type/kind/requestId)
+        // must not leak into a datum the harness JSON-diffs (§2.2(e)).
+        else if (msg.kind === "status") this.onStatus({ phase: msg.phase, version: msg.version ?? null, header: msg.header ?? null, ring: msg.ring, pool: msg.pool, dropped: msg.dropped ?? 0 });
         else if (msg.kind === "heartbeat") this.armHeartbeat();
         // `died` is a fact for the typed listener only: the legacy `state`
         // mirror stays as it was so the shipped pump path (which keys on
@@ -355,6 +357,15 @@ export class LeanSession {
 
   telemetry(): Promise<{ state: string; memory?: MemoryTelemetry }> {
     return this.request("telemetry");
+  }
+
+  /** The front door's Booting → Ready fact (§2.4), sent by the page as the
+   * LAST step of a session start — after boot and every pre-open snapshot
+   * load (§2.3 BootOk: replay, then arm). Takes a runtime turn so it can
+   * never overtake a queued loadSnapshot; the worker refuses it BAD_STATE
+   * while anything owns the runtime. */
+  arm(): Promise<void> {
+    return this.exclusive(() => this.request<{ operation: string }>("lsp-arm")).then(() => undefined);
   }
 
   private rejectAll(error: Error & { code?: string }) {

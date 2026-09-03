@@ -54,9 +54,16 @@ let sink = null;
 // The decoder is shared with Node's resident-probe (one parser, not two that
 // drift — architecture review A1). Absent only under the vitest vm harness,
 // which loads lsp-frames.js into the sandbox itself.
+//
+// lsp-front-door.js is deliberately NOT loaded here: it is imported lazily by
+// `frontDoorApply` on the first `lsp`/`lsp-arm` message. The pump path never
+// sends either, and lean4game vendors this worker as a fixed closure
+// (sync-qed64.sh PATHS + stage-game-assets.sh copy lean.worker.js,
+// snapshot-prefetch.worker.js and lsp-frames.js by name) — an unconditional
+// import of a file that closure lacks would throw at script load, never post
+// {type:"boot"}, and hang every game session (review fix 3).
 if (typeof importScripts === "function") {
   importScripts("lsp-frames.js");
-  importScripts("lsp-front-door.js");
 }
 let lspMode = false;
 let lspFrames = null; // Qed64LspFrames.LspFrameDecoder, created by installStdoutTap
@@ -267,14 +274,25 @@ function residentSend(msg) {
 // ---------------------------------------------------------------------------
 // Resident front door (§2.4; pure machine in lsp-front-door.js). The page's
 // `lsp` request is fire-and-forget — no requestId, no per-message ack: the
-// machine queues from script load, opens the loop on the first didOpen, and
-// this host performs exactly the effects `step` returns. The host also owns
-// the two data the machine cannot know — ring backpressure and the pthread
-// pool — and merges them into one `status` event per change (§2.2(e)) plus
-// a 2 s heartbeat once the loop is open (§2.2(f)); their loss is the ONLY
-// death signal the page derives from time (§2.2 L2).
+// machine queues from script load, opens the loop on the first didOpen once
+// ARMED, and this host performs exactly the effects `step` returns. The host
+// also owns the two data the machine cannot know — ring backpressure and the
+// pthread pool — and merges them into one `status` event per change
+// (§2.2(e)) plus a 2 s heartbeat once the loop is open (§2.2(f)); their loss
+// is the ONLY death signal the page derives from time (§2.2 L2).
+//
+// Booting → Ready is an explicit `lsp-arm` request from the PAGE, not the
+// wasm boot's success: the page still loads its snapshots (init, mathlib)
+// AFTER `boot` resolves, and lean4monaco's initialize/didOpen arrive while
+// that happens. Fed at wasm-boot success, a queued didOpen opened the loop
+// before the page's loadSnapshot calls, which the K-i guard then refused
+// (BAD_STATE → BootFailed → reboot → the same race → breaker), or the loop
+// start met `state === "compiling"` and killed the session. The page arms as
+// the LAST step of its session start (§2.3 BootOk: replay, then arm), so
+// `booted` cannot precede a snapshot load (review fix 1).
 // ---------------------------------------------------------------------------
 let frontDoor = null; // machine state; null until the page speaks `lsp`
+let frontDoorArmed = false; // set by `lsp-arm`; the one Booting → Ready fact
 let ringBusy = false;
 let heartbeat = null;
 let hostStatus = { phase: "booting", version: null, header: null, dropped: 0 };
@@ -282,7 +300,11 @@ let lastStatusJson = "";
 let ringRefused = 0; // frames over cap/2 the ring refused (a > 2 MB document)
 
 function poolSample() {
-  const PT = typeof PThread !== "undefined" ? PThread : null;
+  // In a MODULARIZE glue `PThread` is factory-local; only an
+  // EXPORTED_RUNTIME_METHODS build publishes it as `Module.PThread`. Prefer
+  // that, fall back to a global, and report -1 (not measured) otherwise so
+  // the §6 attack-3 gauntlet can tell "≤ 20 running" from "never sampled".
+  const PT = M && M.PThread ? M.PThread : typeof PThread !== "undefined" ? PThread : null;
   return {
     unused: PT && PT.unusedWorkers ? PT.unusedWorkers.length : -1,
     running: PT ? Object.keys(PT.pthreads || {}).length : -1,
@@ -303,22 +325,29 @@ function emitStatus(delta) {
 }
 
 function frontDoorApply(frame) {
+  // Lazy load (see the import note at the top): synchronous and legal at any
+  // time in a classic worker; the vitest vm harness injects the file itself.
+  if (typeof Qed64LspFrontDoor === "undefined" && typeof importScripts === "function") importScripts("lsp-front-door.js");
   const FD = Qed64LspFrontDoor;
   if (frontDoor === null) {
     frontDoor = FD.initialState();
-    // The page may speak `lsp` before or after boot; the machine starts in
-    // Booting either way and moves on with the fact it missed.
-    if (state === "ready" && frame.kind !== "booted") frontDoor = FD.step(frontDoor, { kind: "booted" }).state;
-    else if (state === "dead") frontDoor = FD.step(frontDoor, { kind: "died" }).state;
+    // The page may speak `lsp` before or after the arm; the machine starts in
+    // Booting either way and moves on with the fact it missed. Only the
+    // arm (never the wasm boot) supplies `booted`.
+    if (state === "dead") frontDoor = FD.step(frontDoor, { kind: "died" }).state;
+    else if (frontDoorArmed && frame.kind !== "booted") frontDoor = FD.step(frontDoor, { kind: "booted" }).state;
   }
   const r = FD.step(frontDoor, frame);
   frontDoor = r.state;
   if (r.startLoop) {
     try {
       residentOpenLoop();
+      // The beat is the liveness fact only (§2.2(f)); status is emitted per
+      // machine change (every server frame samples ring + pool) and on ring
+      // park/drain, not on a 2 s cadence that would re-render the pill and
+      // spam the harness's status stream with pool drift.
       heartbeat = setInterval(() => {
         event(null, "heartbeat", { t: Math.round(performance.now()) });
-        emitStatus(null);
       }, 2000);
     } catch (error) {
       // The loop never opened: that is a session death, not a request error.
@@ -337,6 +366,22 @@ function frontDoorApply(frame) {
     }
   }
   emitStatus(r.statusDelta);
+}
+
+/** `lsp-arm`: the page's Booting → Ready fact (§2.4), sent as the LAST step
+ * of its session start — after boot AND after every pre-open snapshot load
+ * (§2.3 BootOk order: replay into the queue, then arm). Refused while any
+ * runtime-owning request is in flight so a queued didOpen can never open
+ * the loop under a snapshot load; idempotent once armed (a repeated
+ * `booted` is a no-op in the machine). */
+function frontDoorArm(msg) {
+  if (state !== "ready") {
+    fail(msg.requestId, new Error(`Worker is '${state}', not ready; arm after boot and the pre-open snapshot loads.`), "BAD_STATE", state !== "dead");
+    return;
+  }
+  frontDoorArmed = true;
+  frontDoorApply({ kind: "booted" });
+  post({ type: "result", requestId: msg.requestId, result: { operation: "lsp-arm", open: residentMode } });
 }
 
 function lspInit(msg) {
@@ -930,8 +975,8 @@ async function boot(msg) {
             mode: "persistent",
           },
         });
-        // Booting → Ready: frames queued since script load may now open the loop.
-        if (frontDoor) frontDoorApply({ kind: "booted" });
+        // NOT Booting → Ready for the front door: the page's snapshot loads
+        // follow this reply; only its `lsp-arm` moves the machine (see above).
       } else {
         state = "dead";
         fail(requestId, error || new Error("Lean runtime failed to initialize."), "INIT_FAILED", false);
@@ -1648,6 +1693,9 @@ self.addEventListener("message", (e) => {
     case "lsp-resident-send":
       residentSend(msg);
       break;
+    case "lsp-arm":
+      frontDoorArm(msg);
+      break;
     case "lsp-send":
       lspSend(msg);
       break;
@@ -1692,6 +1740,16 @@ self.__qed64TestExports = {
   frontDoor: {
     state: () => frontDoor,
     status: () => ({ ...hostStatus }),
+    armed: () => frontDoorArmed,
+    open: () => residentMode,
+    /** Stand in for the runtime the harness has no wasm for: the host state
+     * a snapshot load or a finished boot would leave, a fake module with the
+     * four resident-transport exports, and a fake shared heap for the ring. */
+    host({ state: s, M: m, memory }) {
+      if (s !== undefined) state = s;
+      if (m !== undefined) M = m;
+      if (memory !== undefined) bootMemory = memory;
+    },
   },
 };
 
