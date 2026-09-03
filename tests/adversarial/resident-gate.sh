@@ -19,7 +19,10 @@ RUN=$(node tests/adversarial/harness.mjs run-dir --url "$URL")
 echo "run dir: $RUN"
 echo "=== preflight: resident ==="; node tests/adversarial/preflight.mjs --url "$URL" --run-dir "$RUN" || { echo "GATE-REFUSED: resident preflight (exit $?)"; exit 3; }
 echo "=== preflight: pump ==="; node tests/adversarial/preflight.mjs --url "$PUMP" --no-boot || { echo "GATE-REFUSED: pump preflight (exit $?)"; exit 3; }
-cool() { node tests/adversarial/harness.mjs cooldown || { echo "GATE-REFUSED: cool-down (stray browsers / memory)"; exit 3; }; }
+# --kill-strays: the preflight's own boot-smoke browser is the usual "stray" (a
+# refusal here skipped every resident lane on 2026-09-03); the memory floor is
+# an argument so a busy machine can still run with a lower bar.
+cool() { node tests/adversarial/harness.mjs cooldown --kill-strays --cooldown-gb "${QED64_COOLDOWN_GB:-6}" || { echo "GATE-REFUSED: cool-down (stray browsers / memory)"; exit 3; }; }
 cool
 echo "=== resident e2e ==="; node tests/adversarial/e2e.mjs --url "$URL" --run-dir "$RUN" > work/adversarial/e2e-resident.log 2>&1; echo "e2e-exit=$?"
 cp work/adversarial/e2e-report.json work/adversarial/e2e-resident-report.json
