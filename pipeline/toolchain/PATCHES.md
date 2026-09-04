@@ -279,17 +279,16 @@ every public def/field needs a doc string; a modifier-misuse refusal
 (`meta`/`import all` outside `module`) was tried and removed — `toModuleHeader`
 flags legacy files' imports, so it refused every header.
 
-## 0033 — `-sPTHREAD_POOL_DELAY_LOAD=1` (link flag only)
-Measured on a first visit (2026-09-04, `work/heap-by-phase.cjs`): the renderer
-sits at ~9.2 GB at `ready` while the wasm heap is 2 GiB and never grows (the
-1.24 GB of snapshot regions live inside it). +2.2 GB is the runtime start
-(eagerly zero-filled shared memory + compiled code); **+4 GB is "Initializing
-the Lean runtime" — the 24 preallocated pthread workers (patch 0019) each
-parsing the 48 MB glue, ~170 MB per worker**; +1.1 GB the mathlib region. With
-delay-load the pool keeps its 24 slots (a `pthread_create` from a pthread can
-only claim a preallocated worker under this toolchain) but a worker fetches and
-parses `lean.js` only when a thread is actually started on it; 11 of 24 run at
-`ready`. The design's "W5" (delete the .snapz/tee/MEMFS copies) does not touch
-this footprint — the raw OPFS path is already direct — and stays hygiene. Next
-lever if needed: the export table (the glue is ~the 104k export wrappers, and
-every loaded worker parses it).
+## (not in the series) `-sPTHREAD_POOL_DELAY_LOAD=1` — tried 2026-09-04, measured no effect, dropped
+Hypothesis: the +4 GB the renderer gains during "Initializing the Lean runtime"
+was the 24 preallocated pthread workers each parsing the 48 MB glue. Built,
+baked and measured (`work/heap-by-phase.cjs`): identical curve, 9.3 GB at
+`ready`. Node attribution then settled it: the same boot reaches ~7.5 GB
+before any snapshot with or without the task manager's threads, tier-up on or
+off (`--no-wasm-tier-up` within 2%), and `WebAssembly.compile` alone is 0.28 GB
+because V8 compiles lazily — the growth is machine code generated for every
+function the stdlib initializers execute. That is a floor of running the full
+Lean compiler as a lazily-compiled 106 MB module in V8; only a leaner module
+(fewer linked components) or fewer initializers moves it. The served pairing
+stays 0032; a pairing change with no benefit would only invalidate every
+visitor's content-addressed cache.
