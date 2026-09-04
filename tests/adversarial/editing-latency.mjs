@@ -70,13 +70,17 @@ try {
     // the pump shim's status() reports header: null (it never receives one),
     // so it takes the pill path below (measured: pump headerSwitchMs=-1).
     if (st0 && st0.header) {
-      const hv0 = st0.header ? st0.header.version : null;
+      // Completion = the DOCUMENT version has advanced past the edit and the
+      // phase is ready again. (The header fact's version is not usable: the
+      // kernel stamps later header setups with the initial document version —
+      // a FileWorker closure binding, harmless to the UI, kernel follow-up.)
+      const v0 = st0.version;
       let firstMove = -1, done = -1;
       for (let i = 0; i < 3600; i++) {
         const st = await status();
         if (st) {
-          if (firstMove < 0 && (st.phase !== "ready" || (st.header && st.header.version !== hv0))) firstMove = Date.now() - t0;
-          if (st.header && st.header.version !== hv0 && st.phase === "ready") { done = Date.now() - t0; break; }
+          if (firstMove < 0 && (st.phase !== "ready" || st.version !== v0)) firstMove = Date.now() - t0;
+          if (st.version !== v0 && st.phase === "ready" && i > 2) { done = Date.now() - t0; break; }
         }
         await page.waitForTimeout(50);
       }
