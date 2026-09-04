@@ -273,11 +273,12 @@ globalThis.Module = {
     M._lean_initialize_runtime_module();
     M._lean_initialize();
     M._lean_io_mark_end_initialization();
-    if (M._lean_init_task_manager) M._lean_init_task_manager();
+    if (M._lean_init_task_manager && !process.env.SKIP_TASK_MANAGER) M._lean_init_task_manager();
     if (M._lean_enable_initializer_execution) M._lean_enable_initializer_execution();
     const sp = M._lean_init_search_path();
     M._lean_wasm_shell_mark_preinitialized();
     log(`lean initialized (search path tag via ${typeof sp})`);
+    { const mu = process.memoryUsage(); log(`MEMUSAGE after-init rss=${(mu.rss/1e9).toFixed(2)}GB arrayBuffers=${(mu.arrayBuffers/1e9).toFixed(2)}GB external=${(mu.external/1e9).toFixed(2)}GB heapUsed=${(mu.heapUsed/1e6).toFixed(0)}MB`); }
     // Seed the prebuilt env FIRST: the resident worker's header processing
     // cannot import oleans on its elaboration pthread (the long-documented
     // hang prepareHeader exists for) — a loaded snapshot publishes a
