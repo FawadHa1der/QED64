@@ -133,3 +133,14 @@ rebuild the runtime from source.
 Lean, Mathlib, Batteries: Apache-2.0. The wasm build derives from
 [cauli/lean4](https://github.com/cauli/lean4) `reinstate-wasm` (Apache-2.0);
 loader and delivery patterns follow the Browser64 workspace evidence.
+
+## Transports
+
+The editor talks to the Lean worker over the **resident** transport by
+default: one real `lean --worker` stays alive in the tab, header changes are
+resolved in-process against the preloaded environments, and the page sees
+only facts the worker reports (see `docs/RESIDENT-WORKER-PLAN.md`). Append
+`?resident=0` to fall back to the older **pump** transport (the header-probe
+shim with in-place restarts) while it is still served; the served artifacts
+are identical for both.
+
