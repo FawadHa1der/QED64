@@ -165,6 +165,16 @@ describe("relay: serving", () => {
     expect(relay.status()).toMatchObject({ phase: "ready", relay: "serving", session: current().id, pool: { running: 2 } });
     expect(statuses.at(-1)).toMatchObject({ phase: "ready" });
   });
+  it("passes the worker's collision fact through untouched — the page's exact-imports offer keys on it (§3 row 8)", async () => {
+    await bootCurrent();
+    const collision = { names: ["Nat.add_comm"], version: 1 };
+    const base: WorkerStatus = { phase: "ready", version: 1, header: null, ring: { bytesQueued: 0, refused: 0 }, pool: { unused: 3, running: 2 }, dropped: 0 };
+    current().onStatus({ ...base, collision });
+    expect(relay.status().collision).toEqual(collision);
+    expect(statuses.at(-1)?.collision).toEqual(collision);
+    current().onStatus({ ...base, collision: null });
+    expect(relay.status().collision).toBeNull();
+  });
 });
 
 describe("relay: deaths (§2.3 SessionDied; §3 rows 9-11)", () => {

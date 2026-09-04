@@ -129,6 +129,12 @@ export interface WorkerStatus {
   ring: { bytesQueued: number; refused: number };
   pool: { unused: number; running: number };
   dropped: number;
+  /** The front door's collision fact (`statusOf().collision`; §3 row 8,
+   * HARDENING #43): names the worker's last publish reported "already
+   * declared" under a COVERED header, null after a clean burst. Optional
+   * because only the resident front door produces it; the pump path's
+   * status never carries it. */
+  collision?: { names: string[]; version: number | null } | null;
 }
 
 interface Pending {
@@ -240,7 +246,10 @@ export class LeanSession {
         else if (msg.kind === "lsp") this.onLsp(msg.msg as JsonRpcMessage);
         // The declared fields only — the event envelope (type/kind/requestId)
         // must not leak into a datum the harness JSON-diffs (§2.2(e)).
-        else if (msg.kind === "status") this.onStatus({ phase: msg.phase, version: msg.version ?? null, header: msg.header ?? null, ring: msg.ring, pool: msg.pool, dropped: msg.dropped ?? 0 });
+        // `collision` rides along because the page's "Load exact imports"
+        // offer keys on it (§3 row 8) — rebuilding from declared fields
+        // silently dropped it once; keep the list and WorkerStatus in step.
+        else if (msg.kind === "status") this.onStatus({ phase: msg.phase, version: msg.version ?? null, header: msg.header ?? null, ring: msg.ring, pool: msg.pool, dropped: msg.dropped ?? 0, collision: msg.collision ?? null });
         else if (msg.kind === "heartbeat") this.armHeartbeat();
         // `died` is a fact for the typed listener only: the legacy `state`
         // mirror stays as it was so the shipped pump path (which keys on

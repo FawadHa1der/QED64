@@ -142,3 +142,26 @@ describe("LeanSession runtime-RPC serialization", () => {
     expect(worker.ofType("compile")).toHaveLength(1);
   });
 });
+
+// The `status` event is rebuilt from declared fields on purpose (the event
+// envelope must not leak into a datum the harness JSON-diffs, §2.2(e)) —
+// which is exactly how the front door's `collision` fact was dropped once
+// and the resident "Load exact imports" offer became dead code (§3 row 8).
+// Pin the whole shape so a new WorkerStatus field cannot be forgotten again.
+describe("LeanSession status events", () => {
+  const RING = { bytesQueued: 0, refused: 0 };
+  const POOL = { unused: 3, running: 2 };
+  it("carries the front door's collision fact through, and null when the worker reports none", () => {
+    const seen: unknown[] = [];
+    session.onStatus = (s) => seen.push(s);
+    const collision = { names: ["Nat.add_comm"], version: 4 };
+    worker.reply("", { type: "event", kind: "status", phase: "ready", version: 4, header: null, ring: RING, pool: POOL, dropped: 0, collision });
+    worker.reply("", { type: "event", kind: "status", phase: "ready", version: 5, header: null, ring: RING, pool: POOL, dropped: 0, collision: null });
+    worker.reply("", { type: "event", kind: "status", phase: "ready", version: 6, header: null, ring: RING, pool: POOL, dropped: 0 });
+    expect(seen).toEqual([
+      { phase: "ready", version: 4, header: null, ring: RING, pool: POOL, dropped: 0, collision },
+      { phase: "ready", version: 5, header: null, ring: RING, pool: POOL, dropped: 0, collision: null },
+      { phase: "ready", version: 6, header: null, ring: RING, pool: POOL, dropped: 0, collision: null },
+    ]);
+  });
+});

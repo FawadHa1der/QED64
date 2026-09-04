@@ -204,12 +204,10 @@ function renderStatus(s: RelayStatus) {
   if (s.phase === "ready" || s.phase === "headerRefused") bootFinish();
 }
 
-/** The worker's collision fact (front door `statusOf().collision`; §3 row 8):
- * set while its last publish reported names already declared under a
- * COVERED header, null after a clean burst. Typed here until WorkerStatus
- * carries it. */
-type Collision = { names: string[]; version: number | null };
-const collisionOf = (s: RelayStatus): Collision | null => (s as { collision?: Collision | null }).collision ?? null;
+/** The worker's collision fact (front door `statusOf().collision`, carried
+ * on WorkerStatus; §3 row 8): set while its last publish reported names
+ * already declared under a COVERED header, null after a clean burst. */
+const collisionOf = (s: RelayStatus) => s.collision ?? null;
 
 /** Only the import lines of a header — the pump shim's prepareHeader builds
  * its warm-compile input the same way (the body must not be elaborated on
