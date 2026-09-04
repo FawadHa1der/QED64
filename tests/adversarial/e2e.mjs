@@ -431,7 +431,13 @@ if (runs("worker-kill-recovery")) {
   await page.selectOption("#examples", "mathlib").catch(() => {});
   await waitPill(/^ready$/, 90000, 2000);
   const statsBefore = await statsSnap();
-  await page.evaluate(() => { globalThis.qed64.shim.qs.session.worker.terminate(); });
+  // Kill the live worker whichever transport owns it: the pump shim's session
+  // (qed64.shim.qs.session) or the resident relay's (qed64.relay.session).
+  await page.evaluate(() => {
+    const q = globalThis.qed64; const s = q.shim?.qs?.session ?? q.relay?.session;
+    if (!s || !s.worker) throw new Error("kill drill: no live session/worker on the page");
+    s.worker.terminate();
+  });
   const recovered = await waitPill(/^ready$/, 180000, 4000);
   // give the replayed elaboration a beat to republish diagnostics
   let badge = "";
