@@ -278,3 +278,18 @@ refused, `missing=[Mathlib.Bogus]`, 0 ms; headerless → exact hit (629 modules)
 every public def/field needs a doc string; a modifier-misuse refusal
 (`meta`/`import all` outside `module`) was tried and removed — `toModuleHeader`
 flags legacy files' imports, so it refused every header.
+
+## 0033 — `-sPTHREAD_POOL_DELAY_LOAD=1` (link flag only)
+Measured on a first visit (2026-09-04, `work/heap-by-phase.cjs`): the renderer
+sits at ~9.2 GB at `ready` while the wasm heap is 2 GiB and never grows (the
+1.24 GB of snapshot regions live inside it). +2.2 GB is the runtime start
+(eagerly zero-filled shared memory + compiled code); **+4 GB is "Initializing
+the Lean runtime" — the 24 preallocated pthread workers (patch 0019) each
+parsing the 48 MB glue, ~170 MB per worker**; +1.1 GB the mathlib region. With
+delay-load the pool keeps its 24 slots (a `pthread_create` from a pthread can
+only claim a preallocated worker under this toolchain) but a worker fetches and
+parses `lean.js` only when a thread is actually started on it; 11 of 24 run at
+`ready`. The design's "W5" (delete the .snapz/tee/MEMFS copies) does not touch
+this footprint — the raw OPFS path is already direct — and stays hygiene. Next
+lever if needed: the export table (the glue is ~the 104k export wrappers, and
+every loaded worker parses it).

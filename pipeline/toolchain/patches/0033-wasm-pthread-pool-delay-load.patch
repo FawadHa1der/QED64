@@ -1,0 +1,37 @@
+From 0e4ccfb03de886c712e230dd4568dc5f2546c77d Mon Sep 17 00:00:00 2001
+From: QED64 Toolchain <qed64-toolchain@localhost>
+Date: Fri, 4 Sep 2026 09:14:24 -0400
+Subject: [PATCH] =?UTF-8?q?wasm:=20PTHREAD=5FPOOL=5FDELAY=5FLOAD=3D1=20?=
+ =?UTF-8?q?=E2=80=94=20idle=20pool=20workers=20do=20not=20load=20the=2048?=
+ =?UTF-8?q?=20MB=20glue=20(patch=200033)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Measured on a first visit: the renderer grows +4 GB during 'Initializing the
+Lean runtime', when the 24 preallocated pthread workers each parse lean.js
+(~170 MB per worker); the wasm heap itself is 2 GiB and never grows. With
+delay-load the pool keeps its 24 slots (patch 0019: pthread_create from a
+pthread can only claim a preallocated worker) but a worker fetches and parses
+the script only when a thread is actually started on it — 11 of 24 run at
+'ready'. Link flag only; no source change.
+---
+ src/CMakeLists.txt | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 97d7702..7ee6111 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -937,7 +937,7 @@ if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
+   # physical allocation. wasm64 uses 128MB initially and may grow to 12GB.
+   string(
+     APPEND LEAN_EXE_LINKER_FLAGS
+-    " ${LIB}/temp/libleanshell.a ${TOOLCHAIN_STATIC_LINKER_FLAGS} ${EMSCRIPTEN_SETTINGS} ${EMSCRIPTEN_LINK_SETTINGS} -lnodefs.js -lworkerfs.js -s EXIT_RUNTIME=1 -s MAIN_MODULE=2 -s ERROR_ON_UNDEFINED_SYMBOLS=0 -sEXPORTED_FUNCTIONS=@${LEAN_SOURCE_DIR}/emscripten-exports.txt -sEXPORTED_RUNTIME_METHODS=ccall,callMain,FS,ENV,getValue,setValue,stringToNewUTF8,UTF8ToString -s STACK_SIZE=16777216 -sINITIAL_MEMORY=${EMSCRIPTEN_INITIAL_MEMORY} -sMAXIMUM_MEMORY=${EMSCRIPTEN_MAXIMUM_MEMORY} -sPTHREAD_POOL_SIZE=24 -sDEFAULT_PTHREAD_STACK_SIZE=8388608 -sPROXY_TO_PTHREAD=1"
++    " ${LIB}/temp/libleanshell.a ${TOOLCHAIN_STATIC_LINKER_FLAGS} ${EMSCRIPTEN_SETTINGS} ${EMSCRIPTEN_LINK_SETTINGS} -lnodefs.js -lworkerfs.js -s EXIT_RUNTIME=1 -s MAIN_MODULE=2 -s ERROR_ON_UNDEFINED_SYMBOLS=0 -sEXPORTED_FUNCTIONS=@${LEAN_SOURCE_DIR}/emscripten-exports.txt -sEXPORTED_RUNTIME_METHODS=ccall,callMain,FS,ENV,getValue,setValue,stringToNewUTF8,UTF8ToString -s STACK_SIZE=16777216 -sINITIAL_MEMORY=${EMSCRIPTEN_INITIAL_MEMORY} -sMAXIMUM_MEMORY=${EMSCRIPTEN_MAXIMUM_MEMORY} -sPTHREAD_POOL_SIZE=24 -sPTHREAD_POOL_DELAY_LOAD=1 -sDEFAULT_PTHREAD_STACK_SIZE=8388608 -sPROXY_TO_PTHREAD=1"
+   )
+ endif()
+ 
+-- 
+2.50.1 (Apple Git-155)
+
