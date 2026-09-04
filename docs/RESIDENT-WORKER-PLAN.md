@@ -261,3 +261,17 @@ Multi-file projects, native mmap emulation, SharedWorker cross-tab session
 sharing (separate backlog line), and any Mathlib curation changes.
 
 **2026-09-04 (later):** the one resident e2e miss (the exact-imports action) is closed — the front door appends the umbrella-collision note inside the worker's own diagnostics burst and reports a `collision` fact on the status event; the page offers "Load exact imports", which restarts the relay session with the essential pack mounted and the header's import lines warm-compiled before `lsp-arm`. Measured on the served 0032 pairing: `mathlib-name-shadow-explains` and `mathlib-name-shadow-faithful-switch` pass (3/3 with boot). W5 is closed by measurement, not by savings: `lean.worker.js` lost its dead copy paths (1862 → 1611 lines), the pthread-pool delay-load flag changed nothing and was dropped, and the ~9 GB renderer footprint is attributed to V8's lazily-generated machine code for the 106 MB module (HARDENING #44). Reducing it means a leaner kernel module, not host-side work.
+
+**2026-09-04, resident is the default transport.** Measured on the served 0032 pairing (`wasm64-5dcdda005a7c5ae0`), the same artifacts for both transports:
+
+| lane | resident (default URL) | pump (`?resident=0`) |
+|---|---|---|
+| e2e | 23/23 | 23/23 |
+| header switch (covered) | 322 ms | 2,571 ms |
+| completion | 254 ms | 252 ms |
+| boot | 12.5 s | 12.6 s |
+| crash gauntlet, mixed | 227 steps, no crash | — |
+| crash gauntlet, imports | 74 steps, no crash | page dies on the first keystroke of the storm (pre-existing; the in-place restart under an import storm) |
+| compiler battery | 49/49 (shared) | |
+
+Two fixes landed on the way to parity: the front door fails import-line completions fast by *position* (a status-based rule raced the keystroke's own header status and hid Monaco's suggest widget; HARDENING #45), and the pump shim stops counting kind-2 (fatalError) progress entries as in-flight work and lets every published header failure set the sticky flag the drain reads (HARDENING #46). `?resident=0` keeps the pump reachable while it is still served; W5 is closed by attribution (HARDENING #44).
