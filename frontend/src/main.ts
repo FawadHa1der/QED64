@@ -2,7 +2,7 @@
 // the real vscode-lean4 InfoView) with zero servers — the Lean file worker
 // runs in this browser tab on the wasm64 runtime.
 import { LeanMonaco, LeanMonacoEditor, type LeanMonacoOptions } from "lean4monaco";
-import { installArtifacts, loadSnapshotByName, newSession, type ProgressInfo, type Qed64Artifacts, type Qed64Session, type StatusSink } from "./qed64-boot";
+import { ensureProfile, installArtifacts, loadSnapshotByName, newSession, type ProgressInfo, type Qed64Artifacts, type Qed64Session, type StatusSink } from "./qed64-boot";
 import { registerImportCompletion } from "./import-completion";
 import { WatchdogShim } from "./watchdog-shim";
 import { LspRelay, type RelaySession, type RelayStatus, type RestartOptions } from "./lsp-relay";
@@ -204,6 +204,19 @@ function renderStatus(s: RelayStatus) {
   if (s.phase === "ready" || s.phase === "headerRefused") bootFinish();
 }
 
+/** The worker's collision fact (front door `statusOf().collision`; §3 row 8):
+ * set while its last publish reported names already declared under a
+ * COVERED header, null after a clean burst. Typed here until WorkerStatus
+ * carries it. */
+type Collision = { names: string[]; version: number | null };
+const collisionOf = (s: RelayStatus): Collision | null => (s as { collision?: Collision | null }).collision ?? null;
+
+/** Only the import lines of a header — the pump shim's prepareHeader builds
+ * its warm-compile input the same way (the body must not be elaborated on
+ * the main thread; the FileWorker does that once the loop opens). */
+const IMPORT_LINE = /^\s*(?:public\s+|private\s+)?(?:meta\s+)?import\s+/;
+const importLinesOf = (header: string): string[] => header.split("\n").filter((l) => IMPORT_LINE.test(l));
+
 /** Day-5 session adapter (§2.2 L4; §7 day 5). A Worker exists from
  * construction — the relay always has a target and a booting worker queues
  * every frame (§6 amendment 20) — and `start()` runs the boot that
@@ -235,6 +248,17 @@ class ResidentSession implements RelaySession {
   dispose() { this.lean.dispose(); }
   async start(): Promise<void> {
     const a = this.artifacts;
+    // "Load exact imports" (§3 row 8; HARDENING #43): the header is imported
+    // from oleans below, so the ~1 GB olean pack must be installed BEFORE
+    // boot — LEAN_PATH and the mounts are boot inputs, and a running worker
+    // cannot retro-mount a pack (the pump path's prepareHeader has to throw
+    // `__qed64_remount__` and boot again for that; here nothing has booted
+    // yet, so the one user restart is the only restart). A pack missing from
+    // the index is not a death: the warm compile then fails its imports and
+    // the session serves the header covered, with the offer back.
+    if (this.opts.packs?.includes("essential") && !(await ensureProfile(a, "essential", ui))) {
+      ui.progress("the Mathlib library pack is unavailable — exact imports may fail");
+    }
     // Memory-backed segments were TRANSFERRED to the worker that booted them
     // and are detached page-side; a reboot reinstalls them exactly as
     // newSession does (an OPFS install revalidates in ms; memory mode
@@ -264,7 +288,34 @@ class ResidentSession implements RelaySession {
     for (const name of this.opts.snapshots ?? ["init", "mathlib"]) {
       if (!(await loadSnapshotByName(a, qs, name, ui))) throw new Error(`snapshot '${name}' failed to load`);
     }
+    if (this.opts.warmHeader) await this.warm(this.opts.warmHeader);
     // Deliberately no arm() here: the relay arms after its replay (§2.3 BootOk).
+  }
+
+  /** Exact imports (§2.2 L1(a) "optional warmHeader → _lean_wasm_compile";
+   * §6 second pass 14): compile ONLY the header's import lines while the loop
+   * is still CLOSED — the worker allows `compile` pre-open only (K-i) — so the
+   * real olean import pushes the exact environment into the main-thread
+   * cache. K1's lookup is exact-first, so the FileWorker then serves this
+   * header from that env (headerStatus mode "exact": no umbrella names, no
+   * collision) while every other header stays covered. A failed import is
+   * reported, not thrown: a throw here would be a BootFailed death and a
+   * crash-loop candidate, whereas serving the header covered again is
+   * honest — the collision note and the offer simply come back. */
+  private async warm(header: string): Promise<void> {
+    const imports = importLinesOf(header);
+    if (imports.length === 0) return;
+    ui.busy("importing exactly your header from the Mathlib library (about a minute; the checker starts afterwards)");
+    try {
+      const r = await this.lean.compile(`${imports.join("\n")}\n`, "/workspace/__warm.lean");
+      if (r.success) return;
+      const why = r.diagnostics.find((d) => d.severity === "error")?.message ?? `exit ${r.exitCode}`;
+      console.warn(`[qed64] exact import failed (${why}); serving the header from the preloaded library`);
+      ui.progress(`exact import failed: ${why.slice(0, 120)} — using the preloaded library`);
+    } catch (err) {
+      console.warn(`[qed64] exact import failed: ${(err as Error).message}; serving the header from the preloaded library`);
+      ui.progress("exact import failed — using the preloaded library");
+    }
   }
 }
 
@@ -338,9 +389,30 @@ async function main() {
   type Tel = { request(type: string, payload: Record<string, unknown>): Promise<unknown> };
   let telemetrySession: () => Tel | null;
   if (resident) {
+    // EXPLAIN AND OFFER, never reboot on the user's behalf (§3 row 8;
+    // HARDENING #43): the worker's publish already carries the note; the page
+    // only shows ONE action while the worker reports a collision and
+    // withdraws it when the fact clears (a clean burst, a header edit, a
+    // replacement session — its first status carries no collision). The
+    // click is the deliberate restart: boot-only snapshots + the header's
+    // exact imports from the olean pack (relay.restart, counted as a user
+    // restart, never a death).
+    let offered = false;
+    const offerExactImports = (s: RelayStatus) => {
+      const c = collisionOf(s);
+      if (c && !offered) {
+        offered = true;
+        ui.action?.("Load exact imports (about 1 min; first time downloads 1 GB)", () => {
+          if (relay) relay.restart({ snapshots: ["init", "mathlib"], warmHeader: relay.lastText, packs: ["essential"] });
+        });
+      } else if (!c && offered) {
+        offered = false;
+        ui.clearAction?.();
+      }
+    };
     relay = new LspRelay(
       (opts) => new ResidentSession(artifacts, opts ?? {}),
-      { status: renderStatus },
+      { status: (s) => { renderStatus(s); offerExactImports(s); } },
       () => new Promise((r) => window.setTimeout(r, 1500)),
     );
     clientPort = relay.clientPort;

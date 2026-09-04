@@ -12,7 +12,7 @@ import "../../public/workers/lsp-front-door.js";
 
 type Msg = { jsonrpc: "2.0"; id?: number | string; method?: string; params?: unknown; result?: unknown; error?: unknown };
 type Frame = { kind: "client"; msg: Msg; replay?: boolean } | { kind: "server"; msg: Msg } | { kind: "booted" } | { kind: "ring"; busy: boolean } | { kind: "died" };
-interface Status { phase: string; version: number | null; header: { mode: string } | null; dropped: number }
+interface Status { phase: string; version: number | null; header: { mode: string } | null; collision: { names: string[]; version: number | null } | null; dropped: number }
 interface Result { state: unknown; ringWrites: Msg[]; replies: Msg[]; startLoop: boolean; statusDelta: Status }
 type Posted = { protocol?: number; type: string; kind?: string; msg?: Msg; requestId?: string; phase?: string; result?: { operation: string; open?: boolean }; error?: { code: string; recoverable: boolean } };
 interface FrontDoor {
@@ -267,6 +267,63 @@ describe("front door: status (§2.2(e); §4 row 8)", () => {
     const snapshot = JSON.stringify(s0);
     run([{ kind: "client", msg: didOpen(1, "A") }, { kind: "booted" }, { kind: "client", msg: didChange(2, "AB") }], s0);
     expect(JSON.stringify(s0)).toBe(snapshot);
+  });
+});
+
+describe("front door: umbrella collisions (§3 row 8; HARDENING #42/#43)", () => {
+  type Diag = { range: { start: { line: number; character: number }; end: { line: number; character: number } }; severity: number; source?: string; message: string };
+  const publish = (version: number, diagnostics: Diag[]): Msg => ({ jsonrpc: "2.0", method: "textDocument/publishDiagnostics", params: { uri: URI, version, diagnostics } });
+  const declared = (name: string, line: number): Diag => ({ range: { start: { line, character: 10 }, end: { line, character: 14 } }, severity: 1, message: `'${name}' has already been declared` });
+  const TEXT = "-- a comment first\nimport Mathlib.Algebra.Algebra.Basic\n\ninductive Tree (α : Type) where\n  | leaf : Tree α\n";
+  const covered = (): { state: unknown } => run([{ kind: "booted" }, { kind: "client", msg: initialize(1) }, { kind: "client", msg: didOpen(1, TEXT) }, { kind: "server", msg: headerStatus(1, "covered") }]);
+
+  it("under a covered header an 'already declared' burst sets the collision fact and rides ONE information note inside the worker's own publish", () => {
+    const burst = publish(1, [declared("Tree", 3), declared("Tree.size", 6), declared("Tree", 9)]);
+    const before = JSON.stringify(burst);
+    const r = run([{ kind: "server", msg: burst }], covered().state);
+    expect(r.status.collision).toEqual({ names: ["Tree", "Tree.size"], version: 1 });
+    expect(r.replies).toHaveLength(1);
+    const diags = (r.replies[0]!.params as { diagnostics: Diag[] }).diagnostics;
+    expect(diags).toHaveLength(4); // the worker's three errors, then the note — never a separate publish (HARDENING #42)
+    const note = diags[3]!;
+    expect(note.severity).toBe(3);
+    expect(note.source).toBe("QED64");
+    expect(note.range).toEqual({ start: { line: 1, character: 0 }, end: { line: 1, character: "import Mathlib.Algebra.Algebra.Basic".length } }); // the header line, not line 0
+    expect(note.message).toMatch(/^Tree, Tree\.size collides with Mathlib/);
+    expect(note.message).toContain("preloads all of Mathlib");
+    expect(note.message).toContain("live.lean-lang.org");
+    expect(note.message).toContain("MyTree");
+    expect(note.message).toContain('"Load exact imports"');
+    expect(note.message).toContain("1 GB");
+    expect(JSON.stringify(burst)).toBe(before); // the input frame is not mutated (step is pure)
+  });
+  it("a later clean burst clears the fact and carries no note; a repeated collision burst re-appends it", () => {
+    const collided = run([{ kind: "server", msg: publish(1, [declared("Tree", 3)]) }], covered().state);
+    expect(collided.status.collision).not.toBeNull();
+    const clean = run([{ kind: "client", msg: didChange(2, TEXT.replace("Tree", "MyTree")) }, { kind: "server", msg: publish(2, []) }], collided.state);
+    expect(clean.status.collision).toBeNull();
+    expect((clean.replies[0]!.params as { diagnostics: Diag[] }).diagnostics).toEqual([]);
+    const again = run([{ kind: "server", msg: publish(2, [declared("Tree", 3)]) }], clean.state);
+    expect(again.status.collision).toEqual({ names: ["Tree"], version: 2 });
+    expect((again.replies[0]!.params as { diagnostics: Diag[] }).diagnostics).toHaveLength(2);
+  });
+  it("an exact session cannot collide: the same burst under an 'exact' verdict sets nothing and adds nothing", () => {
+    const exact = run([{ kind: "booted" }, { kind: "client", msg: didOpen(1, TEXT) }, { kind: "server", msg: headerStatus(1, "exact") }]);
+    const r = run([{ kind: "server", msg: publish(1, [declared("Tree", 3)]) }], exact.state);
+    expect(r.status.collision).toBeNull();
+    expect((r.replies[0]!.params as { diagnostics: Diag[] }).diagnostics).toHaveLength(1);
+    // Likewise with no verdict yet, and for a user's own duplicate under a refused header.
+    const none = run([{ kind: "booted" }, { kind: "client", msg: didOpen(1, TEXT) }, { kind: "server", msg: publish(1, [declared("Tree", 3)]) }]);
+    expect(none.status.collision).toBeNull();
+    expect((none.replies.at(-1)!.params as { diagnostics: Diag[] }).diagnostics).toHaveLength(1);
+  });
+  it("the note follows the header line of the text the worker holds, in client version space after a re-open", () => {
+    const reopened = run([{ kind: "client", msg: didOpen(1, "import Mathlib.Data.Nat.Basic\ndef Tree := 1\n", "file:///level2.lean") }, { kind: "server", msg: headerStatus(2, "covered") }], covered().state);
+    const r = run([{ kind: "server", msg: publish(2, [declared("Tree", 1)]) }], reopened.state); // worker v2 (lastVersion 1 + 1) = client v1
+    expect(r.status.collision).toEqual({ names: ["Tree"], version: 1 });
+    const note = (r.replies[0]!.params as { diagnostics: Diag[] }).diagnostics[1]!;
+    expect(note.range.start.line).toBe(0);
+    expect(note.range.end.character).toBe("import Mathlib.Data.Nat.Basic".length);
   });
 });
 
