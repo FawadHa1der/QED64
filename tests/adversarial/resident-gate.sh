@@ -13,7 +13,7 @@ for P in $(lsof -ti :5184 2>/dev/null); do kill $P 2>/dev/null; done; sleep 2
 (cd frontend && PORT=5184 nohup npx vite > /tmp/vite5184.log 2>&1 &); sleep 7
 curl -s -o /dev/null -w "vite5184=%{http_code}\n" http://localhost:5184/
 URL=$(tests/adversarial/resident-url.sh 5184)
-PUMP="http://localhost:5184/"
+PUMP="http://localhost:5184/?resident=0"
 echo "resident url: $URL"
 RUN=$(node tests/adversarial/harness.mjs run-dir --url "$URL")
 echo "run dir: $RUN"

@@ -27,7 +27,7 @@ export function resolveTarget(url) {
   const u = new URL(url);
   const runtimeOverride = u.searchParams.get("runtime");
   const snapshotsDir = u.searchParams.get("snapshots") || "snapshots";
-  const mode = u.searchParams.get("resident") === "1" ? "resident" : "pump";
+  const mode = u.searchParams.get("resident") === "0" ? "pump" : "resident"; // resident is the default transport
   return {
     url: u.toString(),
     origin: u.origin,

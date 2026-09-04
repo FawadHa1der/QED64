@@ -17,7 +17,7 @@ import path from "node:path";
 import { chromium } from "playwright";
 import { arg, fetchJson, resolveTarget, root, runDir, teeLog } from "./harness.mjs";
 const url = arg("url", "http://localhost:5184/");
-const label = arg("label", /resident=1/.test(url) ? "resident" : "pump");
+const label = arg("label", /resident=0/.test(url) ? "pump" : "resident");
 const rounds = Number(arg("rounds", "3"));
 const target = resolveTarget(url);
 const manifest = await fetchJson(target.manifestUrl).catch(() => null);

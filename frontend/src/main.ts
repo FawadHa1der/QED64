@@ -183,7 +183,7 @@ const ui: StatusSink = {
   clearAction() { renderAction(null); },
 };
 
-// ---- Resident preview (?resident=1): relay instead of shim -----------------
+// ---- Resident transport (default; ?resident=0 = pump shim): relay instead of shim ----
 // The pill is `render(status)` — one enum from the worker (§2.2(e)), no label
 // strings to regex over (C10). The overlay goes at the first phase in which
 // the workspace is actionable: `ready`, or `headerRefused` (a restored buffer
@@ -380,10 +380,14 @@ async function main() {
   let shim: WatchdogShim | null = null;
   let relay: LspRelay | null = null;
   let clientPort: MessagePort;
-  // ?resident=1 (§7 day 5, S3a): the resident front door + relay, a flagged
+  // Resident (default since 2026-09-04; §7 day 5, S3a): the front door + relay, once a flagged
   // preview on the R1 kernel. The pump path (WatchdogShim) stays the default
   // and is untouched.
-  const resident = new URLSearchParams(location.search).get("resident") === "1";
+  // Resident is the default transport (2026-09-04: e2e parity, gauntlets
+  // clean at 227/74 steps where the pump page dies on the first import
+  // keystroke of a storm, header switch 313 ms vs 2,550 ms). `?resident=0`
+  // keeps the pump path reachable as the fallback while it is still served.
+  const resident = new URLSearchParams(location.search).get("resident") !== "0";
   type Tel = { request(type: string, payload: Record<string, unknown>): Promise<unknown> };
   let telemetrySession: () => Tel | null;
   if (resident) {

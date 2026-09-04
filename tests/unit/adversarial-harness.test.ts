@@ -22,10 +22,13 @@ describe("onlyMatches", () => {
 });
 
 describe("resolveTarget", () => {
-  test("default page → mutable manifest, /snapshots/, pump", () => {
+  test("default page → mutable manifest, /snapshots/, resident (the default transport; ?resident=0 is pump)", () => {
     const t = resolveTarget("http://localhost:5187/");
-    expect(t).toMatchObject({ mode: "pump", runtimeOverride: null, snapshotsDir: "snapshots",
+    expect(t).toMatchObject({ mode: "resident", runtimeOverride: null, snapshotsDir: "snapshots",
       manifestUrl: "http://localhost:5187/runtime/runtime-manifest.json", indexUrl: "http://localhost:5187/snapshots/index.json" });
+  });
+  test("?resident=0 → pump (the fallback transport)", () => {
+    expect(resolveTarget("http://localhost:5184/?resident=0").mode).toBe("pump");
   });
   test("dev overrides follow qed64-boot.ts (?runtime=, ?snapshots=, ?resident=1)", () => {
     const t = resolveTarget("http://localhost:5184/?resident=1&runtime=wasm64-464463c696d9aa2d&snapshots=snapshots-0031");
