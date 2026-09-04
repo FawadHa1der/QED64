@@ -35,6 +35,11 @@ export interface StatusSink {
   progress(label: string, info?: ProgressInfo): void;
   /** The page is quiescent. */
   idle(label: string): void;
+  /** Offer ONE explicit, user-initiated action beside the pill (e.g. "Load
+   * exact imports"); optional so embedders' sinks keep compiling. The action
+   * stays until `clearAction` or the next offer replaces it. */
+  action?(label: string, run: () => void): void;
+  clearAction?(): void;
 }
 
 declare const __QED64_BUILD_ID__: string;

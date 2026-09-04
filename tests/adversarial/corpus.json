@@ -1,2057 +1,2107 @@
 {
- "schema": "qed64.adversarial-corpus/v1",
- "items": [
-  {
-   "name": "garbage-token-storm",
-   "category": "parser/parser-lexer",
-   "source": "$$$$ %%%% @@@@ ????\n;;;; :::: ,,,, ....\n!!!! ~~~~ ^^^^ &&&&\n|||| #### 123abc 456def\n\\ \\ \\ \\ ]]]] }}}}\n.5.5.5 0x 0b2 1e\n",
-   "expect": {
-    "panicFree": true,
-    "mustError": true,
-    "containsMsgs": [
-     "unexpected token '$'"
-    ],
-    "budgetMs": 20000
-   },
-   "rationale": "Junk-token soup at command level: symbol clusters, glued numeral+ident tokens, lone backslashes, malformed numeric literals, unbalanced closers. Re-verified in this audit on native lean 4.33.1: exactly three clean parse errors — 1:0 \"unexpected token '$'\" with the giant expected-command-token list (stresses diagnostics rendering), 4:23 and 5:2 backslash errors. Targets the garbage-typing-storm class that historically killed the worker."
-  },
-  {
-   "name": "unterminated-string-literal",
-   "category": "parser/parser-lexer",
-   "source": "def neverEnds : String := \"this string never terminates and swallows everything after it\ndef swallowed : Nat := 42\n",
-   "expect": {
-    "panicFree": true,
-    "mustError": true,
-    "containsMsgs": [
-     "unterminated string literal"
-    ],
-    "budgetMs": 20000
-   },
-   "rationale": "Lean strings may span newlines, so the unterminated literal consumes the rest of the file to EOF, including a would-be-valid decl. Re-verified in this audit on native 4.33.1: exactly one 'unterminated string literal' error at 1:26 (message text confirmed in fork source Parser/Basic.lean). Tests lexer EOF path and that the swallowed decl leaves no stale diagnostics."
-  },
-  {
-   "name": "unterminated-nested-block-comment",
-   "category": "parser/parser-lexer",
-   "source": "/- level one /- level two -/ back to level one\n   /- deeper /- deepest, never closing any of these\n   \"a quote inside a comment and a « guillemet\n",
-   "expect": {
-    "panicFree": true,
-    "mustError": true,
-    "containsMsgs": [
-     "unterminated comment"
-    ],
-    "budgetMs": 20000
-   },
-   "rationale": "Nested block comments (Lean comments nest) left open at three depths, with a quote and a guillemet inside to tempt the lexer into mode confusion. Re-verified in this audit on native 4.33.1: single 'unterminated comment' error at 4:0 (EOF)."
-  },
-  {
-   "name": "deep-paren-nesting-unbalanced",
-   "category": "parser/parser-lexer",
-   "source": "#check\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n 1]\n",
-   "expect": {
-    "panicFree": true,
-    "mustError": true,
-    "containsMsgs": [
-     "expected ')'"
-    ],
-    "budgetMs": 20000
-   },
-   "rationale": "200 open parens (20 lines of 10) with a mismatched ']' closer: drives the parser 200 frames deep then forces the error path at full depth. Re-verified in this audit on native 4.33.1: single error at 22:2 \"unexpected token ']'; expected ')', ',' or ':'\", 0.1 s, no stack issue. Probes the JS-stack-overflow class under wasm."
-  },
-  {
-   "name": "deep-paren-nesting-balanced-valid",
-   "category": "parser/parser-lexer",
-   "source": "example : Nat :=\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n 0\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\ntheorem deep_ok :\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n 2 + 2\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n = 4 := rfl\n",
-   "expect": {
-    "panicFree": true,
-    "mustSucceed": true,
-    "budgetMs": 20000
-   },
-   "rationale": "Success-path twin of the unbalanced case: 200-deep balanced parens around 0 plus a 100-deep balanced theorem proved by rfl. Re-verified in this audit on native 4.33.1: compiles clean in 0.11 s (~0.5 s wasm). Confirms deep-but-legal nesting neither errors nor overflows the wasm/JS stack."
-  },
-  {
-   "name": "giant-unknown-identifier-token",
-   "category": "parser/parser-lexer",
-   "source": "#check xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaAAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
-   "expect": {
-    "panicFree": true,
-    "mustError": true,
-    "containsMsgs": [
-     "Unknown identifier"
-    ],
-    "budgetMs": 20000
-   },
-   "rationale": "One ~1.1KB single identifier token: stresses the lexer's long-token path and the InfoView rendering of a diagnostic whose message embeds the giant name. Re-verified in this audit on native 4.33.1: clean 'Unknown identifier `xa...a`' error (4.33 capitalized-with-backticks phrasing, code lean.unknownIdentifier), no panic."
-  },
-  {
-   "name": "giant-line-parse-error-columns",
-   "category": "parser/parser-lexer",
-   "source": "def gs : String := \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\" ++ %\n#check 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + %\n",
-   "expect": {
-    "panicFree": true,
-    "mustError": true,
-    "containsMsgs": [
-     "unexpected token '%'"
-    ],
-    "budgetMs": 20000
-   },
-   "rationale": "Two giant single lines each ending in garbage: a long string literal then '++ %' (error at a far-right column, stressing UTF-16 column math in the LSP shim), and a ~120-term addition chain ending in '%'. The chain deliberately exercises Lean's superquadratic parse-error recovery, bounded at ~120 terms. Re-verified in this audit on native 4.33.1: two \"unexpected token '%'; expected term\" errors at columns 574 and 486, 0.9 s native (~3 s wasm) — within budget."
-  },
-  {
-   "name": "invisible-combining-unicode-idents",
-   "category": "parser/parser-lexer",
-   "source": "def a‍b : Nat := 1\ntheo​rem zwsp : True := trivial\ndef ź̴a͖l̠g̸o͜ : Nat := 0\ndef w⁠j : Nat := 2\n",
-   "expect": {
-    "panicFree": true,
-    "mustError": true,
-    "containsMsgs": [
-     "expected token"
-    ],
-    "budgetMs": 20000
-   },
-   "rationale": "Zero-width joiner (U+200D) inside a def name, zero-width space (U+200B) splitting the 'theorem' keyword, zalgo combining diacritics after ident letters, and word joiner (U+2060). None are valid ident chars in Lean. Re-verified in this audit on native 4.33.1: three clean 'expected token' errors (lines 1, 3, 4; the ZWSP line is absorbed by recovery from line 1 rather than separately reported), no panic."
-  },
-  {
-   "name": "bidi-rtl-mark-attack",
-   "category": "parser/parser-lexer",
-   "source": "‏ def rlm := 1\nx := ‮reversed‬ segment\ndef שלום := 1\ndef مرحبا := 2\n",
-   "expect": {
-    "panicFree": true,
-    "mustError": true,
-    "containsMsgs": [
-     "expected token",
-     "expected command"
-    ],
-    "budgetMs": 20000
-   },
-   "rationale": "Right-to-left mark (U+200F) at line start, right-to-left override + pop (U+202E/U+202C) mid-line, and Hebrew/Arabic letters as def names (not letterlike in Lean's ident rules). Re-verified in this audit on native 4.33.1: four errors — 'expected token' at 1:0, 3:9, 4:10 and 'unexpected identifier; expected command' at 2:0 — clean recovery; also visually stresses Monaco's bidi rendering of squiggles."
-  },
-  {
-   "name": "garbage-storm-then-valid-recovery",
-   "category": "parser/parser-lexer",
-   "source": "]qw}e{r|t;y:u,i.o<p>a?s/d+f-g*h^j&k%l$\n]qw}e{r|t;y:u,i.o<p>a?s/d+f-g*h^j&k%l$\n]qw}e{r|t;y:u,i.o<p>a?s/d+f-g*h^j&k%l$\n]qw}e{r|t;y:u,i.o<p>a?s/d+f-g*h^j&k%l$\n]qw}e{r|t;y:u,i.o<p>a?s/d+f-g*h^j&k%l$\n]qw}e{r|t;y:u,i.o<p>a?s/d+f-g*h^j&k%l$\n]qw}e{r|t;y:u,i.o<p>a?s/d+f-g*h^j&k%l$\n]qw}e{r|t;y:u,i.o<p>a?s/d+f-g*h^j&k%l$\ntheorem storm_recovery : 2 + 2 = 4 := rfl\n0p9o8i7u6y5t4r3e2w1q ]]] }}} >>> ::: ;;;\n0p9o8i7u6y5t4r3e2w1q ]]] }}} >>> ::: ;;;\n0p9o8i7u6y5t4r3e2w1q ]]] }}} >>> ::: ;;;\n0p9o8i7u6y5t4r3e2w1q ]]] }}} >>> ::: ;;;\n0p9o8i7u6y5t4r3e2w1q ]]] }}} >>> ::: ;;;\n0p9o8i7u6y5t4r3e2w1q ]]] }}} >>> ::: ;;;\n0p9o8i7u6y5t4r3e2w1q ]]] }}} >>> ::: ;;;\n0p9o8i7u6y5t4r3e2w1q ]]] }}} >>> ::: ;;;\n",
-   "expect": {
-    "panicFree": true,
-    "mustError": true,
-    "containsMsgs": [
-     "expected command"
-    ],
-    "budgetMs": 20000
-   },
-   "rationale": "Recovery flagship: 8 lines of keyboard-mash garbage (no string/comment/guillemet openers, so recovery stays token-based), one valid theorem, then 8 more garbage lines. AUDIT FIX: was mustSucceed, but the file necessarily carries error diagnostics, so the correct expectation is mustError. Re-verified on native 4.33.1: exactly two 'expected command' errors (1:0 and 10:0) bracketing the theorem, which parses and elaborates cleanly. Regression-tests parser recovery anchoring at the next command keyword and the storm-crash class."
-  },
-  {
-   "name": "emoji-identifier-attack",
-   "category": "parser/parser-lexer",
-   "source": "def 🚀 : Nat := 1\n#check 😀😀😀\nexample : 🦀 = 🦀 := rfl\n",
-   "expect": {
-    "panicFree": true,
-    "mustError": true,
-    "containsMsgs": [
-     "expected token"
-    ],
-    "budgetMs": 20000
-   },
-   "rationale": "Emoji (astral-plane, surrogate pairs in UTF-16) in decl-name, command-argument, and term positions; emoji are not letterlike so all three lines fail. Re-verified in this audit on native 4.33.1: three 'expected token' errors at 1:6, 2:7, 3:10 (the emoji columns), exercising surrogate-pair position math in the LSP shim."
-  },
-  {
-   "name": "guillemet-ident-recovery",
-   "category": "parser/parser-lexer",
-   "source": "def «weird + name : with, spaces» : Nat := 42\n#eval «weird + name : with, spaces»\ndef «forever unterminated escaped ident := 99\n",
-   "expect": {
-    "panicFree": true,
-    "mustError": true,
-    "containsMsgs": [
-     "unterminated identifier escape"
-    ],
-    "budgetMs": 20000
-   },
-   "rationale": "French-quote escaped identifiers: a valid «...» name containing operator and punctuation tokens (defined and #eval'd successfully, printing 42), followed by an unterminated « that runs to EOF. AUDIT FIX: was mustSucceed, but the trailing unterminated escape is an error diagnostic, so mustError is the correct flag; the #eval success is the recovery invariant. Re-verified on native 4.33.1: eval prints 42 and the tail yields exactly one 'unterminated identifier escape' error at 3:13."
-  },
-  {
-   "name": "notation-edge-cases",
-   "category": "parser/parser-lexer",
-   "source": "notation \"\" => Nat\ninfixl:65 \" +!+ \" =>\nnotation \"☹\" \"☹\" =>\ninfixr:9999999999999999999999 \" ⊗⊗ \" => HMul.hMul\n",
-   "expect": {
-    "panicFree": true,
-    "mustError": true,
-    "containsMsgs": [
-     "invalid atom"
-    ],
-    "budgetMs": 20000
-   },
-   "rationale": "Notation edge cases: empty atom ('invalid atom'), infixl with missing body (next command keyword consumed as term), duplicated emoji atoms with missing body, and a 22-digit precedence probing Nat-to-table conversion for panics. Re-verified in this audit on native 4.33.1: exactly three errors ('invalid atom' at 1:9, \"unexpected token 'notation'; expected term\" at 2:20, \"unexpected token 'infixr'; expected term\" at 3:19) and the giant precedence is accepted without panic — exactly the invariant (panicFree) this input guards."
-  },
-  {
-   "name": "astral-ident-utf16-recovery",
-   "category": "parser/parser-lexer",
-   "source": "def 𝕜 : Nat := 5\ndef 𝔸𝔹ℂ : Nat := 𝕜 + 2\n#eval 𝔸𝔹ℂ\n-- comment with astral 😀𝄞𝕏 and replacement ��� chars\ntheorem 𝕥𝕙𝕞 : 𝔸𝔹ℂ = 7 := rfl\n🚀🚀🚀 garbage after astral idents ��\n",
-   "expect": {
-    "panicFree": true,
-    "mustError": true,
-    "containsMsgs": [
-     "expected token"
-    ],
-    "budgetMs": 20000
-   },
-   "rationale": "Surrogate-pair stress within Lean's legal ident space: double-struck letters (Mathlib's 𝕜 style) are letterlike, so the defs, #eval (prints 7), and theorem all succeed while every position after them requires correct UTF-16 surrogate-pair column accounting; a trailing emoji+U+FFFD garbage line then errors and recovery must preserve the earlier decls. AUDIT FIX: was mustSucceed, but the trailing garbage line is an error diagnostic, so mustError is correct; the eval output 7 is the recovery invariant. Re-verified on native 4.33.1: eval prints 7 plus exactly one 'expected token' error at 6:0."
-  },
-  {
-   "name": "tc_instance_depth_charge",
-   "category": "elab/typeclass-search",
-   "source": "import Mathlib\n\nset_option maxHeartbeats 400000\n\n-- Deep DecidableEq derivation: needs a raised instance-size budget.\nset_option synthInstance.maxSize 512 in\nexample : DecidableEq (List (Option ((Nat × Int × Bool) ⊕ (Fin 7 × List (Option (Bool × Nat)))))) :=\n  inferInstance\n\n-- Instance stacking through iterated products.\nexample : CommRing ((ℤ × ℤ) × (ℤ × ℤ) × (ℤ × ℤ)) := inferInstance\n\n-- Lexicographic order synthesis.\nexample : LinearOrder (Lex (Fin 5 × Lex (Fin 3 × Fin 2))) := inferInstance\n\n-- Decidability of a bounded quantifier through Fintype search.\nexample : Decidable (∀ x : Fin 6, ∀ y : Fin 6, x + y = y + x) := inferInstance\n\n-- Pi-type DecidableEq stack.\nexample : DecidableEq (Fin 3 → Fin 3 → Bool) := inferInstance\n",
-   "expect": {
-    "panicFree": true,
-    "budgetMs": 20000,
-    "mustSucceed": true
-   },
-   "rationale": "Typeclass-search-heavy but terminating: deep DecidableEq/CommRing/LinearOrder/Fintype instance derivations over nested product, sum, Lex, and Pi types. Re-verified in this audit on the shipped wasm64 runtime + umbrella snapshot (snapshot-probe --via-mem): clean success in 917 ms. The first example genuinely exceeds the default synthInstance.maxSize 128, so the in-source set_option is load-bearing; every search is structurally bounded — no unbounded-search risk."
-  },
-  {
-   "name": "rec_depth_ladder",
-   "category": "elab/recursion-depth",
-   "source": "import Mathlib.Tactic\n\n-- 120-deep left-nested addition: elaborator + kernel walk the spine.\nexample : 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 = (0 : Nat) := rfl\n\n-- 120-deep successor tower vs the literal.\nexample : Nat.zero.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ = 120 := rfl\n\n-- 100-deep parenthesis nesting through the parser.\nexample : Nat := ((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((7 : Nat))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))\n",
-   "expect": {
-    "panicFree": true,
-    "budgetMs": 20000,
-    "mustSucceed": true
-   },
-   "rationale": "Moderately deep recursion staying under maxRecDepth 512: a 120-term left-nested + chain proved by rfl (kernel defeq walks the spine), a 120-deep .succ tower against the literal 120 (kernel Nat-literal normalization), and 100-deep parser paren nesting. Re-verified in this audit on native 4.33.1 (body is core-only): clean success in 0.17 s."
-  },
-  {
-   "name": "rec_depth_overflow_clean",
-   "category": "elab/recursion-depth",
-   "source": "import Mathlib.Tactic\n\n-- Meta-level whnf recursion overflow during `decide` must surface as the\n-- CLEAN \"maximum recursion depth\" error, never a stack-blown worker crash.\nset_option maxRecDepth 512 in\nexample : (List.range 300).length = 300 := by decide\n\n-- Lowered limit: the same clean failure at a small depth.\nset_option maxRecDepth 64 in\nexample : (List.range 100).foldl (· + ·) 0 = 4950 := by decide\n",
-   "expect": {
-    "panicFree": true,
-    "budgetMs": 20000,
-    "mustError": true,
-    "containsMsgs": [
-     "maximum recursion depth"
-    ]
-   },
-   "rationale": "Regression test for the JS-stack-overflow-kills-worker bug class: recursion past maxRecDepth must die via Lean's own guard, not the wasm/JS stack. whnf evaluation of List.range under decide reliably trips the guard — List.range 300 trips the pinned 512, and range 100 foldl trips a lowered limit 64. Re-verified in this audit on native 4.33.1: exactly two clean 'maximum recursion depth has been reached' errors (message text confirmed in fork Init/Prelude.lean), instant, worker-safe."
-  },
-  {
-   "name": "bignum_normnum_gauntlet",
-   "category": "elab/numerals-norm_num",
-   "source": "import Mathlib.Tactic\n\nexample : (2 : ℕ) ^ 100 = 1267650600228229401496703205376 := by norm_num\nexample : (2 : ℤ) ^ 64 - 2 ^ 63 = 2 ^ 63 := by norm_num\nexample : (3 : ℚ) / 7 + 2 / 7 = 5 / 7 := by norm_num\nexample : Nat.gcd 123456789 987654321 = 9 := by norm_num\nexample : 999983 * 999979 = 999962000357 := by norm_num\nexample : (3 : ℕ) ^ 60 = 42391158275216203514294433201 := by norm_num\n",
-   "expect": {
-    "panicFree": true,
-    "budgetMs": 20000,
-    "mustSucceed": true
-   },
-   "rationale": "Large-but-bounded numerals through the norm_num extension stack (Pow, GCD, rat-arithmetic): 2^100 and 3^60 exact values, ℤ pow subtraction, ℚ division, Nat.gcd, and a 12-digit product. All constants machine-computed. Deliberately avoids Nat.Prime (Mathlib.Tactic.NormNum.Prime is a known gap in the QED64 essential profile). Re-verified in this audit on the shipped wasm64 runtime + umbrella snapshot: clean success in 1490 ms."
-  },
-  {
-   "name": "bignum_decide_kernel",
-   "category": "elab/numerals-decide",
-   "source": "import Mathlib.Tactic\n\n-- 4096 kernel-evaluated cases.\nexample : ∀ x : Fin 64, ∀ y : Fin 64, (x.val + y.val) % 64 < 64 := by decide\n\nexample : Nat.gcd 123456789 987654321 = 9 := by decide\nexample : (List.range 100).length = 100 := by decide\nexample : (List.range 100).foldl (· + ·) 0 = 4950 := by decide\n",
-   "expect": {
-    "panicFree": true,
-    "budgetMs": 20000,
-    "mustSucceed": true
-   },
-   "rationale": "Bounded kernel evaluation via decide: a 4096-case Fintype forall over Fin 64 × Fin 64, Euclid gcd on 9-digit inputs, and List.range 100 computations (sized deliberately under the maxRecDepth whnf ceiling — range 300 is the error case in rec_depth_overflow_clean). Re-verified in this audit on native 4.33.1 (core-only body): 0.73 s native, ~2-3 s wasm — comfortably inside budget, strictly bounded case count."
-  },
-  {
-   "name": "simp_loop_breaker",
-   "category": "elab/simp-termination",
-   "source": "import Mathlib.Tactic\n\n-- Permutative lemma set: looks loopy, terminates via ordered rewriting.\nexample (a b c : Nat) : a + b + c = c + b + a := by\n  simp [Nat.add_comm, Nat.add_left_comm]\n\naxiom P : Nat → Prop\naxiom P_shift (n : Nat) : P n ↔ P (n + 1)\n\n-- Genuinely looping rewrite; the recursion/heartbeat budget must stop it\n-- CLEANLY (and the \"possibly looping\" lint should fire).\nset_option maxHeartbeats 40000 in\nexample : P 0 := by\n  simp only [P_shift]\n",
-   "expect": {
-    "panicFree": true,
-    "budgetMs": 20000,
-    "mustError": true,
-    "containsMsgs": [
-     "Possibly looping simp theorem"
-    ]
-   },
-   "rationale": "Two sides of simp termination: a permutative AC lemma set that terminates via ordered rewriting (must not loop), then a genuinely divergent P n ↔ P (n+1) rewrite that Lean must stop cleanly. Re-verified in this audit on native 4.33.1: warning 'Possibly looping simp theorem: `P_shift`' (message confirmed in fork LoopProtection.lean — the loop check is force-run after a recursion-depth failure) plus error 'Tactic `simp` failed with a nested error: maximum recursion depth...', instant. The maxHeartbeats 40000 in-source bound is the backstop; worker must survive. Stale-diagnostics and frozen-elaborating-pill regression bait."
-  },
-  {
-   "name": "structure_eta_mutual",
-   "category": "elab/inductives-eta",
-   "source": "import Mathlib.Tactic\n\nstructure Pt where\n  x : Nat\n  y : Nat\n\n-- Structure eta in defeq checks.\nexample (p : Pt) : p = ⟨p.x, p.y⟩ := rfl\nexample (p : Nat × Nat) : p = (p.1, p.2) := rfl\nexample (f : Nat × Nat → Nat) : f = fun p => f (p.1, p.2) := rfl\n\nstructure Sig where\n  n : Nat\n  h : n = n\n\nexample (s : Sig) : s = ⟨s.n, s.h⟩ := rfl\n\nmutual\n  inductive TreeN : Type where\n    | node : Nat → ForestN → TreeN\n  inductive ForestN : Type where\n    | nil : ForestN\n    | cons : TreeN → ForestN → ForestN\nend\n\nmutual\n  def treeSize : TreeN → Nat\n    | .node _ f => 1 + forestSize f\n  def forestSize : ForestN → Nat\n    | .nil => 0\n    | .cons t f => treeSize t + forestSize f\nend\n\nexample : treeSize (.node 5 (.cons (.node 1 .nil) .nil)) = 2 := by\n  norm_num [treeSize, forestSize]\n",
-   "expect": {
-    "panicFree": true,
-    "budgetMs": 20000,
-    "mustSucceed": true
-   },
-   "rationale": "Structure-eta defeq edge cases (record eta under rfl, Prod eta, function-plus-structure eta, a dependent-field record) plus mutual inductive types with mutual recursive functions over them, computed via equation lemmas. Exercises the kernel's eta-for-structures path and mutual brecOn compilation — env-extension-epoch panic bait. Re-verified in this audit on the shipped wasm64 runtime + umbrella snapshot: clean success in 2130 ms."
-  },
-  {
-   "name": "universe_poly_edges",
-   "category": "elab/universes",
-   "source": "import Mathlib.Tactic\n\nuniverse u v w\n\ndef myId : ∀ {α : Sort u}, α → α := fun a => a\n\nexample : myId (myId (myId 3)) = 3 := rfl\n\nset_option linter.checkUnivs false in\ndef liftTwice (α : Type u) : Type (max (max u v) w) := ULift.{w} (ULift.{v} α)\n\nexample : liftTwice.{0, 0, 0} Nat = ULift.{0} (ULift.{0} Nat) := rfl\n\nexample (n : Nat) : (ULift.up.{7} n).down = n := rfl\n\ndef piSort (α : Sort u) (β : α → Sort v) : Sort (imax u v) := ∀ a, β a\n\ndef nestOpt : Nat → Type\n  | 0 => PUnit\n  | n + 1 => Option (nestOpt n)\n\nexample : nestOpt 3 = Option (Option (Option PUnit)) := rfl\n\nexample : (Sort 0) = Prop := rfl\n\ndef pp : PProd PUnit.{u} PUnit.{v} := ⟨⟨⟩, ⟨⟩⟩\n",
-   "expect": {
-    "panicFree": true,
-    "budgetMs": 20000,
-    "mustSucceed": true
-   },
-   "rationale": "Universe-polymorphism edges: Sort-polymorphic id self-application, explicit max/imax level expressions, ULift at concrete high levels (ULift.up.{7}), a Nat-indexed Type-valued recursion reduced by kernel defeq, Sort 0 = Prop, and cross-universe PProd. Audit confirmed linter.checkUnivs is a real registered core option (fork src/Lean/Linter/CheckUnivs.lean), so the in-source silencing is valid and load-bearing. Re-verified on native 4.33.1: clean success in 0.11 s."
-  },
-  {
-   "name": "tactic_misuse_gauntlet",
-   "category": "elab/tactic-misuse",
-   "source": "import Mathlib.Tactic\n\n-- decide on an undecidable universal: clean synthesis failure.\nexample : ∀ n : Nat, n + 0 = n := by decide\n\n-- decide on a false decidable proposition: clean refutation.\nexample : (2 : Nat) + 2 = 5 := by decide\n\n-- exact? after the goal is already closed: instant clean misuse error.\nexample : True := by trivial; exact?\n\n-- sorry: warning only, session must stay alive.\nexample : False := by sorry\n",
-   "expect": {
-    "panicFree": true,
-    "budgetMs": 20000,
-    "mustError": true,
-    "containsMsgs": [
-     "failed to synthesize",
-     "is false",
-     "No goals to be solved",
-     "declaration uses `sorry`"
-    ]
-   },
-   "rationale": "Tactic-misuse gauntlet, each probe failing cleanly and instantly: decide without a Decidable instance ('failed to synthesize' — lowercase confirmed in fork SynthInstance.lean), decide refuting a false prop ('Tactic `decide` proved that the proposition ... is false'), exact? invoked with no goals ('No goals to be solved' — chosen because a real exact? library search over the full umbrella env measured 63 s, blowing the budget), and sorry (warning 'declaration uses `sorry`'). AUDIT FIX: removed the original fifth probe (#eval ([] : List Nat).head!) — its deliberate PANIC output directly contradicts panicFree:true, since the harness fails any panicFree item whose output matches /PANIC/ (compiler-battery.mjs:49, e2e.mjs panicsInConsole). Re-verified in this audit on the shipped wasm64 runtime: three errors + sorry warning, all four fragments present, 881 ms."
-  },
-  {
-   "name": "by_empty_incomplete",
-   "category": "elab/syntax-edge",
-   "source": "import Mathlib.Tactic\n\ntheorem mid : 1 = 1 := by\n\ntheorem after : 2 = 2 := by rfl\n\nexample : True := by\n",
-   "expect": {
-    "panicFree": true,
-    "budgetMs": 20000,
-    "mustError": true,
-    "containsMsgs": [
-     "unsolved goals"
-    ]
-   },
-   "rationale": "'by' with nothing, twice: mid-file (followed by another declaration, which must still compile — recovery check) and at end-of-file. Re-verified in this audit on native 4.33.1: exactly two clean 'unsolved goals' errors (⊢ 1 = 1 at the `by` token and ⊢ True at EOF) while the sandwiched 'after' theorem succeeds. Regression bait for the frozen-'elaborating'-pill and stale-diagnostics bug classes: two errors, correct positions, worker alive."
-  },
-  {
-   "name": "nested_by_matryoshka",
-   "category": "elab/syntax-edge",
-   "source": "import Mathlib.Tactic\n\nexample : (1 = 1) ∧ (2 = 2) := by\n  constructor\n  · exact (by rfl)\n  · have h : 2 = 2 := by\n      have t : True := by exact (by trivial)\n      rfl\n    exact h\n\ndef natFromTactics : Nat := by\n  have n : Nat := by exact (by exact 5)\n  exact n + (by exact 2 : Nat)\n\nexample : natFromTactics = 7 := rfl\n\nexample : ∀ n : Nat, n + 0 = n := fun n => by\n  induction n with\n  | zero => rfl\n  | succ k ih => simp\n",
-   "expect": {
-    "panicFree": true,
-    "budgetMs": 20000,
-    "mustSucceed": true
-   },
-   "rationale": "Nested 'by' blocks four layers deep in both Prop and data positions: term-mode 'by' inside tactic blocks inside 'have's, a Nat DEFINED entirely by nested tactics then computed by rfl, and 'by' under a lambda binder with induction. Exercises tactic-block info-tree nesting and elaborator suspension/resumption. Re-verified in this audit on native 4.33.1: clean success with zero warnings in 0.11 s."
-  },
-  {
-   "name": "canary_speed_heavy",
-   "category": "elab/canary",
-   "source": "import Mathlib\n\nset_option maxHeartbeats 1000000\n\n-- Speed canary: known-good heavy work, all terminating.\nexample (a b c : ℤ) : (a + b + c) ^ 10 = (c + a + b) ^ 10 := by ring\n\n-- 4096 kernel-evaluated cases.\nexample : ∀ x : Fin 64, ∀ y : Fin 64, (x.val * y.val) % 64 < 64 := by decide\n\nexample : (3 : ℕ) ^ 60 = 42391158275216203514294433201 := by norm_num\n\nexample : (2 : ℤ) ^ 127 - 1 = 170141183460469231731687303715884105727 := by norm_num\n\nexample (x y : ℚ) (h1 : x + 2 * y = 4) (h2 : 3 * x - y = 5) : x = 2 := by linarith\n\nexample (a b : ℤ) : (a + b) ^ 9 = a ^ 9 + 9 * a ^ 8 * b + 36 * a ^ 7 * b ^ 2 + 84 * a ^ 6 * b ^ 3 + 126 * a ^ 5 * b ^ 4 + 126 * a ^ 4 * b ^ 5 + 84 * a ^ 3 * b ^ 6 + 36 * a ^ 2 * b ^ 7 + 9 * a * b ^ 8 + b ^ 9 := by ring\n\nexample (a b c d : ℚ) (h1 : a + b + c + d = 10) (h2 : a - b = 1) (h3 : b - c = 1)\n    (h4 : c - d = 1) : a = 4 := by linarith\n",
-   "expect": {
-    "panicFree": true,
-    "budgetMs": 20000,
-    "mustSucceed": true
-   },
-   "rationale": "KNOWN-GOOD heavy speed canary. Re-verified in this audit on the shipped wasm64 runtime + umbrella snapshot (snapshot-probe --via-mem): clean success in 7497 ms — squarely in the 5-10 s target with ~2.5x headroom under the 20 s budget. Mix of degree-10 ring normalization, a 4096-case kernel decide, exact 2^127-1 and 3^60 numerals via norm_num, two linarith systems, and the full degree-9 binomial expansion via ring. Any regression in elaborator, typeclass, norm_num-extension, or kernel-eval speed moves this number."
-  },
-  {
-   "name": "header-partial-module-names",
-   "category": "imports/header-import",
-   "source": "import Mathlib.Data.Nat\nimport Mathlib.Data\nimport Mathlib.Tactic.Lin\n\nexample : True := trivial\n",
-   "expect": {
-    "panicFree": true,
-    "budgetMs": 20000,
-    "mustError": true
-   },
-   "rationale": "Prefixes of real module paths (Mathlib.Data.Nat, Mathlib.Data, Mathlib.Tactic.Lin) — audit re-verified all three absent from the 4192-module mathlib-essential manifest. Unresolvable header must surface the imports-incomplete state cleanly; the trivial body must not produce stale diagnostics afterward."
-  },
-  {
-   "name": "header-bogus-roots",
-   "category": "imports/header-import",
-   "source": "import ZZZNoSuchRoot.Basic\nimport Foo.Bar.Baz\nimport Mathlib2.Data.Nat.Basic\nimport Batteries2.Core\n\nexample : True := trivial\n",
-   "expect": {
-    "panicFree": true,
-    "budgetMs": 20000,
-    "mustError": true
-   },
-   "rationale": "Entirely bogus root namespaces, including near-miss roots (Mathlib2, Batteries2) that must not fuzzy-match the real roots or the Batteries alias (alias set audit-confirmed in src/runtime/umbrella.ts). Must fail cleanly as imports incomplete, no env-setup panic."
-  },
-  {
-   "name": "header-huge-import-list-57",
-   "category": "imports/header-import",
-   "source": "import Mathlib.Data.Nat.Basic\nimport Mathlib.Data.Int.Basic\nimport Mathlib.Data.Rat.Defs\nimport Mathlib.Data.Real.Basic\nimport Mathlib.Data.Complex.Basic\nimport Mathlib.Data.List.Basic\nimport Mathlib.Data.Finset.Basic\nimport Mathlib.Data.Set.Basic\nimport Mathlib.Data.Fin.Basic\nimport Mathlib.Data.Bool.Basic\nimport Mathlib.Data.Option.Basic\nimport Mathlib.Data.Prod.Basic\nimport Mathlib.Data.Sum.Basic\nimport Mathlib.Data.Subtype\nimport Mathlib.Data.Sigma.Basic\nimport Mathlib.Data.Nat.Prime.Basic\nimport Mathlib.Data.Nat.GCD.Basic\nimport Mathlib.Data.Nat.Factorial.Basic\nimport Mathlib.Data.Int.GCD\nimport Mathlib.Algebra.Group.Defs\nimport Mathlib.Algebra.Group.Basic\nimport Mathlib.Algebra.Ring.Defs\nimport Mathlib.Algebra.Ring.Basic\nimport Mathlib.Algebra.Field.Defs\nimport Mathlib.Algebra.Field.Basic\nimport Mathlib.Algebra.Order.Ring.Defs\nimport Mathlib.Algebra.Order.Field.Basic\nimport Mathlib.Order.Basic\nimport Mathlib.Order.Lattice\nimport Mathlib.Order.Bounds.Basic\nimport Mathlib.Order.MinMax\nimport Mathlib.Order.Monotone.Basic\nimport Mathlib.Logic.Basic\nimport Mathlib.Logic.Function.Basic\nimport Mathlib.Logic.Equiv.Basic\nimport Mathlib.Logic.Relation\nimport Mathlib.Tactic.Ring\nimport Mathlib.Tactic.Linarith\nimport Mathlib.Tactic.NormNum\nimport Mathlib.Tactic.Positivity\nimport Mathlib.Tactic.FieldSimp\nimport Mathlib.Tactic.Abel\nimport Mathlib.Tactic.GCongr\nimport Mathlib.Tactic.NthRewrite\nimport Mathlib.Topology.Basic\nimport Mathlib.Topology.Order\nimport Mathlib.Analysis.SpecialFunctions.Log.Basic\nimport Mathlib.Analysis.SpecialFunctions.Exp\nimport Mathlib.LinearAlgebra.Basis.Defs\nimport Mathlib.NumberTheory.Divisors\nimport Mathlib.SetTheory.Cardinal.Basic\nimport Mathlib.RingTheory.Ideal.Basic\nimport Mathlib.Data.Finsupp.Defs\nimport Mathlib.Data.Multiset.Basic\nimport Mathlib.Data.Vector.Basic\nimport Mathlib.Data.Matrix.Basic\nimport Mathlib.Dynamics.FixedPoints.Basic\n\nexample : (2 : ℕ) + 2 = 4 := by norm_num\n",
-   "expect": {
-    "panicFree": true,
-    "budgetMs": 90000,
-    "mustSucceed": true
-   },
-   "rationale": "57 module names — audit re-verified every single one present in public/profiles/mathlib-essential.manifest.json (4192 modules; zero missing), spanning Data/Algebra/Order/Logic/Tactic/Topology/Analysis/etc. Stresses header resolution fan-out against the resident snapshot; a fully resolvable set must succeed (via the umbrella rewrite) and elaborate the norm_num body. [budget raised: real NODEFS import of a large closure is ~60s in this lane; the BROWSER serves this header from the covering env instantly — note the compile-lane parity gap]"
-  },
-  {
-   "name": "header-alias-imports",
-   "category": "imports/header-import",
-   "source": "import Mathlib.Tactic\nimport Batteries\nimport MIL.Common\n\nexample : 2 + 2 = 4 := by norm_num\n",
-   "expect": {
-    "panicFree": true,
-    "budgetMs": 20000,
-    "mustSucceed": true
-   },
-   "rationale": "All three aggregator aliases at once (Mathlib.Tactic, Batteries, MIL.Common) — audit confirmed the alias set in src/runtime/umbrella.ts UMBRELLA_ALIAS_MODULES and the rewriteHeaderToUmbrella product path that serves them from the umbrella snapshot. Must resolve and run a tactic from the aggregator."
-  },
-  {
-   "name": "header-duplicate-imports",
-   "category": "imports/header-import",
-   "source": "import Mathlib.Data.Nat.Basic\nimport Mathlib.Data.Nat.Basic\nimport Mathlib.Tactic.Ring\nimport Mathlib.Data.Nat.Basic\nimport Mathlib.Tactic.Ring\nimport Mathlib.Data.Nat.Basic\n\nexample (a b : Nat) : (a + b) * 1 = a + b := by ring\n",
-   "expect": {
-    "panicFree": true,
-    "budgetMs": 90000,
-    "mustSucceed": true
-   },
-   "rationale": "Same real module imported four times, interleaved with a duplicated tactic import. Lean dedupes duplicate imports, so this must succeed; guards against duplicate-keyed env-extension or snapshot-resolution bookkeeping bugs (epoch-panic class). [budget raised: real NODEFS import of a large closure is ~60s in this lane; the BROWSER serves this header from the covering env instantly — note the compile-lane parity gap]"
-  },
-  {
-   "name": "header-import-after-decl",
-   "category": "imports/header-import",
-   "source": "import Mathlib.Data.Nat.Basic\n\ntheorem early (n : Nat) : n + 0 = n := Nat.add_zero n\n\nimport Mathlib.Data.Int.Basic\n\ntheorem late : (1 : Int) + 0 = 1 := Int.add_zero 1\n",
-   "expect": {
-    "panicFree": true,
-    "budgetMs": 20000,
-    "mustError": true
-   },
-   "rationale": "import appearing after a declaration is illegal in Lean; the parser must report it at the mid-file import without wedging the pipeline. The resolvable one-module header keeps the env path normal, so the error comes from the body parse. Regression probe for the frozen-'elaborating' and stale-diagnostics classes when the header/body boundary is violated."
-  },
-  {
-   "name": "header-prelude-keyword",
-   "category": "imports/header-import",
-   "source": "prelude\nimport Init.Prelude\n\nuniverse u\n\ndef selfId {α : Sort u} (a : α) : α := a\n",
-   "expect": {
-    "panicFree": true,
-    "budgetMs": 20000
-   },
-   "rationale": "'prelude' header keyword suppresses the implicit Init import — a mode the resident-snapshot env setup may honor or ignore (Init.Prelude is present in the lean-core manifest; audit confirmed the file compiles clean on native 4.33.1). Either a clean success or a clean error is acceptable; only a panic, hang, or stuck pill counts as failure, so no mustError/mustSucceed is asserted."
-  },
-  {
-   "name": "header-import-all-syntax",
-   "category": "imports/header-import",
-   "source": "import all Mathlib.Data.Nat.Basic\n\nexample : True := trivial\n",
-   "expect": {
-    "panicFree": true,
-    "budgetMs": 20000,
-    "mustError": true
-   },
-   "rationale": "Module-system 'import all' syntax in a non-module file. Audit verified on native 4.33.1: clean error at 1:7 'cannot use `import all` without `module`'. Must fail cleanly, not crash the header scanner."
-  },
-  {
-   "name": "header-meta-public-modifiers",
-   "category": "imports/header-import",
-   "source": "public import Mathlib.Data.Nat.Basic\nmeta import Mathlib.Tactic.Ring\n\nexample : True := trivial\n",
-   "expect": {
-    "panicFree": true,
-    "budgetMs": 90000,
-    "mustError": true,
-    "containsMsgs": [
-     "cannot use `public import` without `module`",
-     "cannot use `meta import` without `module`"
-    ]
-   },
-   "rationale": "Module-system import modifiers (public/meta) in a plain non-module file. Audit verified on native 4.33.1: two clean errors — 'cannot use `public import` without `module`' and 'cannot use `meta import` without `module`'. Must not confuse the harness's header extraction. [budget raised: the header imports its full closure BEFORE the modifier error surfaces — upstream nuance worth knowing]"
-  },
-  {
-   "name": "header-unicode-module-names",
-   "category": "imports/header-import",
-   "source": "import Mathlib.Дата.Основы\nimport Mathlib.数学.基礎\nimport Mathlib.Ωμέγα.Βασικό\nimport «Mathlib.Data.Nat.Bogus»\n\nexample : True := trivial\n",
-   "expect": {
-    "panicFree": true,
-    "budgetMs": 20000,
-    "mustError": true
-   },
-   "rationale": "Unicode letterlike identifiers (Cyrillic, CJK, Greek) are lexically valid Lean module names but unresolvable, plus a guillemet-quoted atom whose name contains literal dots — unresolvable under both string-keyed and Name-structured resolution. Tests UTF-8 handling in header parsing and manifest lookup; must surface imports incomplete. [KNOWN UPSTREAM PANIC: HeaderSyntax.imports unreachable at Lean.Elab.Import:41 on unicode module names — tracked in docs/UPSTREAM-NOTES.md]"
-  },
-  {
-   "name": "header-umbrella-valid-body",
-   "category": "imports/header-import",
-   "source": "import Mathlib\n\ntheorem sq_expand (a b : ℕ) : (a + b) ^ 2 = a ^ 2 + 2 * a * b + b ^ 2 := by ring\n",
-   "expect": {
-    "panicFree": true,
-    "budgetMs": 20000,
-    "mustSucceed": true
-   },
-   "rationale": "The canonical happy path: full 'import Mathlib' umbrella alias plus a real proof body using ring. Must succeed end-to-end — resolves via the resident umbrella snapshot (audit confirmed the QED64.Essential rewrite path in src/app.ts:761 / src/runtime/umbrella.ts) and elaborates within budget. Baseline that catches any header-handling regression breaking normal use."
-  },
-  {
-   "name": "header-mixed-real-and-bogus",
-   "category": "imports/header-import",
-   "source": "import Mathlib.Data.Nat.Basic\nimport Mathlib.Tactic.Ring\nimport Mathlib.NoSuch.Module\n\nexample : (1 : Nat) + 1 = 2 := rfl\n",
-   "expect": {
-    "panicFree": true,
-    "budgetMs": 20000,
-    "mustError": true
-   },
-   "rationale": "Two real modules plus one bogus one: per src/app.ts (audit-confirmed: 'the umbrella cannot mask a nonexistent import' — unknown imports poison the whole set), this must report imports incomplete rather than partially loading — and the otherwise-valid body must not leave stale success diagnostics. Probes the stale-diagnostics and didChange-replay regression classes."
-  },
-  {
-   "name": "calm-human-control",
-   "category": "editor/editor-actions",
-   "source": "",
-   "actions": [
+  "schema": "qed64.adversarial-corpus/v1",
+  "items": [
     {
-     "op": "setValue",
-     "value": "import Mathlib.Data.Real.Basic\n\n",
-     "text": "import Mathlib.Data.Real.Basic\n\n",
-     "ms": 300
+      "name": "garbage-token-storm",
+      "category": "parser/parser-lexer",
+      "source": "$$$$ %%%% @@@@ ????\n;;;; :::: ,,,, ....\n!!!! ~~~~ ^^^^ &&&&\n|||| #### 123abc 456def\n\\ \\ \\ \\ ]]]] }}}}\n.5.5.5 0x 0b2 1e\n",
+      "expect": {
+        "panicFree": true,
+        "mustError": true,
+        "containsMsgs": [
+          "unexpected token '$'"
+        ],
+        "budgetMs": 20000
+      },
+      "rationale": "Junk-token soup at command level: symbol clusters, glued numeral+ident tokens, lone backslashes, malformed numeric literals, unbalanced closers. Re-verified in this audit on native lean 4.33.1: exactly three clean parse errors — 1:0 \"unexpected token '$'\" with the giant expected-command-token list (stresses diagnostics rendering), 4:23 and 5:2 backslash errors. Targets the garbage-typing-storm class that historically killed the worker."
     },
     {
-     "op": "pause",
-     "ms": 1500
+      "name": "unterminated-string-literal",
+      "category": "parser/parser-lexer",
+      "source": "def neverEnds : String := \"this string never terminates and swallows everything after it\ndef swallowed : Nat := 42\n",
+      "expect": {
+        "panicFree": true,
+        "mustError": true,
+        "containsMsgs": [
+          "unterminated string literal"
+        ],
+        "budgetMs": 20000
+      },
+      "rationale": "Lean strings may span newlines, so the unterminated literal consumes the rest of the file to EOF, including a would-be-valid decl. Re-verified in this audit on native 4.33.1: exactly one 'unterminated string literal' error at 1:26 (message text confirmed in fork source Parser/Basic.lean). Tests lexer EOF path and that the swallowed decl leaves no stale diagnostics."
     },
     {
-     "op": "typeAppend",
-     "text": "example ",
-     "ms": 260
+      "name": "unterminated-nested-block-comment",
+      "category": "parser/parser-lexer",
+      "source": "/- level one /- level two -/ back to level one\n   /- deeper /- deepest, never closing any of these\n   \"a quote inside a comment and a « guillemet\n",
+      "expect": {
+        "panicFree": true,
+        "mustError": true,
+        "containsMsgs": [
+          "unterminated comment"
+        ],
+        "budgetMs": 20000
+      },
+      "rationale": "Nested block comments (Lean comments nest) left open at three depths, with a quote and a guillemet inside to tempt the lexer into mode confusion. Re-verified in this audit on native 4.33.1: single 'unterminated comment' error at 4:0 (EOF)."
     },
     {
-     "op": "typeAppend",
-     "text": "(a b : ℝ) ",
-     "ms": 240
+      "name": "deep-paren-nesting-unbalanced",
+      "category": "parser/parser-lexer",
+      "source": "#check\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n 1]\n",
+      "expect": {
+        "panicFree": true,
+        "mustError": true,
+        "containsMsgs": [
+          "expected ')'"
+        ],
+        "budgetMs": 20000
+      },
+      "rationale": "200 open parens (20 lines of 10) with a mismatched ']' closer: drives the parser 200 frames deep then forces the error path at full depth. Re-verified in this audit on native 4.33.1: single error at 22:2 \"unexpected token ']'; expected ')', ',' or ':'\", 0.1 s, no stack issue. Probes the JS-stack-overflow class under wasm."
     },
     {
-     "op": "typeAppend",
-     "text": "(h : a ≤ b) ",
-     "ms": 290
+      "name": "deep-paren-nesting-balanced-valid",
+      "category": "parser/parser-lexer",
+      "source": "example : Nat :=\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n 0\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\ntheorem deep_ok :\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n ((((((((((\n 2 + 2\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n ))))))))))\n = 4 := rfl\n",
+      "expect": {
+        "panicFree": true,
+        "mustSucceed": true,
+        "budgetMs": 20000
+      },
+      "rationale": "Success-path twin of the unbalanced case: 200-deep balanced parens around 0 plus a 100-deep balanced theorem proved by rfl. Re-verified in this audit on native 4.33.1: compiles clean in 0.11 s (~0.5 s wasm). Confirms deep-but-legal nesting neither errors nor overflows the wasm/JS stack."
     },
     {
-     "op": "typeAppend",
-     "text": ": a + 1 ≤ b + 1 ",
-     "ms": 270
+      "name": "giant-unknown-identifier-token",
+      "category": "parser/parser-lexer",
+      "source": "#check xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaAAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+      "expect": {
+        "panicFree": true,
+        "mustError": true,
+        "containsMsgs": [
+          "Unknown identifier"
+        ],
+        "budgetMs": 20000
+      },
+      "rationale": "One ~1.1KB single identifier token: stresses the lexer's long-token path and the InfoView rendering of a diagnostic whose message embeds the giant name. Re-verified in this audit on native 4.33.1: clean 'Unknown identifier `xa...a`' error (4.33 capitalized-with-backticks phrasing, code lean.unknownIdentifier), no panic."
     },
     {
-     "op": "typeAppend",
-     "text": ":= by",
-     "ms": 220
+      "name": "giant-line-parse-error-columns",
+      "category": "parser/parser-lexer",
+      "source": "def gs : String := \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\" ++ %\n#check 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + %\n",
+      "expect": {
+        "panicFree": true,
+        "mustError": true,
+        "containsMsgs": [
+          "unexpected token '%'"
+        ],
+        "budgetMs": 20000
+      },
+      "rationale": "Two giant single lines each ending in garbage: a long string literal then '++ %' (error at a far-right column, stressing UTF-16 column math in the LSP shim), and a ~120-term addition chain ending in '%'. The chain deliberately exercises Lean's superquadratic parse-error recovery, bounded at ~120 terms. Re-verified in this audit on native 4.33.1: two \"unexpected token '%'; expected term\" errors at columns 574 and 486, 0.9 s native (~3 s wasm) — within budget."
     },
     {
-     "op": "typeAppend",
-     "text": "\n  linarith",
-     "ms": 300
+      "name": "invisible-combining-unicode-idents",
+      "category": "parser/parser-lexer",
+      "source": "def a‍b : Nat := 1\ntheo​rem zwsp : True := trivial\ndef ź̴a͖l̠g̸o͜ : Nat := 0\ndef w⁠j : Nat := 2\n",
+      "expect": {
+        "panicFree": true,
+        "mustError": true,
+        "containsMsgs": [
+          "expected token"
+        ],
+        "budgetMs": 20000
+      },
+      "rationale": "Zero-width joiner (U+200D) inside a def name, zero-width space (U+200B) splitting the 'theorem' keyword, zalgo combining diacritics after ident letters, and word joiner (U+2060). None are valid ident chars in Lean. Re-verified in this audit on native 4.33.1: three clean 'expected token' errors (lines 1, 3, 4; the ZWSP line is absorbed by recovery from line 1 rather than separately reported), no panic."
     },
     {
-     "op": "typeAppend",
-     "text": "\n",
-     "ms": 200
+      "name": "bidi-rtl-mark-attack",
+      "category": "parser/parser-lexer",
+      "source": "‏ def rlm := 1\nx := ‮reversed‬ segment\ndef שלום := 1\ndef مرحبا := 2\n",
+      "expect": {
+        "panicFree": true,
+        "mustError": true,
+        "containsMsgs": [
+          "expected token",
+          "expected command"
+        ],
+        "budgetMs": 20000
+      },
+      "rationale": "Right-to-left mark (U+200F) at line start, right-to-left override + pop (U+202E/U+202C) mid-line, and Hebrew/Arabic letters as def names (not letterlike in Lean's ident rules). Re-verified in this audit on native 4.33.1: four errors — 'expected token' at 1:0, 3:9, 4:10 and 'unexpected identifier; expected command' at 2:0 — clean recovery; also visually stresses Monaco's bidi rendering of squiggles."
     },
     {
-     "op": "pause",
-     "ms": 9500
+      "name": "garbage-storm-then-valid-recovery",
+      "category": "parser/parser-lexer",
+      "source": "]qw}e{r|t;y:u,i.o<p>a?s/d+f-g*h^j&k%l$\n]qw}e{r|t;y:u,i.o<p>a?s/d+f-g*h^j&k%l$\n]qw}e{r|t;y:u,i.o<p>a?s/d+f-g*h^j&k%l$\n]qw}e{r|t;y:u,i.o<p>a?s/d+f-g*h^j&k%l$\n]qw}e{r|t;y:u,i.o<p>a?s/d+f-g*h^j&k%l$\n]qw}e{r|t;y:u,i.o<p>a?s/d+f-g*h^j&k%l$\n]qw}e{r|t;y:u,i.o<p>a?s/d+f-g*h^j&k%l$\n]qw}e{r|t;y:u,i.o<p>a?s/d+f-g*h^j&k%l$\ntheorem storm_recovery : 2 + 2 = 4 := rfl\n0p9o8i7u6y5t4r3e2w1q ]]] }}} >>> ::: ;;;\n0p9o8i7u6y5t4r3e2w1q ]]] }}} >>> ::: ;;;\n0p9o8i7u6y5t4r3e2w1q ]]] }}} >>> ::: ;;;\n0p9o8i7u6y5t4r3e2w1q ]]] }}} >>> ::: ;;;\n0p9o8i7u6y5t4r3e2w1q ]]] }}} >>> ::: ;;;\n0p9o8i7u6y5t4r3e2w1q ]]] }}} >>> ::: ;;;\n0p9o8i7u6y5t4r3e2w1q ]]] }}} >>> ::: ;;;\n0p9o8i7u6y5t4r3e2w1q ]]] }}} >>> ::: ;;;\n",
+      "expect": {
+        "panicFree": true,
+        "mustError": true,
+        "containsMsgs": [
+          "expected command"
+        ],
+        "budgetMs": 20000
+      },
+      "rationale": "Recovery flagship: 8 lines of keyboard-mash garbage (no string/comment/guillemet openers, so recovery stays token-based), one valid theorem, then 8 more garbage lines. AUDIT FIX: was mustSucceed, but the file necessarily carries error diagnostics, so the correct expectation is mustError. Re-verified on native 4.33.1: exactly two 'expected command' errors (1:0 and 10:0) bracketing the theorem, which parses and elaborates cleanly. Regression-tests parser recovery anchoring at the next command keyword and the storm-crash class."
+    },
+    {
+      "name": "emoji-identifier-attack",
+      "category": "parser/parser-lexer",
+      "source": "def 🚀 : Nat := 1\n#check 😀😀😀\nexample : 🦀 = 🦀 := rfl\n",
+      "expect": {
+        "panicFree": true,
+        "mustError": true,
+        "containsMsgs": [
+          "expected token"
+        ],
+        "budgetMs": 20000
+      },
+      "rationale": "Emoji (astral-plane, surrogate pairs in UTF-16) in decl-name, command-argument, and term positions; emoji are not letterlike so all three lines fail. Re-verified in this audit on native 4.33.1: three 'expected token' errors at 1:6, 2:7, 3:10 (the emoji columns), exercising surrogate-pair position math in the LSP shim."
+    },
+    {
+      "name": "guillemet-ident-recovery",
+      "category": "parser/parser-lexer",
+      "source": "def «weird + name : with, spaces» : Nat := 42\n#eval «weird + name : with, spaces»\ndef «forever unterminated escaped ident := 99\n",
+      "expect": {
+        "panicFree": true,
+        "mustError": true,
+        "containsMsgs": [
+          "unterminated identifier escape"
+        ],
+        "budgetMs": 20000
+      },
+      "rationale": "French-quote escaped identifiers: a valid «...» name containing operator and punctuation tokens (defined and #eval'd successfully, printing 42), followed by an unterminated « that runs to EOF. AUDIT FIX: was mustSucceed, but the trailing unterminated escape is an error diagnostic, so mustError is the correct flag; the #eval success is the recovery invariant. Re-verified on native 4.33.1: eval prints 42 and the tail yields exactly one 'unterminated identifier escape' error at 3:13."
+    },
+    {
+      "name": "notation-edge-cases",
+      "category": "parser/parser-lexer",
+      "source": "notation \"\" => Nat\ninfixl:65 \" +!+ \" =>\nnotation \"☹\" \"☹\" =>\ninfixr:9999999999999999999999 \" ⊗⊗ \" => HMul.hMul\n",
+      "expect": {
+        "panicFree": true,
+        "mustError": true,
+        "containsMsgs": [
+          "invalid atom"
+        ],
+        "budgetMs": 20000
+      },
+      "rationale": "Notation edge cases: empty atom ('invalid atom'), infixl with missing body (next command keyword consumed as term), duplicated emoji atoms with missing body, and a 22-digit precedence probing Nat-to-table conversion for panics. Re-verified in this audit on native 4.33.1: exactly three errors ('invalid atom' at 1:9, \"unexpected token 'notation'; expected term\" at 2:20, \"unexpected token 'infixr'; expected term\" at 3:19) and the giant precedence is accepted without panic — exactly the invariant (panicFree) this input guards."
+    },
+    {
+      "name": "astral-ident-utf16-recovery",
+      "category": "parser/parser-lexer",
+      "source": "def 𝕜 : Nat := 5\ndef 𝔸𝔹ℂ : Nat := 𝕜 + 2\n#eval 𝔸𝔹ℂ\n-- comment with astral 😀𝄞𝕏 and replacement ��� chars\ntheorem 𝕥𝕙𝕞 : 𝔸𝔹ℂ = 7 := rfl\n🚀🚀🚀 garbage after astral idents ��\n",
+      "expect": {
+        "panicFree": true,
+        "mustError": true,
+        "containsMsgs": [
+          "expected token"
+        ],
+        "budgetMs": 20000
+      },
+      "rationale": "Surrogate-pair stress within Lean's legal ident space: double-struck letters (Mathlib's 𝕜 style) are letterlike, so the defs, #eval (prints 7), and theorem all succeed while every position after them requires correct UTF-16 surrogate-pair column accounting; a trailing emoji+U+FFFD garbage line then errors and recovery must preserve the earlier decls. AUDIT FIX: was mustSucceed, but the trailing garbage line is an error diagnostic, so mustError is correct; the eval output 7 is the recovery invariant. Re-verified on native 4.33.1: eval prints 7 plus exactly one 'expected token' error at 6:0."
+    },
+    {
+      "name": "tc_instance_depth_charge",
+      "category": "elab/typeclass-search",
+      "source": "import Mathlib\n\nset_option maxHeartbeats 400000\n\n-- Deep DecidableEq derivation: needs a raised instance-size budget.\nset_option synthInstance.maxSize 512 in\nexample : DecidableEq (List (Option ((Nat × Int × Bool) ⊕ (Fin 7 × List (Option (Bool × Nat)))))) :=\n  inferInstance\n\n-- Instance stacking through iterated products.\nexample : CommRing ((ℤ × ℤ) × (ℤ × ℤ) × (ℤ × ℤ)) := inferInstance\n\n-- Lexicographic order synthesis.\nexample : LinearOrder (Lex (Fin 5 × Lex (Fin 3 × Fin 2))) := inferInstance\n\n-- Decidability of a bounded quantifier through Fintype search.\nexample : Decidable (∀ x : Fin 6, ∀ y : Fin 6, x + y = y + x) := inferInstance\n\n-- Pi-type DecidableEq stack.\nexample : DecidableEq (Fin 3 → Fin 3 → Bool) := inferInstance\n",
+      "expect": {
+        "panicFree": true,
+        "budgetMs": 20000,
+        "mustSucceed": true
+      },
+      "rationale": "Typeclass-search-heavy but terminating: deep DecidableEq/CommRing/LinearOrder/Fintype instance derivations over nested product, sum, Lex, and Pi types. Re-verified in this audit on the shipped wasm64 runtime + umbrella snapshot (snapshot-probe --via-mem): clean success in 917 ms. The first example genuinely exceeds the default synthInstance.maxSize 128, so the in-source set_option is load-bearing; every search is structurally bounded — no unbounded-search risk."
+    },
+    {
+      "name": "rec_depth_ladder",
+      "category": "elab/recursion-depth",
+      "source": "import Mathlib.Tactic\n\n-- 120-deep left-nested addition: elaborator + kernel walk the spine.\nexample : 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 = (0 : Nat) := rfl\n\n-- 120-deep successor tower vs the literal.\nexample : Nat.zero.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ.succ = 120 := rfl\n\n-- 100-deep parenthesis nesting through the parser.\nexample : Nat := ((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((7 : Nat))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))\n",
+      "expect": {
+        "panicFree": true,
+        "budgetMs": 20000,
+        "mustSucceed": true
+      },
+      "rationale": "Moderately deep recursion staying under maxRecDepth 512: a 120-term left-nested + chain proved by rfl (kernel defeq walks the spine), a 120-deep .succ tower against the literal 120 (kernel Nat-literal normalization), and 100-deep parser paren nesting. Re-verified in this audit on native 4.33.1 (body is core-only): clean success in 0.17 s."
+    },
+    {
+      "name": "rec_depth_overflow_clean",
+      "category": "elab/recursion-depth",
+      "source": "import Mathlib.Tactic\n\n-- Meta-level whnf recursion overflow during `decide` must surface as the\n-- CLEAN \"maximum recursion depth\" error, never a stack-blown worker crash.\nset_option maxRecDepth 512 in\nexample : (List.range 300).length = 300 := by decide\n\n-- Lowered limit: the same clean failure at a small depth.\nset_option maxRecDepth 64 in\nexample : (List.range 100).foldl (· + ·) 0 = 4950 := by decide\n",
+      "expect": {
+        "panicFree": true,
+        "budgetMs": 20000,
+        "mustError": true,
+        "containsMsgs": [
+          "maximum recursion depth"
+        ]
+      },
+      "rationale": "Regression test for the JS-stack-overflow-kills-worker bug class: recursion past maxRecDepth must die via Lean's own guard, not the wasm/JS stack. whnf evaluation of List.range under decide reliably trips the guard — List.range 300 trips the pinned 512, and range 100 foldl trips a lowered limit 64. Re-verified in this audit on native 4.33.1: exactly two clean 'maximum recursion depth has been reached' errors (message text confirmed in fork Init/Prelude.lean), instant, worker-safe."
+    },
+    {
+      "name": "bignum_normnum_gauntlet",
+      "category": "elab/numerals-norm_num",
+      "source": "import Mathlib.Tactic\n\nexample : (2 : ℕ) ^ 100 = 1267650600228229401496703205376 := by norm_num\nexample : (2 : ℤ) ^ 64 - 2 ^ 63 = 2 ^ 63 := by norm_num\nexample : (3 : ℚ) / 7 + 2 / 7 = 5 / 7 := by norm_num\nexample : Nat.gcd 123456789 987654321 = 9 := by norm_num\nexample : 999983 * 999979 = 999962000357 := by norm_num\nexample : (3 : ℕ) ^ 60 = 42391158275216203514294433201 := by norm_num\n",
+      "expect": {
+        "panicFree": true,
+        "budgetMs": 20000,
+        "mustSucceed": true
+      },
+      "rationale": "Large-but-bounded numerals through the norm_num extension stack (Pow, GCD, rat-arithmetic): 2^100 and 3^60 exact values, ℤ pow subtraction, ℚ division, Nat.gcd, and a 12-digit product. All constants machine-computed. Deliberately avoids Nat.Prime (Mathlib.Tactic.NormNum.Prime is a known gap in the QED64 essential profile). Re-verified in this audit on the shipped wasm64 runtime + umbrella snapshot: clean success in 1490 ms."
+    },
+    {
+      "name": "bignum_decide_kernel",
+      "category": "elab/numerals-decide",
+      "source": "import Mathlib.Tactic\n\n-- 4096 kernel-evaluated cases.\nexample : ∀ x : Fin 64, ∀ y : Fin 64, (x.val + y.val) % 64 < 64 := by decide\n\nexample : Nat.gcd 123456789 987654321 = 9 := by decide\nexample : (List.range 100).length = 100 := by decide\nexample : (List.range 100).foldl (· + ·) 0 = 4950 := by decide\n",
+      "expect": {
+        "panicFree": true,
+        "budgetMs": 20000,
+        "mustSucceed": true
+      },
+      "rationale": "Bounded kernel evaluation via decide: a 4096-case Fintype forall over Fin 64 × Fin 64, Euclid gcd on 9-digit inputs, and List.range 100 computations (sized deliberately under the maxRecDepth whnf ceiling — range 300 is the error case in rec_depth_overflow_clean). Re-verified in this audit on native 4.33.1 (core-only body): 0.73 s native, ~2-3 s wasm — comfortably inside budget, strictly bounded case count."
+    },
+    {
+      "name": "simp_loop_breaker",
+      "category": "elab/simp-termination",
+      "source": "import Mathlib.Tactic\n\n-- Permutative lemma set: looks loopy, terminates via ordered rewriting.\nexample (a b c : Nat) : a + b + c = c + b + a := by\n  simp [Nat.add_comm, Nat.add_left_comm]\n\naxiom P : Nat → Prop\naxiom P_shift (n : Nat) : P n ↔ P (n + 1)\n\n-- Genuinely looping rewrite; the recursion/heartbeat budget must stop it\n-- CLEANLY (and the \"possibly looping\" lint should fire).\nset_option maxHeartbeats 40000 in\nexample : P 0 := by\n  simp only [P_shift]\n",
+      "expect": {
+        "panicFree": true,
+        "budgetMs": 20000,
+        "mustError": true,
+        "containsMsgs": [
+          "Possibly looping simp theorem"
+        ]
+      },
+      "rationale": "Two sides of simp termination: a permutative AC lemma set that terminates via ordered rewriting (must not loop), then a genuinely divergent P n ↔ P (n+1) rewrite that Lean must stop cleanly. Re-verified in this audit on native 4.33.1: warning 'Possibly looping simp theorem: `P_shift`' (message confirmed in fork LoopProtection.lean — the loop check is force-run after a recursion-depth failure) plus error 'Tactic `simp` failed with a nested error: maximum recursion depth...', instant. The maxHeartbeats 40000 in-source bound is the backstop; worker must survive. Stale-diagnostics and frozen-elaborating-pill regression bait."
+    },
+    {
+      "name": "structure_eta_mutual",
+      "category": "elab/inductives-eta",
+      "source": "import Mathlib.Tactic\n\nstructure Pt where\n  x : Nat\n  y : Nat\n\n-- Structure eta in defeq checks.\nexample (p : Pt) : p = ⟨p.x, p.y⟩ := rfl\nexample (p : Nat × Nat) : p = (p.1, p.2) := rfl\nexample (f : Nat × Nat → Nat) : f = fun p => f (p.1, p.2) := rfl\n\nstructure Sig where\n  n : Nat\n  h : n = n\n\nexample (s : Sig) : s = ⟨s.n, s.h⟩ := rfl\n\nmutual\n  inductive TreeN : Type where\n    | node : Nat → ForestN → TreeN\n  inductive ForestN : Type where\n    | nil : ForestN\n    | cons : TreeN → ForestN → ForestN\nend\n\nmutual\n  def treeSize : TreeN → Nat\n    | .node _ f => 1 + forestSize f\n  def forestSize : ForestN → Nat\n    | .nil => 0\n    | .cons t f => treeSize t + forestSize f\nend\n\nexample : treeSize (.node 5 (.cons (.node 1 .nil) .nil)) = 2 := by\n  norm_num [treeSize, forestSize]\n",
+      "expect": {
+        "panicFree": true,
+        "budgetMs": 20000,
+        "mustSucceed": true
+      },
+      "rationale": "Structure-eta defeq edge cases (record eta under rfl, Prod eta, function-plus-structure eta, a dependent-field record) plus mutual inductive types with mutual recursive functions over them, computed via equation lemmas. Exercises the kernel's eta-for-structures path and mutual brecOn compilation — env-extension-epoch panic bait. Re-verified in this audit on the shipped wasm64 runtime + umbrella snapshot: clean success in 2130 ms."
+    },
+    {
+      "name": "universe_poly_edges",
+      "category": "elab/universes",
+      "source": "import Mathlib.Tactic\n\nuniverse u v w\n\ndef myId : ∀ {α : Sort u}, α → α := fun a => a\n\nexample : myId (myId (myId 3)) = 3 := rfl\n\nset_option linter.checkUnivs false in\ndef liftTwice (α : Type u) : Type (max (max u v) w) := ULift.{w} (ULift.{v} α)\n\nexample : liftTwice.{0, 0, 0} Nat = ULift.{0} (ULift.{0} Nat) := rfl\n\nexample (n : Nat) : (ULift.up.{7} n).down = n := rfl\n\ndef piSort (α : Sort u) (β : α → Sort v) : Sort (imax u v) := ∀ a, β a\n\ndef nestOpt : Nat → Type\n  | 0 => PUnit\n  | n + 1 => Option (nestOpt n)\n\nexample : nestOpt 3 = Option (Option (Option PUnit)) := rfl\n\nexample : (Sort 0) = Prop := rfl\n\ndef pp : PProd PUnit.{u} PUnit.{v} := ⟨⟨⟩, ⟨⟩⟩\n",
+      "expect": {
+        "panicFree": true,
+        "budgetMs": 20000,
+        "mustSucceed": true
+      },
+      "rationale": "Universe-polymorphism edges: Sort-polymorphic id self-application, explicit max/imax level expressions, ULift at concrete high levels (ULift.up.{7}), a Nat-indexed Type-valued recursion reduced by kernel defeq, Sort 0 = Prop, and cross-universe PProd. Audit confirmed linter.checkUnivs is a real registered core option (fork src/Lean/Linter/CheckUnivs.lean), so the in-source silencing is valid and load-bearing. Re-verified on native 4.33.1: clean success in 0.11 s."
+    },
+    {
+      "name": "tactic_misuse_gauntlet",
+      "category": "elab/tactic-misuse",
+      "source": "import Mathlib.Tactic\n\n-- decide on an undecidable universal: clean synthesis failure.\nexample : ∀ n : Nat, n + 0 = n := by decide\n\n-- decide on a false decidable proposition: clean refutation.\nexample : (2 : Nat) + 2 = 5 := by decide\n\n-- exact? after the goal is already closed: instant clean misuse error.\nexample : True := by trivial; exact?\n\n-- sorry: warning only, session must stay alive.\nexample : False := by sorry\n",
+      "expect": {
+        "panicFree": true,
+        "budgetMs": 20000,
+        "mustError": true,
+        "containsMsgs": [
+          "failed to synthesize",
+          "is false",
+          "No goals to be solved",
+          "declaration uses `sorry`"
+        ]
+      },
+      "rationale": "Tactic-misuse gauntlet, each probe failing cleanly and instantly: decide without a Decidable instance ('failed to synthesize' — lowercase confirmed in fork SynthInstance.lean), decide refuting a false prop ('Tactic `decide` proved that the proposition ... is false'), exact? invoked with no goals ('No goals to be solved' — chosen because a real exact? library search over the full umbrella env measured 63 s, blowing the budget), and sorry (warning 'declaration uses `sorry`'). AUDIT FIX: removed the original fifth probe (#eval ([] : List Nat).head!) — its deliberate PANIC output directly contradicts panicFree:true, since the harness fails any panicFree item whose output matches /PANIC/ (compiler-battery.mjs:49, e2e.mjs panicsInConsole). Re-verified in this audit on the shipped wasm64 runtime: three errors + sorry warning, all four fragments present, 881 ms."
+    },
+    {
+      "name": "by_empty_incomplete",
+      "category": "elab/syntax-edge",
+      "source": "import Mathlib.Tactic\n\ntheorem mid : 1 = 1 := by\n\ntheorem after : 2 = 2 := by rfl\n\nexample : True := by\n",
+      "expect": {
+        "panicFree": true,
+        "budgetMs": 20000,
+        "mustError": true,
+        "containsMsgs": [
+          "unsolved goals"
+        ]
+      },
+      "rationale": "'by' with nothing, twice: mid-file (followed by another declaration, which must still compile — recovery check) and at end-of-file. Re-verified in this audit on native 4.33.1: exactly two clean 'unsolved goals' errors (⊢ 1 = 1 at the `by` token and ⊢ True at EOF) while the sandwiched 'after' theorem succeeds. Regression bait for the frozen-'elaborating'-pill and stale-diagnostics bug classes: two errors, correct positions, worker alive."
+    },
+    {
+      "name": "nested_by_matryoshka",
+      "category": "elab/syntax-edge",
+      "source": "import Mathlib.Tactic\n\nexample : (1 = 1) ∧ (2 = 2) := by\n  constructor\n  · exact (by rfl)\n  · have h : 2 = 2 := by\n      have t : True := by exact (by trivial)\n      rfl\n    exact h\n\ndef natFromTactics : Nat := by\n  have n : Nat := by exact (by exact 5)\n  exact n + (by exact 2 : Nat)\n\nexample : natFromTactics = 7 := rfl\n\nexample : ∀ n : Nat, n + 0 = n := fun n => by\n  induction n with\n  | zero => rfl\n  | succ k ih => simp\n",
+      "expect": {
+        "panicFree": true,
+        "budgetMs": 20000,
+        "mustSucceed": true
+      },
+      "rationale": "Nested 'by' blocks four layers deep in both Prop and data positions: term-mode 'by' inside tactic blocks inside 'have's, a Nat DEFINED entirely by nested tactics then computed by rfl, and 'by' under a lambda binder with induction. Exercises tactic-block info-tree nesting and elaborator suspension/resumption. Re-verified in this audit on native 4.33.1: clean success with zero warnings in 0.11 s."
+    },
+    {
+      "name": "canary_speed_heavy",
+      "category": "elab/canary",
+      "source": "import Mathlib\n\nset_option maxHeartbeats 1000000\n\n-- Speed canary: known-good heavy work, all terminating.\nexample (a b c : ℤ) : (a + b + c) ^ 10 = (c + a + b) ^ 10 := by ring\n\n-- 4096 kernel-evaluated cases.\nexample : ∀ x : Fin 64, ∀ y : Fin 64, (x.val * y.val) % 64 < 64 := by decide\n\nexample : (3 : ℕ) ^ 60 = 42391158275216203514294433201 := by norm_num\n\nexample : (2 : ℤ) ^ 127 - 1 = 170141183460469231731687303715884105727 := by norm_num\n\nexample (x y : ℚ) (h1 : x + 2 * y = 4) (h2 : 3 * x - y = 5) : x = 2 := by linarith\n\nexample (a b : ℤ) : (a + b) ^ 9 = a ^ 9 + 9 * a ^ 8 * b + 36 * a ^ 7 * b ^ 2 + 84 * a ^ 6 * b ^ 3 + 126 * a ^ 5 * b ^ 4 + 126 * a ^ 4 * b ^ 5 + 84 * a ^ 3 * b ^ 6 + 36 * a ^ 2 * b ^ 7 + 9 * a * b ^ 8 + b ^ 9 := by ring\n\nexample (a b c d : ℚ) (h1 : a + b + c + d = 10) (h2 : a - b = 1) (h3 : b - c = 1)\n    (h4 : c - d = 1) : a = 4 := by linarith\n",
+      "expect": {
+        "panicFree": true,
+        "budgetMs": 20000,
+        "mustSucceed": true
+      },
+      "rationale": "KNOWN-GOOD heavy speed canary. Re-verified in this audit on the shipped wasm64 runtime + umbrella snapshot (snapshot-probe --via-mem): clean success in 7497 ms — squarely in the 5-10 s target with ~2.5x headroom under the 20 s budget. Mix of degree-10 ring normalization, a 4096-case kernel decide, exact 2^127-1 and 3^60 numerals via norm_num, two linarith systems, and the full degree-9 binomial expansion via ring. Any regression in elaborator, typeclass, norm_num-extension, or kernel-eval speed moves this number."
+    },
+    {
+      "name": "header-partial-module-names",
+      "category": "imports/header-import",
+      "source": "import Mathlib.Data.Nat\nimport Mathlib.Data\nimport Mathlib.Tactic.Lin\n\nexample : True := trivial\n",
+      "expect": {
+        "panicFree": true,
+        "budgetMs": 20000,
+        "mustError": true
+      },
+      "rationale": "Prefixes of real module paths (Mathlib.Data.Nat, Mathlib.Data, Mathlib.Tactic.Lin) — audit re-verified all three absent from the 4192-module mathlib-essential manifest. Unresolvable header must surface the imports-incomplete state cleanly; the trivial body must not produce stale diagnostics afterward."
+    },
+    {
+      "name": "header-bogus-roots",
+      "category": "imports/header-import",
+      "source": "import ZZZNoSuchRoot.Basic\nimport Foo.Bar.Baz\nimport Mathlib2.Data.Nat.Basic\nimport Batteries2.Core\n\nexample : True := trivial\n",
+      "expect": {
+        "panicFree": true,
+        "budgetMs": 20000,
+        "mustError": true
+      },
+      "rationale": "Entirely bogus root namespaces, including near-miss roots (Mathlib2, Batteries2) that must not fuzzy-match the real roots or the Batteries alias (alias set audit-confirmed in src/runtime/umbrella.ts). Must fail cleanly as imports incomplete, no env-setup panic."
+    },
+    {
+      "name": "header-huge-import-list-57",
+      "category": "imports/header-import",
+      "source": "import Mathlib.Data.Nat.Basic\nimport Mathlib.Data.Int.Basic\nimport Mathlib.Data.Rat.Defs\nimport Mathlib.Data.Real.Basic\nimport Mathlib.Data.Complex.Basic\nimport Mathlib.Data.List.Basic\nimport Mathlib.Data.Finset.Basic\nimport Mathlib.Data.Set.Basic\nimport Mathlib.Data.Fin.Basic\nimport Mathlib.Data.Bool.Basic\nimport Mathlib.Data.Option.Basic\nimport Mathlib.Data.Prod.Basic\nimport Mathlib.Data.Sum.Basic\nimport Mathlib.Data.Subtype\nimport Mathlib.Data.Sigma.Basic\nimport Mathlib.Data.Nat.Prime.Basic\nimport Mathlib.Data.Nat.GCD.Basic\nimport Mathlib.Data.Nat.Factorial.Basic\nimport Mathlib.Data.Int.GCD\nimport Mathlib.Algebra.Group.Defs\nimport Mathlib.Algebra.Group.Basic\nimport Mathlib.Algebra.Ring.Defs\nimport Mathlib.Algebra.Ring.Basic\nimport Mathlib.Algebra.Field.Defs\nimport Mathlib.Algebra.Field.Basic\nimport Mathlib.Algebra.Order.Ring.Defs\nimport Mathlib.Algebra.Order.Field.Basic\nimport Mathlib.Order.Basic\nimport Mathlib.Order.Lattice\nimport Mathlib.Order.Bounds.Basic\nimport Mathlib.Order.MinMax\nimport Mathlib.Order.Monotone.Basic\nimport Mathlib.Logic.Basic\nimport Mathlib.Logic.Function.Basic\nimport Mathlib.Logic.Equiv.Basic\nimport Mathlib.Logic.Relation\nimport Mathlib.Tactic.Ring\nimport Mathlib.Tactic.Linarith\nimport Mathlib.Tactic.NormNum\nimport Mathlib.Tactic.Positivity\nimport Mathlib.Tactic.FieldSimp\nimport Mathlib.Tactic.Abel\nimport Mathlib.Tactic.GCongr\nimport Mathlib.Tactic.NthRewrite\nimport Mathlib.Topology.Basic\nimport Mathlib.Topology.Order\nimport Mathlib.Analysis.SpecialFunctions.Log.Basic\nimport Mathlib.Analysis.SpecialFunctions.Exp\nimport Mathlib.LinearAlgebra.Basis.Defs\nimport Mathlib.NumberTheory.Divisors\nimport Mathlib.SetTheory.Cardinal.Basic\nimport Mathlib.RingTheory.Ideal.Basic\nimport Mathlib.Data.Finsupp.Defs\nimport Mathlib.Data.Multiset.Basic\nimport Mathlib.Data.Vector.Basic\nimport Mathlib.Data.Matrix.Basic\nimport Mathlib.Dynamics.FixedPoints.Basic\n\nexample : (2 : ℕ) + 2 = 4 := by norm_num\n",
+      "expect": {
+        "panicFree": true,
+        "budgetMs": 90000,
+        "mustSucceed": true
+      },
+      "rationale": "57 module names — audit re-verified every single one present in public/profiles/mathlib-essential.manifest.json (4192 modules; zero missing), spanning Data/Algebra/Order/Logic/Tactic/Topology/Analysis/etc. Stresses header resolution fan-out against the resident snapshot; a fully resolvable set must succeed (via the umbrella rewrite) and elaborate the norm_num body. [budget raised: real NODEFS import of a large closure is ~60s in this lane; the BROWSER serves this header from the covering env instantly — note the compile-lane parity gap]"
+    },
+    {
+      "name": "header-alias-imports",
+      "category": "imports/header-import",
+      "source": "import Mathlib.Tactic\nimport Batteries\nimport MIL.Common\n\nexample : 2 + 2 = 4 := by norm_num\n",
+      "expect": {
+        "panicFree": true,
+        "budgetMs": 20000,
+        "mustSucceed": true
+      },
+      "rationale": "All three aggregator aliases at once (Mathlib.Tactic, Batteries, MIL.Common) — audit confirmed the alias set in src/runtime/umbrella.ts UMBRELLA_ALIAS_MODULES and the rewriteHeaderToUmbrella product path that serves them from the umbrella snapshot. Must resolve and run a tactic from the aggregator."
+    },
+    {
+      "name": "header-duplicate-imports",
+      "category": "imports/header-import",
+      "source": "import Mathlib.Data.Nat.Basic\nimport Mathlib.Data.Nat.Basic\nimport Mathlib.Tactic.Ring\nimport Mathlib.Data.Nat.Basic\nimport Mathlib.Tactic.Ring\nimport Mathlib.Data.Nat.Basic\n\nexample (a b : Nat) : (a + b) * 1 = a + b := by ring\n",
+      "expect": {
+        "panicFree": true,
+        "budgetMs": 90000,
+        "mustSucceed": true
+      },
+      "rationale": "Same real module imported four times, interleaved with a duplicated tactic import. Lean dedupes duplicate imports, so this must succeed; guards against duplicate-keyed env-extension or snapshot-resolution bookkeeping bugs (epoch-panic class). [budget raised: real NODEFS import of a large closure is ~60s in this lane; the BROWSER serves this header from the covering env instantly — note the compile-lane parity gap]"
+    },
+    {
+      "name": "header-import-after-decl",
+      "category": "imports/header-import",
+      "source": "import Mathlib.Data.Nat.Basic\n\ntheorem early (n : Nat) : n + 0 = n := Nat.add_zero n\n\nimport Mathlib.Data.Int.Basic\n\ntheorem late : (1 : Int) + 0 = 1 := Int.add_zero 1\n",
+      "expect": {
+        "panicFree": true,
+        "budgetMs": 20000,
+        "mustError": true
+      },
+      "rationale": "import appearing after a declaration is illegal in Lean; the parser must report it at the mid-file import without wedging the pipeline. The resolvable one-module header keeps the env path normal, so the error comes from the body parse. Regression probe for the frozen-'elaborating' and stale-diagnostics classes when the header/body boundary is violated."
+    },
+    {
+      "name": "header-prelude-keyword",
+      "category": "imports/header-import",
+      "source": "prelude\nimport Init.Prelude\n\nuniverse u\n\ndef selfId {α : Sort u} (a : α) : α := a\n",
+      "expect": {
+        "panicFree": true,
+        "budgetMs": 20000
+      },
+      "rationale": "'prelude' header keyword suppresses the implicit Init import — a mode the resident-snapshot env setup may honor or ignore (Init.Prelude is present in the lean-core manifest; audit confirmed the file compiles clean on native 4.33.1). Either a clean success or a clean error is acceptable; only a panic, hang, or stuck pill counts as failure, so no mustError/mustSucceed is asserted."
+    },
+    {
+      "name": "header-import-all-syntax",
+      "category": "imports/header-import",
+      "source": "import all Mathlib.Data.Nat.Basic\n\nexample : True := trivial\n",
+      "expect": {
+        "panicFree": true,
+        "budgetMs": 20000,
+        "mustError": true
+      },
+      "rationale": "Module-system 'import all' syntax in a non-module file. Audit verified on native 4.33.1: clean error at 1:7 'cannot use `import all` without `module`'. Must fail cleanly, not crash the header scanner."
+    },
+    {
+      "name": "header-meta-public-modifiers",
+      "category": "imports/header-import",
+      "source": "public import Mathlib.Data.Nat.Basic\nmeta import Mathlib.Tactic.Ring\n\nexample : True := trivial\n",
+      "expect": {
+        "panicFree": true,
+        "budgetMs": 90000,
+        "mustError": true,
+        "containsMsgs": [
+          "cannot use `public import` without `module`",
+          "cannot use `meta import` without `module`"
+        ]
+      },
+      "rationale": "Module-system import modifiers (public/meta) in a plain non-module file. Audit verified on native 4.33.1: two clean errors — 'cannot use `public import` without `module`' and 'cannot use `meta import` without `module`'. Must not confuse the harness's header extraction. [budget raised: the header imports its full closure BEFORE the modifier error surfaces — upstream nuance worth knowing]"
+    },
+    {
+      "name": "header-unicode-module-names",
+      "category": "imports/header-import",
+      "source": "import Mathlib.Дата.Основы\nimport Mathlib.数学.基礎\nimport Mathlib.Ωμέγα.Βασικό\nimport «Mathlib.Data.Nat.Bogus»\n\nexample : True := trivial\n",
+      "expect": {
+        "panicFree": true,
+        "budgetMs": 20000,
+        "mustError": true
+      },
+      "rationale": "Unicode letterlike identifiers (Cyrillic, CJK, Greek) are lexically valid Lean module names but unresolvable, plus a guillemet-quoted atom whose name contains literal dots — unresolvable under both string-keyed and Name-structured resolution. Tests UTF-8 handling in header parsing and manifest lookup; must surface imports incomplete. [KNOWN UPSTREAM PANIC: HeaderSyntax.imports unreachable at Lean.Elab.Import:41 on unicode module names — tracked in docs/UPSTREAM-NOTES.md]"
+    },
+    {
+      "name": "header-umbrella-valid-body",
+      "category": "imports/header-import",
+      "source": "import Mathlib\n\ntheorem sq_expand (a b : ℕ) : (a + b) ^ 2 = a ^ 2 + 2 * a * b + b ^ 2 := by ring\n",
+      "expect": {
+        "panicFree": true,
+        "budgetMs": 20000,
+        "mustSucceed": true
+      },
+      "rationale": "The canonical happy path: full 'import Mathlib' umbrella alias plus a real proof body using ring. Must succeed end-to-end — resolves via the resident umbrella snapshot (audit confirmed the QED64.Essential rewrite path in src/app.ts:761 / src/runtime/umbrella.ts) and elaborates within budget. Baseline that catches any header-handling regression breaking normal use."
+    },
+    {
+      "name": "header-mixed-real-and-bogus",
+      "category": "imports/header-import",
+      "source": "import Mathlib.Data.Nat.Basic\nimport Mathlib.Tactic.Ring\nimport Mathlib.NoSuch.Module\n\nexample : (1 : Nat) + 1 = 2 := rfl\n",
+      "expect": {
+        "panicFree": true,
+        "budgetMs": 20000,
+        "mustError": true
+      },
+      "rationale": "Two real modules plus one bogus one: per src/app.ts (audit-confirmed: 'the umbrella cannot mask a nonexistent import' — unknown imports poison the whole set), this must report imports incomplete rather than partially loading — and the otherwise-valid body must not leave stale success diagnostics. Probes the stale-diagnostics and didChange-replay regression classes."
+    },
+    {
+      "name": "calm-human-control",
+      "category": "editor/editor-actions",
+      "source": "",
+      "actions": [
+        {
+          "op": "setValue",
+          "value": "import Mathlib.Data.Real.Basic\n\n",
+          "text": "import Mathlib.Data.Real.Basic\n\n",
+          "ms": 300
+        },
+        {
+          "op": "pause",
+          "ms": 1500
+        },
+        {
+          "op": "typeAppend",
+          "text": "example ",
+          "ms": 260
+        },
+        {
+          "op": "typeAppend",
+          "text": "(a b : ℝ) ",
+          "ms": 240
+        },
+        {
+          "op": "typeAppend",
+          "text": "(h : a ≤ b) ",
+          "ms": 290
+        },
+        {
+          "op": "typeAppend",
+          "text": ": a + 1 ≤ b + 1 ",
+          "ms": 270
+        },
+        {
+          "op": "typeAppend",
+          "text": ":= by",
+          "ms": 220
+        },
+        {
+          "op": "typeAppend",
+          "text": "\n  linarith",
+          "ms": 300
+        },
+        {
+          "op": "typeAppend",
+          "text": "\n",
+          "ms": 200
+        },
+        {
+          "op": "pause",
+          "ms": 9500
+        }
+      ],
+      "expect": {
+        "panicFree": true,
+        "mustSucceed": true
+      },
+      "rationale": "Control scenario: a calm human types a valid linarith theorem in word-sized chunks at 200-300ms cadence against a resolvable Mathlib header (same import+linarith shape as the app's own built-in mathlib example, so known-good in the umbrella env). Baseline that must end at the ready pill — if this fails, every adversarial script's result is uninterpretable. Audit note: setValue actions carry both value and text (the e2e harness reads a.text)."
+    },
+    {
+      "name": "import-char-by-char",
+      "category": "editor/editor-actions",
+      "source": "",
+      "actions": [
+        {
+          "op": "setValue",
+          "value": "",
+          "text": "",
+          "ms": 400
+        },
+        {
+          "op": "typeAppend",
+          "text": "i",
+          "ms": 180
+        },
+        {
+          "op": "typeAppend",
+          "text": "m",
+          "ms": 60
+        },
+        {
+          "op": "typeAppend",
+          "text": "p",
+          "ms": 90
+        },
+        {
+          "op": "typeAppend",
+          "text": "o",
+          "ms": 400
+        },
+        {
+          "op": "typeAppend",
+          "text": "r",
+          "ms": 120
+        },
+        {
+          "op": "typeAppend",
+          "text": "t",
+          "ms": 70
+        },
+        {
+          "op": "typeAppend",
+          "text": " ",
+          "ms": 250
+        },
+        {
+          "op": "typeAppend",
+          "text": "M",
+          "ms": 90
+        },
+        {
+          "op": "typeAppend",
+          "text": "a",
+          "ms": 60
+        },
+        {
+          "op": "typeAppend",
+          "text": "t",
+          "ms": 340
+        },
+        {
+          "op": "typeAppend",
+          "text": "h",
+          "ms": 110
+        },
+        {
+          "op": "typeAppend",
+          "text": "l",
+          "ms": 80
+        },
+        {
+          "op": "typeAppend",
+          "text": "i",
+          "ms": 60
+        },
+        {
+          "op": "typeAppend",
+          "text": "b",
+          "ms": 150
+        },
+        {
+          "op": "typeAppend",
+          "text": ".",
+          "ms": 390
+        },
+        {
+          "op": "typeAppend",
+          "text": "D",
+          "ms": 100
+        },
+        {
+          "op": "typeAppend",
+          "text": "a",
+          "ms": 70
+        },
+        {
+          "op": "typeAppend",
+          "text": "t",
+          "ms": 60
+        },
+        {
+          "op": "typeAppend",
+          "text": "a",
+          "ms": 220
+        },
+        {
+          "op": "typeAppend",
+          "text": ".",
+          "ms": 380
+        },
+        {
+          "op": "typeAppend",
+          "text": "R",
+          "ms": 90
+        },
+        {
+          "op": "typeAppend",
+          "text": "e",
+          "ms": 60
+        },
+        {
+          "op": "typeAppend",
+          "text": "a",
+          "ms": 110
+        },
+        {
+          "op": "typeAppend",
+          "text": "l",
+          "ms": 70
+        },
+        {
+          "op": "typeAppend",
+          "text": ".",
+          "ms": 360
+        },
+        {
+          "op": "typeAppend",
+          "text": "B",
+          "ms": 140
+        },
+        {
+          "op": "typeAppend",
+          "text": "a",
+          "ms": 80
+        },
+        {
+          "op": "typeAppend",
+          "text": "s",
+          "ms": 60
+        },
+        {
+          "op": "typeAppend",
+          "text": "i",
+          "ms": 90
+        },
+        {
+          "op": "typeAppend",
+          "text": "c",
+          "ms": 300
+        },
+        {
+          "op": "pause",
+          "ms": 1200
+        },
+        {
+          "op": "typeAppend",
+          "text": "\n\nexample (x y : ℝ) : x * y = y * x := ",
+          "ms": 300
+        },
+        {
+          "op": "typeAppend",
+          "text": "mul_comm x y\n",
+          "ms": 250
+        },
+        {
+          "op": "pause",
+          "ms": 9000
+        }
+      ],
+      "expect": {
+        "panicFree": true,
+        "mustSucceed": true
+      },
+      "rationale": "Composes the import line one character at a time with irregular 60-400ms pauses, so the header passes through ~30 unresolvable prefixes ('impor', 'Mathlib.Da', ...) before resolving. Stresses the imports-incomplete path (audit confirmed 'imports incomplete' is the frontend watchdog-shim's idle surface) and header re-resolution churn; must end fully checked at the ready pill."
+    },
+    {
+      "name": "garbage-midproof-undo-all",
+      "category": "editor/editor-actions",
+      "source": "",
+      "actions": [
+        {
+          "op": "switchExample",
+          "value": "mil",
+          "ms": 200
+        },
+        {
+          "op": "pause",
+          "ms": 3000
+        },
+        {
+          "op": "typeAt",
+          "line": 5,
+          "col": 7,
+          "text": "⟨⟨",
+          "ms": 120
+        },
+        {
+          "op": "typeAt",
+          "line": 5,
+          "col": 9,
+          "text": "junk",
+          "ms": 150
+        },
+        {
+          "op": "typeAt",
+          "line": 5,
+          "col": 13,
+          "text": "]]",
+          "ms": 110
+        },
+        {
+          "op": "typeAt",
+          "line": 5,
+          "col": 15,
+          "text": " ∀",
+          "ms": 130
+        },
+        {
+          "op": "pause",
+          "ms": 1800
+        },
+        {
+          "op": "undo",
+          "ms": 120
+        },
+        {
+          "op": "undo",
+          "ms": 120
+        },
+        {
+          "op": "undo",
+          "ms": 120
+        },
+        {
+          "op": "undo",
+          "ms": 120
+        },
+        {
+          "op": "undo",
+          "ms": 120
+        },
+        {
+          "op": "undo",
+          "ms": 120
+        },
+        {
+          "op": "pause",
+          "ms": 1000
+        },
+        {
+          "op": "setValue",
+          "value": "import MIL.Common\nimport Mathlib.Data.Real.Basic\n\nexample (a b c : ℝ) : a * (b * c) = b * (a * c) := by\n  rw [← mul_assoc]\n  rw [mul_comm a]\n  rw [mul_assoc]\n\nexample (a b c d : ℝ) (hyp : c = b * a - d) (hyp' : d = a * b) : c = 0 := by\n  rw [hyp]\n  rw [hyp']\n  rw [mul_comm]\n  rw [sub_self]\n",
+          "text": "import MIL.Common\nimport Mathlib.Data.Real.Basic\n\nexample (a b c : ℝ) : a * (b * c) = b * (a * c) := by\n  rw [← mul_assoc]\n  rw [mul_comm a]\n  rw [mul_assoc]\n\nexample (a b c d : ℝ) (hyp : c = b * a - d) (hyp' : d = a * b) : c = 0 := by\n  rw [hyp]\n  rw [hyp']\n  rw [mul_comm]\n  rw [sub_self]\n",
+          "ms": 200
+        },
+        {
+          "op": "pause",
+          "ms": 9000
+        }
+      ],
+      "expect": {
+        "panicFree": true,
+        "mustSucceed": true
+      },
+      "rationale": "Types unbalanced anonymous-constructor/bracket garbage into the middle of a working mil proof (inside 'rw [← mul_assoc]'), lets error diagnostics land, then undo-alls (with extra no-op undos) and pins the exact original source (audit confirmed the setValue is byte-identical to the app's built-in mil example in frontend/src/main.ts). Regression for the stale-diagnostics-never-clearing class: the earlier garbage errors must be gone at settle."
+    },
+    {
+      "name": "rapid-example-switch-storm",
+      "category": "editor/editor-actions",
+      "source": "",
+      "actions": [
+        {
+          "op": "switchExample",
+          "value": "mathlib",
+          "ms": 120
+        },
+        {
+          "op": "typeAppend",
+          "text": "qqq⟨⟨",
+          "ms": 120
+        },
+        {
+          "op": "switchExample",
+          "value": "mil",
+          "ms": 120
+        },
+        {
+          "op": "typeAppend",
+          "text": "]]∀∀",
+          "ms": 120
+        },
+        {
+          "op": "switchExample",
+          "value": "init",
+          "ms": 120
+        },
+        {
+          "op": "typeAppend",
+          "text": "λλ..",
+          "ms": 120
+        },
+        {
+          "op": "switchExample",
+          "value": "mathlib",
+          "ms": 120
+        },
+        {
+          "op": "typeAppend",
+          "text": "⟦⟦⟦",
+          "ms": 120
+        },
+        {
+          "op": "switchExample",
+          "value": "mil",
+          "ms": 120
+        },
+        {
+          "op": "typeAppend",
+          "text": "by by",
+          "ms": 120
+        },
+        {
+          "op": "switchExample",
+          "value": "init",
+          "ms": 120
+        },
+        {
+          "op": "typeAppend",
+          "text": "««",
+          "ms": 120
+        },
+        {
+          "op": "switchExample",
+          "value": "mathlib",
+          "ms": 120
+        },
+        {
+          "op": "typeAppend",
+          "text": "0xZZ",
+          "ms": 120
+        },
+        {
+          "op": "switchExample",
+          "value": "init",
+          "ms": 120
+        },
+        {
+          "op": "pause",
+          "ms": 1500
+        },
+        {
+          "op": "pause",
+          "ms": 9000
+        }
+      ],
+      "expect": {
+        "panicFree": true,
+        "mustSucceed": true
+      },
+      "rationale": "Eight whole-document example switches at ~120ms with garbage appended between them; each switch flips the header set (Mathlib.Data.Real.Basic / MIL.Common / no imports — audit confirmed all three example keys exist in frontend/src/main.ts), retargeting the resident env repeatedly mid-elaboration. Direct regression for the env-extension epoch-panic class; ends on a pristine init example that must check clean."
+    },
+    {
+      "name": "select-all-replace-cycles",
+      "category": "editor/editor-actions",
+      "source": "",
+      "actions": [
+        {
+          "op": "setValue",
+          "value": "theorem ⟨⟨⟨ where := by\n  simp [ [ [\nmacro junk : term => ]]]\n∀ ∀ ∀ αβγδ ⦃⦃\nexample : := :=\n",
+          "text": "theorem ⟨⟨⟨ where := by\n  simp [ [ [\nmacro junk : term => ]]]\n∀ ∀ ∀ αβγδ ⦃⦃\nexample : := :=\n",
+          "ms": 200
+        },
+        {
+          "op": "pause",
+          "ms": 800
+        },
+        {
+          "op": "setValue",
+          "value": "inductive Tree (α : Type) where\n  | leaf : Tree α\n  | node : Tree α → α → Tree α → Tree α\n\ndef Tree.size : Tree α → Nat\n  | .leaf => 0\n  | .node l _ r => l.size + r.size + 1\n\ndef Tree.mirror : Tree α → Tree α\n  | .leaf => .leaf\n  | .node l x r => .node r.mirror x l.mirror\n\ntheorem Tree.mirror_size (t : Tree α) : t.mirror.size = t.size := by\n  induction t with\n  | leaf => rfl\n  | node l x r ihl ihr => simp [mirror, size, ihl, ihr]; omega\n",
+          "text": "inductive Tree (α : Type) where\n  | leaf : Tree α\n  | node : Tree α → α → Tree α → Tree α\n\ndef Tree.size : Tree α → Nat\n  | .leaf => 0\n  | .node l _ r => l.size + r.size + 1\n\ndef Tree.mirror : Tree α → Tree α\n  | .leaf => .leaf\n  | .node l x r => .node r.mirror x l.mirror\n\ntheorem Tree.mirror_size (t : Tree α) : t.mirror.size = t.size := by\n  induction t with\n  | leaf => rfl\n  | node l x r ihl ihr => simp [mirror, size, ihl, ihr]; omega\n",
+          "ms": 200
+        },
+        {
+          "op": "pause",
+          "ms": 800
+        },
+        {
+          "op": "setValue",
+          "value": "theorem ⟨⟨⟨ where := by\n  simp [ [ [\nmacro junk : term => ]]]\n∀ ∀ ∀ αβγδ ⦃⦃\nexample : := :=\n",
+          "text": "theorem ⟨⟨⟨ where := by\n  simp [ [ [\nmacro junk : term => ]]]\n∀ ∀ ∀ αβγδ ⦃⦃\nexample : := :=\n",
+          "ms": 200
+        },
+        {
+          "op": "pause",
+          "ms": 800
+        },
+        {
+          "op": "setValue",
+          "value": "inductive Tree (α : Type) where\n  | leaf : Tree α\n  | node : Tree α → α → Tree α → Tree α\n\ndef Tree.size : Tree α → Nat\n  | .leaf => 0\n  | .node l _ r => l.size + r.size + 1\n\ndef Tree.mirror : Tree α → Tree α\n  | .leaf => .leaf\n  | .node l x r => .node r.mirror x l.mirror\n\ntheorem Tree.mirror_size (t : Tree α) : t.mirror.size = t.size := by\n  induction t with\n  | leaf => rfl\n  | node l x r ihl ihr => simp [mirror, size, ihl, ihr]; omega\n",
+          "text": "inductive Tree (α : Type) where\n  | leaf : Tree α\n  | node : Tree α → α → Tree α → Tree α\n\ndef Tree.size : Tree α → Nat\n  | .leaf => 0\n  | .node l _ r => l.size + r.size + 1\n\ndef Tree.mirror : Tree α → Tree α\n  | .leaf => .leaf\n  | .node l x r => .node r.mirror x l.mirror\n\ntheorem Tree.mirror_size (t : Tree α) : t.mirror.size = t.size := by\n  induction t with\n  | leaf => rfl\n  | node l x r ihl ihr => simp [mirror, size, ihl, ihr]; omega\n",
+          "ms": 200
+        },
+        {
+          "op": "pause",
+          "ms": 800
+        },
+        {
+          "op": "setValue",
+          "value": "theorem ⟨⟨⟨ where := by\n  simp [ [ [\nmacro junk : term => ]]]\n∀ ∀ ∀ αβγδ ⦃⦃\nexample : := :=\n",
+          "text": "theorem ⟨⟨⟨ where := by\n  simp [ [ [\nmacro junk : term => ]]]\n∀ ∀ ∀ αβγδ ⦃⦃\nexample : := :=\n",
+          "ms": 200
+        },
+        {
+          "op": "pause",
+          "ms": 800
+        },
+        {
+          "op": "setValue",
+          "value": "inductive Tree (α : Type) where\n  | leaf : Tree α\n  | node : Tree α → α → Tree α → Tree α\n\ndef Tree.size : Tree α → Nat\n  | .leaf => 0\n  | .node l _ r => l.size + r.size + 1\n\ndef Tree.mirror : Tree α → Tree α\n  | .leaf => .leaf\n  | .node l x r => .node r.mirror x l.mirror\n\ntheorem Tree.mirror_size (t : Tree α) : t.mirror.size = t.size := by\n  induction t with\n  | leaf => rfl\n  | node l x r ihl ihr => simp [mirror, size, ihl, ihr]; omega\n",
+          "text": "inductive Tree (α : Type) where\n  | leaf : Tree α\n  | node : Tree α → α → Tree α → Tree α\n\ndef Tree.size : Tree α → Nat\n  | .leaf => 0\n  | .node l _ r => l.size + r.size + 1\n\ndef Tree.mirror : Tree α → Tree α\n  | .leaf => .leaf\n  | .node l x r => .node r.mirror x l.mirror\n\ntheorem Tree.mirror_size (t : Tree α) : t.mirror.size = t.size := by\n  induction t with\n  | leaf => rfl\n  | node l x r ihl ihr => simp [mirror, size, ihl, ihr]; omega\n",
+          "ms": 200
+        },
+        {
+          "op": "pause",
+          "ms": 9000
+        }
+      ],
+      "expect": {
+        "panicFree": true,
+        "mustSucceed": true
+      },
+      "rationale": "Three select-all-replace cycles alternating a syntactically horrid garbage blob with the full valid init example (audit confirmed byte-identical to frontend/src/main.ts), each replacement landing while the previous whole-document check is still in flight. Stresses full-document invalidation and diagnostic swaps; ends on the valid source, so lingering garbage-era errors fail it."
+    },
+    {
+      "name": "type-line1-during-elab",
+      "category": "editor/editor-actions",
+      "source": "",
+      "actions": [
+        {
+          "op": "switchExample",
+          "value": "mathlib",
+          "ms": 100
+        },
+        {
+          "op": "pause",
+          "ms": 250
+        },
+        {
+          "op": "typeAt",
+          "line": 1,
+          "col": 1,
+          "text": "-",
+          "ms": 90
+        },
+        {
+          "op": "typeAt",
+          "line": 1,
+          "col": 2,
+          "text": "-",
+          "ms": 90
+        },
+        {
+          "op": "typeAt",
+          "line": 1,
+          "col": 3,
+          "text": " ",
+          "ms": 90
+        },
+        {
+          "op": "pause",
+          "ms": 1500
+        },
+        {
+          "op": "undo",
+          "ms": 150
+        },
+        {
+          "op": "undo",
+          "ms": 150
+        },
+        {
+          "op": "undo",
+          "ms": 150
+        },
+        {
+          "op": "pause",
+          "ms": 500
+        },
+        {
+          "op": "typeAt",
+          "line": 1,
+          "col": 1,
+          "text": "x",
+          "ms": 80
+        },
+        {
+          "op": "typeAt",
+          "line": 1,
+          "col": 1,
+          "text": "y",
+          "ms": 80
+        },
+        {
+          "op": "pause",
+          "ms": 900
+        },
+        {
+          "op": "undo",
+          "ms": 150
+        },
+        {
+          "op": "undo",
+          "ms": 150
+        },
+        {
+          "op": "pause",
+          "ms": 9000
+        }
+      ],
+      "expect": {
+        "panicFree": true
+      },
+      "rationale": "Starts elaboration of the mathlib example, then 250ms in types at line 1 col 1 — mutating the import line itself mid-flight ('-import' -> '--import' -> '-- import', killing the header, then 'yximport'), each time undoing back. Hits header re-resolution racing an in-flight elaboration; survival test (the built-in mathlib example ends in 'example : False := sorry', so no mustSucceed — audit confirmed that final line in frontend/src/main.ts)."
+    },
+    {
+      "name": "undo-redo-storm-15x",
+      "category": "editor/editor-actions",
+      "source": "",
+      "actions": [
+        {
+          "op": "switchExample",
+          "value": "init",
+          "ms": 200
+        },
+        {
+          "op": "pause",
+          "ms": 2500
+        },
+        {
+          "op": "typeAppend",
+          "text": "\n\n-- scratch note",
+          "ms": 180
+        },
+        {
+          "op": "typeAppend",
+          "text": "\n#check Tree.mirror",
+          "ms": 200
+        },
+        {
+          "op": "typeAppend",
+          "text": "\n#check Tree.size",
+          "ms": 180
+        },
+        {
+          "op": "pause",
+          "ms": 1200
+        },
+        {
+          "op": "undo",
+          "ms": 80
+        },
+        {
+          "op": "redo",
+          "ms": 80
+        },
+        {
+          "op": "undo",
+          "ms": 80
+        },
+        {
+          "op": "redo",
+          "ms": 80
+        },
+        {
+          "op": "undo",
+          "ms": 80
+        },
+        {
+          "op": "redo",
+          "ms": 80
+        },
+        {
+          "op": "undo",
+          "ms": 80
+        },
+        {
+          "op": "redo",
+          "ms": 80
+        },
+        {
+          "op": "undo",
+          "ms": 80
+        },
+        {
+          "op": "redo",
+          "ms": 80
+        },
+        {
+          "op": "undo",
+          "ms": 80
+        },
+        {
+          "op": "redo",
+          "ms": 80
+        },
+        {
+          "op": "undo",
+          "ms": 80
+        },
+        {
+          "op": "redo",
+          "ms": 80
+        },
+        {
+          "op": "undo",
+          "ms": 80
+        },
+        {
+          "op": "redo",
+          "ms": 80
+        },
+        {
+          "op": "undo",
+          "ms": 80
+        },
+        {
+          "op": "redo",
+          "ms": 80
+        },
+        {
+          "op": "undo",
+          "ms": 80
+        },
+        {
+          "op": "redo",
+          "ms": 80
+        },
+        {
+          "op": "undo",
+          "ms": 80
+        },
+        {
+          "op": "redo",
+          "ms": 80
+        },
+        {
+          "op": "undo",
+          "ms": 80
+        },
+        {
+          "op": "redo",
+          "ms": 80
+        },
+        {
+          "op": "undo",
+          "ms": 80
+        },
+        {
+          "op": "redo",
+          "ms": 80
+        },
+        {
+          "op": "undo",
+          "ms": 80
+        },
+        {
+          "op": "redo",
+          "ms": 80
+        },
+        {
+          "op": "undo",
+          "ms": 80
+        },
+        {
+          "op": "redo",
+          "ms": 80
+        },
+        {
+          "op": "pause",
+          "ms": 600
+        },
+        {
+          "op": "undo",
+          "ms": 120
+        },
+        {
+          "op": "undo",
+          "ms": 120
+        },
+        {
+          "op": "undo",
+          "ms": 120
+        },
+        {
+          "op": "pause",
+          "ms": 9000
+        }
+      ],
+      "expect": {
+        "panicFree": true
+      },
+      "rationale": "Fifteen undo/redo cycles at 80ms over three appended edits, then a drain of undos. Every flip is a didChange the worker must replay in order — direct regression for the version-regression-on-didChange-replay class. All reachable end states are valid or comment-only, but undo-stack semantics vary, so panicFree-only."
+    },
+    {
+      "name": "delete-import-line-restore",
+      "category": "editor/editor-actions",
+      "source": "",
+      "actions": [
+        {
+          "op": "switchExample",
+          "value": "mil",
+          "ms": 200
+        },
+        {
+          "op": "pause",
+          "ms": 3000
+        },
+        {
+          "op": "deleteRange",
+          "line": 1,
+          "col": 1,
+          "endLine": 3,
+          "endCol": 1,
+          "ms": 150
+        },
+        {
+          "op": "pause",
+          "ms": 2000
+        },
+        {
+          "op": "undo",
+          "ms": 200
+        },
+        {
+          "op": "pause",
+          "ms": 1500
+        },
+        {
+          "op": "deleteRange",
+          "line": 1,
+          "col": 1,
+          "endLine": 2,
+          "endCol": 1,
+          "ms": 150
+        },
+        {
+          "op": "pause",
+          "ms": 1200
+        },
+        {
+          "op": "typeAt",
+          "line": 1,
+          "col": 1,
+          "text": "import MIL.Common\n",
+          "ms": 200
+        },
+        {
+          "op": "pause",
+          "ms": 500
+        },
+        {
+          "op": "pause",
+          "ms": 9000
+        }
+      ],
+      "expect": {
+        "panicFree": true,
+        "mustSucceed": true
+      },
+      "rationale": "From the working mil file: deletes both import lines (ℝ becomes unknown, whole file errors), undo-restores; then deletes just the MIL.Common line and restores it by retyping rather than undo. Two different header-loss/header-regain transitions against the resident snapshot env; must end fully checked with no residual diagnostics."
+    },
+    {
+      "name": "unresolvable-import-composition",
+      "category": "editor/editor-actions",
+      "source": "",
+      "actions": [
+        {
+          "op": "setValue",
+          "value": "",
+          "text": "",
+          "ms": 400
+        },
+        {
+          "op": "typeAppend",
+          "text": "i",
+          "ms": 150
+        },
+        {
+          "op": "typeAppend",
+          "text": "m",
+          "ms": 70
+        },
+        {
+          "op": "typeAppend",
+          "text": "p",
+          "ms": 90
+        },
+        {
+          "op": "typeAppend",
+          "text": "o",
+          "ms": 300
+        },
+        {
+          "op": "typeAppend",
+          "text": "r",
+          "ms": 80
+        },
+        {
+          "op": "typeAppend",
+          "text": "t",
+          "ms": 120
+        },
+        {
+          "op": "typeAppend",
+          "text": " ",
+          "ms": 200
+        },
+        {
+          "op": "typeAppend",
+          "text": "M",
+          "ms": 80
+        },
+        {
+          "op": "typeAppend",
+          "text": "a",
+          "ms": 60
+        },
+        {
+          "op": "typeAppend",
+          "text": "t",
+          "ms": 250
+        },
+        {
+          "op": "typeAppend",
+          "text": "h",
+          "ms": 90
+        },
+        {
+          "op": "typeAppend",
+          "text": "l",
+          "ms": 70
+        },
+        {
+          "op": "typeAppend",
+          "text": "i",
+          "ms": 60
+        },
+        {
+          "op": "typeAppend",
+          "text": "b",
+          "ms": 180
+        },
+        {
+          "op": "typeAppend",
+          "text": ".",
+          "ms": 350
+        },
+        {
+          "op": "typeAppend",
+          "text": "T",
+          "ms": 90
+        },
+        {
+          "op": "typeAppend",
+          "text": "a",
+          "ms": 60
+        },
+        {
+          "op": "typeAppend",
+          "text": "c",
+          "ms": 110
+        },
+        {
+          "op": "typeAppend",
+          "text": "t",
+          "ms": 70
+        },
+        {
+          "op": "typeAppend",
+          "text": "i",
+          "ms": 60
+        },
+        {
+          "op": "typeAppend",
+          "text": "c",
+          "ms": 90
+        },
+        {
+          "op": "pause",
+          "ms": 2000
+        },
+        {
+          "op": "typeAppend",
+          "text": ".",
+          "ms": 200
+        },
+        {
+          "op": "typeAppend",
+          "text": "B",
+          "ms": 100
+        },
+        {
+          "op": "typeAppend",
+          "text": "o",
+          "ms": 80
+        },
+        {
+          "op": "typeAppend",
+          "text": "g",
+          "ms": 100
+        },
+        {
+          "op": "typeAppend",
+          "text": "u",
+          "ms": 70
+        },
+        {
+          "op": "typeAppend",
+          "text": "s",
+          "ms": 150
+        },
+        {
+          "op": "typeAppend",
+          "text": "\n\nexample : 1 + 1 = 2 := rfl\n",
+          "ms": 300
+        },
+        {
+          "op": "pause",
+          "ms": 9000
+        }
+      ],
+      "expect": {
+        "panicFree": true,
+        "terminal": "headerUnresolvable"
+      },
+      "rationale": "Types 'import Mathlib.Tactic' char-by-char (resolvable alias — a 2s pause lets that header commit and elaboration start), then extends it to 'Mathlib.Tactic.Bogus', flipping the header from resolvable back to unresolvable. Ends parked in the unresolvable state; audit confirmed 'imports incomplete' is the exact watchdog-shim idle text (frontend/src/watchdog-shim.ts) and an accepted terminal settle state in the e2e harness. Deliberately no mustSucceed — the required end state is imports-incomplete, not ready."
+    },
+    {
+      "name": "cursor-thrash-during-elab",
+      "category": "editor/editor-actions",
+      "source": "",
+      "actions": [
+        {
+          "op": "switchExample",
+          "value": "mathlib",
+          "ms": 100
+        },
+        {
+          "op": "pause",
+          "ms": 250
+        },
+        {
+          "op": "setCursor",
+          "line": 1,
+          "col": 1,
+          "ms": 70
+        },
+        {
+          "op": "setCursor",
+          "line": 11,
+          "col": 5,
+          "ms": 90
+        },
+        {
+          "op": "setCursor",
+          "line": 4,
+          "col": 10,
+          "ms": 60
+        },
+        {
+          "op": "setCursor",
+          "line": 8,
+          "col": 30,
+          "ms": 120
+        },
+        {
+          "op": "setCursor",
+          "line": 2,
+          "col": 1,
+          "ms": 60
+        },
+        {
+          "op": "setCursor",
+          "line": 9,
+          "col": 11,
+          "ms": 150
+        },
+        {
+          "op": "setCursor",
+          "line": 3,
+          "col": 40,
+          "ms": 70
+        },
+        {
+          "op": "setCursor",
+          "line": 6,
+          "col": 15,
+          "ms": 90
+        },
+        {
+          "op": "setCursor",
+          "line": 5,
+          "col": 8,
+          "ms": 60
+        },
+        {
+          "op": "setCursor",
+          "line": 1,
+          "col": 30,
+          "ms": 130
+        },
+        {
+          "op": "setCursor",
+          "line": 8,
+          "col": 60,
+          "ms": 70
+        },
+        {
+          "op": "setCursor",
+          "line": 11,
+          "col": 20,
+          "ms": 90
+        },
+        {
+          "op": "setCursor",
+          "line": 4,
+          "col": 3,
+          "ms": 60
+        },
+        {
+          "op": "setCursor",
+          "line": 3,
+          "col": 52,
+          "ms": 140
+        },
+        {
+          "op": "setCursor",
+          "line": 2,
+          "col": 1,
+          "ms": 60
+        },
+        {
+          "op": "setCursor",
+          "line": 9,
+          "col": 3,
+          "ms": 80
+        },
+        {
+          "op": "setCursor",
+          "line": 5,
+          "col": 20,
+          "ms": 100
+        },
+        {
+          "op": "setCursor",
+          "line": 3,
+          "col": 1,
+          "ms": 60
+        },
+        {
+          "op": "setCursor",
+          "line": 8,
+          "col": 45,
+          "ms": 110
+        },
+        {
+          "op": "setCursor",
+          "line": 6,
+          "col": 10,
+          "ms": 90
+        },
+        {
+          "op": "pause",
+          "ms": 1200
+        },
+        {
+          "op": "setCursor",
+          "line": 11,
+          "col": 25,
+          "ms": 100
+        },
+        {
+          "op": "setCursor",
+          "line": 4,
+          "col": 12,
+          "ms": 100
+        },
+        {
+          "op": "setCursor",
+          "line": 9,
+          "col": 11,
+          "ms": 100
+        },
+        {
+          "op": "setCursor",
+          "line": 3,
+          "col": 50,
+          "ms": 100
+        },
+        {
+          "op": "setCursor",
+          "line": 8,
+          "col": 66,
+          "ms": 100
+        },
+        {
+          "op": "pause",
+          "ms": 9000
+        }
+      ],
+      "expect": {
+        "panicFree": true
+      },
+      "rationale": "Twenty cursor jumps at 60-150ms starting 250ms into the mathlib example's elaboration (plus five more after a beat), spraying InfoView goal-state and hover requests across every proof line, including past-end-of-line columns that must clamp. Targets the frozen-'elaborating'-pill class; document is never edited, so panicFree plus terminal settle is the assertion (final doc contains the example's built-in sorry, so no mustSucceed)."
+    },
+    {
+      "name": "garbage-storm-worker-recovery",
+      "category": "editor/editor-actions",
+      "source": "",
+      "actions": [
+        {
+          "op": "switchExample",
+          "value": "init",
+          "ms": 200
+        },
+        {
+          "op": "pause",
+          "ms": 1500
+        },
+        {
+          "op": "typeAppend",
+          "text": "\n⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨",
+          "ms": 90
+        },
+        {
+          "op": "typeAppend",
+          "text": "]]]]]]]]",
+          "ms": 90
+        },
+        {
+          "op": "typeAppend",
+          "text": "∀∀∀∀∀∀∀∀",
+          "ms": 90
+        },
+        {
+          "op": "typeAppend",
+          "text": "fun fun fun =>",
+          "ms": 90
+        },
+        {
+          "op": "typeAppend",
+          "text": "⦃⦃⦃⦃⦃⦃",
+          "ms": 90
+        },
+        {
+          "op": "typeAppend",
+          "text": "........",
+          "ms": 90
+        },
+        {
+          "op": "typeAppend",
+          "text": "«««««",
+          "ms": 90
+        },
+        {
+          "op": "typeAppend",
+          "text": "by by by by",
+          "ms": 90
+        },
+        {
+          "op": "typeAppend",
+          "text": "end end end",
+          "ms": 90
+        },
+        {
+          "op": "typeAppend",
+          "text": "@[simp]@[simp]@[simp]",
+          "ms": 90
+        },
+        {
+          "op": "typeAppend",
+          "text": "{{{{{{{{",
+          "ms": 90
+        },
+        {
+          "op": "typeAppend",
+          "text": "→→→→→→→→",
+          "ms": 90
+        },
+        {
+          "op": "pause",
+          "ms": 2500
+        },
+        {
+          "op": "setValue",
+          "value": "inductive Tree (α : Type) where\n  | leaf : Tree α\n  | node : Tree α → α → Tree α → Tree α\n\ndef Tree.size : Tree α → Nat\n  | .leaf => 0\n  | .node l _ r => l.size + r.size + 1\n\ndef Tree.mirror : Tree α → Tree α\n  | .leaf => .leaf\n  | .node l x r => .node r.mirror x l.mirror\n\ntheorem Tree.mirror_size (t : Tree α) : t.mirror.size = t.size := by\n  induction t with\n  | leaf => rfl\n  | node l x r ihl ihr => simp [mirror, size, ihl, ihr]; omega\n",
+          "text": "inductive Tree (α : Type) where\n  | leaf : Tree α\n  | node : Tree α → α → Tree α → Tree α\n\ndef Tree.size : Tree α → Nat\n  | .leaf => 0\n  | .node l _ r => l.size + r.size + 1\n\ndef Tree.mirror : Tree α → Tree α\n  | .leaf => .leaf\n  | .node l x r => .node r.mirror x l.mirror\n\ntheorem Tree.mirror_size (t : Tree α) : t.mirror.size = t.size := by\n  induction t with\n  | leaf => rfl\n  | node l x r ihl ihr => simp [mirror, size, ihl, ihr]; omega\n",
+          "ms": 200
+        },
+        {
+          "op": "pause",
+          "ms": 12000
+        }
+      ],
+      "expect": {
+        "panicFree": true,
+        "mustSucceed": true
+      },
+      "rationale": "The garbage-typing-storm class that historically killed the worker via JS stack overflow: twelve 90ms bursts of pathologically nested/unclosed tokens appended to a valid file, a 2.5s window for the parser to choke, then a clean setValue and a long 12s settle. Whether or not the worker died, recovery plus the crash-loop breaker must leave the clean file fully checked. Note: if the worker survives without any PANIC-class console line, panicFree holds; a stack-overflow console line here is exactly the regression this item exists to catch."
+    },
+    {
+      "name": "setvalue-typing-version-races",
+      "category": "editor/editor-actions",
+      "source": "",
+      "actions": [
+        {
+          "op": "setValue",
+          "value": "inductive Tree (α : Type) where\n  | leaf : Tree α\n  | node : Tree α → α → Tree α → Tree α\n\ndef Tree.size : Tree α → Nat\n  | .leaf => 0\n  | .node l _ r => l.size + r.size + 1\n\ndef Tree.mirror : Tree α → Tree α\n  | .leaf => .leaf\n  | .node l x r => .node r.mirror x l.mirror\n\ntheorem Tree.mirror_size (t : Tree α) : t.mirror.size = t.size := by\n  induction t with\n  | leaf => rfl\n  | node l x r ihl ihr => simp [mirror, size, ihl, ihr]; omega\n",
+          "text": "inductive Tree (α : Type) where\n  | leaf : Tree α\n  | node : Tree α → α → Tree α → Tree α\n\ndef Tree.size : Tree α → Nat\n  | .leaf => 0\n  | .node l _ r => l.size + r.size + 1\n\ndef Tree.mirror : Tree α → Tree α\n  | .leaf => .leaf\n  | .node l x r => .node r.mirror x l.mirror\n\ntheorem Tree.mirror_size (t : Tree α) : t.mirror.size = t.size := by\n  induction t with\n  | leaf => rfl\n  | node l x r ihl ihr => simp [mirror, size, ihl, ihr]; omega\n",
+          "ms": 80
+        },
+        {
+          "op": "typeAppend",
+          "text": "\n-- v1",
+          "ms": 50
+        },
+        {
+          "op": "typeAt",
+          "line": 1,
+          "col": 1,
+          "text": "--",
+          "ms": 50
+        },
+        {
+          "op": "undo",
+          "ms": 50
+        },
+        {
+          "op": "setValue",
+          "value": "theorem two_le : 2 ≤ 4 := by omega\n",
+          "text": "theorem two_le : 2 ≤ 4 := by omega\n",
+          "ms": 60
+        },
+        {
+          "op": "typeAppend",
+          "text": "#check two_le\n",
+          "ms": 50
+        },
+        {
+          "op": "typeAt",
+          "line": 1,
+          "col": 1,
+          "text": "-",
+          "ms": 40
+        },
+        {
+          "op": "undo",
+          "ms": 50
+        },
+        {
+          "op": "setValue",
+          "value": "example : 2 + 2 = 4 := rfl\n",
+          "text": "example : 2 + 2 = 4 := rfl\n",
+          "ms": 60
+        },
+        {
+          "op": "typeAppend",
+          "text": "example : True := trivial\n",
+          "ms": 40
+        },
+        {
+          "op": "setValue",
+          "value": "theorem two_le : 2 ≤ 4 := by omega\n",
+          "text": "theorem two_le : 2 ≤ 4 := by omega\n",
+          "ms": 50
+        },
+        {
+          "op": "typeAppend",
+          "text": "#check two_le\n",
+          "ms": 40
+        },
+        {
+          "op": "setValue",
+          "value": "inductive Tree (α : Type) where\n  | leaf : Tree α\n  | node : Tree α → α → Tree α → Tree α\n\ndef Tree.size : Tree α → Nat\n  | .leaf => 0\n  | .node l _ r => l.size + r.size + 1\n\ndef Tree.mirror : Tree α → Tree α\n  | .leaf => .leaf\n  | .node l x r => .node r.mirror x l.mirror\n\ntheorem Tree.mirror_size (t : Tree α) : t.mirror.size = t.size := by\n  induction t with\n  | leaf => rfl\n  | node l x r ihl ihr => simp [mirror, size, ihl, ihr]; omega\n",
+          "text": "inductive Tree (α : Type) where\n  | leaf : Tree α\n  | node : Tree α → α → Tree α → Tree α\n\ndef Tree.size : Tree α → Nat\n  | .leaf => 0\n  | .node l _ r => l.size + r.size + 1\n\ndef Tree.mirror : Tree α → Tree α\n  | .leaf => .leaf\n  | .node l x r => .node r.mirror x l.mirror\n\ntheorem Tree.mirror_size (t : Tree α) : t.mirror.size = t.size := by\n  induction t with\n  | leaf => rfl\n  | node l x r ihl ihr => simp [mirror, size, ihl, ihr]; omega\n",
+          "ms": 70
+        },
+        {
+          "op": "pause",
+          "ms": 800
+        },
+        {
+          "op": "pause",
+          "ms": 9000
+        }
+      ],
+      "expect": {
+        "panicFree": true,
+        "mustSucceed": true
+      },
+      "rationale": "Interleaves whole-document setValues with incremental typeAt/typeAppend/undo at 40-80ms — full-replace and delta didChanges racing each other is exactly the shape that produced the version-regression-on-didChange-replay bug. Ends deterministically on the valid init source, which must check clean with no diagnostics from any intermediate document generation."
+    },
+    {
+      "name": "msg-unknown-identifier",
+      "category": "goldens/message-output",
+      "source": "import Mathlib\n\nexample : Nat := foo\n",
+      "expect": {
+        "panicFree": true,
+        "budgetMs": 20000,
+        "mustError": true,
+        "containsMsgs": [
+          "Unknown identifier `foo`"
+        ]
+      },
+      "rationale": "Exactly one error at line 3 (span covers `foo`). Lean 4.33 phrasing is capitalized with backticks: 'Unknown identifier `foo`' (diagnostic code lean.unknownIdentifier) — audit confirmed the format string in the fork source and reproduced the exact phrasing on native 4.33.1. Regression-guards diagnostic text+position stability and that stale diagnostics clear correctly around a single-error buffer."
+    },
+    {
+      "name": "msg-type-mismatch-string-nat",
+      "category": "goldens/message-output",
+      "source": "import Mathlib\n\ndef answer : Nat := \"forty-two\"\n",
+      "expect": {
+        "panicFree": true,
+        "budgetMs": 20000,
+        "mustError": true,
+        "containsMsgs": [
+          "Type mismatch",
+          "\"forty-two\"",
+          "String",
+          "but is expected to have type",
+          "ℕ"
+        ]
+      },
+      "rationale": "Single error at the string literal. Audit re-verified on the shipped wasm64 runtime + umbrella snapshot: exact diagnostic data 'Type mismatch\\n  \"forty-two\"\\nhas type\\n  String\\nbut is expected to have type\\n  ℕ' — with Mathlib imported the expected type pretty-prints as ℕ, NOT Nat (a golden asserting 'Nat' would be wrong), and 4.33 capitalizes 'Type mismatch' (fork TermElabM.lean:1104)."
+    },
+    {
+      "name": "msg-rfl-definitional-mismatch",
+      "category": "goldens/message-output",
+      "source": "import Mathlib\n\nexample : 2 + 2 = 5 := by rfl\n",
+      "expect": {
+        "panicFree": true,
+        "budgetMs": 20000,
+        "mustError": true,
+        "containsMsgs": [
+          "Tactic `rfl` failed",
+          "2 + 2",
+          "is not definitionally equal to the right-hand side",
+          "⊢ 2 + 2 = 5"
+        ]
+      },
+      "rationale": "Single error at the `rfl` token. Tactic-mode rfl is used deliberately: audit confirmed in fork source (Meta/Tactic/Rfl.lean:90 + Util.lean mkTacticExMsg) the exact shape 'Tactic `rfl` failed: The left-hand side\\n  2 + 2\\nis not definitionally equal to the right-hand side\\n  5' followed by the goal display; term-mode rfl instead gives a Type mismatch with an unstable metavariable index that must not be asserted."
+    },
+    {
+      "name": "msg-unsolved-goals",
+      "category": "goldens/message-output",
+      "source": "import Mathlib\n\nexample : True ∧ True := by\n  constructor\n",
+      "expect": {
+        "panicFree": true,
+        "budgetMs": 20000,
+        "mustError": true,
+        "containsMsgs": [
+          "unsolved goals",
+          "case left",
+          "case right",
+          "⊢ True"
+        ]
+      },
+      "rationale": "Single 'unsolved goals' error anchored at the `by` token (note it lands on `by`, not on `constructor`). Body lists both remaining goals: 'case left\\n⊢ True\\n\\ncase right\\n⊢ True'. 'unsolved goals' is one of the few messages still lowercase in 4.33 (audit confirmed the tagged lowercase literal in fork source and reproduced it natively). Also exercises the frozen-'elaborating'-pill class: elaboration must terminate and publish this diagnostic."
+    },
+    {
+      "name": "msg-sorry-warning",
+      "category": "goldens/message-output",
+      "source": "import Mathlib.Tactic\n\ntheorem uses_sorry : False := sorry\n",
+      "expect": {
+        "panicFree": true,
+        "budgetMs": 20000,
+        "mustError": false,
+        "mustSucceed": true,
+        "containsMsgs": [
+          "declaration uses `sorry`"
+        ]
+      },
+      "rationale": "Zero errors, exactly one warning at the declaration name `uses_sorry`. Text: 'declaration uses `sorry`' — audit confirmed the backticked format string in fork AddDecl.lean:91 and reproduced on the wasm runtime (warning is the 4th of 4 messages in the misuse gauntlet run, severity warning, errors=0). Header uses the Mathlib.Tactic alias to also exercise the snapshot alias-resolution path. Guards that warnings render as warnings (not errors) and the file still reports success."
+    },
+    {
+      "name": "msg-decide-false-prop",
+      "category": "goldens/message-output",
+      "source": "import Mathlib\n\nexample : 2 + 2 = 5 := by decide\n",
+      "expect": {
+        "panicFree": true,
+        "budgetMs": 20000,
+        "mustError": true,
+        "containsMsgs": [
+          "Tactic `decide` proved that the proposition",
+          "2 + 2 = 5",
+          "is false"
+        ]
+      },
+      "rationale": "Single error at the `decide` token. 4.33 text: 'Tactic `decide` proved that the proposition\\n  2 + 2 = 5\\nis false' — audit confirmed the format string in fork Elab/Tactic/Decide.lean:133 and reproduced it verbatim on the shipped wasm64 runtime. Older goldens asserting 'evaluated to false'/'decide failed' phrasings would miss. Decidable.decide on tiny Nat literals is instant."
+    },
+    {
+      "name": "msg-unused-simp-arg-linter",
+      "category": "goldens/message-output",
+      "source": "import Mathlib\n\nexample : 1 = 1 := by simp only [Nat.add_zero]\n",
+      "expect": {
+        "panicFree": true,
+        "budgetMs": 20000,
+        "mustError": false,
+        "mustSucceed": true,
+        "containsMsgs": [
+          "This simp argument is unused:",
+          "Nat.add_zero",
+          "Omit it from the simp argument list",
+          "linter.unusedSimpArgs"
+        ]
+      },
+      "rationale": "Zero errors, one warning at `Nat.add_zero` inside the bracket. simp only closes 1 = 1 by rfl leaving the arg unused; core linter.unusedSimpArgs (audit confirmed defValue := true in fork Elab/Tactic/Simp.lean:675) emits 'This simp argument is unused:\\n  Nat.add_zero', the hint 'Omit it from the simp argument list.', and the note naming linter.unusedSimpArgs — all four fragments reproduced verbatim on native 4.33.1 in this audit. Proof succeeds — mustSucceed guards against warnings being promoted to errors."
+    },
+    {
+      "name": "msg-unused-variable-linter",
+      "category": "goldens/message-output",
+      "source": "import Batteries\n\ndef double (x : Nat) (y : Nat) : Nat := x + x\n",
+      "expect": {
+        "panicFree": true,
+        "budgetMs": 20000,
+        "mustError": false,
+        "mustSucceed": true,
+        "containsMsgs": [
+          "Variable name `y` is not explicitly referenced",
+          "linter.unusedVariables"
+        ]
+      },
+      "rationale": "Zero errors, one warning at binder `y` (`x` is used so only `y` fires). 4.33 text: 'Variable name `y` is not explicitly referenced.' with the `_`-prefix hint and the note naming linter.unusedVariables — audit confirmed the format string in fork Linter/UnusedVariables.lean:573 and reproduced both fragments verbatim on native 4.33.1. Old goldens asserting \"unused variable 'y'\" are stale. Header exercises the Batteries import alias against the snapshot."
+    },
+    {
+      "name": "msg-unknown-constant-in-simp-set",
+      "category": "goldens/message-output",
+      "source": "import Mathlib\n\nexample : True := by simp [Nat.nonexistent_lemma]\n",
+      "expect": {
+        "panicFree": true,
+        "budgetMs": 20000,
+        "mustError": true,
+        "containsMsgs": [
+          "Unknown constant `Nat.nonexistent_lemma`"
+        ]
+      },
+      "rationale": "Exactly one error at the bad name inside the simp bracket and no cascading 'unsolved goals' second diagnostic — audit reproduced this exactly on native 4.33.1 (single error, code lean.unknownIdentifier). Distinct from the unknown-identifier case: simp-set name resolution reports 'Unknown constant', quoting the full dotted name in backticks (format confirmed in fork Exception.lean:157)."
+    },
+    {
+      "name": "msg-check-eval-deterministic",
+      "category": "goldens/message-output",
+      "source": "import Mathlib\n\n#check Nat.succ\n#eval 2 + 2\n#eval \"QED64\".length\n#eval (2 : ℤ) ^ 10\n",
+      "expect": {
+        "panicFree": true,
+        "budgetMs": 20000,
+        "mustError": false,
+        "mustSucceed": true,
+        "containsMsgs": [
+          "Nat.succ (n : ℕ) : ℕ",
+          "4",
+          "5",
+          "1024"
+        ]
+      },
+      "rationale": "Zero errors, four info diagnostics at lines 3-6 (each anchored on its #check/#eval keyword): 'Nat.succ (n : ℕ) : ℕ', '4', '5', '1024'. Under Mathlib the signature renders with ℕ, not Nat. The ℤ eval proves Mathlib notation/Int arithmetic is live in the resident snapshot — audit re-ran this file on the shipped wasm64 runtime + umbrella snapshot: clean success, 945 ms. All evals are constant-time; guards that info-severity messages surface in the InfoView and clear correctly."
+    },
+    {
+      "name": "mathlib-name-shadow-faithful-compile",
+      "category": "compiler/covering-env",
+      "source": "import Mathlib.Algebra.Algebra.Basic\n\ninductive Tree (α : Type) where\n  | leaf : Tree α\n  | node : Tree α → α → Tree α → Tree α\n\ndef Tree.size : Tree α → Nat\n  | .leaf => 0  \n  | .node l _ r => l.size + r.size + 1\n\ndef Tree.mirror : Tree α → Tree α\n  | .leaf => .leaf\n  | .node l x r => .node r.mirror x l.mirror\n\ntheorem Tree.mirror_size (t : Tree α) : t.mirror.size = t.size := by\n  induction t with\n  | leaf => rfl\n  | node l x r ihl ihr => simp [mirror, size, ihl, ihr]; omega\n",
+      "expect": {
+        "mustSucceed": true,
+        "panicFree": true,
+        "budgetMs": 110000
+      },
+      "notes": "User-reported genre: defining a name (Tree) that full Mathlib already has, under a specific import that does NOT bring it in. Faithful import semantics must be clean (live parity); the covering env used to leak all Mathlib names into scope."
+    },
+    {
+      "name": "mathlib-name-shadow-explains",
+      "category": "editor/editor-actions",
+      "source": "",
+      "actions": [
+        {
+          "op": "switchExample",
+          "value": "init",
+          "ms": 300
+        },
+        {
+          "op": "pause",
+          "ms": 2000
+        },
+        {
+          "op": "setValue",
+          "text": "import Mathlib.Algebra.Algebra.Basic\n\ninductive Tree (α : Type) where\n  | leaf : Tree α\n  | node : Tree α → α → Tree α → Tree α\n\ndef Tree.size : Tree α → Nat\n  | .leaf => 0  \n  | .node l _ r => l.size + r.size + 1\n\ndef Tree.mirror : Tree α → Tree α\n  | .leaf => .leaf\n  | .node l x r => .node r.mirror x l.mirror\n\ntheorem Tree.mirror_size (t : Tree α) : t.mirror.size = t.size := by\n  induction t with\n  | leaf => rfl\n  | node l x r ihl ihr => simp [mirror, size, ihl, ihr]; omega\n",
+          "ms": 100
+        },
+        {
+          "op": "waitAction",
+          "ms": 90000
+        },
+        {
+          "op": "pause",
+          "ms": 1500
+        }
+      ],
+      "expect": {
+        "terminal": "ready",
+        "panicFree": true,
+        "settleMs": 120000,
+        "actionOffered": true,
+        "noteContains": "preloads all of Mathlib"
+      },
+      "rationale": "The umbrella collision is an artifact of this playground (live.lean-lang.org imports only the header's closure and would not collide). The user must be told immediately — an information diagnostic naming the colliding name and the two ways out — and offered exact imports explicitly; nothing is rebooted for them (second review C4, UX row 8). Runs BEFORE the click-through scenario: on the same page a header already loaded exactly cannot collide, so this must observe the first paste."
+    },
+    {
+      "name": "mathlib-name-shadow-faithful-switch",
+      "category": "editor-actions",
+      "source": "",
+      "actions": [
+        {
+          "op": "switchExample",
+          "value": "init",
+          "ms": 300
+        },
+        {
+          "op": "pause",
+          "ms": 2000
+        },
+        {
+          "op": "setValue",
+          "text": "import Mathlib.Algebra.Algebra.Basic\n\ninductive Tree (α : Type) where\n  | leaf : Tree α\n  | node : Tree α → α → Tree α → Tree α\n\ndef Tree.size : Tree α → Nat\n  | .leaf => 0  \n  | .node l _ r => l.size + r.size + 1\n\ndef Tree.mirror : Tree α → Tree α\n  | .leaf => .leaf\n  | .node l x r => .node r.mirror x l.mirror\n\ntheorem Tree.mirror_size (t : Tree α) : t.mirror.size = t.size := by\n  induction t with\n  | leaf => rfl\n  | node l x r ihl ihr => simp [mirror, size, ihl, ihr]; omega\n",
+          "ms": 100
+        },
+        {
+          "op": "pause",
+          "ms": 1500
+        },
+        {
+          "op": "clickAction",
+          "ms": 90000
+        },
+        {
+          "op": "pause",
+          "ms": 2000
+        }
+      ],
+      "expect": {
+        "mustSucceed": true,
+        "panicFree": true,
+        "settleMs": 420000,
+        "zeroErrors": true
+      },
+      "notes": "Same genre in the live pane: paste into the init tab. The covering env first produces 'Tree has already been declared'; the shim must reboot once into faithful imports and settle ready with ZERO errors.",
+      "rationale": "A pasted file whose names collide with the preloaded Mathlib umbrella must NOT reboot on its own: the page explains the collision and offers 'Load exact imports'; clicking it reboots into faithful mode (pack install once + exact olean import) and the file then checks clean."
     }
-   ],
-   "expect": {
-    "panicFree": true,
-    "mustSucceed": true
-   },
-   "rationale": "Control scenario: a calm human types a valid linarith theorem in word-sized chunks at 200-300ms cadence against a resolvable Mathlib header (same import+linarith shape as the app's own built-in mathlib example, so known-good in the umbrella env). Baseline that must end at the ready pill — if this fails, every adversarial script's result is uninterpretable. Audit note: setValue actions carry both value and text (the e2e harness reads a.text)."
-  },
-  {
-   "name": "import-char-by-char",
-   "category": "editor/editor-actions",
-   "source": "",
-   "actions": [
-    {
-     "op": "setValue",
-     "value": "",
-     "text": "",
-     "ms": 400
-    },
-    {
-     "op": "typeAppend",
-     "text": "i",
-     "ms": 180
-    },
-    {
-     "op": "typeAppend",
-     "text": "m",
-     "ms": 60
-    },
-    {
-     "op": "typeAppend",
-     "text": "p",
-     "ms": 90
-    },
-    {
-     "op": "typeAppend",
-     "text": "o",
-     "ms": 400
-    },
-    {
-     "op": "typeAppend",
-     "text": "r",
-     "ms": 120
-    },
-    {
-     "op": "typeAppend",
-     "text": "t",
-     "ms": 70
-    },
-    {
-     "op": "typeAppend",
-     "text": " ",
-     "ms": 250
-    },
-    {
-     "op": "typeAppend",
-     "text": "M",
-     "ms": 90
-    },
-    {
-     "op": "typeAppend",
-     "text": "a",
-     "ms": 60
-    },
-    {
-     "op": "typeAppend",
-     "text": "t",
-     "ms": 340
-    },
-    {
-     "op": "typeAppend",
-     "text": "h",
-     "ms": 110
-    },
-    {
-     "op": "typeAppend",
-     "text": "l",
-     "ms": 80
-    },
-    {
-     "op": "typeAppend",
-     "text": "i",
-     "ms": 60
-    },
-    {
-     "op": "typeAppend",
-     "text": "b",
-     "ms": 150
-    },
-    {
-     "op": "typeAppend",
-     "text": ".",
-     "ms": 390
-    },
-    {
-     "op": "typeAppend",
-     "text": "D",
-     "ms": 100
-    },
-    {
-     "op": "typeAppend",
-     "text": "a",
-     "ms": 70
-    },
-    {
-     "op": "typeAppend",
-     "text": "t",
-     "ms": 60
-    },
-    {
-     "op": "typeAppend",
-     "text": "a",
-     "ms": 220
-    },
-    {
-     "op": "typeAppend",
-     "text": ".",
-     "ms": 380
-    },
-    {
-     "op": "typeAppend",
-     "text": "R",
-     "ms": 90
-    },
-    {
-     "op": "typeAppend",
-     "text": "e",
-     "ms": 60
-    },
-    {
-     "op": "typeAppend",
-     "text": "a",
-     "ms": 110
-    },
-    {
-     "op": "typeAppend",
-     "text": "l",
-     "ms": 70
-    },
-    {
-     "op": "typeAppend",
-     "text": ".",
-     "ms": 360
-    },
-    {
-     "op": "typeAppend",
-     "text": "B",
-     "ms": 140
-    },
-    {
-     "op": "typeAppend",
-     "text": "a",
-     "ms": 80
-    },
-    {
-     "op": "typeAppend",
-     "text": "s",
-     "ms": 60
-    },
-    {
-     "op": "typeAppend",
-     "text": "i",
-     "ms": 90
-    },
-    {
-     "op": "typeAppend",
-     "text": "c",
-     "ms": 300
-    },
-    {
-     "op": "pause",
-     "ms": 1200
-    },
-    {
-     "op": "typeAppend",
-     "text": "\n\nexample (x y : ℝ) : x * y = y * x := ",
-     "ms": 300
-    },
-    {
-     "op": "typeAppend",
-     "text": "mul_comm x y\n",
-     "ms": 250
-    },
-    {
-     "op": "pause",
-     "ms": 9000
-    }
-   ],
-   "expect": {
-    "panicFree": true,
-    "mustSucceed": true
-   },
-   "rationale": "Composes the import line one character at a time with irregular 60-400ms pauses, so the header passes through ~30 unresolvable prefixes ('impor', 'Mathlib.Da', ...) before resolving. Stresses the imports-incomplete path (audit confirmed 'imports incomplete' is the frontend watchdog-shim's idle surface) and header re-resolution churn; must end fully checked at the ready pill."
-  },
-  {
-   "name": "garbage-midproof-undo-all",
-   "category": "editor/editor-actions",
-   "source": "",
-   "actions": [
-    {
-     "op": "switchExample",
-     "value": "mil",
-     "ms": 200
-    },
-    {
-     "op": "pause",
-     "ms": 3000
-    },
-    {
-     "op": "typeAt",
-     "line": 5,
-     "col": 7,
-     "text": "⟨⟨",
-     "ms": 120
-    },
-    {
-     "op": "typeAt",
-     "line": 5,
-     "col": 9,
-     "text": "junk",
-     "ms": 150
-    },
-    {
-     "op": "typeAt",
-     "line": 5,
-     "col": 13,
-     "text": "]]",
-     "ms": 110
-    },
-    {
-     "op": "typeAt",
-     "line": 5,
-     "col": 15,
-     "text": " ∀",
-     "ms": 130
-    },
-    {
-     "op": "pause",
-     "ms": 1800
-    },
-    {
-     "op": "undo",
-     "ms": 120
-    },
-    {
-     "op": "undo",
-     "ms": 120
-    },
-    {
-     "op": "undo",
-     "ms": 120
-    },
-    {
-     "op": "undo",
-     "ms": 120
-    },
-    {
-     "op": "undo",
-     "ms": 120
-    },
-    {
-     "op": "undo",
-     "ms": 120
-    },
-    {
-     "op": "pause",
-     "ms": 1000
-    },
-    {
-     "op": "setValue",
-     "value": "import MIL.Common\nimport Mathlib.Data.Real.Basic\n\nexample (a b c : ℝ) : a * (b * c) = b * (a * c) := by\n  rw [← mul_assoc]\n  rw [mul_comm a]\n  rw [mul_assoc]\n\nexample (a b c d : ℝ) (hyp : c = b * a - d) (hyp' : d = a * b) : c = 0 := by\n  rw [hyp]\n  rw [hyp']\n  rw [mul_comm]\n  rw [sub_self]\n",
-     "text": "import MIL.Common\nimport Mathlib.Data.Real.Basic\n\nexample (a b c : ℝ) : a * (b * c) = b * (a * c) := by\n  rw [← mul_assoc]\n  rw [mul_comm a]\n  rw [mul_assoc]\n\nexample (a b c d : ℝ) (hyp : c = b * a - d) (hyp' : d = a * b) : c = 0 := by\n  rw [hyp]\n  rw [hyp']\n  rw [mul_comm]\n  rw [sub_self]\n",
-     "ms": 200
-    },
-    {
-     "op": "pause",
-     "ms": 9000
-    }
-   ],
-   "expect": {
-    "panicFree": true,
-    "mustSucceed": true
-   },
-   "rationale": "Types unbalanced anonymous-constructor/bracket garbage into the middle of a working mil proof (inside 'rw [← mul_assoc]'), lets error diagnostics land, then undo-alls (with extra no-op undos) and pins the exact original source (audit confirmed the setValue is byte-identical to the app's built-in mil example in frontend/src/main.ts). Regression for the stale-diagnostics-never-clearing class: the earlier garbage errors must be gone at settle."
-  },
-  {
-   "name": "rapid-example-switch-storm",
-   "category": "editor/editor-actions",
-   "source": "",
-   "actions": [
-    {
-     "op": "switchExample",
-     "value": "mathlib",
-     "ms": 120
-    },
-    {
-     "op": "typeAppend",
-     "text": "qqq⟨⟨",
-     "ms": 120
-    },
-    {
-     "op": "switchExample",
-     "value": "mil",
-     "ms": 120
-    },
-    {
-     "op": "typeAppend",
-     "text": "]]∀∀",
-     "ms": 120
-    },
-    {
-     "op": "switchExample",
-     "value": "init",
-     "ms": 120
-    },
-    {
-     "op": "typeAppend",
-     "text": "λλ..",
-     "ms": 120
-    },
-    {
-     "op": "switchExample",
-     "value": "mathlib",
-     "ms": 120
-    },
-    {
-     "op": "typeAppend",
-     "text": "⟦⟦⟦",
-     "ms": 120
-    },
-    {
-     "op": "switchExample",
-     "value": "mil",
-     "ms": 120
-    },
-    {
-     "op": "typeAppend",
-     "text": "by by",
-     "ms": 120
-    },
-    {
-     "op": "switchExample",
-     "value": "init",
-     "ms": 120
-    },
-    {
-     "op": "typeAppend",
-     "text": "««",
-     "ms": 120
-    },
-    {
-     "op": "switchExample",
-     "value": "mathlib",
-     "ms": 120
-    },
-    {
-     "op": "typeAppend",
-     "text": "0xZZ",
-     "ms": 120
-    },
-    {
-     "op": "switchExample",
-     "value": "init",
-     "ms": 120
-    },
-    {
-     "op": "pause",
-     "ms": 1500
-    },
-    {
-     "op": "pause",
-     "ms": 9000
-    }
-   ],
-   "expect": {
-    "panicFree": true,
-    "mustSucceed": true
-   },
-   "rationale": "Eight whole-document example switches at ~120ms with garbage appended between them; each switch flips the header set (Mathlib.Data.Real.Basic / MIL.Common / no imports — audit confirmed all three example keys exist in frontend/src/main.ts), retargeting the resident env repeatedly mid-elaboration. Direct regression for the env-extension epoch-panic class; ends on a pristine init example that must check clean."
-  },
-  {
-   "name": "select-all-replace-cycles",
-   "category": "editor/editor-actions",
-   "source": "",
-   "actions": [
-    {
-     "op": "setValue",
-     "value": "theorem ⟨⟨⟨ where := by\n  simp [ [ [\nmacro junk : term => ]]]\n∀ ∀ ∀ αβγδ ⦃⦃\nexample : := :=\n",
-     "text": "theorem ⟨⟨⟨ where := by\n  simp [ [ [\nmacro junk : term => ]]]\n∀ ∀ ∀ αβγδ ⦃⦃\nexample : := :=\n",
-     "ms": 200
-    },
-    {
-     "op": "pause",
-     "ms": 800
-    },
-    {
-     "op": "setValue",
-     "value": "inductive Tree (α : Type) where\n  | leaf : Tree α\n  | node : Tree α → α → Tree α → Tree α\n\ndef Tree.size : Tree α → Nat\n  | .leaf => 0\n  | .node l _ r => l.size + r.size + 1\n\ndef Tree.mirror : Tree α → Tree α\n  | .leaf => .leaf\n  | .node l x r => .node r.mirror x l.mirror\n\ntheorem Tree.mirror_size (t : Tree α) : t.mirror.size = t.size := by\n  induction t with\n  | leaf => rfl\n  | node l x r ihl ihr => simp [mirror, size, ihl, ihr]; omega\n",
-     "text": "inductive Tree (α : Type) where\n  | leaf : Tree α\n  | node : Tree α → α → Tree α → Tree α\n\ndef Tree.size : Tree α → Nat\n  | .leaf => 0\n  | .node l _ r => l.size + r.size + 1\n\ndef Tree.mirror : Tree α → Tree α\n  | .leaf => .leaf\n  | .node l x r => .node r.mirror x l.mirror\n\ntheorem Tree.mirror_size (t : Tree α) : t.mirror.size = t.size := by\n  induction t with\n  | leaf => rfl\n  | node l x r ihl ihr => simp [mirror, size, ihl, ihr]; omega\n",
-     "ms": 200
-    },
-    {
-     "op": "pause",
-     "ms": 800
-    },
-    {
-     "op": "setValue",
-     "value": "theorem ⟨⟨⟨ where := by\n  simp [ [ [\nmacro junk : term => ]]]\n∀ ∀ ∀ αβγδ ⦃⦃\nexample : := :=\n",
-     "text": "theorem ⟨⟨⟨ where := by\n  simp [ [ [\nmacro junk : term => ]]]\n∀ ∀ ∀ αβγδ ⦃⦃\nexample : := :=\n",
-     "ms": 200
-    },
-    {
-     "op": "pause",
-     "ms": 800
-    },
-    {
-     "op": "setValue",
-     "value": "inductive Tree (α : Type) where\n  | leaf : Tree α\n  | node : Tree α → α → Tree α → Tree α\n\ndef Tree.size : Tree α → Nat\n  | .leaf => 0\n  | .node l _ r => l.size + r.size + 1\n\ndef Tree.mirror : Tree α → Tree α\n  | .leaf => .leaf\n  | .node l x r => .node r.mirror x l.mirror\n\ntheorem Tree.mirror_size (t : Tree α) : t.mirror.size = t.size := by\n  induction t with\n  | leaf => rfl\n  | node l x r ihl ihr => simp [mirror, size, ihl, ihr]; omega\n",
-     "text": "inductive Tree (α : Type) where\n  | leaf : Tree α\n  | node : Tree α → α → Tree α → Tree α\n\ndef Tree.size : Tree α → Nat\n  | .leaf => 0\n  | .node l _ r => l.size + r.size + 1\n\ndef Tree.mirror : Tree α → Tree α\n  | .leaf => .leaf\n  | .node l x r => .node r.mirror x l.mirror\n\ntheorem Tree.mirror_size (t : Tree α) : t.mirror.size = t.size := by\n  induction t with\n  | leaf => rfl\n  | node l x r ihl ihr => simp [mirror, size, ihl, ihr]; omega\n",
-     "ms": 200
-    },
-    {
-     "op": "pause",
-     "ms": 800
-    },
-    {
-     "op": "setValue",
-     "value": "theorem ⟨⟨⟨ where := by\n  simp [ [ [\nmacro junk : term => ]]]\n∀ ∀ ∀ αβγδ ⦃⦃\nexample : := :=\n",
-     "text": "theorem ⟨⟨⟨ where := by\n  simp [ [ [\nmacro junk : term => ]]]\n∀ ∀ ∀ αβγδ ⦃⦃\nexample : := :=\n",
-     "ms": 200
-    },
-    {
-     "op": "pause",
-     "ms": 800
-    },
-    {
-     "op": "setValue",
-     "value": "inductive Tree (α : Type) where\n  | leaf : Tree α\n  | node : Tree α → α → Tree α → Tree α\n\ndef Tree.size : Tree α → Nat\n  | .leaf => 0\n  | .node l _ r => l.size + r.size + 1\n\ndef Tree.mirror : Tree α → Tree α\n  | .leaf => .leaf\n  | .node l x r => .node r.mirror x l.mirror\n\ntheorem Tree.mirror_size (t : Tree α) : t.mirror.size = t.size := by\n  induction t with\n  | leaf => rfl\n  | node l x r ihl ihr => simp [mirror, size, ihl, ihr]; omega\n",
-     "text": "inductive Tree (α : Type) where\n  | leaf : Tree α\n  | node : Tree α → α → Tree α → Tree α\n\ndef Tree.size : Tree α → Nat\n  | .leaf => 0\n  | .node l _ r => l.size + r.size + 1\n\ndef Tree.mirror : Tree α → Tree α\n  | .leaf => .leaf\n  | .node l x r => .node r.mirror x l.mirror\n\ntheorem Tree.mirror_size (t : Tree α) : t.mirror.size = t.size := by\n  induction t with\n  | leaf => rfl\n  | node l x r ihl ihr => simp [mirror, size, ihl, ihr]; omega\n",
-     "ms": 200
-    },
-    {
-     "op": "pause",
-     "ms": 9000
-    }
-   ],
-   "expect": {
-    "panicFree": true,
-    "mustSucceed": true
-   },
-   "rationale": "Three select-all-replace cycles alternating a syntactically horrid garbage blob with the full valid init example (audit confirmed byte-identical to frontend/src/main.ts), each replacement landing while the previous whole-document check is still in flight. Stresses full-document invalidation and diagnostic swaps; ends on the valid source, so lingering garbage-era errors fail it."
-  },
-  {
-   "name": "type-line1-during-elab",
-   "category": "editor/editor-actions",
-   "source": "",
-   "actions": [
-    {
-     "op": "switchExample",
-     "value": "mathlib",
-     "ms": 100
-    },
-    {
-     "op": "pause",
-     "ms": 250
-    },
-    {
-     "op": "typeAt",
-     "line": 1,
-     "col": 1,
-     "text": "-",
-     "ms": 90
-    },
-    {
-     "op": "typeAt",
-     "line": 1,
-     "col": 2,
-     "text": "-",
-     "ms": 90
-    },
-    {
-     "op": "typeAt",
-     "line": 1,
-     "col": 3,
-     "text": " ",
-     "ms": 90
-    },
-    {
-     "op": "pause",
-     "ms": 1500
-    },
-    {
-     "op": "undo",
-     "ms": 150
-    },
-    {
-     "op": "undo",
-     "ms": 150
-    },
-    {
-     "op": "undo",
-     "ms": 150
-    },
-    {
-     "op": "pause",
-     "ms": 500
-    },
-    {
-     "op": "typeAt",
-     "line": 1,
-     "col": 1,
-     "text": "x",
-     "ms": 80
-    },
-    {
-     "op": "typeAt",
-     "line": 1,
-     "col": 1,
-     "text": "y",
-     "ms": 80
-    },
-    {
-     "op": "pause",
-     "ms": 900
-    },
-    {
-     "op": "undo",
-     "ms": 150
-    },
-    {
-     "op": "undo",
-     "ms": 150
-    },
-    {
-     "op": "pause",
-     "ms": 9000
-    }
-   ],
-   "expect": {
-    "panicFree": true
-   },
-   "rationale": "Starts elaboration of the mathlib example, then 250ms in types at line 1 col 1 — mutating the import line itself mid-flight ('-import' -> '--import' -> '-- import', killing the header, then 'yximport'), each time undoing back. Hits header re-resolution racing an in-flight elaboration; survival test (the built-in mathlib example ends in 'example : False := sorry', so no mustSucceed — audit confirmed that final line in frontend/src/main.ts)."
-  },
-  {
-   "name": "undo-redo-storm-15x",
-   "category": "editor/editor-actions",
-   "source": "",
-   "actions": [
-    {
-     "op": "switchExample",
-     "value": "init",
-     "ms": 200
-    },
-    {
-     "op": "pause",
-     "ms": 2500
-    },
-    {
-     "op": "typeAppend",
-     "text": "\n\n-- scratch note",
-     "ms": 180
-    },
-    {
-     "op": "typeAppend",
-     "text": "\n#check Tree.mirror",
-     "ms": 200
-    },
-    {
-     "op": "typeAppend",
-     "text": "\n#check Tree.size",
-     "ms": 180
-    },
-    {
-     "op": "pause",
-     "ms": 1200
-    },
-    {
-     "op": "undo",
-     "ms": 80
-    },
-    {
-     "op": "redo",
-     "ms": 80
-    },
-    {
-     "op": "undo",
-     "ms": 80
-    },
-    {
-     "op": "redo",
-     "ms": 80
-    },
-    {
-     "op": "undo",
-     "ms": 80
-    },
-    {
-     "op": "redo",
-     "ms": 80
-    },
-    {
-     "op": "undo",
-     "ms": 80
-    },
-    {
-     "op": "redo",
-     "ms": 80
-    },
-    {
-     "op": "undo",
-     "ms": 80
-    },
-    {
-     "op": "redo",
-     "ms": 80
-    },
-    {
-     "op": "undo",
-     "ms": 80
-    },
-    {
-     "op": "redo",
-     "ms": 80
-    },
-    {
-     "op": "undo",
-     "ms": 80
-    },
-    {
-     "op": "redo",
-     "ms": 80
-    },
-    {
-     "op": "undo",
-     "ms": 80
-    },
-    {
-     "op": "redo",
-     "ms": 80
-    },
-    {
-     "op": "undo",
-     "ms": 80
-    },
-    {
-     "op": "redo",
-     "ms": 80
-    },
-    {
-     "op": "undo",
-     "ms": 80
-    },
-    {
-     "op": "redo",
-     "ms": 80
-    },
-    {
-     "op": "undo",
-     "ms": 80
-    },
-    {
-     "op": "redo",
-     "ms": 80
-    },
-    {
-     "op": "undo",
-     "ms": 80
-    },
-    {
-     "op": "redo",
-     "ms": 80
-    },
-    {
-     "op": "undo",
-     "ms": 80
-    },
-    {
-     "op": "redo",
-     "ms": 80
-    },
-    {
-     "op": "undo",
-     "ms": 80
-    },
-    {
-     "op": "redo",
-     "ms": 80
-    },
-    {
-     "op": "undo",
-     "ms": 80
-    },
-    {
-     "op": "redo",
-     "ms": 80
-    },
-    {
-     "op": "pause",
-     "ms": 600
-    },
-    {
-     "op": "undo",
-     "ms": 120
-    },
-    {
-     "op": "undo",
-     "ms": 120
-    },
-    {
-     "op": "undo",
-     "ms": 120
-    },
-    {
-     "op": "pause",
-     "ms": 9000
-    }
-   ],
-   "expect": {
-    "panicFree": true
-   },
-   "rationale": "Fifteen undo/redo cycles at 80ms over three appended edits, then a drain of undos. Every flip is a didChange the worker must replay in order — direct regression for the version-regression-on-didChange-replay class. All reachable end states are valid or comment-only, but undo-stack semantics vary, so panicFree-only."
-  },
-  {
-   "name": "delete-import-line-restore",
-   "category": "editor/editor-actions",
-   "source": "",
-   "actions": [
-    {
-     "op": "switchExample",
-     "value": "mil",
-     "ms": 200
-    },
-    {
-     "op": "pause",
-     "ms": 3000
-    },
-    {
-     "op": "deleteRange",
-     "line": 1,
-     "col": 1,
-     "endLine": 3,
-     "endCol": 1,
-     "ms": 150
-    },
-    {
-     "op": "pause",
-     "ms": 2000
-    },
-    {
-     "op": "undo",
-     "ms": 200
-    },
-    {
-     "op": "pause",
-     "ms": 1500
-    },
-    {
-     "op": "deleteRange",
-     "line": 1,
-     "col": 1,
-     "endLine": 2,
-     "endCol": 1,
-     "ms": 150
-    },
-    {
-     "op": "pause",
-     "ms": 1200
-    },
-    {
-     "op": "typeAt",
-     "line": 1,
-     "col": 1,
-     "text": "import MIL.Common\n",
-     "ms": 200
-    },
-    {
-     "op": "pause",
-     "ms": 500
-    },
-    {
-     "op": "pause",
-     "ms": 9000
-    }
-   ],
-   "expect": {
-    "panicFree": true,
-    "mustSucceed": true
-   },
-   "rationale": "From the working mil file: deletes both import lines (ℝ becomes unknown, whole file errors), undo-restores; then deletes just the MIL.Common line and restores it by retyping rather than undo. Two different header-loss/header-regain transitions against the resident snapshot env; must end fully checked with no residual diagnostics."
-  },
-  {
-   "name": "unresolvable-import-composition",
-   "category": "editor/editor-actions",
-   "source": "",
-   "actions": [
-    {
-     "op": "setValue",
-     "value": "",
-     "text": "",
-     "ms": 400
-    },
-    {
-     "op": "typeAppend",
-     "text": "i",
-     "ms": 150
-    },
-    {
-     "op": "typeAppend",
-     "text": "m",
-     "ms": 70
-    },
-    {
-     "op": "typeAppend",
-     "text": "p",
-     "ms": 90
-    },
-    {
-     "op": "typeAppend",
-     "text": "o",
-     "ms": 300
-    },
-    {
-     "op": "typeAppend",
-     "text": "r",
-     "ms": 80
-    },
-    {
-     "op": "typeAppend",
-     "text": "t",
-     "ms": 120
-    },
-    {
-     "op": "typeAppend",
-     "text": " ",
-     "ms": 200
-    },
-    {
-     "op": "typeAppend",
-     "text": "M",
-     "ms": 80
-    },
-    {
-     "op": "typeAppend",
-     "text": "a",
-     "ms": 60
-    },
-    {
-     "op": "typeAppend",
-     "text": "t",
-     "ms": 250
-    },
-    {
-     "op": "typeAppend",
-     "text": "h",
-     "ms": 90
-    },
-    {
-     "op": "typeAppend",
-     "text": "l",
-     "ms": 70
-    },
-    {
-     "op": "typeAppend",
-     "text": "i",
-     "ms": 60
-    },
-    {
-     "op": "typeAppend",
-     "text": "b",
-     "ms": 180
-    },
-    {
-     "op": "typeAppend",
-     "text": ".",
-     "ms": 350
-    },
-    {
-     "op": "typeAppend",
-     "text": "T",
-     "ms": 90
-    },
-    {
-     "op": "typeAppend",
-     "text": "a",
-     "ms": 60
-    },
-    {
-     "op": "typeAppend",
-     "text": "c",
-     "ms": 110
-    },
-    {
-     "op": "typeAppend",
-     "text": "t",
-     "ms": 70
-    },
-    {
-     "op": "typeAppend",
-     "text": "i",
-     "ms": 60
-    },
-    {
-     "op": "typeAppend",
-     "text": "c",
-     "ms": 90
-    },
-    {
-     "op": "pause",
-     "ms": 2000
-    },
-    {
-     "op": "typeAppend",
-     "text": ".",
-     "ms": 200
-    },
-    {
-     "op": "typeAppend",
-     "text": "B",
-     "ms": 100
-    },
-    {
-     "op": "typeAppend",
-     "text": "o",
-     "ms": 80
-    },
-    {
-     "op": "typeAppend",
-     "text": "g",
-     "ms": 100
-    },
-    {
-     "op": "typeAppend",
-     "text": "u",
-     "ms": 70
-    },
-    {
-     "op": "typeAppend",
-     "text": "s",
-     "ms": 150
-    },
-    {
-     "op": "typeAppend",
-     "text": "\n\nexample : 1 + 1 = 2 := rfl\n",
-     "ms": 300
-    },
-    {
-     "op": "pause",
-     "ms": 9000
-    }
-   ],
-   "expect": {
-    "panicFree": true,
-    "terminal": "headerUnresolvable"
-   },
-   "rationale": "Types 'import Mathlib.Tactic' char-by-char (resolvable alias — a 2s pause lets that header commit and elaboration start), then extends it to 'Mathlib.Tactic.Bogus', flipping the header from resolvable back to unresolvable. Ends parked in the unresolvable state; audit confirmed 'imports incomplete' is the exact watchdog-shim idle text (frontend/src/watchdog-shim.ts) and an accepted terminal settle state in the e2e harness. Deliberately no mustSucceed — the required end state is imports-incomplete, not ready."
-  },
-  {
-   "name": "cursor-thrash-during-elab",
-   "category": "editor/editor-actions",
-   "source": "",
-   "actions": [
-    {
-     "op": "switchExample",
-     "value": "mathlib",
-     "ms": 100
-    },
-    {
-     "op": "pause",
-     "ms": 250
-    },
-    {
-     "op": "setCursor",
-     "line": 1,
-     "col": 1,
-     "ms": 70
-    },
-    {
-     "op": "setCursor",
-     "line": 11,
-     "col": 5,
-     "ms": 90
-    },
-    {
-     "op": "setCursor",
-     "line": 4,
-     "col": 10,
-     "ms": 60
-    },
-    {
-     "op": "setCursor",
-     "line": 8,
-     "col": 30,
-     "ms": 120
-    },
-    {
-     "op": "setCursor",
-     "line": 2,
-     "col": 1,
-     "ms": 60
-    },
-    {
-     "op": "setCursor",
-     "line": 9,
-     "col": 11,
-     "ms": 150
-    },
-    {
-     "op": "setCursor",
-     "line": 3,
-     "col": 40,
-     "ms": 70
-    },
-    {
-     "op": "setCursor",
-     "line": 6,
-     "col": 15,
-     "ms": 90
-    },
-    {
-     "op": "setCursor",
-     "line": 5,
-     "col": 8,
-     "ms": 60
-    },
-    {
-     "op": "setCursor",
-     "line": 1,
-     "col": 30,
-     "ms": 130
-    },
-    {
-     "op": "setCursor",
-     "line": 8,
-     "col": 60,
-     "ms": 70
-    },
-    {
-     "op": "setCursor",
-     "line": 11,
-     "col": 20,
-     "ms": 90
-    },
-    {
-     "op": "setCursor",
-     "line": 4,
-     "col": 3,
-     "ms": 60
-    },
-    {
-     "op": "setCursor",
-     "line": 3,
-     "col": 52,
-     "ms": 140
-    },
-    {
-     "op": "setCursor",
-     "line": 2,
-     "col": 1,
-     "ms": 60
-    },
-    {
-     "op": "setCursor",
-     "line": 9,
-     "col": 3,
-     "ms": 80
-    },
-    {
-     "op": "setCursor",
-     "line": 5,
-     "col": 20,
-     "ms": 100
-    },
-    {
-     "op": "setCursor",
-     "line": 3,
-     "col": 1,
-     "ms": 60
-    },
-    {
-     "op": "setCursor",
-     "line": 8,
-     "col": 45,
-     "ms": 110
-    },
-    {
-     "op": "setCursor",
-     "line": 6,
-     "col": 10,
-     "ms": 90
-    },
-    {
-     "op": "pause",
-     "ms": 1200
-    },
-    {
-     "op": "setCursor",
-     "line": 11,
-     "col": 25,
-     "ms": 100
-    },
-    {
-     "op": "setCursor",
-     "line": 4,
-     "col": 12,
-     "ms": 100
-    },
-    {
-     "op": "setCursor",
-     "line": 9,
-     "col": 11,
-     "ms": 100
-    },
-    {
-     "op": "setCursor",
-     "line": 3,
-     "col": 50,
-     "ms": 100
-    },
-    {
-     "op": "setCursor",
-     "line": 8,
-     "col": 66,
-     "ms": 100
-    },
-    {
-     "op": "pause",
-     "ms": 9000
-    }
-   ],
-   "expect": {
-    "panicFree": true
-   },
-   "rationale": "Twenty cursor jumps at 60-150ms starting 250ms into the mathlib example's elaboration (plus five more after a beat), spraying InfoView goal-state and hover requests across every proof line, including past-end-of-line columns that must clamp. Targets the frozen-'elaborating'-pill class; document is never edited, so panicFree plus terminal settle is the assertion (final doc contains the example's built-in sorry, so no mustSucceed)."
-  },
-  {
-   "name": "garbage-storm-worker-recovery",
-   "category": "editor/editor-actions",
-   "source": "",
-   "actions": [
-    {
-     "op": "switchExample",
-     "value": "init",
-     "ms": 200
-    },
-    {
-     "op": "pause",
-     "ms": 1500
-    },
-    {
-     "op": "typeAppend",
-     "text": "\n⟨⟨⟨⟨⟨⟨⟨⟨⟨⟨",
-     "ms": 90
-    },
-    {
-     "op": "typeAppend",
-     "text": "]]]]]]]]",
-     "ms": 90
-    },
-    {
-     "op": "typeAppend",
-     "text": "∀∀∀∀∀∀∀∀",
-     "ms": 90
-    },
-    {
-     "op": "typeAppend",
-     "text": "fun fun fun =>",
-     "ms": 90
-    },
-    {
-     "op": "typeAppend",
-     "text": "⦃⦃⦃⦃⦃⦃",
-     "ms": 90
-    },
-    {
-     "op": "typeAppend",
-     "text": "........",
-     "ms": 90
-    },
-    {
-     "op": "typeAppend",
-     "text": "«««««",
-     "ms": 90
-    },
-    {
-     "op": "typeAppend",
-     "text": "by by by by",
-     "ms": 90
-    },
-    {
-     "op": "typeAppend",
-     "text": "end end end",
-     "ms": 90
-    },
-    {
-     "op": "typeAppend",
-     "text": "@[simp]@[simp]@[simp]",
-     "ms": 90
-    },
-    {
-     "op": "typeAppend",
-     "text": "{{{{{{{{",
-     "ms": 90
-    },
-    {
-     "op": "typeAppend",
-     "text": "→→→→→→→→",
-     "ms": 90
-    },
-    {
-     "op": "pause",
-     "ms": 2500
-    },
-    {
-     "op": "setValue",
-     "value": "inductive Tree (α : Type) where\n  | leaf : Tree α\n  | node : Tree α → α → Tree α → Tree α\n\ndef Tree.size : Tree α → Nat\n  | .leaf => 0\n  | .node l _ r => l.size + r.size + 1\n\ndef Tree.mirror : Tree α → Tree α\n  | .leaf => .leaf\n  | .node l x r => .node r.mirror x l.mirror\n\ntheorem Tree.mirror_size (t : Tree α) : t.mirror.size = t.size := by\n  induction t with\n  | leaf => rfl\n  | node l x r ihl ihr => simp [mirror, size, ihl, ihr]; omega\n",
-     "text": "inductive Tree (α : Type) where\n  | leaf : Tree α\n  | node : Tree α → α → Tree α → Tree α\n\ndef Tree.size : Tree α → Nat\n  | .leaf => 0\n  | .node l _ r => l.size + r.size + 1\n\ndef Tree.mirror : Tree α → Tree α\n  | .leaf => .leaf\n  | .node l x r => .node r.mirror x l.mirror\n\ntheorem Tree.mirror_size (t : Tree α) : t.mirror.size = t.size := by\n  induction t with\n  | leaf => rfl\n  | node l x r ihl ihr => simp [mirror, size, ihl, ihr]; omega\n",
-     "ms": 200
-    },
-    {
-     "op": "pause",
-     "ms": 12000
-    }
-   ],
-   "expect": {
-    "panicFree": true,
-    "mustSucceed": true
-   },
-   "rationale": "The garbage-typing-storm class that historically killed the worker via JS stack overflow: twelve 90ms bursts of pathologically nested/unclosed tokens appended to a valid file, a 2.5s window for the parser to choke, then a clean setValue and a long 12s settle. Whether or not the worker died, recovery plus the crash-loop breaker must leave the clean file fully checked. Note: if the worker survives without any PANIC-class console line, panicFree holds; a stack-overflow console line here is exactly the regression this item exists to catch."
-  },
-  {
-   "name": "setvalue-typing-version-races",
-   "category": "editor/editor-actions",
-   "source": "",
-   "actions": [
-    {
-     "op": "setValue",
-     "value": "inductive Tree (α : Type) where\n  | leaf : Tree α\n  | node : Tree α → α → Tree α → Tree α\n\ndef Tree.size : Tree α → Nat\n  | .leaf => 0\n  | .node l _ r => l.size + r.size + 1\n\ndef Tree.mirror : Tree α → Tree α\n  | .leaf => .leaf\n  | .node l x r => .node r.mirror x l.mirror\n\ntheorem Tree.mirror_size (t : Tree α) : t.mirror.size = t.size := by\n  induction t with\n  | leaf => rfl\n  | node l x r ihl ihr => simp [mirror, size, ihl, ihr]; omega\n",
-     "text": "inductive Tree (α : Type) where\n  | leaf : Tree α\n  | node : Tree α → α → Tree α → Tree α\n\ndef Tree.size : Tree α → Nat\n  | .leaf => 0\n  | .node l _ r => l.size + r.size + 1\n\ndef Tree.mirror : Tree α → Tree α\n  | .leaf => .leaf\n  | .node l x r => .node r.mirror x l.mirror\n\ntheorem Tree.mirror_size (t : Tree α) : t.mirror.size = t.size := by\n  induction t with\n  | leaf => rfl\n  | node l x r ihl ihr => simp [mirror, size, ihl, ihr]; omega\n",
-     "ms": 80
-    },
-    {
-     "op": "typeAppend",
-     "text": "\n-- v1",
-     "ms": 50
-    },
-    {
-     "op": "typeAt",
-     "line": 1,
-     "col": 1,
-     "text": "--",
-     "ms": 50
-    },
-    {
-     "op": "undo",
-     "ms": 50
-    },
-    {
-     "op": "setValue",
-     "value": "theorem two_le : 2 ≤ 4 := by omega\n",
-     "text": "theorem two_le : 2 ≤ 4 := by omega\n",
-     "ms": 60
-    },
-    {
-     "op": "typeAppend",
-     "text": "#check two_le\n",
-     "ms": 50
-    },
-    {
-     "op": "typeAt",
-     "line": 1,
-     "col": 1,
-     "text": "-",
-     "ms": 40
-    },
-    {
-     "op": "undo",
-     "ms": 50
-    },
-    {
-     "op": "setValue",
-     "value": "example : 2 + 2 = 4 := rfl\n",
-     "text": "example : 2 + 2 = 4 := rfl\n",
-     "ms": 60
-    },
-    {
-     "op": "typeAppend",
-     "text": "example : True := trivial\n",
-     "ms": 40
-    },
-    {
-     "op": "setValue",
-     "value": "theorem two_le : 2 ≤ 4 := by omega\n",
-     "text": "theorem two_le : 2 ≤ 4 := by omega\n",
-     "ms": 50
-    },
-    {
-     "op": "typeAppend",
-     "text": "#check two_le\n",
-     "ms": 40
-    },
-    {
-     "op": "setValue",
-     "value": "inductive Tree (α : Type) where\n  | leaf : Tree α\n  | node : Tree α → α → Tree α → Tree α\n\ndef Tree.size : Tree α → Nat\n  | .leaf => 0\n  | .node l _ r => l.size + r.size + 1\n\ndef Tree.mirror : Tree α → Tree α\n  | .leaf => .leaf\n  | .node l x r => .node r.mirror x l.mirror\n\ntheorem Tree.mirror_size (t : Tree α) : t.mirror.size = t.size := by\n  induction t with\n  | leaf => rfl\n  | node l x r ihl ihr => simp [mirror, size, ihl, ihr]; omega\n",
-     "text": "inductive Tree (α : Type) where\n  | leaf : Tree α\n  | node : Tree α → α → Tree α → Tree α\n\ndef Tree.size : Tree α → Nat\n  | .leaf => 0\n  | .node l _ r => l.size + r.size + 1\n\ndef Tree.mirror : Tree α → Tree α\n  | .leaf => .leaf\n  | .node l x r => .node r.mirror x l.mirror\n\ntheorem Tree.mirror_size (t : Tree α) : t.mirror.size = t.size := by\n  induction t with\n  | leaf => rfl\n  | node l x r ihl ihr => simp [mirror, size, ihl, ihr]; omega\n",
-     "ms": 70
-    },
-    {
-     "op": "pause",
-     "ms": 800
-    },
-    {
-     "op": "pause",
-     "ms": 9000
-    }
-   ],
-   "expect": {
-    "panicFree": true,
-    "mustSucceed": true
-   },
-   "rationale": "Interleaves whole-document setValues with incremental typeAt/typeAppend/undo at 40-80ms — full-replace and delta didChanges racing each other is exactly the shape that produced the version-regression-on-didChange-replay bug. Ends deterministically on the valid init source, which must check clean with no diagnostics from any intermediate document generation."
-  },
-  {
-   "name": "msg-unknown-identifier",
-   "category": "goldens/message-output",
-   "source": "import Mathlib\n\nexample : Nat := foo\n",
-   "expect": {
-    "panicFree": true,
-    "budgetMs": 20000,
-    "mustError": true,
-    "containsMsgs": [
-     "Unknown identifier `foo`"
-    ]
-   },
-   "rationale": "Exactly one error at line 3 (span covers `foo`). Lean 4.33 phrasing is capitalized with backticks: 'Unknown identifier `foo`' (diagnostic code lean.unknownIdentifier) — audit confirmed the format string in the fork source and reproduced the exact phrasing on native 4.33.1. Regression-guards diagnostic text+position stability and that stale diagnostics clear correctly around a single-error buffer."
-  },
-  {
-   "name": "msg-type-mismatch-string-nat",
-   "category": "goldens/message-output",
-   "source": "import Mathlib\n\ndef answer : Nat := \"forty-two\"\n",
-   "expect": {
-    "panicFree": true,
-    "budgetMs": 20000,
-    "mustError": true,
-    "containsMsgs": [
-     "Type mismatch",
-     "\"forty-two\"",
-     "String",
-     "but is expected to have type",
-     "ℕ"
-    ]
-   },
-   "rationale": "Single error at the string literal. Audit re-verified on the shipped wasm64 runtime + umbrella snapshot: exact diagnostic data 'Type mismatch\\n  \"forty-two\"\\nhas type\\n  String\\nbut is expected to have type\\n  ℕ' — with Mathlib imported the expected type pretty-prints as ℕ, NOT Nat (a golden asserting 'Nat' would be wrong), and 4.33 capitalizes 'Type mismatch' (fork TermElabM.lean:1104)."
-  },
-  {
-   "name": "msg-rfl-definitional-mismatch",
-   "category": "goldens/message-output",
-   "source": "import Mathlib\n\nexample : 2 + 2 = 5 := by rfl\n",
-   "expect": {
-    "panicFree": true,
-    "budgetMs": 20000,
-    "mustError": true,
-    "containsMsgs": [
-     "Tactic `rfl` failed",
-     "2 + 2",
-     "is not definitionally equal to the right-hand side",
-     "⊢ 2 + 2 = 5"
-    ]
-   },
-   "rationale": "Single error at the `rfl` token. Tactic-mode rfl is used deliberately: audit confirmed in fork source (Meta/Tactic/Rfl.lean:90 + Util.lean mkTacticExMsg) the exact shape 'Tactic `rfl` failed: The left-hand side\\n  2 + 2\\nis not definitionally equal to the right-hand side\\n  5' followed by the goal display; term-mode rfl instead gives a Type mismatch with an unstable metavariable index that must not be asserted."
-  },
-  {
-   "name": "msg-unsolved-goals",
-   "category": "goldens/message-output",
-   "source": "import Mathlib\n\nexample : True ∧ True := by\n  constructor\n",
-   "expect": {
-    "panicFree": true,
-    "budgetMs": 20000,
-    "mustError": true,
-    "containsMsgs": [
-     "unsolved goals",
-     "case left",
-     "case right",
-     "⊢ True"
-    ]
-   },
-   "rationale": "Single 'unsolved goals' error anchored at the `by` token (note it lands on `by`, not on `constructor`). Body lists both remaining goals: 'case left\\n⊢ True\\n\\ncase right\\n⊢ True'. 'unsolved goals' is one of the few messages still lowercase in 4.33 (audit confirmed the tagged lowercase literal in fork source and reproduced it natively). Also exercises the frozen-'elaborating'-pill class: elaboration must terminate and publish this diagnostic."
-  },
-  {
-   "name": "msg-sorry-warning",
-   "category": "goldens/message-output",
-   "source": "import Mathlib.Tactic\n\ntheorem uses_sorry : False := sorry\n",
-   "expect": {
-    "panicFree": true,
-    "budgetMs": 20000,
-    "mustError": false,
-    "mustSucceed": true,
-    "containsMsgs": [
-     "declaration uses `sorry`"
-    ]
-   },
-   "rationale": "Zero errors, exactly one warning at the declaration name `uses_sorry`. Text: 'declaration uses `sorry`' — audit confirmed the backticked format string in fork AddDecl.lean:91 and reproduced on the wasm runtime (warning is the 4th of 4 messages in the misuse gauntlet run, severity warning, errors=0). Header uses the Mathlib.Tactic alias to also exercise the snapshot alias-resolution path. Guards that warnings render as warnings (not errors) and the file still reports success."
-  },
-  {
-   "name": "msg-decide-false-prop",
-   "category": "goldens/message-output",
-   "source": "import Mathlib\n\nexample : 2 + 2 = 5 := by decide\n",
-   "expect": {
-    "panicFree": true,
-    "budgetMs": 20000,
-    "mustError": true,
-    "containsMsgs": [
-     "Tactic `decide` proved that the proposition",
-     "2 + 2 = 5",
-     "is false"
-    ]
-   },
-   "rationale": "Single error at the `decide` token. 4.33 text: 'Tactic `decide` proved that the proposition\\n  2 + 2 = 5\\nis false' — audit confirmed the format string in fork Elab/Tactic/Decide.lean:133 and reproduced it verbatim on the shipped wasm64 runtime. Older goldens asserting 'evaluated to false'/'decide failed' phrasings would miss. Decidable.decide on tiny Nat literals is instant."
-  },
-  {
-   "name": "msg-unused-simp-arg-linter",
-   "category": "goldens/message-output",
-   "source": "import Mathlib\n\nexample : 1 = 1 := by simp only [Nat.add_zero]\n",
-   "expect": {
-    "panicFree": true,
-    "budgetMs": 20000,
-    "mustError": false,
-    "mustSucceed": true,
-    "containsMsgs": [
-     "This simp argument is unused:",
-     "Nat.add_zero",
-     "Omit it from the simp argument list",
-     "linter.unusedSimpArgs"
-    ]
-   },
-   "rationale": "Zero errors, one warning at `Nat.add_zero` inside the bracket. simp only closes 1 = 1 by rfl leaving the arg unused; core linter.unusedSimpArgs (audit confirmed defValue := true in fork Elab/Tactic/Simp.lean:675) emits 'This simp argument is unused:\\n  Nat.add_zero', the hint 'Omit it from the simp argument list.', and the note naming linter.unusedSimpArgs — all four fragments reproduced verbatim on native 4.33.1 in this audit. Proof succeeds — mustSucceed guards against warnings being promoted to errors."
-  },
-  {
-   "name": "msg-unused-variable-linter",
-   "category": "goldens/message-output",
-   "source": "import Batteries\n\ndef double (x : Nat) (y : Nat) : Nat := x + x\n",
-   "expect": {
-    "panicFree": true,
-    "budgetMs": 20000,
-    "mustError": false,
-    "mustSucceed": true,
-    "containsMsgs": [
-     "Variable name `y` is not explicitly referenced",
-     "linter.unusedVariables"
-    ]
-   },
-   "rationale": "Zero errors, one warning at binder `y` (`x` is used so only `y` fires). 4.33 text: 'Variable name `y` is not explicitly referenced.' with the `_`-prefix hint and the note naming linter.unusedVariables — audit confirmed the format string in fork Linter/UnusedVariables.lean:573 and reproduced both fragments verbatim on native 4.33.1. Old goldens asserting \"unused variable 'y'\" are stale. Header exercises the Batteries import alias against the snapshot."
-  },
-  {
-   "name": "msg-unknown-constant-in-simp-set",
-   "category": "goldens/message-output",
-   "source": "import Mathlib\n\nexample : True := by simp [Nat.nonexistent_lemma]\n",
-   "expect": {
-    "panicFree": true,
-    "budgetMs": 20000,
-    "mustError": true,
-    "containsMsgs": [
-     "Unknown constant `Nat.nonexistent_lemma`"
-    ]
-   },
-   "rationale": "Exactly one error at the bad name inside the simp bracket and no cascading 'unsolved goals' second diagnostic — audit reproduced this exactly on native 4.33.1 (single error, code lean.unknownIdentifier). Distinct from the unknown-identifier case: simp-set name resolution reports 'Unknown constant', quoting the full dotted name in backticks (format confirmed in fork Exception.lean:157)."
-  },
-  {
-   "name": "msg-check-eval-deterministic",
-   "category": "goldens/message-output",
-   "source": "import Mathlib\n\n#check Nat.succ\n#eval 2 + 2\n#eval \"QED64\".length\n#eval (2 : ℤ) ^ 10\n",
-   "expect": {
-    "panicFree": true,
-    "budgetMs": 20000,
-    "mustError": false,
-    "mustSucceed": true,
-    "containsMsgs": [
-     "Nat.succ (n : ℕ) : ℕ",
-     "4",
-     "5",
-     "1024"
-    ]
-   },
-   "rationale": "Zero errors, four info diagnostics at lines 3-6 (each anchored on its #check/#eval keyword): 'Nat.succ (n : ℕ) : ℕ', '4', '5', '1024'. Under Mathlib the signature renders with ℕ, not Nat. The ℤ eval proves Mathlib notation/Int arithmetic is live in the resident snapshot — audit re-ran this file on the shipped wasm64 runtime + umbrella snapshot: clean success, 945 ms. All evals are constant-time; guards that info-severity messages surface in the InfoView and clear correctly."
-  },
-  {
-   "name": "mathlib-name-shadow-faithful-compile",
-   "category": "compiler/covering-env",
-   "source": "import Mathlib.Algebra.Algebra.Basic\n\ninductive Tree (α : Type) where\n  | leaf : Tree α\n  | node : Tree α → α → Tree α → Tree α\n\ndef Tree.size : Tree α → Nat\n  | .leaf => 0  \n  | .node l _ r => l.size + r.size + 1\n\ndef Tree.mirror : Tree α → Tree α\n  | .leaf => .leaf\n  | .node l x r => .node r.mirror x l.mirror\n\ntheorem Tree.mirror_size (t : Tree α) : t.mirror.size = t.size := by\n  induction t with\n  | leaf => rfl\n  | node l x r ihl ihr => simp [mirror, size, ihl, ihr]; omega\n",
-   "expect": {
-    "mustSucceed": true,
-    "panicFree": true,
-    "budgetMs": 110000
-   },
-   "notes": "User-reported genre: defining a name (Tree) that full Mathlib already has, under a specific import that does NOT bring it in. Faithful import semantics must be clean (live parity); the covering env used to leak all Mathlib names into scope."
-  },
-  {
-   "name": "mathlib-name-shadow-faithful-switch",
-   "category": "editor-actions",
-   "source": "",
-   "actions": [
-    {
-     "op": "switchExample",
-     "value": "init",
-     "ms": 300
-    },
-    {
-     "op": "pause",
-     "ms": 2000
-    },
-    {
-     "op": "setValue",
-     "text": "import Mathlib.Algebra.Algebra.Basic\n\ninductive Tree (α : Type) where\n  | leaf : Tree α\n  | node : Tree α → α → Tree α → Tree α\n\ndef Tree.size : Tree α → Nat\n  | .leaf => 0  \n  | .node l _ r => l.size + r.size + 1\n\ndef Tree.mirror : Tree α → Tree α\n  | .leaf => .leaf\n  | .node l x r => .node r.mirror x l.mirror\n\ntheorem Tree.mirror_size (t : Tree α) : t.mirror.size = t.size := by\n  induction t with\n  | leaf => rfl\n  | node l x r ihl ihr => simp [mirror, size, ihl, ihr]; omega\n",
-     "ms": 100
-    }
-   ],
-   "expect": {
-    "mustSucceed": true,
-    "panicFree": true,
-    "settleMs": 420000,
-    "zeroErrors": true
-   },
-   "notes": "Same genre in the live pane: paste into the init tab. The covering env first produces 'Tree has already been declared'; the shim must reboot once into faithful imports and settle ready with ZERO errors."
-  }
- ]
+  ]
 }

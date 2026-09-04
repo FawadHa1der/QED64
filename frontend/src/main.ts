@@ -13,6 +13,23 @@ const editorEl = document.getElementById("editor")! as HTMLElement;
 const infoviewEl = document.getElementById("infoview")! as HTMLElement;
 const pill = document.getElementById("pill")!;
 const ptext = document.getElementById("ptext")!;
+// One explicit action beside the pill (StatusSink.action): created lazily so
+// the markup stays a plain pill when nothing is offered.
+const pillEl = document.getElementById("pill")!;
+let actionBtn: HTMLButtonElement | null = null;
+function renderAction(label: string | null, run?: () => void): void {
+  if (!label) { if (actionBtn) { actionBtn.remove(); actionBtn = null; } return; }
+  if (!actionBtn) {
+    actionBtn = document.createElement("button");
+    actionBtn.id = "action";
+    actionBtn.type = "button";
+    actionBtn.style.cssText = "margin-left:.6em;padding:.15em .6em;font:inherit;font-size:.9em;cursor:pointer;border-radius:.4em;border:1px solid currentColor;background:transparent;color:inherit";
+    pillEl.insertAdjacentElement("afterend", actionBtn);
+  }
+  actionBtn.textContent = label;
+  actionBtn.title = label;
+  actionBtn.onclick = () => { renderAction(null); run?.(); };
+}
 const ptime = document.getElementById("ptime")!;
 const examplesEl = document.getElementById("examples")! as HTMLSelectElement;
 
@@ -162,6 +179,8 @@ const ui: StatusSink = {
     else if (/^ready/.test(label)) window.setTimeout(bootFinish, 120000);
     console.log(`[qed64] ${label}`);
   },
+  action(label, run) { renderAction(label, run); },
+  clearAction() { renderAction(null); },
 };
 
 // ---- Resident preview (?resident=1): relay instead of shim -----------------

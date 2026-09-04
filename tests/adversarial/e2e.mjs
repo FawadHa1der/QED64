@@ -346,6 +346,8 @@ for (const item of actionItems) {
         case "typeAt": await page.evaluate(({ t, l, c }) => { const m = globalThis.qed64.editor.getModel(); const ln = Math.min(l || 1, m.getLineCount()); const col = Math.min(c || 1, m.getLineMaxColumn(ln)); m.applyEdits([{ range: { startLineNumber: ln, startColumn: col, endLineNumber: ln, endColumn: col }, text: t }]); }, { t: a.text ?? "", l: a.line, c: a.col }); break;
         case "deleteRange": await page.evaluate(({ l, c, el, ec }) => { const m = globalThis.qed64.editor.getModel(); m.applyEdits([{ range: { startLineNumber: l, startColumn: c, endLineNumber: el, endColumn: ec }, text: "" }]); }, { l: a.line ?? 1, c: a.col ?? 1, el: a.endLine ?? 1, ec: a.endCol ?? 1 }).catch(() => {}); break;
         case "switchExample": await page.selectOption("#examples", a.value ?? "mathlib"); break;
+        case "clickAction": await page.waitForSelector("#action", { timeout: a.ms ?? 60000 }); await page.click("#action"); break;
+        case "waitAction": await page.waitForSelector("#action", { timeout: a.ms ?? 60000 }).catch(() => {}); break;
         case "undo": await page.evaluate(() => globalThis.qed64.editor.trigger("t", "undo")); break;
         case "redo": await page.evaluate(() => globalThis.qed64.editor.trigger("t", "redo")); break;
         case "setCursor": await page.evaluate(({ l, c }) => globalThis.qed64.editor.setPosition({ lineNumber: l || 1, column: c || 1 }), { l: a.line, c: a.col }); break;
@@ -362,6 +364,12 @@ for (const item of actionItems) {
     // errors before the faithful reboot lands — so poll until the badge is
     // clean WITH the pill at ready, up to the scenario's settle budget.
     let errCount = null;
+    // actionOffered / noteContains: the explain-and-offer contract for umbrella
+    // name collisions (an explicit "Load exact imports" beside the pill and an
+    // information diagnostic naming the collision and the alternatives).
+    let actionOk = true, noteOk = true;
+    if (item.expect.actionOffered) actionOk = await page.$("#action").then((h) => !!h).catch(() => false);
+    if (item.expect.noteContains) noteOk = (await ivText()).includes(item.expect.noteContains);
     if (item.expect.zeroErrors) {
       const deadlineAt = Date.now() + (item.expect.settleMs ?? 120000);
       for (;;) {
@@ -386,9 +394,10 @@ for (const item of actionItems) {
     const pass = alive && settle.ok && (item.expect.panicFree ? panics === 0 : true)
       && (wantTerminal ? terminal === wantTerminal : true)
       && (item.expect.zeroErrors ? errCount === 0 : true)
+      && actionOk && noteOk
       && statsBad.length === 0;
     await record(item.name, `editor/${item.category}`, pass,
-      `alive=${alive} settled='${settle.s.slice(0, 40)}'@${settle.ms}ms terminal=${terminal}${wantTerminal ? `/${wantTerminal}` : ""} panics=${panics}${errCount !== null ? ` errBadge=${errCount}` : ""}${statsBad.length ? ` stats:${statsBad.join(",")}` : ""}`,
+      `alive=${alive} settled='${settle.s.slice(0, 40)}'@${settle.ms}ms terminal=${terminal}${wantTerminal ? `/${wantTerminal}` : ""} panics=${panics}${errCount !== null ? ` errBadge=${errCount}` : ""}${item.expect.actionOffered ? ` action=${actionOk}` : ""}${item.expect.noteContains ? ` note=${noteOk}` : ""}${statsBad.length ? ` stats:${statsBad.join(",")}` : ""}`,
       { terminal, stats: delta ? { before: statsBefore, after: statsAfter, delta } : undefined });
     })()]);
   } catch (e) {
