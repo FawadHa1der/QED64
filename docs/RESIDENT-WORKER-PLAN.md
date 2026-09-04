@@ -19,13 +19,14 @@ harness, same machine (median of 3):
 | crash gauntlet, mixed 4 min | — | 226 steps, no crash |
 | crash gauntlet, imports 4 min | crashed at step 2 (pre-existing) | 74 steps, no crash |
 | compiler battery (0032 pairing) | 49/49 | 49/49 |
-| e2e | 17/22 on the production pairing (3 known wedge-cohort items + 2 oracle artifacts since fixed) | 19/22 |
+| e2e | 17/22 on the production pairing (3 known wedge-cohort items + 2 oracle artifacts since fixed) | 21/22 (the miss is the exact-imports action, not yet built) |
 
 The three resident misses: `mathlib-name-shadow-faithful-switch` expects the
 automatic exact-imports reboot that the design replaces with an explicit
 "Load exact imports" action (phase 6, not built); `worker-kill-recovery` and
-`final-memory` were a harness accessor (fixed; rerun pending at the time of
-writing). What remains for the default flip (phase 5/6 of the second review):
+`final-memory` were a harness accessor (fixed; both pass on rerun — a
+terminated worker is detected, replayed and back to `ready` with the edits
+present). What remains for the default flip (phase 5/6 of the second review):
 the exact-imports action, the lean4game port to the relay (it vendors qed64 at
 a pin), and one kernel follow-up — `$/qed64/headerStatus.version` is stamped
 with the initial document version on later setups (the FileWorker binds the
