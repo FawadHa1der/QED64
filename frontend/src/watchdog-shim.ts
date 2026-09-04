@@ -460,7 +460,15 @@ export class WatchdogShim {
     }
     if (msg.method === "$/lean/fileProgress") {
       this.lastProgressAt = performance.now();
-      const processing = (msg.params as { processing?: unknown[] })?.processing ?? [];
+      // A kind-2 entry (LeanFileProgressKind.fatalError — a refused or
+      // unresolvable header) is a verdict, not work in flight: it never
+      // drains, so counting it kept the pill at "elaborating" for good after
+      // the idle "imports incomplete" verdict and queued requests behind a
+      // count that could never reach zero (measured: unresolvable-import-
+      // composition settled 'elaborating'@120s, timing-dependent). The
+      // resident front door applies the same reading (phaseOf → headerRefused).
+      const processing = ((msg.params as { processing?: unknown[] })?.processing ?? [])
+        .filter((p) => (p as { kind?: number } | null)?.kind !== 2);
       const was = this.processingCount;
       this.processingCount = processing.length;
       if (processing.length > 0 && was === 0) {
