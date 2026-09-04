@@ -259,3 +259,5 @@ Run the REAL, unmodified `lean --worker` main loop on an application pthread
 
 Multi-file projects, native mmap emulation, SharedWorker cross-tab session
 sharing (separate backlog line), and any Mathlib curation changes.
+
+**2026-09-04 (later):** the one resident e2e miss (the exact-imports action) is closed — the front door appends the umbrella-collision note inside the worker's own diagnostics burst and reports a `collision` fact on the status event; the page offers "Load exact imports", which restarts the relay session with the essential pack mounted and the header's import lines warm-compiled before `lsp-arm`. Measured on the served 0032 pairing: `mathlib-name-shadow-explains` and `mathlib-name-shadow-faithful-switch` pass (3/3 with boot). W5 is closed by measurement, not by savings: `lean.worker.js` lost its dead copy paths (1862 → 1611 lines), the pthread-pool delay-load flag changed nothing and was dropped, and the ~9 GB renderer footprint is attributed to V8's lazily-generated machine code for the 106 MB module (HARDENING #44). Reducing it means a leaner kernel module, not host-side work.
