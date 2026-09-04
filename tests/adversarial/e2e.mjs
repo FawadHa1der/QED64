@@ -434,9 +434,14 @@ if (runs("worker-kill-recovery")) {
   // Kill the live worker whichever transport owns it: the pump shim's session
   // (qed64.shim.qs.session) or the resident relay's (qed64.relay.session).
   await page.evaluate(() => {
-    const q = globalThis.qed64; const s = q.shim?.qs?.session ?? q.relay?.session;
-    if (!s || !s.worker) throw new Error("kill drill: no live session/worker on the page");
-    s.worker.terminate();
+    const q = globalThis.qed64;
+    // pump: shim.qs.session is the LeanSession; resident: relay.session is the
+    // ResidentSession adapter wrapping one (any LeanSession-typed field).
+    const cands = [q.shim?.qs?.session, q.relay?.session];
+    let w = null;
+    for (const c of cands) { if (!c) continue; if (c.worker) { w = c.worker; break; } for (const k of Object.keys(c)) { const v = c[k]; if (v && typeof v === "object" && v.worker) { w = v.worker; break; } } if (w) break; }
+    if (!w) throw new Error("kill drill: no live session/worker on the page");
+    w.terminate();
   });
   const recovered = await waitPill(/^ready$/, 180000, 4000);
   // give the replayed elaboration a beat to republish diagnostics
