@@ -91,6 +91,18 @@
     return { line, length: lines[line] ? lines[line].length : 1 };
   }
 
+  /** Line indices holding an import: completion there belongs to the client
+   * (frontend/src/import-completion.ts, from the pack manifests). The wasm
+   * FileWorker has no module inventory to answer from and holds such a
+   * request until the header settles; Monaco's suggest widget awaits every
+   * provider, so a held request hides the client's items (measured:
+   * import-completion, widget=false, on the resident path). */
+  function importLinesOf(text) {
+    const out = new Set();
+    if (typeof text === "string") text.split("\n").forEach((l, i) => { if (IMPORT_LINE.test(l)) out.add(i); });
+    return out;
+  }
+
   /** Distinct identifiers the diagnostics report as already declared. */
   function collidingNames(diagnostics) {
     const names = [];
@@ -148,6 +160,7 @@
       // null after a clean burst. Client version space, like `version`.
       collision: null,
       headerLine: { line: 0, length: 1 }, // where the collision note sits (from the text the worker holds)
+      importLines: new Set(), // line indices that are imports (same text); completion there is failed fast
       dropped: 0,
     };
   }
@@ -201,7 +214,7 @@
         s.lastVersion = v + s.base;
       }
       const c = Array.isArray(msg.params.contentChanges) ? msg.params.contentChanges[0] : null;
-      if (c && typeof c.text === "string" && c.range === undefined) s.headerLine = headerLineOf(c.text);
+      if (c && typeof c.text === "string" && c.range === undefined) { s.headerLine = headerLineOf(c.text); s.importLines = importLinesOf(c.text); }
     }
     const wire = shiftVersions(msg, s.base);
     if (s.ringBusy) s.backlog = enqueue(s.backlog, { msg: wire });
@@ -232,16 +245,29 @@
       r.replies.push({ jsonrpc: "2.0", id: msg.id, result: null });
       return;
     }
-    if (isRequest && msg.method === "textDocument/completion" && s.header && s.header.mode === "refused") {
-      // K3 (in-memory import completion) is not built yet: a completion request
-      // on a document whose header was REFUSED has no environment to answer
-      // from and the FileWorker holds it; Monaco's suggest widget waits for
-      // every provider, so the client-side import-path provider's items never
-      // show (measured: import-completion, widget=false). Fail fast, as the
-      // pump shim does while a header is in flight (-32801).
-      s.dropped += 1;
-      r.replies.push({ jsonrpc: "2.0", id: msg.id, error: { code: -32801, message: "QED64: the header is unresolved; completion is unavailable until it resolves" } });
-      return;
+    if (isRequest && msg.method === "textDocument/completion") {
+      // Two completions the FileWorker cannot answer are failed fast with
+      // ContentModified (-32801, which clients swallow as "ask again later")
+      // instead of being held — Monaco's suggest widget awaits every
+      // provider, so one held LSP completion hides the client-side
+      // import-path items for the whole gesture:
+      //   (a) on an import line, whatever the header state: the wasm worker
+      //       has no module inventory (K3), the client provider has the
+      //       manifests. Decided by POSITION, so it cannot race the
+      //       headerStatus that a keystroke's own header change is still
+      //       producing (measured: import-completion widget=false while the
+      //       refused status was in flight).
+      //   (b) anywhere while the header is REFUSED: no environment to
+      //       answer from.
+      const pos = msg.params && msg.params.position;
+      const onImport = !!pos && s.importLines.has(pos.line);
+      if (onImport || (s.header && s.header.mode === "refused")) {
+        s.dropped += 1;
+        r.replies.push({ jsonrpc: "2.0", id: msg.id, error: { code: -32801, message: onImport
+          ? "QED64: import-path completion is answered client-side; the worker has no module inventory"
+          : "QED64: the header is unresolved; completion is unavailable until it resolves" } });
+        return;
+      }
     }
     if (s.phase === "dead") {
       s.dropped += 1;
@@ -275,6 +301,7 @@
         s.doc = { uri: td.uri, languageId: td.languageId, version: td.version };
         s.lastVersion = td.version;
         s.headerLine = headerLineOf(td.text);
+        s.importLines = importLinesOf(td.text);
         s.phase = "open";
         r.startLoop = true;
         r.ringWrites.push({ jsonrpc: "2.0", id: init ? init.id : 0, method: "initialize", params: init && init.params ? init.params : {} });

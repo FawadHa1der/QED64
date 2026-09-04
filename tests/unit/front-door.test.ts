@@ -474,6 +474,32 @@ describe("front door: refused headers are terminal (pyramid 2026-09-03 fixes)", 
     expect(r.status.phase).toBe("headerRefused");
   });
 
+  it("a completion request ON AN IMPORT LINE is failed fast (-32801) even while the header is covered — the client-side import provider owns it; body completions still reach the ring", () => {
+    // Decided by position, not by header status: the request a keystroke on
+    // the import line fires arrives before that keystroke's headerStatus, so
+    // a status-based rule forwarded it and the worker held it (import-completion e2e).
+    const covered = run([
+      { kind: "booted" },
+      { kind: "client", msg: initialize(1) },
+      { kind: "client", msg: didOpen(1, "import Mathlib.Data.Re\n\nexample : True := trivial\n") },
+      { kind: "server", msg: headerStatus(1, "covered") },
+    ]);
+    const onImport = run([{ kind: "client", msg: request(9, "textDocument/completion", { textDocument: { uri: URI }, position: { line: 0, character: 22 } }) }], covered.state);
+    expect(onImport.ring).toHaveLength(0);
+    expect(onImport.replies).toHaveLength(1);
+    expect((onImport.replies[0] as { error?: { code: number; message: string } }).error?.code).toBe(-32801);
+    expect((onImport.replies[0] as { error?: { message: string } }).error?.message).toMatch(/client-side/);
+    const inBody = run([{ kind: "client", msg: request(10, "textDocument/completion", { textDocument: { uri: URI }, position: { line: 2, character: 3 } }) }], covered.state);
+    expect(inBody.replies).toHaveLength(0);
+    expect(inBody.ring.map((m) => m.method)).toEqual(["textDocument/completion"]);
+    // A full-text didChange that moves the import to line 1 moves the rule with it.
+    const moved = run([{ kind: "client", msg: didChange(2, "-- comment\nimport Mathlib.Data.Re\n\nexample : True := trivial\n") }], covered.state);
+    const line0 = run([{ kind: "client", msg: request(11, "textDocument/completion", { textDocument: { uri: URI }, position: { line: 0, character: 3 } }) }], moved.state);
+    expect(line0.replies).toHaveLength(0);
+    const line1 = run([{ kind: "client", msg: request(12, "textDocument/completion", { textDocument: { uri: URI }, position: { line: 1, character: 22 } }) }], moved.state);
+    expect((line1.replies[0] as { error?: { code: number } }).error?.code).toBe(-32801);
+  });
+
   it("a completion request while the header is refused is failed fast with -32801 and never reaches the ring", () => {
     const prelude = run([...open(), { kind: "server", msg: headerStatus(1, "refused") }, { kind: "server", msg: fatalProgress(1) }]);
     const before = prelude.ring.length;
