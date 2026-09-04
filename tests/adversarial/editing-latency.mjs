@@ -66,7 +66,10 @@ try {
     // status()); a page without one falls back to the pill (pump era, 500 ms floor).
     const status = () => page.evaluate(() => { try { return globalThis.qed64?.status?.() ?? null; } catch { return null; } }).catch(() => null);
     const st0 = await status();
-    if (st0 && st0.header !== undefined) {
+    // Only a page that already holds a header FACT can be measured by facts;
+    // the pump shim's status() reports header: null (it never receives one),
+    // so it takes the pill path below (measured: pump headerSwitchMs=-1).
+    if (st0 && st0.header) {
       const hv0 = st0.header ? st0.header.version : null;
       let firstMove = -1, done = -1;
       for (let i = 0; i < 3600; i++) {
