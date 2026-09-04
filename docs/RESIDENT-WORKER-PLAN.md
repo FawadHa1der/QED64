@@ -1,11 +1,39 @@
 # Resident FileWorker — the plan (PATCH-BACKLOG #4, promoted)
 
-Status: PHASE 3 REACHED (2026-09-02 afternoon) — resident boots in the
-browser behind `?resident=1`, the full pyramid runs in both modes on one
-binary; phase-4 memory discipline and the kernel-side "MISS ⇒ header error"
-invariant are the open work (see the architecture re-evaluation report). This is the campaign that retires
-the reboot-per-header-change architecture. Written after the 2026-09-01/02
-crash investigation, whose measurements set the targets below.
+Status: THE SECOND-REVIEW DESIGN IS IMPLEMENTED behind `?resident=1`
+(2026-09-03; docs/ARCHITECTURE-REEVALUATION-2-2026-09-02.md, phases 0–5 of
+its plan). Kernel patch 0032 (single header resolver in `setupImports`, one
+environment registry, one normalized header key, `$/qed64/headerStatus`,
+exports generated at build) is validated on runtime `wasm64-5dcdda005a7c5ae0`;
+the worker is a byte-exact channel with a pure LSP front door; the page side
+is a 159-line relay with three states and no timers. Measured on the same
+harness, same machine (median of 3):
+
+| | pump (shipped) | resident (implemented) |
+|---|---|---|
+| header switch, edit → ready | 2,575 ms | **332 ms** |
+| first progress after the edit | 2,055 ms | 280 ms |
+| import completion widget | 301 ms | 346 ms |
+| error clear | 11 ms | 12 ms |
+| boot (warm) | 12.4 s | 12.2 s |
+| crash gauntlet, mixed 4 min | — | 226 steps, no crash |
+| crash gauntlet, imports 4 min | crashed at step 2 (pre-existing) | 74 steps, no crash |
+| compiler battery (0032 pairing) | 49/49 | 49/49 |
+| e2e | 17/22 on the production pairing (3 known wedge-cohort items + 2 oracle artifacts since fixed) | 19/22 |
+
+The three resident misses: `mathlib-name-shadow-faithful-switch` expects the
+automatic exact-imports reboot that the design replaces with an explicit
+"Load exact imports" action (phase 6, not built); `worker-kill-recovery` and
+`final-memory` were a harness accessor (fixed; rerun pending at the time of
+writing). What remains for the default flip (phase 5/6 of the second review):
+the exact-imports action, the lean4game port to the relay (it vendors qed64 at
+a pin), and one kernel follow-up — `$/qed64/headerStatus.version` is stamped
+with the initial document version on later setups (the FileWorker binds the
+first `DocumentMeta` into `setupImports`; the UI keys on progress versions
+and the mode, so nothing user-visible depends on it). Phase 7 (retire the
+pump transport) is deliberately not scheduled until the game passes on
+resident. The served pairing is promoted only when the pump transport passes
+its e2e on the 0032 pairing (see the promote rule in HARDENING/PATCHES).
 
 ## Phase-1 spike results (2026-09-02) — transport PROVEN; all blockers resolved by the afternoon
 
