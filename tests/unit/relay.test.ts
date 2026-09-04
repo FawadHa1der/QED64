@@ -165,6 +165,16 @@ describe("relay: serving", () => {
     expect(relay.status()).toMatchObject({ phase: "ready", relay: "serving", session: current().id, pool: { running: 2 } });
     expect(statuses.at(-1)).toMatchObject({ phase: "ready" });
   });
+  it("passes the worker's collision fact through untouched — the page's exact-imports offer keys on it (§3 row 8)", async () => {
+    await bootCurrent();
+    const collision = { names: ["Nat.add_comm"], version: 1 };
+    const base: WorkerStatus = { phase: "ready", version: 1, header: null, ring: { bytesQueued: 0, refused: 0 }, pool: { unused: 3, running: 2 }, dropped: 0 };
+    current().onStatus({ ...base, collision });
+    expect(relay.status().collision).toEqual(collision);
+    expect(statuses.at(-1)?.collision).toEqual(collision);
+    current().onStatus({ ...base, collision: null });
+    expect(relay.status().collision).toBeNull();
+  });
 });
 
 describe("relay: deaths (§2.3 SessionDied; §3 rows 9-11)", () => {
@@ -284,12 +294,14 @@ describe("relay: RestartRequested (§2.3; §3 row 8)", () => {
     await bootCurrent();
     relay.fromClient(request(3, "$/lean/rpc/connect"));
     const old = current();
-    relay.restart({ snapshots: ["init", "mathlib"], warmHeader: "import Mathlib.Data.Real.Basic" });
+    // The page's "Load exact imports" (§3 row 8): boot-only snapshots, the relay's own last text as the
+    // header to warm, and the olean pack the exact import needs — all handed to the replacement session as is.
+    relay.restart({ snapshots: ["init", "mathlib"], warmHeader: relay.lastText, packs: ["essential"] });
     await settle();
     expect(old.disposed).toBe(true);
     expect(errorsToClient()).toEqual([{ jsonrpc: "2.0", id: 3, error: { code: -32900, message: expect.stringContaining("exact imports") } }]);
     expect(relay.state).toEqual({ kind: "rebooting", reason: "user" });
-    expect(current().opts).toEqual({ snapshots: ["init", "mathlib"], warmHeader: "import Mathlib.Data.Real.Basic" });
+    expect(current().opts).toEqual({ snapshots: ["init", "mathlib"], warmHeader: "import Mathlib.Data.Real.Basic\nx", packs: ["essential"] });
     expect(relay.stats).toMatchObject({ userRestarts: 1, workerDeaths: 0, reboots: 0 });
     await bootCurrent();
     expect(current().methods()).toEqual(["initialize(replay)", "textDocument/didOpen"]);
