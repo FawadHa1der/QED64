@@ -605,6 +605,7 @@ export class WatchdogShim {
         this.publishHeaderFailure("the imports could not be resolved — check the module names (details in the browser console)");
         return;
       }
+      this.headerSetupFailed = false; // the header set up (tag 0)
       // The replaced session never answers requests that were in flight
       // against it — without this they dangle until the 15 s loss watchdog
       // (observed as a "response lost" storm and a ~15 s InfoView freeze
@@ -754,6 +755,7 @@ export class WatchdogShim {
         return;
       }
       if (r.tag !== 0) throw new Error("the imports could not be resolved — check the module names (details in the browser console)");
+      this.headerSetupFailed = false; // the header set up (tag 0)
       // The replacement is live: in-flight requests against the old session
       // are now orphans — fail them so the InfoView reconnects.
       this.failInFlight("the Lean checker switched documents");
@@ -854,6 +856,13 @@ export class WatchdogShim {
   }
 
   private publishHeaderFailure(message: string): void {
+    // Every caller is a header failure (worker setup failure, the probe's
+    // "still composing" tag 2, an unknown module on the resident hold), and
+    // the flag is what the fileProgress drain reads for its idle label —
+    // without it the probe-side verdicts drained to "ready" (measured:
+    // unresolvable-import-composition settled 'ready' once kind-2 entries
+    // stopped pinning the pill). Cleared where a header setup succeeds.
+    this.headerSetupFailed = true;
     if (!this.doc) return;
     const lines = this.doc.text.split("\n");
     let line = lines.findIndex((l) => /^\s*(?:public\s+|private\s+)?(?:meta\s+)?import\s+/.test(l));
@@ -1087,6 +1096,7 @@ export class WatchdogShim {
           return;
         }
         if (r.tag !== 0) throw new Error("the imports could not be resolved — check the module names (details in the browser console)");
+        this.headerSetupFailed = false; // the header set up (tag 0)
         this.workerStarted = true;
         this.headerDiverged = false; // recomputed below once the replay lands
         this.ui.idle("ready");
