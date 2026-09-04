@@ -565,8 +565,8 @@ self.addEventListener("unhandledrejection", (e) => {
     // Post-boot with nothing in flight: a fact the port must hear once (W2)
     // rather than a log line it cannot act on. No exit code exists here.
     // Only a worker with an LSP session (pump or resident) can die of it — a
-    // batch worker's stray rejection (an OPFS tee, until W5 deletes it) is a
-    // log line, not a false death.
+    // batch worker's stray rejection (e.g. a best-effort OPFS `removeEntry`
+    // in openRawSnapshot's self-heal) is a log line, not a false death.
     event(null, "log", { stream: "stderr", text: `unhandled rejection: ${error.message}` });
     if (lspMode && state !== "idle" && state !== "booting") die(null, "unhandled", error.message);
   }
@@ -1243,16 +1243,25 @@ function compile(msg) {
 // ---------------------------------------------------------------------------
 // Snapshot loading (optional fast boot)
 // ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Snapshot cache (OPFS, worker-side)
-// ---------------------------------------------------------------------------
-// An 806 MB umbrella snapshot must not be re-downloaded every session; the
-// HTTP cache is not reliable at that size. Bytes are stored exactly as
-// received (compressed — the served name never triggers Content-Encoding)
-// and read back through a sync access handle in 8 MiB slices. Any cache
-// failure (quota, API absent, embedder rot) is logged and the load proceeds
-// from the network; caching never fails a load.
+// Exactly two load paths, both ending in the wasm heap and both handed to
+// `_lean_wasm_load_snapshot_mem` — the only browser loader (architecture
+// re-evaluation 2, §2.2 L0/L1 (a); T9 "one writer, one reader"):
+//
+//   1. warm: the prefetch worker (snapshot-prefetch.worker.js) is the SOLE
+//      OPFS producer of `qed64-snapshots/<cacheKey>.raw` (network → gunzip
+//      → OPFS in a disposable heap); this worker only ever sync-reads that
+//      inflated region straight into a wasm allocation — no gunzip, no
+//      per-chunk JS buffer;
+//   2. cold / no OPFS: fetch → sniff → DecompressionStream → the same wasm
+//      allocation. Kept as the fallback because embedders lie about storage
+//      and an origin's OPFS view can rot mid-session (HARDENING #6, #16), so
+//      a missing or unreadable `.raw` must still boot from the network.
+//
+// Deleted in W5 (dead on the raw path, and a second multi-GB copy in the JS
+// heap on the cold path): the compressed `.snapz` OPFS cache and its
+// transactional writer, the download tee that fed it, the MEMFS staging
+// file, and the `_lean_wasm_load_snapshot` path-loader branch. A cache
+// failure of any kind is a log line and a network boot, never a failed load.
 
 async function snapshotCacheDir() {
   try {
@@ -1260,17 +1269,6 @@ async function snapshotCacheDir() {
     return await root.getDirectoryHandle("qed64-snapshots", { create: true });
   } catch {
     return null;
-  }
-}
-
-/** Free OPFS origin quota (advisory — embedders may lie; used only to gate
- * optional cache writes, never as a correctness guarantee). */
-async function opfsFreeBytes() {
-  try {
-    const e = await navigator.storage.estimate();
-    return (e.quota || 0) - (e.usage || 0);
-  } catch {
-    return 0;
   }
 }
 
@@ -1295,147 +1293,6 @@ async function openRawSnapshot(rawKey, expectedBytes) {
     return null;
   }
   return { handle, size };
-}
-
-/** A ReadableStream over a cached snapshot file, or null when absent. */
-async function openCachedSnapshot(cacheKey) {
-  const dir = await snapshotCacheDir();
-  if (!dir || !cacheKey) return null;
-  let handle;
-  try {
-    const fh = await dir.getFileHandle(cacheKey);
-    handle = await fh.createSyncAccessHandle();
-  } catch {
-    return null;
-  }
-  const size = handle.getSize();
-  if (size === 0) {
-    handle.close();
-    return null;
-  }
-  const SLICE = 8 * 1024 * 1024;
-  let at = 0;
-  return {
-    size,
-    stream: new ReadableStream({
-      pull(controller) {
-        if (at >= size) {
-          handle.close();
-          controller.close();
-          return;
-        }
-        const buf = new Uint8Array(Math.min(SLICE, size - at));
-        const n = handle.read(buf, { at });
-        at += n;
-        controller.enqueue(n === buf.length ? buf : buf.subarray(0, n));
-      },
-      cancel() {
-        try { handle.close(); } catch { /* closed */ }
-      },
-    }),
-  };
-}
-
-/** Incremental writer for a snapshot being downloaded; commits on finish. */
-async function beginSnapshotCacheWrite(cacheKey) {
-  const dir = await snapshotCacheDir();
-  if (!dir || !cacheKey) return null;
-  const partial = `${cacheKey}.partial`;
-  let handle;
-  let fh;
-  try {
-    try { await dir.removeEntry(partial); } catch { /* absent */ }
-    fh = await dir.getFileHandle(partial, { create: true });
-    handle = await fh.createSyncAccessHandle();
-  } catch {
-    return null;
-  }
-  let at = 0;
-  let dead = false;
-  return {
-    write(bytes) {
-      if (dead) return;
-      try {
-        const n = handle.write(bytes, { at });
-        at += bytes.length;
-        if (n !== bytes.length) throw new Error(`short write: ${n} of ${bytes.length} bytes`);
-      } catch (error) {
-        dead = true;
-        try { handle.close(); } catch { /* ignore */ }
-        dir.removeEntry(partial).catch(() => {});
-        event(null, "log", { stream: "stderr", text: `snapshot cache write stopped: ${error && error.message}` });
-      }
-    },
-    async finish(expectedBytes) {
-      if (dead) return false;
-      // OPFS write() can short-write silently at quota exhaustion (observed:
-      // a 2624 MB region committed as 1999 MB) — never commit a byte count
-      // that disagrees with what the caller streamed.
-      if (typeof expectedBytes === "number" && at !== expectedBytes) {
-        try { handle.close(); } catch { /* closed */ }
-        dir.removeEntry(partial).catch(() => {});
-        event(null, "log", { stream: "stderr", text: `snapshot cache aborted: wrote ${at} of ${expectedBytes} bytes` });
-        return false;
-      }
-      try {
-        handle.flush();
-        handle.close();
-        if (typeof fh.move === "function") {
-          try { await dir.removeEntry(cacheKey); } catch { /* absent */ }
-          await fh.move(cacheKey);
-        } else {
-          // No rename: leave the partial in place under its final name next time.
-          const final = await dir.getFileHandle(cacheKey, { create: true });
-          const w = await final.createSyncAccessHandle();
-          const src = await fh.createSyncAccessHandle();
-          const buf = new Uint8Array(8 * 1024 * 1024);
-          let pos = 0;
-          for (;;) {
-            const n = src.read(buf, { at: pos });
-            if (n === 0) break;
-            w.write(buf.subarray(0, n), { at: pos });
-            pos += n;
-          }
-          src.close();
-          w.flush();
-          w.close();
-          await dir.removeEntry(partial);
-        }
-        // Prune superseded bakes of the same logical snapshot (keys embed a
-        // digest or sizes, so every deploy leaves a differently-named
-        // sibling; without this, dead multi-GB entries accumulate until the
-        // origin hits its OPFS quota). Collect names BEFORE deleting —
-        // removing entries mid-iteration invalidates the directory iterator.
-        try {
-          const stem = cacheKey.split(".")[0];
-          const stale = [];
-          for await (const entryName of dir.keys()) {
-            if (entryName !== cacheKey && entryName.startsWith(`${stem}.`) && entryName.endsWith(".snapz")) {
-              stale.push(entryName);
-            }
-          }
-          for (const entryName of stale) {
-            await dir.removeEntry(entryName).catch(() => {});
-          }
-          if (stale.length > 0) {
-            event(null, "log", { stream: "stderr", text: `snapshot cache pruned: ${stale.join(", ")}` });
-          }
-        } catch { /* best effort */ }
-        return true;
-      } catch (error) {
-        dead = true;
-        dir.removeEntry(partial).catch(() => {});
-        event(null, "log", { stream: "stderr", text: `snapshot cache commit failed: ${error && error.message}` });
-        return false;
-      }
-    },
-    abort() {
-      if (dead) return;
-      dead = true;
-      try { handle.close(); } catch { /* ignore */ }
-      dir.removeEntry(partial).catch(() => {});
-    },
-  };
 }
 
 async function loadSnapshot(msg) {
@@ -1472,64 +1329,43 @@ async function loadSnapshot(msg) {
     );
     return;
   }
-  const path = `/snapshots/${compileSeq += 1}-${safeName}`;
+  // Both paths write the region into ONE wasm-malloc'd buffer sized from the
+  // index entry's RAW byte count (for gzip-served snapshots content-length is
+  // only the transfer size) and hand it to the in-memory loader. A runtime
+  // without that export, or an index without `bytes`, cannot be served in
+  // the browser at all: the MEMFS + path-loader stand-in was deleted (W5),
+  // so refuse up front with a message that names the missing datum.
+  const total = Number(expectedBytes) || 0;
+  if (typeof M._lean_wasm_load_snapshot_mem !== "function" || !bootMemory || total <= 0) {
+    fail(
+      msg.requestId,
+      new Error(`snapshot '${safeName}': needs _lean_wasm_load_snapshot_mem in the runtime and the raw byte count in the index (got ${String(expectedBytes)})`),
+      "SNAPSHOT_FAILED",
+      true,
+    );
+    return;
+  }
   const started = performance.now();
   state = "compiling"; // snapshot loads own the runtime exactly like a compile
-  const FS = M.FS;
-  // Direct path: stream the region straight into a wasm-malloc'd buffer and
-  // let the runtime read it from memory. Avoids staging a multi-GB file in
-  // MEMFS (a second copy in this worker's JS heap — the allocation that
-  // fails first on memory-tight renderers). Needs the raw size up front.
-  const direct = typeof M._lean_wasm_load_snapshot_mem === "function" && bootMemory && Number(expectedBytes) > 0;
   let heapPtr = null;
   let received = 0;
-  let stream = null;
   let reader = null;
-  let cacheWriterRef = null;
+  let rawSource = null;
   let prevSinkRef = null;
   try {
     const rawKey = cacheKey ? `${cacheKey}.raw` : null;
-    const rawSource = direct && rawKey ? await openRawSnapshot(rawKey, Number(expectedBytes) || 0) : null;
-    let sourceBody = null;
-    let fromCache = false;
-    let contentLength = 0;
+    rawSource = rawKey ? await openRawSnapshot(rawKey, total) : null;
+    let response = null;
     if (!rawSource) {
-      const cached = await openCachedSnapshot(cacheKey);
-      if (cached) {
-        sourceBody = cached.stream;
-        fromCache = true;
-        contentLength = cached.size;
-      } else {
-        const response = await fetch(url);
-        if (!response.ok || !response.body) throw new Error(`snapshot fetch: HTTP ${response.status}`);
-        sourceBody = response.body;
-        contentLength = Number(response.headers.get("content-length")) || 0;
-      }
+      // Fail on HTTP status BEFORE allocating a multi-GB region, so a bad URL
+      // costs nothing in the heap.
+      response = await fetch(url);
+      if (!response.ok || !response.body) throw new Error(`snapshot fetch: HTTP ${response.status}`);
     }
-    // For gzip-served snapshots content-length is the transfer size; the
-    // caller passes the RAW region size for pre-sizing and progress.
-    const total = Number(expectedBytes) || contentLength || (rawSource ? rawSource.size : 0) || 0;
-    // Cache policy, strictly-safe under lying quota estimates (observed:
-    // the Electron pane reports 0 free while OPFS holds 1.25 of 10 GB):
-    // network downloads always keep the compressed cache (as before), and
-    // a gzip-cache WARM boot opportunistically converts to a raw-region
-    // cache — sync-readable straight into the heap next boot, no gunzip,
-    // no chunk churn. If the raw write hits real quota exhaustion the
-    // transactional writer self-cleans and the gzip cache is still there,
-    // so no boot is ever worse than today. On success the gzip is deleted.
-    let cacheWriter = null;
-    let teeInflated = false;
-    if (!rawSource && fromCache && rawKey && direct && total > 0) {
-      cacheWriter = await beginSnapshotCacheWrite(rawKey);
-      teeInflated = cacheWriter !== null;
-    }
-    if (!rawSource && !cacheWriter && !fromCache) cacheWriter = await beginSnapshotCacheWrite(cacheKey);
-    cacheWriterRef = cacheWriter;
-    if (direct) {
-      heapPtr = asPtr(M._malloc(asPtr(total)));
-      regionBytesTotal += Number(total);
-      if (heapPtr === 0n) throw new Error(`snapshot: could not allocate ${total} bytes in the wasm heap`);
-    }
+    heapPtr = asPtr(M._malloc(asPtr(total)));
+    regionBytesTotal += total;
+    if (heapPtr === 0n) throw new Error(`snapshot: could not allocate ${total} bytes in the wasm heap`);
+    const magic = [0x6f, 0x6c, 0x65, 0x61, 0x6e]; // "olean"
     if (rawSource) {
       // Warm fast path: the inflated region sits in OPFS — sync-read it in
       // large slices DIRECTLY into the wasm allocation. Re-derive the heap
@@ -1541,89 +1377,57 @@ async function loadSnapshot(msg) {
         const view = new Uint8Array(bootMemory.buffer, Number(heapPtr) + off, n);
         const got = rawSource.handle.read(view, { at: off });
         if (got <= 0) throw new Error("raw snapshot cache truncated mid-read");
-        if (off === 0) {
-          const magic = [0x6f, 0x6c, 0x65, 0x61, 0x6e]; // "olean"
-          if (magic.some((b, i) => view[i] !== b)) throw new Error("raw snapshot cache is not a compacted-region file");
+        if (off === 0 && magic.some((b, i) => view[i] !== b)) {
+          throw new Error("raw snapshot cache is not a compacted-region file");
         }
         off += got;
         progress(msg.requestId, "snapshot-cache", "Loading environment snapshot", off, total, "bytes");
       }
       rawSource.handle.close();
+      rawSource = null;
       received = total;
-    } else if (!direct) {
-      stream = FS.open(path, "w");
-      if (total > 0) {
-        // Pre-size the MEMFS file: growth-by-doubling would transiently hold
-        // ~2× the snapshot in the JS heap mid-copy, which is exactly what dies
-        // first on a memory-tight session. One exact allocation instead.
-        try { FS.ftruncate(stream.fd, total); } catch { /* fall back to growth */ }
-      }
-    }
-    // Gzip-served snapshots inflate through DecompressionStream — but only if
-    // the bytes that arrive are still gzip. Servers that recognise the .gz
-    // extension add `Content-Encoding: gzip` and the browser inflates
-    // transparently; trusting the URL would then gunzip plain olean bytes
-    // ("incorrect header check"). Sniff the magic on the first chunk instead.
-    const rawReader = rawSource ? null : sourceBody.getReader();
-    if (!rawSource) {
-    const head = await rawReader.read();
-    if (head.done || !head.value) throw new Error("snapshot fetch: empty body");
-    const isGzip = head.value.length >= 2 && head.value[0] === 0x1f && head.value[1] === 0x8b;
-    if (cacheWriter && !teeInflated) cacheWriter.write(head.value);
-    const replay = new ReadableStream({
-      start(controller) {
-        controller.enqueue(head.value);
-      },
-      async pull(controller) {
-        const { done, value } = await rawReader.read();
-        if (done) controller.close();
-        else {
-          if (cacheWriter && !teeInflated) cacheWriter.write(value);
-          controller.enqueue(value);
-        }
-      },
-      cancel(reason) {
-        return rawReader.cancel(reason);
-      },
-    });
-    const body = isGzip ? replay.pipeThrough(new DecompressionStream("gzip")) : replay;
-    reader = body.getReader();
-    let first = true;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (first) {
-        first = false;
-        const magic = [0x6f, 0x6c, 0x65, 0x61, 0x6e]; // "olean"
-        if (value.length < 5 || magic.some((b, i) => value[i] !== b)) {
+    } else {
+      // Cold path. Gzip-served snapshots inflate through DecompressionStream
+      // — but only if the bytes that arrive are still gzip. Servers that
+      // recognise the .gz extension add `Content-Encoding: gzip` and the
+      // browser inflates transparently; trusting the URL would then gunzip
+      // plain olean bytes ("incorrect header check", HARDENING #19). Sniff
+      // the magic on the first chunk instead.
+      const rawReader = response.body.getReader();
+      const head = await rawReader.read();
+      if (head.done || !head.value) throw new Error("snapshot fetch: empty body");
+      const isGzip = head.value.length >= 2 && head.value[0] === 0x1f && head.value[1] === 0x8b;
+      const replay = new ReadableStream({
+        start(controller) {
+          controller.enqueue(head.value);
+        },
+        async pull(controller) {
+          const { done, value } = await rawReader.read();
+          if (done) controller.close();
+          else controller.enqueue(value);
+        },
+        cancel(reason) {
+          return rawReader.cancel(reason);
+        },
+      });
+      const body = isGzip ? replay.pipeThrough(new DecompressionStream("gzip")) : replay;
+      reader = body.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (received === 0 && (value.length < 5 || magic.some((b, i) => value[i] !== b))) {
           throw new Error("snapshot is not a compacted-region file");
         }
-      }
-      if (direct) {
         if (received + value.length > total) throw new Error("snapshot: more bytes than the index declares");
         // Re-read .buffer each chunk (a shared memory's buffer object changes
         // on growth) and window the view: offsets past 2^32 are fine, a
         // whole-heap view of a multi-GiB buffer is not in every engine.
         new Uint8Array(bootMemory.buffer, Number(heapPtr) + received, value.length).set(value);
-      } else {
-        FS.write(stream, value, 0, value.length, received);
-      }
-      if (cacheWriter && teeInflated) cacheWriter.write(value);
-      received += value.length;
-      progress(msg.requestId, fromCache ? "snapshot-cache" : "snapshot", "Loading environment snapshot", received, total || undefined, "bytes");
-    }
-    if (cacheWriter) {
-      // Raw tees know the exact region size; compressed tees stream an
-      // unknown transfer length (no expectation to enforce).
-      const committed = await cacheWriter.finish(teeInflated ? received : undefined);
-      event(null, "log", { stream: "stderr", text: committed ? `snapshot cached as ${teeInflated ? rawKey : cacheKey}` : "snapshot not cached" });
-      if (committed && teeInflated) {
-        // The raw cache supersedes the compressed one — reclaim its quota.
-        const dir = await snapshotCacheDir();
-        if (dir && cacheKey) dir.removeEntry(cacheKey).catch(() => {});
+        received += value.length;
+        progress(msg.requestId, "snapshot", "Loading environment snapshot", received, total, "bytes");
       }
     }
-    } // end !rawSource
+    if (received !== total) throw new Error(`snapshot: received ${received} bytes, index declares ${total}`);
     // The region load below is one synchronous wasm call (1–2 min for a
     // whole-Mathlib environment); tell the host before blocking so it can
     // show an honest "loading into Lean" stage instead of a pegged bar. The
@@ -1640,26 +1444,12 @@ async function loadSnapshot(msg) {
         else if (prevSink) prevSink.push(stream, text);
       },
     };
-    let res;
-    if (direct) {
-      if (received !== total) throw new Error(`snapshot: received ${received} bytes, index declares ${total}`);
-      // The runtime takes ownership of the buffer as the region's backing store.
-      const owned = heapPtr;
-      heapPtr = null;
-      // Third arg: replay-control flags — bit 0 runs the [init] attribute
-      // replay, which the app always needs (compiles die without it).
-      res = M._lean_wasm_load_snapshot_mem(owned, asPtr(received), 1n);
-    } else {
-      if (total > 0 && received !== total) {
-        // The pre-size was a hint; trim (or extend) to what actually arrived so
-        // the region loader never sees phantom trailing bytes.
-        try { FS.ftruncate(stream.fd, received); } catch { /* best effort */ }
-      }
-      FS.close(stream);
-      stream = null;
-      FS.writeFile(`${path}.deps`, new Uint8Array([0x5b, 0x5d])); // "[]"
-      res = callP(M._lean_wasm_load_snapshot, mkLeanString(path));
-    }
+    // The runtime takes ownership of the buffer as the region's backing store.
+    const owned = heapPtr;
+    heapPtr = null;
+    // Third arg: replay-control flags — bit 0 runs the [init] attribute
+    // replay, which the app always needs (compiles die without it).
+    const res = M._lean_wasm_load_snapshot_mem(owned, asPtr(received), 1n);
     sink = prevSink;
     memCheckpoint(`snapshot-loaded:${safeName}`);
     const tag = ioResultTag(res);
@@ -1671,18 +1461,15 @@ async function loadSnapshot(msg) {
       result: { operation: "loadSnapshot", success: ok, elapsedMs: performance.now() - started },
     });
   } catch (error) {
-    // A mid-stream failure (allocation, network) must not strand a partial
-    // multi-GB file in MEMFS: the fallback import that follows runs under
-    // whatever heap this leak would have consumed.
+    // A mid-stream failure (allocation, network, torn cache) must not strand
+    // a partial multi-GB region in the wasm heap: the fallback import that
+    // follows runs under whatever heap this leak would have consumed.
     try { reader?.cancel(); } catch { /* stream already dead */ }
-    try { if (stream !== null) FS.close(stream); } catch { /* already closed */ }
+    try { rawSource?.handle.close(); } catch { /* already closed */ }
     if (heapPtr !== null) { try { M._free(heapPtr); } catch { /* best effort */ } }
-    try { cacheWriterRef?.abort(); } catch { /* best effort */ }
     fail(msg.requestId, error, "SNAPSHOT_FAILED", true);
   } finally {
     if (prevSinkRef) sink = prevSinkRef.sink;
-    try { FS.unlink(path); } catch { /* success path may run before a compile; absent is fine */ }
-    try { FS.unlink(`${path}.deps`); } catch { /* ditto */ }
     if (state === "compiling") state = "ready";
   }
 }
