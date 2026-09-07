@@ -2,12 +2,10 @@
 // the real vscode-lean4 InfoView) with zero servers — the Lean file worker
 // runs in this browser tab on the wasm64 runtime.
 import { LeanMonaco, LeanMonacoEditor, type LeanMonacoOptions } from "lean4monaco";
-import { ensureProfile, installArtifacts, loadSnapshotByName, newSession, type ProgressInfo, type Qed64Artifacts, type Qed64Session, type StatusSink } from "./qed64-boot";
+import { installArtifacts, type ProgressInfo, type StatusSink } from "./qed64-boot";
 import { registerImportCompletion } from "./import-completion";
-import { WatchdogShim } from "./watchdog-shim";
-import { LspRelay, type RelaySession, type RelayStatus, type RestartOptions } from "./lsp-relay";
-import { LeanSession, memoryCandidates, type JsonRpcMessage, type LibraryPack, type WorkerStatus } from "../../src/runtime/client";
-import { installProfile } from "../../src/install/profiles";
+import { LspRelay, type RelayStatus } from "./lsp-relay";
+import { EDITOR_POLICY, ResidentSession, isUmbrellaModule } from "./resident-session";
 
 const editorEl = document.getElementById("editor")! as HTMLElement;
 const infoviewEl = document.getElementById("infoview")! as HTMLElement;
@@ -183,7 +181,7 @@ const ui: StatusSink = {
   clearAction() { renderAction(null); },
 };
 
-// ---- Resident transport (default; ?resident=0 = pump shim): relay instead of shim ----
+// ---- Status: the relay's datum rendered, nothing regexed -------------------
 // The pill is `render(status)` — one enum from the worker (§2.2(e)), no label
 // strings to regex over (C10). The overlay goes at the first phase in which
 // the workspace is actionable: `ready`, or `headerRefused` (a restored buffer
@@ -197,8 +195,73 @@ const PHASE_LABEL: Record<RelayStatus["phase"], string> = {
   dead: "the checker crashed — restarting (~15 s)",
   halted: "the checker keeps crashing on this content — edit the file to retry",
 };
-function renderStatus(s: RelayStatus) {
-  const label = PHASE_LABEL[s.phase];
+/** The relay's status as this page consumes it. `lastDeath` is the relay's
+ * memory of the death that halted it (`onDied(code, reason, message)`, or
+ * the boot rejection), null once a session reaches `ready`; optional here so
+ * the page compiles against a relay that does not carry it yet. */
+type PageStatus = RelayStatus & { lastDeath?: { reason: string; message: string } | null };
+
+// GAP 2 (page side): a halt BEFORE any session ever reached `ready` is a boot
+// that never worked — a Memory64 reservation refused, a capability missing,
+// a runtime fetch or snapshot pairing failure — and gets the first-boot
+// failure card with its Reload button; a halt after that is the crash-loop
+// breaker, explained by the pill and the relay's in-document note.
+let everReady = false;
+
+// GAP 4: the first library search of a session (`exact?`/`apply?`/`rw?`)
+// indexes Mathlib for about a minute; past 8 s of elaborating on such a
+// document the pill says so instead of a bare elapsed ticker. UI-only: the
+// timer lives here, never in the relay.
+const SEARCH_RE = /\b(exact\?|apply\?|rw\?)/;
+const SEARCH_HINT = "first library search — indexing Mathlib (about a minute, once per session)";
+const SEARCH_HINT_AFTER_MS = 8000;
+let docText: () => string = () => "";
+let searchSession = ""; // the session the warm-index fact belongs to (a reboot loses the index)
+let searchIndexWarm = false;
+let elaboratingSince: number | null = null;
+let searchSeen = false; // the document matched SEARCH_RE during this elaborating stretch
+let hintShown = false;
+function trackSearch(s: PageStatus): void {
+  if (s.session !== searchSession) { searchSession = s.session; searchIndexWarm = false; elaboratingSince = null; searchSeen = false; hintShown = false; }
+  if (s.phase === "elaborating") {
+    if (elaboratingSince === null) elaboratingSince = performance.now();
+    return;
+  }
+  if (elaboratingSince !== null && (searchSeen || SEARCH_RE.test(docText()))) searchIndexWarm = true; // a search completed: the index is warm
+  elaboratingSince = null; searchSeen = false; hintShown = false;
+}
+function tickSearchHint(): void {
+  if (elaboratingSince === null || searchIndexWarm || hintShown) return;
+  if (!SEARCH_RE.test(docText())) return;
+  searchSeen = true;
+  if (performance.now() - elaboratingSince < SEARCH_HINT_AFTER_MS) return;
+  hintShown = true;
+  ui.progress(SEARCH_HINT);
+}
+
+// GAP 3: a session that booted light (init only) and whose header now names
+// Mathlib is refused by the kernel; the page widens it once (a user restart
+// with the umbrella) and says "loading Mathlib…" while the replacement boots.
+let widening = false;
+
+function renderStatus(s: PageStatus) {
+  if (s.phase === "ready") everReady = true;
+  trackSearch(s);
+  if (s.phase === "halted") {
+    const d = s.lastDeath ?? null;
+    // Not gated on the overlay: once it is gone (the 120 s fallback, or a
+    // first boot that settled in headerRefused) `bootFail` is a no-op and the
+    // pill alone must carry the message, not a bare "halted — bootFailed".
+    if (d && !everReady) {
+      ui.idle(`could not start — ${d.message || d.reason}`);
+      bootFail(d.message || d.reason);
+      return;
+    }
+    ui.idle(d ? `halted — ${d.reason}` : PHASE_LABEL.halted);
+    return;
+  }
+  if (s.phase !== "booting" && s.phase !== "starting") widening = false;
+  const label = widening ? "loading Mathlib…" : s.phase === "elaborating" && hintShown ? SEARCH_HINT : PHASE_LABEL[s.phase];
   if (s.phase === "booting" || s.phase === "starting" || s.phase === "elaborating" || s.phase === "dead") ui.busy(label);
   else ui.idle(label);
   if (s.phase === "ready" || s.phase === "headerRefused") bootFinish();
@@ -208,114 +271,6 @@ function renderStatus(s: RelayStatus) {
  * on WorkerStatus; §3 row 8): set while its last publish reported names
  * already declared under a COVERED header, null after a clean burst. */
 const collisionOf = (s: RelayStatus) => s.collision ?? null;
-
-/** Only the import lines of a header — the pump shim's prepareHeader builds
- * its warm-compile input the same way (the body must not be elaborated on
- * the main thread; the FileWorker does that once the loop opens). */
-const IMPORT_LINE = /^\s*(?:public\s+|private\s+)?(?:meta\s+)?import\s+/;
-const importLinesOf = (header: string): string[] => header.split("\n").filter((l) => IMPORT_LINE.test(l));
-
-/** Day-5 session adapter (§2.2 L4; §7 day 5). A Worker exists from
- * construction — the relay always has a target and a booting worker queues
- * every frame (§6 amendment 20) — and `start()` runs the boot that
- * qed64-boot.ts's `newSession` performs for the pump path, on the same
- * artifacts, and leaves the worker's loop CLOSED: the relay arms it
- * (`arm()`) only after its BootOk replay (§2.3), so the machine's `booted`
- * fact can never precede the snapshot loads below (§2.4 Booting → Ready is
- * the page's fact, not the wasm boot's). The sync-create/async-boot split
- * moves INTO qed64-boot.ts at S3b (week 2); until then the boot inputs live
- * here: the umbrella-sized initial commit and the boot-only snapshot list —
- * a default session is covered by init + mathlib, and K1 serves exact keys
- * first, so no page-side header reading chooses them. */
-class ResidentSession implements RelaySession {
-  readonly lean = new LeanSession();
-  readonly id: string;
-  constructor(private readonly artifacts: Qed64Artifacts, private readonly opts: RestartOptions) {
-    this.id = this.lean.id;
-    this.lean.onLog = (stream, text) => console.debug(`[lean:${stream}] ${text}`);
-    this.lean.onProgress = (p) => ui.progress(p.label ?? p.phase, { phase: p.phase, loaded: p.loaded, total: p.total, unit: p.unit });
-  }
-  get onLsp() { return this.lean.onLsp; }
-  set onLsp(f: (msg: JsonRpcMessage) => void) { this.lean.onLsp = f; }
-  get onStatus() { return this.lean.onStatus; }
-  set onStatus(f: (s: WorkerStatus) => void) { this.lean.onStatus = f; }
-  get onDied() { return this.lean.onDied; }
-  set onDied(f: (code: number | null, reason: string, message: string) => void) { this.lean.onDied = f; }
-  lsp(msg: JsonRpcMessage, replay?: boolean) { this.lean.lsp(msg, replay); }
-  arm() { return this.lean.arm(); }
-  dispose() { this.lean.dispose(); }
-  async start(): Promise<void> {
-    const a = this.artifacts;
-    // "Load exact imports" (§3 row 8; HARDENING #43): the header is imported
-    // from oleans below, so the ~1 GB olean pack must be installed BEFORE
-    // boot — LEAN_PATH and the mounts are boot inputs, and a running worker
-    // cannot retro-mount a pack (the pump path's prepareHeader has to throw
-    // `__qed64_remount__` and boot again for that; here nothing has booted
-    // yet, so the one user restart is the only restart). A pack missing from
-    // the index is not a death: the warm compile then fails its imports and
-    // the session serves the header covered, with the offer back.
-    if (this.opts.packs?.includes("essential") && !(await ensureProfile(a, "essential", ui))) {
-      ui.progress("the Mathlib library pack is unavailable — exact imports may fail");
-    }
-    // Memory-backed segments were TRANSFERRED to the worker that booted them
-    // and are detached page-side; a reboot reinstalls them exactly as
-    // newSession does (an OPFS install revalidates in ms; memory mode
-    // re-downloads). Skipping them silently booted a worker with the pack's
-    // mount on LEAN_PATH but none of its bytes; one not in the index any
-    // more is dropped from LEAN_PATH and said so, never mounted empty.
-    for (const [id, profile] of [...a.installed]) {
-      if (!profile.segments.some((seg) => seg.bytes && seg.bytes.buffer.byteLength === 0)) continue;
-      const entry = a.index.profiles.find((p) => p.id === id);
-      if (!entry) { a.installed.delete(id); console.warn(`[qed64] pack ${id} was consumed by the previous worker and is not in the index; dropped from LEAN_PATH`); continue; }
-      ui.busy(`re-preparing the ${id} library for the new session`);
-      a.installed.set(id, await installProfile(entry, (p) => ui.progress(`${p.phase} ${id}`, { phase: `pack-${p.phase}`, loaded: p.loaded, total: p.total ?? 0, unit: "bytes" })));
-    }
-    const packs: LibraryPack[] = [...a.installed.values()].flatMap((p) =>
-      p.segments.map((segment, i) => ({ id: `${p.id}#${i}`, ...(segment.blob ? { blob: segment.blob } : {}), ...(segment.bytes ? { bytes: segment.bytes } : {}), metadata: segment.metadata, mountPoint: `/lib/packs/${p.id}` })),
-    );
-    const cap = 6 * 1073741824;
-    const under = memoryCandidates().filter((b) => b <= cap);
-    ui.busy("starting Lean");
-    await this.lean.boot({
-      runtime: a.runtime,
-      memory: { initialBytes: 2048 * 1048576, maximumCandidates: under.length ? under : [cap] },
-      leanPath: [...a.installed.keys()].map((id) => `/lib/packs/${id}`).join(":"),
-      packs,
-    });
-    const qs: Qed64Session = { session: this.lean, loadedSnapshots: new Set() };
-    for (const name of this.opts.snapshots ?? ["init", "mathlib"]) {
-      if (!(await loadSnapshotByName(a, qs, name, ui))) throw new Error(`snapshot '${name}' failed to load`);
-    }
-    if (this.opts.warmHeader) await this.warm(this.opts.warmHeader);
-    // Deliberately no arm() here: the relay arms after its replay (§2.3 BootOk).
-  }
-
-  /** Exact imports (§2.2 L1(a) "optional warmHeader → _lean_wasm_compile";
-   * §6 second pass 14): compile ONLY the header's import lines while the loop
-   * is still CLOSED — the worker allows `compile` pre-open only (K-i) — so the
-   * real olean import pushes the exact environment into the main-thread
-   * cache. K1's lookup is exact-first, so the FileWorker then serves this
-   * header from that env (headerStatus mode "exact": no umbrella names, no
-   * collision) while every other header stays covered. A failed import is
-   * reported, not thrown: a throw here would be a BootFailed death and a
-   * crash-loop candidate, whereas serving the header covered again is
-   * honest — the collision note and the offer simply come back. */
-  private async warm(header: string): Promise<void> {
-    const imports = importLinesOf(header);
-    if (imports.length === 0) return;
-    ui.busy("importing exactly your header from the Mathlib library (about a minute; the checker starts afterwards)");
-    try {
-      const r = await this.lean.compile(`${imports.join("\n")}\n`, "/workspace/__warm.lean");
-      if (r.success) return;
-      const why = r.diagnostics.find((d) => d.severity === "error")?.message ?? `exit ${r.exitCode}`;
-      console.warn(`[qed64] exact import failed (${why}); serving the header from the preloaded library`);
-      ui.progress(`exact import failed: ${why.slice(0, 120)} — using the preloaded library`);
-    } catch (err) {
-      console.warn(`[qed64] exact import failed: ${(err as Error).message}; serving the header from the preloaded library`);
-      ui.progress("exact import failed — using the preloaded library");
-    }
-  }
-}
 
 // ---- Examples -------------------------------------------------------------
 const EXAMPLES: Record<string, string> = {
@@ -377,73 +332,85 @@ async function main() {
       bi.title = `Lean ${rt.leanVersion}\n${rt.sourceRevision ?? "source revision unknown"}\nruntime ${rt.buildId}\nno servers — everything runs in this tab`;
     }
   }
-  let shim: WatchdogShim | null = null;
-  let relay: LspRelay | null = null;
-  let clientPort: MessagePort;
-  // Resident (default since 2026-09-04; §7 day 5, S3a): the front door + relay, once a flagged
-  // preview on the R1 kernel. The pump path (WatchdogShim) stays the default
-  // and is untouched.
-  // Resident is the default transport (2026-09-04: e2e parity, gauntlets
-  // clean at 227/74 steps where the pump page dies on the first import
-  // keystroke of a storm, header switch 313 ms vs 2,550 ms). `?resident=0`
-  // keeps the pump path reachable as the fallback while it is still served.
-  const resident = new URLSearchParams(location.search).get("resident") !== "0";
-  type Tel = { request(type: string, payload: Record<string, unknown>): Promise<unknown> };
-  let telemetrySession: () => Tel | null;
-  if (resident) {
-    // EXPLAIN AND OFFER, never reboot on the user's behalf (§3 row 8;
-    // HARDENING #43): the worker's publish already carries the note; the page
-    // only shows ONE action while the worker reports a collision and
-    // withdraws it when the fact clears (a clean burst, a header edit, a
-    // replacement session — its first status carries no collision). The
-    // click is the deliberate restart: boot-only snapshots + the header's
-    // exact imports from the olean pack (relay.restart, counted as a user
-    // restart, never a death).
-    let offered = false;
-    const offerExactImports = (s: RelayStatus) => {
-      const c = collisionOf(s);
-      if (c && !offered) {
-        offered = true;
-        ui.action?.("Load exact imports (about 1 min; first time downloads 1 GB)", () => {
-          if (relay) relay.restart({ snapshots: ["init", "mathlib"], warmHeader: relay.lastText, packs: ["essential"] });
-        });
-      } else if (!c && offered) {
-        offered = false;
-        ui.clearAction?.();
-      }
-    };
-    relay = new LspRelay(
-      (opts) => new ResidentSession(artifacts, opts ?? {}),
-      { status: (s) => { renderStatus(s); offerExactImports(s); } },
-      () => new Promise((r) => window.setTimeout(r, 1500)),
-    );
-    clientPort = relay.clientPort;
-    const r = relay;
-    window.addEventListener("pagehide", () => r.unload());
-    telemetrySession = () => (r.session as ResidentSession).lean as unknown as Tel;
-  } else {
-    const makeSession = (opts?: { mathlib?: boolean }): Promise<Qed64Session> =>
-      newSession(artifacts, ui, () => void shim?.handleWorkerDeath(), opts);
-    // The default example is a Mathlib one — commit the umbrella-sized heap.
-    const qs = await makeSession({ mathlib: true });
-    shim = new WatchdogShim(artifacts, qs, ui, makeSession, {}, {});
-    clientPort = shim.clientPort;
-    const s = shim;
-    window.addEventListener("pagehide", () => s.disposeForUnload());
-    // The getter re-reads shim.qs each tick, so the meter follows worker reboots.
-    telemetrySession = () => (s as unknown as { qs?: { session?: Tel } }).qs?.session ?? null;
-  }
-  // `qed64.status()` is the harness's one oracle on both transports (C7):
-  // the same enum from the relay's worker status or the shim's flag→enum getter.
+  // Crash insurance: the buffer persists locally on every edit, so a killed
+  // tab (runaway elaboration can still take the renderer down) costs a
+  // reload, not the user's proof. Read BEFORE the relay exists: the initial
+  // text is a boot input (§6 amendment 15) — an Init-only document boots
+  // light, a Mathlib one boots the umbrella.
+  let restored: string | null = null;
+  try { restored = window.localStorage.getItem("qed64.buffer"); } catch { /* storage unavailable */ }
+  const initialText = restored ?? EXAMPLES.mathlib;
+  // The editor's boot policy (resident-session.ts); an embedder passes its own.
+  const policy = EDITOR_POLICY;
+  let relay: LspRelay; // assigned below; the closures here run only from the relay's status sink or a click
+
+  // EXPLAIN AND OFFER, never reboot on the user's behalf (§3 row 8;
+  // HARDENING #43): the worker's publish already carries the note; the page
+  // only shows ONE action while the worker reports a collision and
+  // withdraws it when the fact clears (a clean burst, a header edit, a
+  // replacement session — its first status carries no collision). The
+  // click is the deliberate restart: boot-only snapshots + the header's
+  // exact imports from the olean pack (relay.restart, counted as a user
+  // restart, never a death).
+  let offered = false;
+  const offerExactImports = (s: RelayStatus) => {
+    const c = collisionOf(s);
+    if (c && !offered) {
+      offered = true;
+      ui.action?.("Load exact imports (about 1 min; first time downloads 1 GB)", () => {
+        relay.restart({ snapshots: ["init", "mathlib"], warmHeader: relay.lastText, packs: ["essential"] });
+      });
+    } else if (!c && offered) {
+      offered = false;
+      ui.clearAction?.();
+    }
+  };
+  // GAP 3, the other half of the light boot: the kernel refuses a header a
+  // light session cannot cover (K1: nothing loaded contains the modules) and
+  // reports which modules are missing. When every one of them is under a
+  // root the umbrella serves, the fix is the umbrella itself — restart ONCE
+  // with it (a user restart, never a death; the relay remembers these
+  // options across a crash reboot while the header stays the same). A
+  // session that already has the umbrella is never widened again: whatever
+  // it refuses, no snapshot would change the verdict.
+  let widened: string | null = null;
+  const widenForMathlib = (s: RelayStatus) => {
+    if (s.phase !== "headerRefused" || !s.header || s.header.mode !== "refused" || relay.state.kind !== "serving") return;
+    const session = relay.session as ResidentSession;
+    if (session.id !== s.session || session.snapshots.includes("mathlib") || widened === s.session) return;
+    const missing = s.header.missing;
+    if (missing.length === 0 || !missing.every(isUmbrellaModule)) return;
+    widened = s.session;
+    widening = true;
+    ui.busy("loading Mathlib…");
+    relay.restart({ snapshots: ["init", "mathlib"] });
+  };
+  // The session adapter reads the document it will serve: the initial text
+  // at first boot (the relay constructs its first session before `relay` is
+  // assigned, so the factory sees `undefined`) AND on a reboot that precedes
+  // the editor's first didOpen (`lastText` is still "" — `||`, not `??`: a
+  // Mathlib document must not boot light there and pay a widen reboot once
+  // the didOpen lands), the relay's last full text on every later reboot —
+  // a header change between sessions changes the boot inputs with it.
+  relay = new LspRelay(
+    (opts) => new ResidentSession({ artifacts, ui, policy, headerText: relay?.lastText || initialText }, opts ?? {}),
+    { status: (s) => { renderStatus(s); offerExactImports(s); widenForMathlib(s); } },
+    () => new Promise((r) => window.setTimeout(r, 1500)),
+  );
+  const clientPort: MessagePort = relay.clientPort;
+  window.addEventListener("pagehide", () => relay.unload());
+  // `qed64.status()` is the harness's one oracle (C7): the relay's own datum.
+  // `relay.session.lean` is the LeanSession (telemetry: `relay.session.lean.request('telemetry')`).
   (globalThis as unknown as Record<string, unknown>).qed64 = {
     artifacts,
-    shim,
     relay,
     ui,
-    status: () => (relay ? relay.status() : shim!.status()),
+    status: () => relay.status(),
     get editor() { return editor.editor; },
   };
-  startMemoryMeter(telemetrySession);
+  // `request` is LeanSession-private; the meter is a trusted internal peer.
+  startMemoryMeter(() => (relay.session as ResidentSession).lean as unknown as Tel);
+  window.setInterval(tickSearchHint, 1000);
 
   ui.busy("starting the editor");
   const leanMonaco = new LeanMonaco();
@@ -469,12 +436,8 @@ async function main() {
   // Chrome's form-state restore can reset the picker (and fire `change`)
   // long after load — pin it to the content we actually open.
   examplesEl.value = "mathlib";
-  // Crash insurance: the buffer persists locally on every edit, so a killed
-  // tab (runaway elaboration can still take the renderer down) costs a
-  // reload, not the user's proof.
-  let restored: string | null = null;
-  try { restored = window.localStorage.getItem("qed64.buffer"); } catch { /* storage unavailable */ }
-  await editor.start(editorEl, "/project/Probe.lean", restored ?? EXAMPLES.mathlib);
+  await editor.start(editorEl, "/project/Probe.lean", initialText);
+  docText = () => editor.editor?.getModel()?.getValue() ?? relay.lastText;
   if (restored) ui.progress("restored your last buffer");
   let saveTimer: number | undefined;
   editor.editor?.getModel()?.onDidChangeContent(() => {
@@ -488,14 +451,15 @@ async function main() {
   });
   ui.idle("ready — put the cursor inside a proof");
 
-  // Example switching = a document edit; if it changes the header, the
-  // worker restarts itself through the shim's death-replay path.
+  // Example switching = a document edit; a header change is resolved
+  // in-kernel against the loaded environments (K1), a light session widens
+  // itself above, and a halted relay takes the didChange as its re-arm.
   examplesEl.addEventListener("change", () => {
     const src = EXAMPLES[examplesEl.value];
     const model = editor.editor?.getModel();
     if (src && model) {
       // Re-picking the already-loaded example is a no-op: setValue with
-      // identical text emits no change event, so the shim never runs and
+      // identical text emits no change event, so no status would follow and
       // nothing would ever clear the busy label — the pill wedged forever.
       if (model.getValue() === src) return;
       model.setValue(src);
@@ -509,7 +473,8 @@ async function main() {
  * browser's own overhead sit on top (documented in the tooltip). Warn as the
  * heap nears its cap — growth past it is a recoverable worker abort, but the
  * OS may kill the whole tab first when other heavy tabs crowd the machine. */
-function startMemoryMeter(getSession: () => { request(type: string, payload: Record<string, unknown>): Promise<unknown> } | null) {
+type Tel = { request(type: string, payload: Record<string, unknown>): Promise<unknown> };
+function startMemoryMeter(getSession: () => Tel | null) {
   const el = document.getElementById("buildinfo");
   if (!el) return;
   const base = el.textContent ?? "";

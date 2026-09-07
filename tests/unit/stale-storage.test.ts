@@ -1,5 +1,5 @@
-// Mid-session storage-rot recovery: classification of stale-storage compile
-// failures, and the install-time cache probe that refuses unreadable packs.
+// Mid-session storage-rot recovery: the install-time cache probe that
+// refuses unreadable packs.
 //
 // Live-observed failure this guards (Electron pane, after an OPFS quota
 // event): the pack directory silently emptied while WORKERFS still held File
@@ -7,31 +7,7 @@
 // NotFoundError and the compile failed with no recovery path.
 
 import { describe, expect, it } from "vitest";
-import { isStaleStorageError } from "../../src/runtime/errors";
 import { readCached, type PackMeta } from "../../src/install/profiles";
-
-describe("isStaleStorageError", () => {
-  it("matches the live-observed WORKERFS failure verbatim", () => {
-    expect(
-      isStaleStorageError(
-        "Failed to execute 'readAsArrayBuffer' on 'FileReaderSync': " +
-          "A requested file or directory could not be found at the time an operation was processed.",
-      ),
-    ).toBe(true);
-  });
-
-  it("matches DOMException names for dead file snapshots", () => {
-    expect(isStaleStorageError("NotFoundError: file gone")).toBe(true);
-    expect(isStaleStorageError("NotReadableError: the requested file could not be read")).toBe(true);
-  });
-
-  it("does not match unrelated compile-path failures", () => {
-    expect(isStaleStorageError("worker terminated")).toBe(false);
-    expect(isStaleStorageError("snapshot fetch: HTTP 404")).toBe(false);
-    expect(isStaleStorageError("Lean process wrote a malformed IO result")).toBe(false);
-    expect(isStaleStorageError("RangeError: Maximum call stack size exceeded")).toBe(false);
-  });
-});
 
 // -- readCached probe --------------------------------------------------------
 

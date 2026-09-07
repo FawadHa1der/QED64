@@ -5,9 +5,9 @@
   "type": "module",
   "description": "QED64 \u2014 a Lean 4 web editor running the real compiler client-side on WebAssembly Memory64, with Mathlib profiles.",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc --noEmit && vite build",
-    "preview": "vite preview",
+    "dev": "npm --prefix frontend run dev",
+    "build": "tsc --noEmit && npm run build:site",
+    "preview": "node scripts/serve-dist.mjs",
     "pretest": "if [ -d frontend/node_modules ]; then npm run typecheck:site; else echo \"pretest: frontend/node_modules absent — skipping typecheck:site (run: npm --prefix frontend ci)\"; fi",
     "test": "vitest run --exclude '**/integration/**'",
     "test:watch": "vitest --exclude '**/integration/**'",
@@ -21,7 +21,7 @@
     "verify:release": "node pipeline/release/verify-release.mjs",
     "promote:staging": "node pipeline/release/promote-staging.mjs",
     "build:site": "npm --prefix frontend run build",
-    "typecheck:site": "npm --prefix frontend exec tsc -- --noEmit -p frontend/tsconfig.json",
+    "typecheck:site": "npm --prefix frontend exec -- tsc -p frontend --noEmit",
     "preview:prod": "node scripts/serve-dist.mjs",
     "test:adversarial": "node tests/adversarial/run.mjs"
   },

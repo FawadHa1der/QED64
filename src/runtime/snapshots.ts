@@ -4,8 +4,10 @@
 // under Node (`npm run bake:snapshot`): loading one seeds the worker's
 // environment cache for the ordered header-import list recorded inside it,
 // replacing a minutes-long module-closure import with a seconds-long region
-// load. The index maps each snapshot to that ordered import list; matching is
-// exact — the runtime keys its cache by the precise `import` sequence.
+// load. The index records each snapshot's ordered import list and the
+// runtime that baked it; the resident kernel resolves headers against the
+// loaded environments itself (patch 0032 K1), so nothing page-side matches
+// import lists any more.
 
 export interface SnapshotEntry {
   name: string;
@@ -53,24 +55,6 @@ export async function fetchSnapshotIndex(url = "/snapshots/index.json"): Promise
   } catch {
     return null;
   }
-}
-
-/** Find the snapshot matching an ordered import list exactly (or the boot
- * snapshot when `imports` is empty). */
-export function matchSnapshot(index: SnapshotIndex | null, imports: string[]): SnapshotEntry | null {
-  if (!index) return null;
-  for (const entry of index.snapshots) {
-    if (entry.imports.length !== imports.length) continue;
-    let same = true;
-    for (let i = 0; i < imports.length; i += 1) {
-      if (entry.imports[i] !== imports[i]) {
-        same = false;
-        break;
-      }
-    }
-    if (same) return entry;
-  }
-  return null;
 }
 
 /** Stable OPFS cache file name for a snapshot. Prefer the content digest:
