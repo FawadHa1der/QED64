@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { LspRelay, type RelaySession, type RelayStatus, type RestartOptions } from "../../frontend/src/lsp-relay";
+import { LspRelay, isImport, type RelaySession, type RelayStatus, type RestartOptions } from "../../frontend/src/lsp-relay";
 import type { JsonRpcMessage as Msg, WorkerStatus } from "../../src/runtime/client";
 
 class FakeSession implements RelaySession {
@@ -120,9 +120,24 @@ describe("relay: line and timer budget (§8 item 9)", () => {
   });
   it("parses no text beyond splitting it into lines: no regex literal, no match/test/exec, no other split", () => {
     // The one text operation the pump's retirement added (gaps 2/5, restart options across a crash): the
-    // import lines, found with startsWith over `text.split("\n")` — never a regex.
+    // import lines, found with startsWith over `text.split("\n")` — never a regex, and exactly ONE such split
+    // (linesOf), so a second unrelated line split cannot slip in under the whitelist.
+    expect(source.split('.split("\\n")').length - 1).toBe(1);
     const withoutLineSplit = source.replaceAll('.split("\\n")', "");
     expect(/\.split\(|\.match\(|\.test\(|\.exec\(|new RegExp/.test(withoutLineSplit)).toBe(false);
+  });
+  it("finds import lines exactly as the front door's and main.ts's IMPORT_LINE regex does (tabs, modifiers, order)", () => {
+    // The regex both public/workers/lsp-front-door.js and frontend/src/main.ts spell; the relay must agree line for
+    // line, or the halted note and the warm-compiled header it remembers a restart for would drift from them.
+    const IMPORT_LINE = /^\s*(?:public\s+|private\s+)?(?:meta\s+)?import\s+/;
+    const lines = [
+      "import Mathlib.Tactic", "  import Foo", "\timport\tFoo", "import  Foo", "public import X", "private import X",
+      "public\timport X", "meta import X", "public meta import X", "private\tmeta\timport X", " import Foo",
+      "import", "import\n", "importFoo", "meta public import X", "public private import X", "public  private import X",
+      "publicimport X", "metaimport X", "-- import Foo", "/- import -/", "theorem import_ok : True := trivial", "", "   ",
+      "open Nat in import X", "public", "private meta", "Import Foo", "IMPORT Foo",
+    ];
+    for (const line of lines) expect(isImport(line), JSON.stringify(line)).toBe(IMPORT_LINE.test(line));
   });
   it("stays within the line budget (hard cap 220 including comments; ~150 before the pump-retirement contract)", () => {
     expect(source.split("\n").length).toBeLessThanOrEqual(220);
@@ -519,15 +534,21 @@ describe("relay contract: restart options outlive a crash while the header stand
     expect(current().opts).toBeUndefined();
     await bootCurrent();
   });
-  it("a halted re-arm follows the same rule, and a later restart() replaces them", async () => {
+  it("the breaker forgets them: the halted re-arm boots the default (umbrella) session even with the header unchanged, and only a later restart() sets them again", async () => {
+    // The exact import itself may be what kills the worker (an OOM warm compile); re-arming into the same mode
+    // would halt again on every body edit until the HEADER changed. The umbrella at least serves the header.
     relay.fromClient(didOpen(1, `${HEADER}\nx`));
     await bootCurrent();
     relay.restart(exact);
     await bootCurrent();
-    for (let i = 0; i < 3; i += 1) { current().onDied(null, "abort", "x"); await settle(); clock += 1000; await settle(); }
+    current().onDied(null, "abort", "x"); await settle(); clock += 1000; await settle();
+    expect(current().opts).toEqual(exact); // the first two reboots still reuse them
+    for (let i = 0; i < 2; i += 1) { current().onDied(null, "abort", "x"); await settle(); clock += 1000; await settle(); }
     expect(relay.state).toEqual({ kind: "halted" });
-    relay.fromClient(didChange(2, `${HEADER}\nxy`));
-    expect(current().opts).toEqual(exact);
+    expect(relay.restartOpts).toBeNull();
+    relay.fromClient(didChange(2, `${HEADER}\nxy`)); // a body-only edit: the header stands, the options are gone
+    expect(relay.state).toEqual({ kind: "rebooting", reason: "user" });
+    expect(current().opts).toBeUndefined();
     await bootCurrent();
     const other: RestartOptions = { snapshots: ["init"], warmHeader: "", packs: [] };
     relay.restart(other);
@@ -549,8 +570,12 @@ describe("relay contract: unload is synchronous", () => {
   it("tolerates an adapter without terminate() (the kill is then LeanSession.dispose()'s deferred one)", async () => {
     await bootCurrent();
     const live = current();
-    delete (live as unknown as { terminate?: () => void }).terminate;
+    // FakeSession.terminate is a prototype method, so `delete live.terminate` would be a no-op (the test would
+    // silently re-run the previous one); an own property shadowing it with undefined is what "no terminate()" is.
+    Object.defineProperty(live, "terminate", { value: undefined, configurable: true, writable: true });
+    expect(typeof live.terminate).toBe("undefined");
     expect(() => relay.unload()).not.toThrow();
     expect(live.disposed).toBe(true);
+    expect(live.terminated).toBe(false); // the optional-chaining branch: nothing was called unconditionally
   });
 });

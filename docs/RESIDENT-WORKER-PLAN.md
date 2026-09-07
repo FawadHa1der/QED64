@@ -310,14 +310,29 @@ is now a hard cap of 220 (was 160) for the contract below.
   import lines still read the same (body edits do not count); a header
   change forgets them, and only a fresh `restart()` sets them again. So
   "Load exact imports" survives a crash instead of coming back covered with
-  the collision note. Open question for the integrator: the breaker does NOT
-  forget them, so a header whose exact import itself kills the worker
-  re-arms into the same mode until the header is edited.
+  the collision note. The breaker forgets them too (review follow-up): a
+  header whose exact import itself kills the worker (an OOM warm compile)
+  would otherwise re-arm into the same mode on every body edit and halt
+  again until the HEADER changed; the halted re-arm boots the default
+  (umbrella) session, which at least serves the header with the offer back
+  — the same fresh chance `deaths = []` gives that edit. The import lines are
+  found exactly as the front door's and main.ts's `IMPORT_LINE` regex finds
+  them (tabs, `public`/`private` then `meta`, `import` + whitespace), pinned
+  by a table test against that regex.
 - **`unload()` is synchronous.** `LeanSession.dispose()` posts `dispose` and
   hard-terminates the Worker 250 ms later on a timer — a closing document
   never runs it, which is the reload-storm stacking the pump's
   `disposeForUnload` (dispose + immediate `worker.terminate()`) fixed.
-  `RelaySession` therefore gains an optional `terminate?(): void`; `unload()`
-  calls `dispose()` then `terminate?.()` in the pagehide handler's own turn.
-  The adapter (`frontend/src/resident-session.ts`) must implement it with the
-  synchronous `Worker.terminate()`; without it the kill stays deferred.
+  `LeanSession` therefore gains a public `terminate(): void` (disposes if
+  the caller has not, then `Worker.terminate()` in the same turn; idempotent,
+  never a death — `tests/unit/session-serialization.test.ts` pins that the
+  Worker is terminated before the call returns, and that `dispose()` alone
+  does not do so until its timer). `RelaySession` gains `terminate?(): void`
+  and `unload()` calls `dispose()` then `terminate?.()` in the pagehide
+  handler's own turn. The member is optional ONLY because the relay branch
+  could not edit `main.ts`, whose inline `ResidentSession` predates it:
+  **at integration, make it `terminate(): void` (required)** and have
+  `frontend/src/resident-session.ts` implement `terminate() {
+  this.lean.terminate(); }` — the compiler then holds every adapter (the
+  page's and lean4game's) to the synchronous kill; without it the kill stays
+  deferred and reload storms stack heaps again.

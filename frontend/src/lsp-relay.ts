@@ -17,9 +17,10 @@ export interface RelaySession {
   onStatus: (status: WorkerStatus) => void;
   onDied: (code: number | null, reason: string, message: string) => void;
   dispose(): void; // detaches first, never emits a death (§2.2 L2)
-  /** Kill the worker NOW (Unload only). LeanSession.dispose() hard-terminates 250 ms later behind a timer a
-   * closing document never runs; the pump's disposeForUnload terminated inline so reload storms could not
-   * stack dead multi-GiB heaps (watchdog-shim disposeHard). An adapter without it leaves unload deferred. */
+  /** Kill the worker NOW (Unload only): the adapter forwards to LeanSession.terminate(), the synchronous kill —
+   * dispose() alone hard-terminates 250 ms later behind a timer a closing document never runs (reload storms
+   * stacked dead multi-GiB heaps; the pump's disposeHard). Optional ONLY while main.ts's inline ResidentSession
+   * predates it: integration makes this `terminate(): void` so the compiler holds resident-session.ts to it. */
   terminate?(): void;
 }
 export interface RestartOptions { snapshots?: string[]; warmHeader?: string; packs?: string[] } // boot inputs for a replacement session (S4 "Load exact imports")
@@ -33,12 +34,19 @@ const BREAKER_DEATHS = 3;
 const BREAKER_WINDOW_MS = 120_000;
 const HALTED_NOTE = "imports could not be loaded: the checker crashed repeatedly while processing this content. Edit the file (or pick an example from the menu) to restart it.";
 
-/** An import line as the front door's IMPORT_LINE and the page's warm compile see one (optional public/private,
- * optional meta, then `import `), spelled with startsWith: the relay owns no regex. */
-function isImport(line: string): boolean {
+/** `s` past `word` and the ≥ 1 whitespace the regex's `word\s+` demands (trimStart strips the same set as \s), else null. */
+function afterWord(s: string, word: string): string | null {
+  if (!s.startsWith(word)) return null;
+  const rest = s.slice(word.length), t = rest.trimStart();
+  return t.length < rest.length ? t : null;
+}
+/** An import line exactly as the front door's and main.ts's IMPORT_LINE regex sees one —
+ * `^\s*(?:public\s+|private\s+)?(?:meta\s+)?import\s+` — with startsWith: the relay owns no regex. Exported for the parity test. */
+export function isImport(line: string): boolean {
   let s = line.trimStart();
-  for (const modifier of ["public ", "private ", "meta "]) if (s.startsWith(modifier)) s = s.slice(modifier.length).trimStart();
-  return s.startsWith("import ");
+  s = afterWord(s, "public") ?? afterWord(s, "private") ?? s;
+  s = afterWord(s, "meta") ?? s;
+  return afterWord(s, "import") !== null;
 }
 const linesOf = (text: string): string[] => text.split("\n");
 /** The header a restart was chosen for: the import lines, exactly what ResidentSession warm-compiles from `warmHeader`. */
@@ -59,7 +67,8 @@ export class LspRelay {
   /** Set by every counted death, cleared when a session reports phase "ready"; halted-before-ready is the page's boot-failure card. */
   lastDeath: Death | null = null;
   /** The last restart(opts), reused by a death-reboot while the header it was chosen for stands — "Load exact imports"
-   * survives a crash instead of coming back covered with the collision note. A header change forgets it. */
+   * survives a crash instead of coming back covered with the collision note. A header change forgets it, and so
+   * does the breaker: a header whose exact import itself kills the worker must not re-arm into the same mode. */
   restartOpts: RestartOptions | null = null;
   private restartHeader = "";
   readonly stats = { reboots: 0, userRestarts: 0, workerDeaths: 0, breakerTrips: 0, failedInFlight: 0, staleDeaths: 0, rangedChanges: 0 }; // rangedChanges: didChanges that ignored change = 1
@@ -162,8 +171,10 @@ export class LspRelay {
     const t = this.now();
     this.deaths = [...this.deaths.filter((d) => t - d < BREAKER_WINDOW_MS), t];
     if (this.deaths.length < BREAKER_DEATHS) return this.reboot(reason === "bootFailed" || reason === "heartbeat" ? reason : "crash", true);
-    // Crash-loop breaker: the content kills the checker on every replay; keep the editor alive, an edit re-arms.
+    // Crash-loop breaker: the content kills the checker on every replay; keep the editor alive, an edit re-arms — on
+    // the default (umbrella) session: the remembered exact mode may be the very thing that dies (it serves the header, with the offer back).
     this.stats.breakerTrips += 1;
+    this.restartOpts = null;
     this.state = { kind: "halted" };
     this.sink.status(this.status());
     this.haltedNote();
