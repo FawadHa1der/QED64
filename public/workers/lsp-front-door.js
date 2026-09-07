@@ -22,8 +22,8 @@
 "use strict";
 
 (function (root) {
-  // Transcribed from Lean.Server.Watchdog.mkLeanServerCapabilities (the table
-  // watchdog-shim.ts answered with) — `change: 1` (full text) instead of 2:
+  // Transcribed from Lean.Server.Watchdog.mkLeanServerCapabilities — with
+  // `change: 1` (full text) instead of 2:
   // the wire then has no range type, so the client cannot diverge from the
   // worker's document by construction (§4 row 3; vscode-languageclient
   // honours `resolvedTextDocumentSync.change`).
@@ -74,15 +74,37 @@
   // "covered" by the preloaded Mathlib snapshot sees ALL of Mathlib's names,
   // so a user `Tree`/`Point`/`Graph` is "already declared" although the same
   // file is clean on live.lean-lang.org (which imports only the header's
-  // closure). The worker names the colliding identifiers with the pump
-  // shim's regex (watchdog-shim.ts observeServerMessage) and rides an
-  // information note INSIDE the FileWorker's own publish — LSP diagnostics
-  // are a whole-document replacement per URI, so a separate publish would
-  // hide the real errors and be overwritten by the next burst (HARDENING #42).
+  // closure). The worker names the colliding identifiers from Lean's own
+  // message and rides an information note INSIDE the FileWorker's own
+  // publish — LSP diagnostics are a whole-document replacement per URI, so a
+  // separate publish would hide the real errors and be overwritten by the
+  // next burst (HARDENING #42).
   const ALREADY_DECLARED = /[`'"]?([^`'"\s]+)[`'"]? has already been declared/;
-  // The note sits on the header line (the first import, else line 0), as the
-  // pump shim's collisionNote does; only this much of the text is inspected.
+  // The note sits on the header line (the first import, else line 0); only
+  // this much of the text is inspected.
   const IMPORT_LINE = /^\s*(?:public\s+|private\s+)?(?:meta\s+)?import\s+/;
+  // The four umbrella aliases the kernel's resolver (patch 0032
+  // lookupPrebuiltEnv) serves as "covered" by the QED64.Essential umbrella.
+  // For a header made ONLY of these (plus `Init`, which the normalized key
+  // always leads with) the exact environment IS the umbrella: "Load exact
+  // imports" would rebuild the same Mathlib and collide again, so the offer
+  // is pointless and an "already declared" there is simply the user's own
+  // duplicate — no fact, no note (pump-removal assessment, gap 1).
+  const UMBRELLA_ALIASES = new Set(["Mathlib", "Mathlib.Tactic", "Batteries", "MIL.Common"]);
+
+  /** True when the normalized header key names nothing but `Init` and
+   * umbrella aliases (at least one alias: a bare `["Init"]` key is the empty
+   * header, whose exact environment is Init alone and can differ). */
+  function aliasOnlyKey(key) {
+    if (!Array.isArray(key)) return false;
+    let aliases = 0;
+    for (const m of key) {
+      if (m === "Init") continue;
+      if (!UMBRELLA_ALIASES.has(m)) return false;
+      aliases += 1;
+    }
+    return aliases > 0;
+  }
 
   function headerLineOf(text) {
     const lines = typeof text === "string" ? text.split("\n") : [""];
@@ -113,10 +135,10 @@
     return names;
   }
 
-  /** The collision note (severity 3 = information), text mirroring the pump
-   * shim's collisionNote: what collided, why (this playground, not Lean),
-   * and the two ways out — rename, or the explicit "Load exact imports"
-   * action the page offers while `status.collision` is set. */
+  /** The collision note (severity 3 = information): what collided, why
+   * (this playground, not Lean), and the two ways out — rename, or the
+   * explicit "Load exact imports" action the page offers while
+   * `status.collision` is set. */
   function collisionNote(headerLine, names) {
     const shown = names.slice(0, 3).join(", ");
     const first = names[0].replace(/^.*\./, "");
@@ -391,10 +413,13 @@
           // The FileWorker owns exactly one document, so every publish is for
           // the current one. An "exact" session cannot collide (the header's
           // own closure declares nothing of the user's), so only a COVERED
-          // verdict turns "already declared" into the umbrella note; any later
-          // burst without a collision clears the fact (the note is a whole-
-          // document replacement and goes with it — HARDENING #42).
-          const names = s.header && s.header.mode === "covered" ? collidingNames(p.diagnostics) : [];
+          // verdict turns "already declared" into the umbrella note — and not
+          // when the header is the umbrella itself under an alias name (see
+          // UMBRELLA_ALIASES). Any later burst without a collision clears the
+          // fact (the note is a whole-document replacement and goes with it —
+          // HARDENING #42).
+          const offerable = s.header && s.header.mode === "covered" && !aliasOnlyKey(s.header.key);
+          const names = offerable ? collidingNames(p.diagnostics) : [];
           if (names.length > 0) {
             s.collision = { names, version: typeof p.version === "number" ? p.version : s.doc.version };
             // A new frame, not a mutation of the input (step is pure).
@@ -432,6 +457,11 @@
         break;
       case "died":
         s.phase = "dead";
+        // Frames held for a parked ring would otherwise be flushed onto the
+        // dead ring when the host's pump finds its queue emptied by the death
+        // and reports the park over — a spurious refusal on a session that no
+        // longer exists. The relay replays the latest text on the next one.
+        s.backlog = [];
         break;
       default:
         break;
@@ -440,5 +470,5 @@
     return r;
   }
 
-  root.Qed64LspFrontDoor = { initialState, step, statusOf, SERVER_CAPABILITIES, FORWARDED_NOTIFICATIONS };
+  root.Qed64LspFrontDoor = { initialState, step, statusOf, SERVER_CAPABILITIES, FORWARDED_NOTIFICATIONS, UMBRELLA_ALIASES };
 })(globalThis);

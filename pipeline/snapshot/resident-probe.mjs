@@ -184,7 +184,7 @@ function checkActs() {
 // The product's ring size (lean.worker.js RESIDENT_RING_CAP, spec W4) so the
 // probe exercises the shipped geometry; the two are asserted equal at startup
 // because the worker is a classic script the probe cannot import.
-const CAP = 4 << 20;
+const CAP = 64 << 20;
 {
   const src = fs.readFileSync(new URL("../../public/workers/lean.worker.js", import.meta.url), "utf8");
   const m = /const RESIDENT_RING_CAP = (\d+) << (\d+);/.exec(src);

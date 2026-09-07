@@ -20,6 +20,7 @@ interface FrontDoor {
   step(state: unknown, frame: Frame): Result;
   SERVER_CAPABILITIES: { textDocumentSync: { change: number } };
   FORWARDED_NOTIFICATIONS: Set<string>;
+  UMBRELLA_ALIASES: Set<string>;
 }
 const FD = (globalThis as unknown as { Qed64LspFrontDoor: FrontDoor }).Qed64LspFrontDoor;
 
@@ -30,7 +31,8 @@ const didChange = (version: number, text: string, uri = URI): Msg => ({ jsonrpc:
 const request = (id: number, method: string, params: unknown = { textDocument: { uri: URI } }): Msg => ({ jsonrpc: "2.0", id, method, params });
 const notification = (method: string, params: unknown = {}): Msg => ({ jsonrpc: "2.0", method, params });
 const fileProgress = (version: number, processing: number): Msg => ({ jsonrpc: "2.0", method: "$/lean/fileProgress", params: { textDocument: { uri: URI, version }, processing: Array.from({ length: processing }, () => ({ range: {}, kind: 1 })) } });
-const headerStatus = (version: number, mode: string): Msg => ({ jsonrpc: "2.0", method: "$/qed64/headerStatus", params: { version, mode, key: ["Init"], moduleCount: 1, missing: [], ms: 1 } });
+// `key` is the kernel's normalized header key (patch 0032 qed64HeaderKey: Init first, de-duplicated, stringified).
+const headerStatus = (version: number, mode: string, key: string[] = ["Init"]): Msg => ({ jsonrpc: "2.0", method: "$/qed64/headerStatus", params: { version, mode, key, moduleCount: key.length, missing: [], ms: 1 } });
 const textOf = (m: Msg) => ((m.params as { contentChanges?: { text: string }[]; textDocument?: { text?: string } }).contentChanges?.[0]?.text ?? (m.params as { textDocument: { text?: string } }).textDocument.text);
 const versionOf = (m: Msg) => (m.params as { textDocument: { version: number } }).textDocument.version;
 
@@ -325,6 +327,56 @@ describe("front door: umbrella collisions (§3 row 8; HARDENING #42/#43)", () =>
     expect(note.range.start.line).toBe(0);
     expect(note.range.end.character).toBe("import Mathlib.Data.Nat.Basic".length);
   });
+
+  // Pump-removal assessment gap 1: `import Mathlib` resolves as COVERED (an
+  // umbrella alias), but its exact environment IS the umbrella — "Load exact
+  // imports" would rebuild the same Mathlib and collide again. The gate is
+  // the kernel's normalized key, not the header text.
+  const ALIAS_TEXT = "import Mathlib\n\ninductive Tree (α : Type) where\n  | leaf : Tree α\n";
+  const withKey = (key: string[], text = ALIAS_TEXT) => run([{ kind: "booted" }, { kind: "client", msg: initialize(1) }, { kind: "client", msg: didOpen(1, text) }, { kind: "server", msg: headerStatus(1, "covered", key) }]);
+  it("an alias-only header (Init + any of the four umbrella aliases) sets NO collision fact and rides NO note: the duplicate is the user's own", () => {
+    expect([...FD.UMBRELLA_ALIASES].sort()).toEqual(["Batteries", "MIL.Common", "Mathlib", "Mathlib.Tactic"]);
+    const keys = [["Init", "Mathlib"], ["Init", "Mathlib.Tactic"], ["Init", "Batteries"], ["Init", "MIL.Common"], ["Init", "Mathlib", "Mathlib.Tactic", "Batteries", "MIL.Common"], ["Mathlib"]];
+    for (const key of keys) {
+      const burst = publish(1, [declared("Tree", 2), declared("Tree.leaf", 3)]);
+      const r = run([{ kind: "server", msg: burst }], withKey(key).state);
+      expect(r.status.collision, key.join(",")).toBeNull();
+      const diags = (r.replies[0]!.params as { diagnostics: Diag[] }).diagnostics;
+      expect(diags, key.join(",")).toHaveLength(2); // the worker's own errors, unchanged
+      expect(diags.some((d) => d.source === "QED64"), key.join(",")).toBe(false);
+      expect(r.status.header!.mode).toBe("covered"); // the verdict itself is untouched
+    }
+  });
+  it("a specific module in the key (alone or beside an alias), or the bare Init key, keeps the fact and the note: the exact environment differs", () => {
+    const keys = [["Init", "Mathlib.Algebra.Algebra.Basic"], ["Init", "Mathlib", "Mathlib.Data.Nat.Basic"], ["Init", "Batteries", "Batteries.Data.List.Basic"], ["Init"]];
+    for (const key of keys) {
+      const r = run([{ kind: "server", msg: publish(1, [declared("Tree", 2)]) }], withKey(key).state);
+      expect(r.status.collision, key.join(",")).toEqual({ names: ["Tree"], version: 1 });
+      const diags = (r.replies[0]!.params as { diagnostics: Diag[] }).diagnostics;
+      expect(diags, key.join(",")).toHaveLength(2);
+      expect(diags[1]!.source).toBe("QED64");
+      expect(diags[1]!.message).toMatch(/^Tree collides with Mathlib/);
+    }
+  });
+  it("the gate follows the LATEST header verdict: an alias header edited to a specific module surfaces the collision, and back again hides it", () => {
+    const aliased = withKey(["Init", "Mathlib"]);
+    const hidden = run([{ kind: "server", msg: publish(1, [declared("Tree", 2)]) }], aliased.state);
+    expect(hidden.status.collision).toBeNull();
+    const specific = run([
+      { kind: "client", msg: didChange(2, ALIAS_TEXT.replace("import Mathlib", "import Mathlib.Data.Nat.Basic")) },
+      { kind: "server", msg: headerStatus(2, "covered", ["Init", "Mathlib.Data.Nat.Basic"]) },
+      { kind: "server", msg: publish(2, [declared("Tree", 2)]) },
+    ], hidden.state);
+    expect(specific.status.collision).toEqual({ names: ["Tree"], version: 2 });
+    expect((specific.replies.at(-1)!.params as { diagnostics: Diag[] }).diagnostics).toHaveLength(2);
+    const back = run([
+      { kind: "client", msg: didChange(3, ALIAS_TEXT) },
+      { kind: "server", msg: headerStatus(3, "covered", ["Init", "Mathlib"]) },
+      { kind: "server", msg: publish(3, [declared("Tree", 2)]) },
+    ], specific.state);
+    expect(back.status.collision).toBeNull();
+    expect((back.replies.at(-1)!.params as { diagnostics: Diag[] }).diagnostics).toHaveLength(1);
+  });
 });
 
 describe("front door: worker host wiring (lean.worker.js)", () => {
@@ -370,15 +422,21 @@ describe("front door: worker host wiring (lean.worker.js)", () => {
     hooks = (sandbox as { __qed64TestExports?: Hooks }).__qed64TestExports!;
     deliver = (data) => listeners.message!({ data });
   });
-  it("imports only lsp-frames.js at script load; the front door loads lazily on the first `lsp` (a pump-only consumer never loads it)", () => {
+  it("imports only lsp-frames.js at script load; the front door loads lazily on the first `lsp` (a compile-only consumer never loads it)", () => {
     // lean4game vendors lean.worker.js + snapshot-prefetch.worker.js + lsp-frames.js
-    // as a fixed closure and only ever speaks the pump requests: an unconditional
-    // import of lsp-front-door.js would throw before {type:"boot"} and hang every game session.
+    // as a fixed closure: an unconditional import of lsp-front-door.js would throw
+    // before {type:"boot"} and hang every session of a closure that lacks it.
     expect(imported).toEqual(["lsp-frames.js"]);
     expect(posted.filter((m) => m.type === "boot")).toHaveLength(1);
-    // Every request the pump path sends is dispatched without the front door.
+    // A plain request is dispatched without the front door.
     deliver({ protocol: 1, requestId: "c1", type: "capabilities" });
     expect(posted.find((m) => m.requestId === "c1")).toMatchObject({ type: "result" });
+    expect(imported).toEqual(["lsp-frames.js"]);
+    // The deleted pump-transport requests are unknown to the dispatcher (INVALID_MESSAGE), never silently accepted.
+    for (const type of ["lsp-init", "lsp-send", "lsp-threads", "lsp-resident-init", "lsp-resident-send"]) {
+      deliver({ protocol: 1, requestId: `gone-${type}`, type, input: {} });
+      expect(posted.find((m) => m.requestId === `gone-${type}`), type).toMatchObject({ type: "error", error: { code: "INVALID_MESSAGE" } });
+    }
     expect(imported).toEqual(["lsp-frames.js"]);
   });
   it("dispatches `lsp` without a requestId while a snapshot loads: answers initialize as an `lsp` event, queues the rest, reports status once per change, and does NOT open the loop", () => {

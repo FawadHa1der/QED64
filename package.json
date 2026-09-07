@@ -21,7 +21,7 @@
     "verify:release": "node pipeline/release/verify-release.mjs",
     "promote:staging": "node pipeline/release/promote-staging.mjs",
     "build:site": "npm --prefix frontend run build",
-    "typecheck:site": "npm --prefix frontend exec tsc -- --noEmit",
+    "typecheck:site": "npm --prefix frontend exec tsc -- --noEmit -p frontend/tsconfig.json",
     "preview:prod": "node scripts/serve-dist.mjs",
     "test:adversarial": "node tests/adversarial/run.mjs"
   },
