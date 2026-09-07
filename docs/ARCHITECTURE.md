@@ -181,8 +181,9 @@ re-prepares what a dead worker consumed — memory-backed pack segments were
 healthy OPFS cache revalidates in milliseconds; a dead one re-downloads) and a
 pack no longer in the index is dropped from `LEAN_PATH` rather than mounted
 empty. Three deaths inside 120 s trip the breaker instead of looping. (The
-batch app's `isStaleStorageError` classifier and probe-compile gate,
-`src/runtime/errors.ts` / `src/app.ts`, were retired on 2026-09-04.)
+batch app and its probe-compile gate, `src/app.ts`, were retired with the
+pump transport on 2026-09-04; its `isStaleStorageError` classifier,
+`src/runtime/errors.ts`, has no remaining consumer.)
 
 ### wasm64 pointer discipline
 
@@ -315,7 +316,8 @@ lookup HIT|MISS` lines go to stderr as `log` events.
 
 **LeanSession** (`src/runtime/client.ts`) owns the Worker. `lsp(msg, replay?)`
 posts without a promise or ack (a booting worker queues it, a dead one drops
-it); `arm()` is the `lsp-arm` request; `request("telemetry")` answers
+it); `arm()` is the `lsp-arm` request; `telemetry()` (the public wrapper of
+`request("telemetry")`) answers
 `{state, memory:{currentBytes, initialBytes, maximumBytes, regionBytes, …},
 status}`. `onDied(code, reason, message)` fires **once** per session from a
 worker `error`, an unrecoverable error reply, the worker's `died` event, or
@@ -406,8 +408,11 @@ packs: ["essential"]})`: the essential olean pack is installed *before* boot
 exact-first — the FileWorker then serves this header `exact` (no umbrella
 names, no collision) while every other header stays covered. For a header
 that is only one of the four aliases the exact environment *is* the
-umbrella, so no offer is useful there (the assessment's gap 1; the front door
-gates the fact on the normalized key).
+umbrella, so no offer is useful there — the assessment's gap 1. As of
+2026-09-07 the front door's publish branch gates the fact on
+`header.mode === "covered"` alone (an alias-only header still gets the
+offer); closing the gap means also gating on the normalized `key` the header
+status carries.
 
 **The page** (`frontend/src/main.ts`): the pill is `render(status)` —
 `PHASE_LABEL[phase]`, busy for `booting | starting | elaborating | dead`,
@@ -418,8 +423,8 @@ Reload); otherwise the pill reads `halted — <reason>` and the relay's
 in-document diagnostic explains. The harness oracle is
 `globalThis.qed64 = { artifacts, relay, ui, status: () => relay.status(),
 editor }`; `relay.session.lean` is the `LeanSession`
-(`relay.session.lean.request("telemetry")` feeds the heap meter and the
-e2e memory rows), `relay.stats` the counters the e2e lane diffs.
+(`relay.session.lean.telemetry()` feeds the heap meter and the e2e memory
+rows), `relay.stats` the counters the e2e lane diffs.
 
 Numbers that are load-bearing: ring 4 MiB (frames > 2 MiB refused);
 heartbeat 2 s, loss 6 s + 2 s probe; breaker 3 deaths / 120 s; reboot

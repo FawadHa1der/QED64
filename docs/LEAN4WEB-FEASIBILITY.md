@@ -53,7 +53,7 @@ The decisive technical facts, verified against source and by experiment:
    the main thread returns to the event loop between messages, so elaboration
    tasks' proxied FS reads and stdout writes drain. Same integration shape as
    our proven `lean_wasm_compile`. Evidence: `pipeline/lsp/lsp-pump-probe.mjs`
-   (results below).
+   (results below; the probe was deleted with the pump transport on 2026-09-04).
 5. **The front end has a transport seam.** lean4web's entire Lean surface is
    the npm package `lean4monaco`; its `LeanMonacoOptions.websocket` object is
    spread **last** into monaco-editor-wrapper's connection config, so
@@ -266,7 +266,9 @@ The blocker as originally isolated (kept for the record; now resolved — the
 
 - `pipeline/lsp/lsp-probe.mjs` — callMain `--worker` conversation (framed
   output verified; EOF limitation analyzed).
-- `pipeline/lsp/lsp-pump-probe.mjs` — Node pump driver (init succeeds; Node
+- `pipeline/lsp/lsp-pump-probe.mjs` (deleted 2026-09-04 with the pump
+  transport; the numbers stand as the historical record) — Node pump driver
+  (init succeeds; Node
   additionally fails to service pthread→main proxying from an idle event
   loop — Node-harness-specific, browser does service it).
 - Browser probes via the branch worker's `lsp-init`/`lsp-send` debug RPC

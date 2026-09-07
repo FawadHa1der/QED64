@@ -119,6 +119,12 @@ const ivText = () => Promise.race([
 async function phaseNow() {
   return page.evaluate(() => { try { return globalThis.qed64?.status?.()?.phase ?? null; } catch { return null; } }).catch(() => null);
 }
+/** The page's header FACT (`status().header.mode`: the last
+ * `$/qed64/headerStatus` verdict — exact / covered / refused), or null when
+ * the page carries none. */
+async function headerModeNow() {
+  return page.evaluate(() => { try { return globalThis.qed64?.status?.()?.header?.mode ?? null; } catch { return null; } }).catch(() => null);
+}
 /** Wait for a TERMINAL state: the phase enum from `qed64.status()` (ready /
  * headerRefused / halted — the relay's status is the oracle, the pill is
  * `render(status)` of the same datum), with the pill labels as the fallback
@@ -156,8 +162,9 @@ async function setBuffer(text) {
   await page.evaluate((t) => { globalThis.qed64.editor.getModel().setValue(t); }, text);
 }
 /** Memory sample: the JS heap plus the worker's own telemetry
- * (`qed64.relay.session.lean.request("telemetry")` → memory.currentBytes /
- * maximumBytes). `wasmMB` is a number when the live session answered;
+ * (`qed64.relay.session.lean.telemetry()` — LeanSession's public wrapper of
+ * the worker 'telemetry' op → memory.currentBytes / maximumBytes). `wasmMB`
+ * is a number when the live session answered;
  * otherwise `error` says why (no session, the tap is missing, the worker
  * did not answer within 8 s) — callers that NEED the number (final-memory)
  * fail on its absence instead of passing on `undefined`. */
@@ -170,11 +177,12 @@ async function memSample() {
     page.evaluate(async () => {
       const out = { jsHeapMB: performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null };
       const lean = globalThis.qed64?.relay?.session?.lean;
-      if (!lean || typeof lean.request !== "function") return { ...out, error: "qed64.relay.session.lean.request is not a function (tap missing)" };
+      if (!lean || typeof lean.telemetry !== "function") return { ...out, error: "qed64.relay.session.lean.telemetry is not a function (tap missing)" };
       try {
-        const tel = await lean.request("telemetry", {});
+        const tel = await lean.telemetry();
         if (!tel || !tel.memory || typeof tel.memory.currentBytes !== "number") return { ...out, error: `telemetry carried no memory (${JSON.stringify(tel).slice(0, 80)})` };
-        return { ...out, wasmMB: Math.round(tel.memory.currentBytes / 1048576), maxGiB: tel.memory.maximumBytes / 1073741824, workerState: tel.state };
+        const max = tel.memory.maximumBytes;
+        return { ...out, wasmMB: Math.round(tel.memory.currentBytes / 1048576), maxGiB: typeof max === "number" ? max / 1073741824 : null, workerState: tel.state };
       } catch (e) { return { ...out, error: `telemetry threw: ${String(e).slice(0, 100)}` }; }
     }).catch((e) => ({ error: `evaluate failed: ${String(e).slice(0, 100)}` })),
   ]);
@@ -225,6 +233,13 @@ async function record(name, category, outcome, detail, extra = {}) {
   console.log(`${outcome === "pass" ? "ok  " : outcome.toUpperCase().padEnd(4)} [${category}] ${name}${outcome === "pass" ? "" : " — " + detail}`);
 }
 const panicsInConsole = () => consoleLog.filter((l) => /PANIC|assertion violation|Maximum call stack/.test(l)).length;
+/** The in-kernel resolver's refusal note (patch 0032, FileWorker.setupImports):
+ * `modules [...] are not loaded in this session — use "Load exact imports"`.
+ * Pinned in ONE place so a kernel wording change fails import-composition
+ * loudly instead of letting its note checks pass on a string nobody emits
+ * (the pump-era check matched "do not resolve", a shim-only text, and was
+ * vacuous on this transport). */
+const REFUSED_NOTE = "are not loaded in this session";
 const GOLDEN_7 = {
   source: `import Mathlib.Data.Real.Basic\n\nexample : (1:ℝ) + 1 = 3 := by rfl\nexample (a : ℝ) : a * 0 = a := by simpa\nexample : Nat := "not a nat"\nnoncomputable def f (x : ℝ) : ℝ := x + unknownIdent\nexample (a b : ℝ) : a + b = b + a := by exact wrongLemma\nexample : False := sorry\nexample : (2:ℕ) < 1 := by decide\n`,
   positions: ["3:30", "4:34", "5:17", "6:39", "7:46", "8:0", "9:26"],
@@ -305,19 +320,35 @@ if (runs("error-clear-staleness")) {
 }
 
 // ---------- scenario: import composition (calm path) -------------------------
+// "import Mathlib.Da" is a refused header. The in-kernel resolver answers it
+// with a FACT — `$/qed64/headerStatus{refused}`, read as
+// `status().header.mode` — and a NOTE — one error diagnostic on the header
+// line whose text carries REFUSED_NOTE, rendered by the InfoView. Finishing
+// the line must clear both without a reboot. Every leg is asserted: the fact
+// and the note, shown and then withdrawn (LSP diagnostics are whole-document
+// replacements, so the note vanishing is the proof the refusal was retired).
 if (runs("import-composition")) {
   consoleLog = [];
   await setBuffer("");
   await page.waitForTimeout(5000);
   await page.evaluate(() => globalThis.qed64.editor.getModel().applyEdits([{ range: { startLineNumber: 1, startColumn: 1, endLineNumber: 1, endColumn: 1 }, text: "import Mathlib.Da" }]));
   const incomplete = await (async () => { const t0 = Date.now(); for (;;) { const ph = await phaseNow(); const s = await pill(); if (ph === "headerRefused" || /imports incomplete/.test(s)) return { ok: true, ms: Date.now() - t0, s }; if (Date.now() - t0 > 30000) return { ok: false, ms: Date.now() - t0, s }; await page.waitForTimeout(100); } })();
+  const modeDuring = await headerModeNow();
+  // The InfoView paints the publish a beat after the phase flips — poll for
+  // the note rather than read it once.
+  const noteSeen = await (async () => { const t0 = Date.now(); for (;;) { if ((await ivText()).includes(REFUSED_NOTE)) return true; if (Date.now() - t0 > 15000) return false; await page.waitForTimeout(250); } })();
   const noChurn = !consoleLog.some((l) => /Starting the Emscripten runtime/.test(l));
   await page.evaluate(() => { const m = globalThis.qed64.editor.getModel(); const c = m.getLineMaxColumn(1);
     m.applyEdits([{ range: { startLineNumber: 1, startColumn: c, endLineNumber: 1, endColumn: c }, text: "ta.Real.Basic\n\nexample (a b : ℝ) : a + b = b + a := add_comm a b\n" }]); });
   const done = await waitPill(/^ready$/, 60000, 2000);
-  const noteGone = !/do not resolve/.test(await ivText());
-  await record("import-composition", "functional", incomplete.ok && done.ok && noteGone && noChurn,
-    `incomplete=${incomplete.ok} recovered=${done.ok}@${done.ms}ms noteGone=${noteGone} noRebootChurn=${noChurn}`);
+  const modeAfter = await headerModeNow();
+  const noteGone = !(await ivText()).includes(REFUSED_NOTE);
+  // The fact must have read `refused` while incomplete and a real, non-refused
+  // verdict (exact / covered) after recovery — a null after `ready` would mean
+  // the page lost its header fact, which is a defect, not a pass.
+  const factOk = modeDuring === "refused" && typeof modeAfter === "string" && modeAfter !== "refused";
+  await record("import-composition", "functional", incomplete.ok && factOk && noteSeen && done.ok && noteGone && noChurn,
+    `incomplete=${incomplete.ok} headerMode=${modeDuring}→${modeAfter} noteSeen=${noteSeen} recovered=${done.ok}@${done.ms}ms noteGone=${noteGone} noRebootChurn=${noChurn}`);
 }
 
 // ---------- scenario: example switch speed budget ----------------------------

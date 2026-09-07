@@ -6,10 +6,12 @@
 // never render (attacks.txt #4):
 //   headerSwitchMs    — edit the import line → the document version has
 //                       advanced past the edit AND the phase is `ready` again
-//   switchBusySeenMs  — edit the import line → the FIRST status change after
-//                       it (phase leaves ready, or the version moves) — the
-//                       covered-switch metric the design budgets at ≤ 300 ms
-//                       (ux item 4)
+//   switchAdmitMs     — edit the import line → the FIRST status change after
+//                       it (the front door admits the didChange: the version
+//                       moves and the phase leaves `ready`) — the transport's
+//                       admit latency, about one 50 ms poll, NOT the worker's
+//                       first $/lean/fileProgress; the design's ≤ 300 ms
+//                       covered-switch metric (ux item 4) is not measured here
 //   bodyEditMs        — introduce an error in a theorem → its diagnostic shows
 //   completionMs      — import-line completion widget appears while a switch runs
 //   errorClearMs      — remove the error → the diagnostic disappears
@@ -74,7 +76,7 @@ try {
       }
       await page.waitForTimeout(50);
     }
-    R.switchBusySeenMs = firstMove; R.headerSwitchMs = done; R.headerMode = (await status())?.header?.mode ?? null;
+    R.switchAdmitMs = firstMove; R.headerSwitchMs = done; R.headerMode = (await status())?.header?.mode ?? null;
     // 2) completion during a switch: retype the import segment and look for the widget
     t0 = Date.now();
     await editLine(1, "import Mathlib.Data.Re");
@@ -101,7 +103,7 @@ try {
     console.log(`[${label}] round ${r + 1}: ${JSON.stringify(R)}`);
   }
   const med = (k) => { const v = results.rounds.map((x) => x[k]).filter((x) => x >= 0).sort((a, b) => a - b); return v.length ? v[Math.floor(v.length / 2)] : -1; };
-  results.median = { headerSwitchMs: med("headerSwitchMs"), switchBusySeenMs: med("switchBusySeenMs"), completionMs: med("completionMs"), bodyEditToDiagMs: med("bodyEditToDiagMs"), errorClearMs: med("errorClearMs") };
+  results.median = { headerSwitchMs: med("headerSwitchMs"), switchAdmitMs: med("switchAdmitMs"), completionMs: med("completionMs"), bodyEditToDiagMs: med("bodyEditToDiagMs"), errorClearMs: med("errorClearMs") };
   console.log(`SUMMARY ${JSON.stringify(results.median)} label=${label} boot=${results.bootMs}ms`);
   results.alive = await page.evaluate(() => !!globalThis.qed64).catch(() => false);
   console.log(`alive=${results.alive}`);

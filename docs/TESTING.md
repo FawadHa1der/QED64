@@ -56,9 +56,14 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   status: the front door's phase with `halted` on top) — `ready`,
   `headerRefused → headerUnresolvable`, `halted`; the pill label is only the
   fallback for a page without the tap (`harness.settleClass`, which also
-  reads the "halted — <reason>" pill). Two rows used to pass vacuously and no
-  longer can: `final-memory` reads
-  `qed64.relay.session.lean.request("telemetry")` and FAILS when
+  reads the "halted — <reason>" pill). Three rows used to pass vacuously and
+  no longer can: `import-composition` requires the refused-header FACT
+  (`status().header.mode === "refused"` while the line is incomplete, a
+  non-refused verdict after it is finished) AND the kernel's refusal NOTE
+  (`… are not loaded in this session …`, pinned once as `REFUSED_NOTE`) to
+  be shown in the InfoView and then withdrawn (the old check matched a
+  string only the pump shim ever emitted); `final-memory` reads
+  `qed64.relay.session.lean.telemetry()` and FAILS when
   `memory.currentBytes` is not a number (a missing tap or a dead worker is a
   failure, not an empty sample); `worker-kill-recovery` terminates
   `qed64.relay.session.lean.worker` and requires, besides the `ready` pill
@@ -84,9 +89,12 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   `--cooldown-gb` (6 GB). `--kill-strays` opts into SIGKILL for unattended
   re-runs. Every probe closes its browser in `finally`.
 - **Latency.** `editing-latency.mjs` measures header gestures from
-  `qed64.status()` facts only: `switchBusySeenMs` = header edit → the first
-  status change after it (the phase leaves `ready` or the document version
-  moves) — the covered-switch metric the design budgets at ≤ 300 ms — and
+  `qed64.status()` facts only: `switchAdmitMs` = header edit → the first
+  status change after it (the front door admits the didChange: the document
+  version moves and the phase leaves `ready`) — the transport's admit
+  latency, about one 50 ms poll, not the worker's first
+  `$/lean/fileProgress`; the design's ≤ 300 ms covered-switch metric (ux
+  item 4) is not measured by this lane — and
   `headerSwitchMs` = edit → the version has advanced past the edit AND the
   phase is `ready` again; each round also records `headerMode`
   (exact / covered / refused). A page whose status carries no header fact

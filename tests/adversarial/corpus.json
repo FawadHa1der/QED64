@@ -722,7 +722,7 @@
         "panicFree": true,
         "mustSucceed": true
       },
-      "rationale": "Composes the import line one character at a time with irregular 60-400ms pauses, so the header passes through ~30 unresolvable prefixes ('impor', 'Mathlib.Da', ...) before resolving. Stresses the imports-incomplete path (audit confirmed 'imports incomplete' is the frontend watchdog-shim's idle surface) and header re-resolution churn; must end fully checked at the ready pill."
+      "rationale": "Composes the import line one character at a time with irregular 60-400ms pauses, so the header passes through ~30 unresolvable prefixes ('impor', 'Mathlib.Da', ...) before resolving. Stresses the refused-header path (each prefix is answered in-kernel by the resolver: `$/qed64/headerStatus{refused}`, phase `headerRefused`, the 'imports incomplete' pill of main.ts PHASE_LABEL) and header re-resolution churn; must end fully checked at the ready pill."
     },
     {
       "name": "garbage-midproof-undo-all",
@@ -1484,7 +1484,7 @@
         "panicFree": true,
         "terminal": "headerUnresolvable"
       },
-      "rationale": "Types 'import Mathlib.Tactic' char-by-char (resolvable alias — a 2s pause lets that header commit and elaboration start), then extends it to 'Mathlib.Tactic.Bogus', flipping the header from resolvable back to unresolvable. Ends parked in the unresolvable state; audit confirmed 'imports incomplete' is the exact watchdog-shim idle text (frontend/src/watchdog-shim.ts) and an accepted terminal settle state in the e2e harness. Deliberately no mustSucceed — the required end state is imports-incomplete, not ready."
+      "rationale": "Types 'import Mathlib.Tactic' char-by-char (resolvable alias — a 2s pause lets that header commit and elaboration start), then extends it to 'Mathlib.Tactic.Bogus', flipping the header from resolvable back to unresolvable. Ends parked in the unresolvable state; a refused header is a status fact (`$/qed64/headerStatus{refused}` from the in-kernel resolver, phase `headerRefused`, rendered as the 'imports incomplete' pill by main.ts PHASE_LABEL) and an accepted terminal settle state in the e2e harness (`headerUnresolvable`). Deliberately no mustSucceed — the required end state is imports-incomplete, not ready."
     },
     {
       "name": "cursor-thrash-during-elab",
@@ -2100,7 +2100,7 @@
         "settleMs": 420000,
         "zeroErrors": true
       },
-      "notes": "Same genre in the live pane: paste into the init tab. The covering env first produces 'Tree has already been declared'; the shim must reboot once into faithful imports and settle ready with ZERO errors.",
+      "notes": "Same genre in the live pane: paste into the init tab. The covering env first produces 'Tree has already been declared'; nothing reboots on its own — the page offers 'Load exact imports', the scenario's clickAction drives `relay.restart` once into exact imports, and the file settles ready with ZERO errors.",
       "rationale": "A pasted file whose names collide with the preloaded Mathlib umbrella must NOT reboot on its own: the page explains the collision and offers 'Load exact imports'; clicking it reboots into faithful mode (pack install once + exact olean import) and the file then checks clean."
     }
   ]
