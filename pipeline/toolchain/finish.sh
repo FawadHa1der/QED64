@@ -19,6 +19,8 @@ echo "=== reconfigure (embeds githash) ==="
 run "/lean4/docker-wasm64/configure-qed64.sh"
 run "make -C /build stage1-configure -j12"
 echo "=== leaninitialize + final link ==="
+# Re-link with exports generated from THIS build's C (same rule as build.sh 4b).
+python3 "$(dirname "$0")/gen-exports.py" "$W/build/stage1/lib/temp" "$W/lean4/src"
 run "make -C /build/stage1 leaninitialize -j12"
 run "make -C /build/stage1 lean -j12"
 ls -la "$W/build/stage1/bin/" | grep -E "lean\.(js|wasm)"

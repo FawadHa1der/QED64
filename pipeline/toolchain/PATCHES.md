@@ -279,29 +279,36 @@ every public def/field needs a doc string; a modifier-misuse refusal
 (`meta`/`import all` outside `module`) was tried and removed — `toModuleHeader`
 flags legacy files' imports, so it refused every header.
 
-## Retirement at the next pairing bump (noted 2026-09-04; no patch file changes yet)
+## 0033 — retire the host-pumped LSP entry points (2026-09-07; the pairing bump)
+Fork commit `a437a4c` (kernel clone `37c3fc3adf` on `qed64-wasm64`), patch
+file `0033-wasm-retire-host-pumped-lsp-entry-points.patch` (3 files, +8/−181).
 The pump transport left the page, the worker and the test suite on
-2026-09-04 (docs/PUMP-REMOVAL-ASSESSMENT-2026-09-04.md, step 1). Its
-kernel-side half is still in the series and in the served binary, because
-any kernel deletion changes `lean.wasm`, the build id and therefore the
-snapshot pairing every visitor has cached — so it goes with the next
-pairing bump that is needed for another reason, never on its own (step 3):
-- **0018** (host-pumped `lean_wasm_lsp_init` / `lean_wasm_lsp_send`),
-  **0023** (covering-environment aliasing for `wasmLspInit` — the resolver of
-  0032 carries the rule), **0027** (resolve-before-replace in `wasmLspInit`),
-  and **0024(a)** (`teardownForReplacement` + its call) retire whole
-  (0024's (b) save-exception boundary and (c) single-read olean path stay);
-- the **Shell.lean hunks of 0021 and 0025** (pump entry points, the covering
-  loop that duplicates `lookupPrebuiltEnv`, `wasmLspSession`) retire, while
-  their `Language.Lean` hooks (the prebuilt-header lookup, the extension-array
-  resize) are load-bearing for the resident resolver — split, don't drop;
-- the two pump lines in `emscripten-exports.seed.txt` go with the Shell
-  block, or the link fails;
-- **0020** (keepalive guard) is measured before it is dropped: resident
-  still runs library-style calls (snapshot loads, the exact-imports warm
-  compile) before `main`.
-Regroup the survivors into a resident-only series at that rebuild and
-restate the promote rule for resident only (docs/RESIDENT-WORKER-PLAN.md).
+2026-09-04 (docs/PUMP-REMOVAL-ASSESSMENT-2026-09-04.md, step 1); this
+commit is its kernel half, applied as a forward deletion — the numbered
+series above stays as provenance, nothing is rewritten:
+- deleted the whole `Host-pumped LSP file worker` section of `Shell.lean`
+  (`wasmLspSession`, `runWorkerPump`, `wasmLspInit` = `lean_wasm_lsp_init`,
+  `wasmLspSend` = `lean_wasm_lsp_send`) — i.e. the code of **0018**, **0023**,
+  **0027** and the Shell hunks of **0021**/**0025** (the covering loop that
+  duplicated `lookupPrebuiltEnv`); their `Language.Lean` hooks stay, they are
+  load-bearing for the resident resolver of 0032;
+- deleted `Server.FileWorker.teardownForReplacement` (**0024(a)**; its only
+  caller was `wasmLspInit`); 0024's (b)/(c) stay;
+- the two seed lines `_lean_wasm_lsp_init`/`_lean_wasm_lsp_send` are gone
+  (seed 785 → 783; the seed is not filtered against the compiled C, so a
+  stale seed line fails the link);
+- **0020** (keepalive guard) is kept, unmeasured: resident still runs
+  library-style calls (snapshot loads, the exact-imports warm compile) before
+  `main`.
+Build identity: runtime `wasm64-c645477e817ac857`, `lean.wasm` 105,449,148
+bytes; both snapshots rebaked against it (KERNEL-PIN carries the sizes).
+Reviewed before the build (two lenses, no blocking finding): the recompiled
+C has no reference to the deleted names; every export the probes, the
+battery and `lean.worker.js` call is present. One latent hazard the review
+surfaced is fixed in the same bump: `build.sh` ran the export scan before
+the stdlib compile, so it read the PREVIOUS build's C — a deleted `wanted`
+name could still have been exported and failed the link; `make_stdlib` now
+precedes the scan and `finish.sh` regenerates the list before its relink.
 
 ## (not in the series) `-sPTHREAD_POOL_DELAY_LOAD=1` — tried 2026-09-04, measured no effect, dropped
 Hypothesis: the +4 GB the renderer gains during "Initializing the Lean runtime"

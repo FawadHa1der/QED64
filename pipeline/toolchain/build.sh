@@ -21,6 +21,10 @@ echo "=== [3/5] stage1-configure (builds native stage0 first) ==="
 run "make -C /build stage1-configure -j12"
 echo "=== [4/5] stage1 libraries ==="
 run "make -C /build/stage1 libuv leanrt leanrt_initial-exec leancpp leanshell kernel library -j12"
+# The stdlib compile (.lean -> lib/temp/*.c) must precede the export scan:
+# without it the generator reads the PREVIOUS build's C and a name that a
+# commit deleted could still be exported (review of the 0033 deletion, 2026-09-07).
+run "make -C /build/stage1 make_stdlib -j12"
 echo "=== [4b/5] exports generated from the compiled C (patch 0032) ==="
 python3 "$(dirname "$0")/gen-exports.py" "$W/build/stage1/lib/temp" "$W/lean4/src"
 echo "=== [5/5] final lean link ==="

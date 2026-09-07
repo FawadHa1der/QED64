@@ -317,7 +317,7 @@ globalThis.Module = {
     log("ring configured — callMain --worker");
     M.callMain(["--worker", "-Dserver.reportDelayMs=0"]);
     // reportDelayMs=0: the reporter's first IO.sleep on a task pthread never
-    // wakes under this emsdk (the pump path's wasmLspInit sets the same).
+    // wakes under this emsdk (the retired pump entry point (patch 0018, removed by 0033) set the same).
     setInterval(() => {
       const { ctrl } = views();
       const PT = globalThis.PThread ?? {};
