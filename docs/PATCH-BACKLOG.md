@@ -4,40 +4,39 @@ Each of these is coded or fully designed but needs the Docker pipeline
 (down at time of writing). One rebuild + one rebake of BOTH snapshots
 (binary-paired) covers all of them.
 
-## 1. Alias coverage in the covering-env check (coded, unbuilt)
-`Shell.lean` `wasmLspInit`: `aliasOk` lets the umbrella env satisfy
-`import Mathlib` / `Mathlib.Tactic` / `Batteries` / `MIL.Common`. The
-shim's client-side header rewrite covers this meanwhile.
+## 1. Alias coverage in the covering-env check — OBSOLETE (2026-09-04)
+Was: `Shell.lean` `wasmLspInit`'s `aliasOk`, with the shim's client-side
+header rewrite covering meanwhile. Patch 0032's `setupImports` resolver
+carries the alias rule itself (the four aliases resolve as `covered` by
+`QED64.Essential`); the pump entry point and the page-side rewrite
+(`src/runtime/umbrella.ts`) are gone. Nothing left to build.
 
 ## 2. Bake the library-search index into the snapshot (designed)
 See docs/LIBRARY-SEARCH-BAKE.md. First `exact?` drops from ~2 min to ~2 s.
 
-## 3. Cancel the old session in wasmLspInit before replacing it (designed)
-`wasmLspInit` already accepts being called on a live session ("init called
-with a live session; replacing it") and swaps `wasmLspSession` — but the
-REPLACED session's elaboration/reporter tasks are abandoned, not
-cancelled, and the new session's elaboration then wedges silently (no
-fileProgress completion, no diagnostics, didChange ignored; reproduced
-2026-08-26 switching the examples dropdown). Fix: before replacing, run
-the old session's shutdown path (cancel its CancelToken / request tasks,
-wait for the reporter to drain) so the replacement elaborates cleanly.
-Payoff: switching between examples/headers becomes a sub-second in-place
-re-init — both snapshots stay resident in the instance's env cache — and
-the frontend's `restartForHeaderChange` can retry the in-place path
-(the reverted client half lived at commit-era `restartForHeaderChange`;
-resurrect it from git history once this lands) instead of a ~30 s wasm
-reboot that re-verifies the runtime and re-streams snapshots.
+## 3. Cancel the old session in wasmLspInit before replacing it — OBSOLETE (2026-09-04)
+Was: the replaced pump session's elaboration/reporter tasks were abandoned,
+not cancelled, and the replacement wedged (reproduced 2026-08-26 switching
+the examples dropdown); patch 0024(a) `teardownForReplacement` was the
+interim fix. The resident FileWorker never replaces a session for a header
+change — `setupImports` re-runs in process and Lean's `cancelRec` discards
+the previous header task — so a header switch is 322 ms edit → ready on the
+served 0032 pairing with no session lifecycle at all. `wasmLspInit` and
+`teardownForReplacement` retire from the kernel at the next pairing bump
+(docs/PUMP-REMOVAL-ASSESSMENT-2026-09-04.md, step 3).
 
-## 4. PROXY_TO_PTHREAD resident FileWorker — PLANNED, see docs/RESIDENT-WORKER-PLAN.md
-browser64 runs the REAL, unmodified `lean --worker` main loop on an
-application pthread (`-sPROXY_TO_PTHREAD=1`), fed by a native futex-based
-stdin ring (~150-line io.cpp core in their `lean4-resident-transport.patch`,
-contract in `resident-transport.lock.json`). Blocking stdin becomes legal, so
-the whole host-pumped machinery — our patches 0018 (pump exports) and 0020
-(keepalive guard), and much of 0019/0021's motivation — retires, the
-event-loop-starvation bug class disappears architecturally, and the stock
-LSP loop the lean4web front end wants runs as upstream wrote it.
-Large + Docker-gated; schedule as the next rebuild's centerpiece.
+## 4. PROXY_TO_PTHREAD resident FileWorker — DONE (patches 0031/0032; the default and only page transport since 2026-09-04)
+The REAL, unmodified `lean --worker` main loop runs on an application
+pthread (`-sPROXY_TO_PTHREAD=1`), fed by a futex stdin ring (browser64's
+transport port, patch 0031), with header resolution in `setupImports` and
+`$/qed64/headerStatus` (patch 0032). See docs/RESIDENT-WORKER-PLAN.md for
+the measurements and docs/ARCHITECTURE.md "Transport" for the living
+description. What is still owed to it: the kernel-side deletion of the pump
+entry points and the regrouping of 0018/0023/0027/0024(a) and the Shell
+hunks of 0021/0025 at the next pairing bump, and a measurement of 0020
+(keepalive guard) before dropping it — resident still runs library-style
+calls (snapshot loads, the warm compile) before `main`
+(docs/PUMP-REMOVAL-ASSESSMENT-2026-09-04.md, step 3).
 
 ## 5. Single-read no-mmap region loader (~40 lines, upstream-worthy)
 Pinned `src/library/module.cpp` no-mmap path reads the 88-byte header, seeks

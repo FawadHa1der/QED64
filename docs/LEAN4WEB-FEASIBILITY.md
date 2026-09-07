@@ -1,5 +1,7 @@
 # Feasibility: lean4web front end on the QED64 wasm64 backend
 
+> **Historical since 2026-09-04:** the pump transport was removed at the page level (shim, umbrella rewrite, batch app, pump worker ops, pump test lanes); the living description of what shipped is docs/ARCHITECTURE.md "Transport". This document is kept as the reasoning trail and is not updated.
+
 *2026-08-25 · branch `feature/lean4web-frontend` · research: 4-agent deep-dive
 over lean4web/lean4monaco/lean4 server sources + local source analysis of our
 fork + two working probes.*

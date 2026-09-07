@@ -279,6 +279,30 @@ every public def/field needs a doc string; a modifier-misuse refusal
 (`meta`/`import all` outside `module`) was tried and removed — `toModuleHeader`
 flags legacy files' imports, so it refused every header.
 
+## Retirement at the next pairing bump (noted 2026-09-04; no patch file changes yet)
+The pump transport left the page, the worker and the test suite on
+2026-09-04 (docs/PUMP-REMOVAL-ASSESSMENT-2026-09-04.md, step 1). Its
+kernel-side half is still in the series and in the served binary, because
+any kernel deletion changes `lean.wasm`, the build id and therefore the
+snapshot pairing every visitor has cached — so it goes with the next
+pairing bump that is needed for another reason, never on its own (step 3):
+- **0018** (host-pumped `lean_wasm_lsp_init` / `lean_wasm_lsp_send`),
+  **0023** (covering-environment aliasing for `wasmLspInit` — the resolver of
+  0032 carries the rule), **0027** (resolve-before-replace in `wasmLspInit`),
+  and **0024(a)** (`teardownForReplacement` + its call) retire whole
+  (0024's (b) save-exception boundary and (c) single-read olean path stay);
+- the **Shell.lean hunks of 0021 and 0025** (pump entry points, the covering
+  loop that duplicates `lookupPrebuiltEnv`, `wasmLspSession`) retire, while
+  their `Language.Lean` hooks (the prebuilt-header lookup, the extension-array
+  resize) are load-bearing for the resident resolver — split, don't drop;
+- the two pump lines in `emscripten-exports.seed.txt` go with the Shell
+  block, or the link fails;
+- **0020** (keepalive guard) is measured before it is dropped: resident
+  still runs library-style calls (snapshot loads, the exact-imports warm
+  compile) before `main`.
+Regroup the survivors into a resident-only series at that rebuild and
+restate the promote rule for resident only (docs/RESIDENT-WORKER-PLAN.md).
+
 ## (not in the series) `-sPTHREAD_POOL_DELAY_LOAD=1` — tried 2026-09-04, measured no effect, dropped
 Hypothesis: the +4 GB the renderer gains during "Initializing the Lean runtime"
 was the 24 preallocated pthread workers each parsing the 48 MB glue. Built,

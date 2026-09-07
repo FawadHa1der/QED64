@@ -12,8 +12,15 @@
 // `infra` row and the run aborts (freshPage throws), never N scenario
 // failures; reports go to a per-run directory
 // work/adversarial/runs/<ts>-<buildId>-<mode>/ (plus the legacy
-// work/adversarial/e2e-report.json for existing scripts); shim stats deltas
-// are recorded per scenario once the shim exposes `stats`.
+// work/adversarial/e2e-report.json for existing scripts); the relay's
+// counters (`globalThis.qed64.relay.stats`: reboots, userRestarts,
+// workerDeaths, breakerTrips, failedInFlight, staleDeaths, rangedChanges)
+// are snapshotted around every scenario and their deltas recorded.
+//
+// The page speaks ONE transport (resident: front door + relay; the pump shim
+// left the page on 2026-09-04), so the taps below are direct reads of
+// `qed64.status()`, `qed64.relay.stats` and `qed64.relay.session.lean` —
+// an undefined tap is a harness/page defect and is reported, never passed.
 //
 // Usage: node tests/adversarial/e2e.mjs [--url http://localhost:5187/] [--corpus corpus.json]
 //        [--only <exact scenario name>] [--run-dir <dir>] [--boot-budget-ms 480000]
@@ -79,7 +86,7 @@ function wirePage(p) {
  * the run (today's "continuing" turned an unbootable runtime into a cascade
  * of scenario failures — HARDENING #32/#33). Infra means the page never
  * became INTERACTIVE (`ready…`) — a page that is alive but slow to settle
- * under machine load (kernel builds push pump boots past 400 s) is not an
+ * under machine load (kernel builds push boots past 400 s) is not an
  * environment refusal; it is logged and the scenario judges it. */
 async function freshPage() {
   try { if (page && !page.isClosed()) await page.close(); } catch { /* gone */ }
@@ -112,17 +119,15 @@ const ivText = () => Promise.race([
 async function phaseNow() {
   return page.evaluate(() => { try { return globalThis.qed64?.status?.()?.phase ?? null; } catch { return null; } }).catch(() => null);
 }
-/** Wait for a TERMINAL state: the phase enum when exposed (ready / headerRefused
- * / halted), else the pill labels. Returns {ok, ms, s, terminal}. */
+/** Wait for a TERMINAL state: the phase enum from `qed64.status()` (ready /
+ * headerRefused / halted — the relay's status is the oracle, the pill is
+ * `render(status)` of the same datum), with the pill labels as the fallback
+ * for a page that has not installed the tap yet. Returns {ok, ms, s, terminal}. */
 async function waitTerminal(ms, minMs = 0) {
   const t0 = Date.now();
   for (;;) {
     const s = await pill();
     const ph = await phaseNow();
-    // Either source may carry the terminal fact: the pump shim's status() getter
-    // can report a non-terminal phase while its pill already shows the calm hold
-    // (measured: unresolvable-import-composition, cursor-thrash-during-elab timed
-    // out at 120 s with the right pill). Prefer the phase, fall back to the pill.
     const terminal = (ph !== null ? settleClassFromPhase(ph) : null) ?? settleClass(s);
     if (Date.now() - t0 >= minMs && terminal) return { ok: true, ms: Date.now() - t0, s, terminal };
     if (Date.now() - t0 > ms) return { ok: false, ms: Date.now() - t0, s, terminal: null };
@@ -147,38 +152,44 @@ async function waitPill(re, timeoutMs, minMs = 0) {
     await page.waitForTimeout(400);
   }
 }
-// Terminal classes the pill can settle in today (pump-era labels, see
-// harness.settleClass). When the shim exposes a phase enum (attacks.txt #3)
-// this becomes a read of `qed64.status().phase`; the corpus keys
-// (`expect.terminal`) already use the enum names so the corpus never changes again.
-const SETTLE_RE = /^ready$|imports (incomplete|failed)|keeps crashing/;
 async function setBuffer(text) {
   await page.evaluate((t) => { globalThis.qed64.editor.getModel().setValue(t); }, text);
 }
+/** Memory sample: the JS heap plus the worker's own telemetry
+ * (`qed64.relay.session.lean.request("telemetry")` → memory.currentBytes /
+ * maximumBytes). `wasmMB` is a number when the live session answered;
+ * otherwise `error` says why (no session, the tap is missing, the worker
+ * did not answer within 8 s) — callers that NEED the number (final-memory)
+ * fail on its absence instead of passing on `undefined`. */
 async function memSample() {
-  if (!page || page.isClosed()) return {};
+  if (!page || page.isClosed()) return { error: "page closed" };
   // The telemetry request inside goes to the worker — a wedged worker never
   // answers, and an unresolved evaluate would hang record() (and the run).
   return Promise.race([
-    new Promise((res) => setTimeout(() => res({ stale: true }), 8000)),
+    new Promise((res) => setTimeout(() => res({ error: "telemetry unanswered within 8 s" }), 8000)),
     page.evaluate(async () => {
-    const out = { jsHeapMB: performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null };
-    try {
-      const tel = await globalThis.qed64.shim.qs.session.request("telemetry", {});
-      if (tel.memory) { out.wasmMB = Math.round(tel.memory.currentBytes / 1048576); out.maxGiB = tel.memory.maximumBytes / 1073741824; }
-    } catch { /* dead session mid-drill is fine */ }
-    return out;
-  }).catch(() => ({})),
+      const out = { jsHeapMB: performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null };
+      const lean = globalThis.qed64?.relay?.session?.lean;
+      if (!lean || typeof lean.request !== "function") return { ...out, error: "qed64.relay.session.lean.request is not a function (tap missing)" };
+      try {
+        const tel = await lean.request("telemetry", {});
+        if (!tel || !tel.memory || typeof tel.memory.currentBytes !== "number") return { ...out, error: `telemetry carried no memory (${JSON.stringify(tel).slice(0, 80)})` };
+        return { ...out, wasmMB: Math.round(tel.memory.currentBytes / 1048576), maxGiB: tel.memory.maximumBytes / 1073741824, workerState: tel.state };
+      } catch (e) { return { ...out, error: `telemetry threw: ${String(e).slice(0, 100)}` }; }
+    }).catch((e) => ({ error: `evaluate failed: ${String(e).slice(0, 100)}` })),
   ]);
 }
-/** Shim counters (`globalThis.qed64.shim.stats`, landing with the shim
- * rewrite) — null until they exist; never a reason to fail. */
+/** The relay's counters (`globalThis.qed64.relay.stats`: reboots,
+ * userRestarts, workerDeaths, breakerTrips, failedInFlight, staleDeaths,
+ * rangedChanges — frontend/src/lsp-relay.ts). Null only when the page
+ * cannot be read (dead / closed / no relay); the kill drill treats null as
+ * a failure, the corpus loop records it. */
 async function statsSnap() {
   if (!page || page.isClosed()) return null;
   return Promise.race([
     new Promise((res) => setTimeout(() => res(null), 3000)),
     page.evaluate(() => {
-      const s = globalThis.qed64?.shim?.stats;
+      const s = globalThis.qed64?.relay?.stats;
       return s && typeof s === "object" ? JSON.parse(JSON.stringify(s)) : null;
     }).catch(() => null),
   ]);
@@ -384,8 +395,9 @@ for (const item of actionItems) {
     }
     const statsAfter = await statsSnap();
     const delta = statsDelta(statsBefore, statsAfter);
-    // expect.stats: max allowed deltas per counter (e.g. {reboots: 0});
-    // evaluated only once the shim reports stats — silently ignored before.
+    // expect.stats: max allowed deltas per relay counter (e.g. {reboots: 0,
+    // workerDeaths: 0}); a page that could not be read before AND after
+    // (delta null) records no verdict on them — the row's other checks stand.
     const statsBad = delta && item.expect.stats
       ? Object.entries(item.expect.stats).filter(([k, max]) => typeof delta[k] === "number" && delta[k] > max).map(([k, max]) => `${k}=${delta[k]}>${max}`)
       : [];
@@ -440,18 +452,22 @@ if (runs("worker-kill-recovery")) {
   await page.selectOption("#examples", "mathlib").catch(() => {});
   await waitPill(/^ready$/, 90000, 2000);
   const statsBefore = await statsSnap();
-  // Kill the live worker whichever transport owns it: the pump shim's session
-  // (qed64.shim.qs.session) or the resident relay's (qed64.relay.session).
+  const sessionBefore = await page.evaluate(() => globalThis.qed64?.relay?.session?.id ?? null).catch(() => null);
+  // Kill the live worker underneath the relay: `qed64.relay.session` is the
+  // ResidentSession adapter, `.lean` its LeanSession, `.lean.worker` the
+  // Worker. `terminate()` is silent (no error event), so the death the relay
+  // sees is the heartbeat-loss path (6 s without a beat + a 2 s unanswered
+  // telemetry probe — src/runtime/client.ts), which is the point of the drill.
   await page.evaluate(() => {
-    const q = globalThis.qed64;
-    // pump: shim.qs.session is the LeanSession; resident: relay.session is the
-    // ResidentSession adapter wrapping one (any LeanSession-typed field).
-    const cands = [q.shim?.qs?.session, q.relay?.session];
-    let w = null;
-    for (const c of cands) { if (!c) continue; if (c.worker) { w = c.worker; break; } for (const k of Object.keys(c)) { const v = c[k]; if (v && typeof v === "object" && v.worker) { w = v.worker; break; } } if (w) break; }
-    if (!w) throw new Error("kill drill: no live session/worker on the page");
+    const w = globalThis.qed64?.relay?.session?.lean?.worker;
+    if (!w || typeof w.terminate !== "function") throw new Error("kill drill: qed64.relay.session.lean.worker is not a Worker (tap missing)");
     w.terminate();
   });
+  const tKill = Date.now();
+  // Death detected = the status phase leaves `ready` (dead → the relay's
+  // replacement session's booting), not a pill regex; the design budgets
+  // ≤ 10 s (§3 row 10), the gate allows 3× that for machine load.
+  const detected = await (async () => { for (;;) { const ph = await phaseNow(); if (ph !== null && ph !== "ready") return { ok: true, ms: Date.now() - tKill, phase: ph }; if (Date.now() - tKill > 30000) return { ok: false, ms: Date.now() - tKill, phase: ph }; await page.waitForTimeout(100); } })();
   const recovered = await waitPill(/^ready$/, 180000, 4000);
   // give the replayed elaboration a beat to republish diagnostics
   let badge = "";
@@ -460,19 +476,29 @@ if (runs("worker-kill-recovery")) {
     if (/2/.test(badge)) break;
     await page.waitForTimeout(1000);
   }
-  const delta = statsDelta(statsBefore, await statsSnap());
-  // Once the shim counts deaths, a "recovery" that saw no death is vacuous
-  // (attacks.txt #5) — the drill then also requires workerDeaths === 1.
-  const deathSeen = delta && typeof delta.workerDeaths === "number" ? delta.workerDeaths === 1 : true;
-  await record("worker-kill-recovery", "recovery", recovered.ok && /2/.test(badge) && deathSeen,
-    `recovered=${recovered.ok}@${recovered.ms}ms badge='${badge}'${delta ? ` stats=${JSON.stringify(delta)}` : ""}`, { recoveryMs: recovered.ms, stats: delta ? { delta } : undefined });
+  const statsAfter = await statsSnap();
+  const delta = statsDelta(statsBefore, statsAfter);
+  const sessionAfter = await page.evaluate(() => globalThis.qed64?.relay?.session?.id ?? null).catch(() => null);
+  // Non-vacuous by construction: the relay must have COUNTED exactly one
+  // worker death and one (crash) reboot, and be serving a different session;
+  // unreadable counters are a failure, not a pass (the old drill passed on
+  // `undefined` stats).
+  const counted = !!delta && delta.workerDeaths === 1 && delta.reboots === 1 && (delta.userRestarts ?? 0) === 0;
+  const replaced = sessionBefore !== null && sessionAfter !== null && sessionAfter !== sessionBefore;
+  await record("worker-kill-recovery", "recovery", detected.ok && recovered.ok && /2/.test(badge) && counted && replaced,
+    `detected=${detected.ok}@${detected.ms}ms(phase=${detected.phase}) recovered=${recovered.ok}@${recovered.ms}ms badge='${badge}' session=${sessionBefore}→${sessionAfter} stats=${delta ? JSON.stringify(delta) : "UNREADABLE"}`,
+    { recoveryMs: recovered.ms, deathDetectedMs: detected.ms, stats: delta ? { before: statsBefore, after: statsAfter, delta } : undefined });
 }
 
 // ---------- final: memory + stuck-pill sweep ---------------------------------
 if (runs("final-memory")) {
   const mem = await memSample();
-  const wasmOk = mem.wasmMB === null || mem.wasmMB === undefined || mem.wasmMB < 3800;
-  await record("final-memory", "memory", wasmOk, `wasm=${mem.wasmMB}MB js=${mem.jsHeapMB}MB (budget wasm<3800MB)`);
+  // A sample without the number is a broken tap or a dead worker — both are
+  // failures here (this row passed vacuously on `undefined` before 2026-09-04).
+  const measured = typeof mem.wasmMB === "number";
+  const wasmOk = measured && mem.wasmMB < 3800;
+  await record("final-memory", "memory", wasmOk,
+    `wasm=${measured ? mem.wasmMB : "UNMEASURED"}MB js=${mem.jsHeapMB}MB max=${mem.maxGiB ?? "?"}GiB (budget wasm<3800MB)${mem.error ? ` error='${mem.error}'` : ""}`);
 }
 } catch (e) {
   // InfraError: the page cannot boot — one infra row, the rest aborted, exit 3.

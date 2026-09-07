@@ -1,5 +1,7 @@
 # QED64 architecture re-evaluation — second pass (2026-09-02, evening)
 
+> **Historical since 2026-09-04:** the pump transport was removed at the page level (shim, umbrella rewrite, batch app, pump worker ops, pump test lanes); the living description of what shipped is docs/ARCHITECTURE.md "Transport". This document is kept as the reasoning trail and is not updated.
+
 *Read-only synthesis over the five candidate designs, the judge ranking, and both red-team passes, checked against the tree at qed64 6e7f079 (the lean4game vendor pin, `client/src/wasm/vendor/QED64-PIN`), the kernel worktree at `pipeline/toolchain/work/lean4` (patch 0031 applied), and the built glue at `pipeline/toolchain/work/build/stage1/bin/lean.js`. Every line number below was re-read today; where a design or a red-team item cited a number that is off, the corrected anchor is used.*
 
 ---

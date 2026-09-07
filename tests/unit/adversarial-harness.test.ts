@@ -5,7 +5,7 @@ import { describe, expect, test } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { onlyMatches, resolveTarget, settleClass } from "../../tests/adversarial/harness.mjs";
+import { MODE, onlyMatches, resolveTarget, settleClass, settleClassFromPhase } from "../../tests/adversarial/harness.mjs";
 import { classify, missingInputs } from "../../tests/adversarial/compiler-battery.mjs";
 
 describe("onlyMatches", () => {
@@ -22,29 +22,40 @@ describe("onlyMatches", () => {
 });
 
 describe("resolveTarget", () => {
-  test("default page → mutable manifest, /snapshots/, resident (the default transport; ?resident=0 is pump)", () => {
+  test("default page → mutable manifest, /snapshots/, resident (the only transport since 2026-09-04)", () => {
     const t = resolveTarget("http://localhost:5187/");
     expect(t).toMatchObject({ mode: "resident", runtimeOverride: null, snapshotsDir: "snapshots",
       manifestUrl: "http://localhost:5187/runtime/runtime-manifest.json", indexUrl: "http://localhost:5187/snapshots/index.json" });
+    expect(MODE).toBe("resident");
   });
-  test("?resident=0 → pump (the fallback transport)", () => {
-    expect(resolveTarget("http://localhost:5184/?resident=0").mode).toBe("pump");
+  test("a stale ?resident= query no longer selects anything (the page ignores it; the run dir stays resident)", () => {
+    expect(resolveTarget("http://localhost:5184/?resident=0").mode).toBe("resident");
+    expect(resolveTarget("http://localhost:5184/?resident=1").mode).toBe("resident");
   });
-  test("dev overrides follow qed64-boot.ts (?runtime=, ?snapshots=, ?resident=1)", () => {
-    const t = resolveTarget("http://localhost:5184/?resident=1&runtime=wasm64-464463c696d9aa2d&snapshots=snapshots-0031");
+  test("dev overrides follow qed64-boot.ts (?runtime=, ?snapshots=)", () => {
+    const t = resolveTarget("http://localhost:5184/?runtime=wasm64-464463c696d9aa2d&snapshots=snapshots-0031");
     expect(t).toMatchObject({ mode: "resident", runtimeOverride: "wasm64-464463c696d9aa2d", snapshotsDir: "snapshots-0031",
       manifestUrl: "http://localhost:5184/runtime/runtime-manifest.wasm64-464463c696d9aa2d.json", indexUrl: "http://localhost:5184/snapshots-0031/index.json" });
   });
 });
 
 describe("settleClass", () => {
-  test("maps today's pill labels onto the terminal enum", () => {
+  test("maps the page's pill labels (main.ts PHASE_LABEL) onto the terminal enum", () => {
     expect(settleClass("ready")).toBe("ready");
     expect(settleClass("ready — 3 s")).toBeNull();
-    expect(settleClass("imports incomplete — finish the import line")).toBe("headerUnresolvable");
+    expect(settleClass("imports incomplete — finish the import line to continue")).toBe("headerUnresolvable");
     expect(settleClass("imports failed")).toBe("headerUnresolvable");
-    expect(settleClass("Lean keeps crashing — halted")).toBe("halted");
+    expect(settleClass("the checker keeps crashing on this content — edit the file to retry")).toBe("halted");
+    // The breaker on a session that had reached ready: "halted — <reason>".
+    expect(settleClass("halted — heartbeat")).toBe("halted");
     expect(settleClass("elaborating")).toBeNull();
+    expect(settleClass("the checker crashed — restarting (~15 s)")).toBeNull();
+  });
+  test("the phase enum is the primary oracle: ready / headerRefused / halted are terminal, the rest are not", () => {
+    expect(settleClassFromPhase("ready")).toBe("ready");
+    expect(settleClassFromPhase("headerRefused")).toBe("headerUnresolvable");
+    expect(settleClassFromPhase("halted")).toBe("halted");
+    for (const ph of ["booting", "starting", "elaborating", "dead", null]) expect(settleClassFromPhase(ph)).toBeNull();
   });
 });
 

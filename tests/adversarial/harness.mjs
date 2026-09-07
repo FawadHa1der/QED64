@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 // Shared plumbing for the adversarial harness (review C7, migration phase 0):
 //   - resolveTarget(url): the runtime/snapshot pairing a page URL will boot
-//     (the same ?runtime= / ?snapshots= / ?resident= rules as qed64-boot.ts),
-//     so preflight, e2e and the gauntlets agree on what "the run" is;
+//     (the same ?runtime= / ?snapshots= rules as qed64-boot.ts), so
+//     preflight, e2e and the gauntlets agree on what "the run" is;
 //   - runDir(): one directory per run, work/adversarial/runs/<ts>-<buildId>-<mode>/,
-//     so a report is never overwritten by the next lane;
+//     so a report is never overwritten by the next lane (`mode` is the
+//     constant "resident" since the pump transport left the page, 2026-09-04;
+//     the field survives so run-dir names and old report readers keep their shape);
 //   - teeLog(): console output mirrored into that directory;
 //   - coolDown(): the between-browser-lanes discipline of HARDENING #34
 //     (refuse while a chrome-headless-shell exists — `--kill-strays` to kill
@@ -22,12 +24,16 @@ export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 export const arg = (n, d) => { const i = process.argv.indexOf(`--${n}`); return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : d; };
 export const has = (f) => process.argv.includes(f);
 
+/** The one transport the page speaks (the pump was removed at the page level
+ * on 2026-09-04); kept as a field so run directories and reports stay shaped. */
+export const MODE = "resident";
+
 /** What a page at `url` will boot: manifest and snapshot-index URLs, mode. */
 export function resolveTarget(url) {
   const u = new URL(url);
   const runtimeOverride = u.searchParams.get("runtime");
   const snapshotsDir = u.searchParams.get("snapshots") || "snapshots";
-  const mode = u.searchParams.get("resident") === "0" ? "pump" : "resident"; // resident is the default transport
+  const mode = MODE;
   return {
     url: u.toString(),
     origin: u.origin,
@@ -60,15 +66,18 @@ export function onlyMatches(name, pattern) {
   return /[\\^$.*+?()[\]{}|]/.test(pattern) ? new RegExp(`^(?:${pattern})$`).test(name) : name === pattern;
 }
 
-/** The terminal class a pill label settles in (pump-era labels); the enum
- * names are the ones `expect.terminal` uses so the corpus survives the move
- * to a phase enum tap (attacks.txt #3). */
-/** Terminal class of a status phase (the enum the front door / shim report). */
+/** Terminal class of a status phase — the enum `qed64.status().phase`
+ * reports (the relay's `halted` on top of the front door's phases); the
+ * names are the ones the corpus's `expect.terminal` uses. */
 export function settleClassFromPhase(phase) {
   return phase === "ready" ? "ready" : phase === "headerRefused" ? "headerUnresolvable" : phase === "halted" ? "halted" : null;
 }
+/** The same classes read off the pill label (main.ts PHASE_LABEL, plus the
+ * "halted — <reason>" form the pill takes after a breaker trip on a session
+ * that had been ready) — the fallback for a page that exposes no status tap,
+ * and what the gauntlet's console/pill watch reads. */
 export function settleClass(pill) {
-  return /^ready$/.test(pill) ? "ready" : /imports (incomplete|failed)/.test(pill) ? "headerUnresolvable" : /keeps crashing/.test(pill) ? "halted" : null;
+  return /^ready$/.test(pill) ? "ready" : /imports (incomplete|failed)/.test(pill) ? "headerUnresolvable" : /keeps crashing|^halted/.test(pill) ? "halted" : null;
 }
 
 export const stamp = () => new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
