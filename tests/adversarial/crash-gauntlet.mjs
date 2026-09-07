@@ -7,7 +7,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { chromium } from "playwright";
-import { fetchJson, resolveTarget, root, runDir, settleClass } from "./harness.mjs";
+import { fetchJson, resolveTarget, root, runDir, settleClass, settleClassFromPhase } from "./harness.mjs";
 const positional = process.argv.slice(2).filter((a, i, all) => !a.startsWith("--") && !(i > 0 && all[i - 1].startsWith("--")));
 const URL = positional[0] ?? "http://localhost:5184/";
 const MINUTES = Number(positional[1] ?? 3);
@@ -84,16 +84,20 @@ try {
     }
   } catch (e) { push(`[${ts()}s] driver threw: ${String(e).slice(0, 120)}`); }
   // settle verdict: give the machinery a fair window to reach a terminal
-  // state — the class comes from harness.settleClass (one grammar for e2e
-  // and the gauntlet, so the phase-enum tap of attacks.txt #3 is one edit).
+  // state — the phase enum from `qed64.status()` first (harness.settleClassFromPhase,
+  // the same oracle e2e uses), the pill label (harness.settleClass) when the
+  // tap cannot be read.
+  const phaseNow = () => page.evaluate(() => { try { return globalThis.qed64?.status?.()?.phase ?? null; } catch { return null; } }).catch(() => null);
   for (let i = 0; i < 60; i++) {
     const p = await page.evaluate(() => document.querySelector("#ptext")?.textContent ?? "").catch(() => "DEAD");
-    if (p === "DEAD" || settleClass(p)) break;
+    const ph = await phaseNow();
+    if (p === "DEAD" || (ph !== null ? settleClassFromPhase(ph) : settleClass(p))) break;
     await page.waitForTimeout(2000);
   }
   alive = await page.evaluate(() => !!globalThis.qed64).catch(() => false);
   finalPill = await page.evaluate(() => document.querySelector("#ptext")?.textContent ?? "").catch(() => "DEAD");
-  halted = settleClass(finalPill) === "halted";
+  const finalPhase = await phaseNow();
+  halted = (finalPhase !== null ? settleClassFromPhase(finalPhase) : settleClass(finalPill)) === "halted";
 } catch (e) {
   push(`[${ts()}s] gauntlet threw: ${String(e).slice(0, 160)}`);
 } finally {

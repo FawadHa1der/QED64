@@ -71,9 +71,12 @@ export function classify(item, { out, code, wallMs, budget, spawnError = null })
   return row(failures.length ? "fail" : "pass", failures, { note: knownPanicNote });
 }
 
-// Mirror the production shim's alias rewrite: the browser rewrites the first
-// umbrella-alias import to QED64.Essential before the worker ever sees it, so
-// the battery must test the same text the runtime actually receives.
+// The four umbrella aliases (Mathlib, Mathlib.Tactic, Batteries, MIL.Common)
+// are served "covered" by the QED64.Essential environment in the browser —
+// the kernel's setupImports resolver (patch 0032) does that. This lane drives
+// the batch compile path (`lean_wasm_compile`), whose environment cache keys
+// EXACTLY, so the alias is rewritten to the umbrella's own key here: the
+// battery then elaborates the same environment the resident page serves.
 export function rewriteAliases(src) {
   let first = true;
   return src.split("\n").map((l) => {

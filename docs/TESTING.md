@@ -4,7 +4,7 @@
 
 | Layer | Command | What it proves |
 |---|---|---|
-| Unit (133 tests) | `npm test` | abbreviation engine; manifest validation incl. hostile inputs; segmentation plan/build byte-exactness; installer stream failure classes (rejecting sink, hanging sink, corrupted part, zip-bomb); diagnostic parsing incl. multi-line goals (real worker source in a VM); Lean IO-result decoding; Memory64 probing; CM position mapping; pack round-trip on real oleans; parser-coverage lints; snapshot index matching; umbrella header rewrite; stale-storage classification + cache probes |
+| Unit (~190 tests) | `npm test` | abbreviation engine; manifest validation incl. hostile inputs; segmentation plan/build byte-exactness; installer stream failure classes (rejecting sink, hanging sink, corrupted part, zip-bomb); diagnostic parsing incl. multi-line goals (real worker source in a VM); Lean IO-result decoding; Memory64 probing; CM position mapping; pack round-trip on real oleans; parser-coverage lints; snapshot index matching; the LSP front door reducer (real worker source in a VM) and the byte-exact framer; the relay against a fake session (document hash after every scenario, orphaned requests answered, no timers, stale deaths ignored); the ring writer; artifact discipline; the adversarial harness's pure helpers |
 | Integration | `npm run test:integration` | the real wasm64 runtime under Node: prelude parse, Init import + `numBits=64` + kernel-checked `rfl`, positioned errors + exit codes, `sorry` semantics, and the full persistent-path probe (init sequence, 26 ms resident recheck, error-count return, survival after failure) |
 | Slow tier | `QED64_SLOW=1 npm run test:integration` | 2,308-module `import Lean` closure; snapshot bake produces a valid compacted region |
 | Snapshot | `node --stack-size=8192 pipeline/snapshot/snapshot-probe.mjs --snap <file> --probe-file <lean>` | a baked snapshot loads via `lean_wasm_load_snapshot` (the worker's exact path) and the follow-up compile is an env-cache hit within a time budget — a wrong cache key would silently re-import for minutes |
@@ -22,8 +22,9 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   test` skips it with a printed notice when `frontend/node_modules` is absent
   (a fresh clone — run `npm --prefix frontend ci`), `run.mjs` never skips.
 - **Preflight** (`preflight.mjs --url <page url> [--no-boot]`): for the
-  pairing the URL will boot (`?runtime=`, `?snapshots=`, `?resident=` exactly
-  as qed64-boot.ts reads them) it verifies the manifest is JSON with chunks,
+  pairing the URL will boot (`?runtime=`, `?snapshots=` exactly as
+  qed64-boot.ts reads them; the page has one transport, so `mode` in every
+  report is the constant `resident`) it verifies the manifest is JSON with chunks,
   every chunk answers HEAD with its manifest size and a non-HTML type (vite's
   SPA fallback once served index.html as chunk 0), the snapshot index and
   each snapshot file, the `runtime` pairing of every index entry against the
@@ -46,9 +47,30 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   machine load is logged and judged by its scenario.
 - **Corpus keys.** Editor-action items use `panicFree`, `mustSucceed`,
   `settleMs`, `zeroErrors`, `terminal ∈ {ready, headerUnresolvable, halted}`
-  and `stats` (max allowed shim-counter deltas, evaluated once
-  `globalThis.qed64.shim.stats` exists). Battery-only keys (`containsMsgs`,
-  `budgetMs`, `mustError`) on an action item are a load error.
+  and `stats` (max allowed deltas of the relay's counters,
+  `globalThis.qed64.relay.stats`: `reboots`, `userRestarts`, `workerDeaths`,
+  `breakerTrips`, `failedInFlight`, `staleDeaths`, `rangedChanges` — e.g.
+  `{"reboots": 0}` pins "no reboot happened"). Battery-only keys
+  (`containsMsgs`, `budgetMs`, `mustError`) on an action item are a load error.
+- **The oracle.** `terminal` is read from `qed64.status().phase` (the relay's
+  status: the front door's phase with `halted` on top) — `ready`,
+  `headerRefused → headerUnresolvable`, `halted`; the pill label is only the
+  fallback for a page without the tap (`harness.settleClass`, which also
+  reads the "halted — <reason>" pill). Three rows used to pass vacuously and
+  no longer can: `import-composition` requires the refused-header FACT
+  (`status().header.mode === "refused"` while the line is incomplete, a
+  non-refused verdict after it is finished) AND the kernel's refusal NOTE
+  (`… are not loaded in this session …`, pinned once as `REFUSED_NOTE`) to
+  be shown in the InfoView and then withdrawn (the old check matched a
+  string only the pump shim ever emitted); `final-memory` reads
+  `qed64.relay.session.lean.telemetry()` and FAILS when
+  `memory.currentBytes` is not a number (a missing tap or a dead worker is a
+  failure, not an empty sample); `worker-kill-recovery` terminates
+  `qed64.relay.session.lean.worker` and requires, besides the `ready` pill
+  and the replayed diagnostics, that the status phase left `ready` within
+  30 s (the heartbeat-loss path: 6 s + a 2 s probe, ×3 for load), that
+  `relay.stats` moved by exactly `workerDeaths: 1, reboots: 1, userRestarts: 0`,
+  and that `relay.session.id` changed — unreadable counters fail the row.
 - **Run directories.** Each run writes to
   `work/adversarial/runs/<ts>-<buildId>-<mode>/` (preflight.json, e2e.log,
   e2e-report.json, compiler.log, gauntlet-*.log, latency-*.json, report.md);
@@ -56,18 +78,30 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   `report.md` are still written for existing scripts. `--only <name>` runs
   exactly one scenario after `boot` (whole-name match; a corpus item or a
   fixed scenario such as `import-composition`, `worker-kill-recovery`).
+  `resident-url.sh` prints the dev URL for the staged pairing
+  (`?runtime=<buildId>&snapshots=snapshots-0031`); `resident-gate.sh` is the
+  post-rebuild gate (typecheck, dev server restart, preflight, e2e, latency,
+  battery, with cool-downs).
 - **Cool-down.** Between browser lanes `harness.mjs cooldown` REFUSES while
   any `chrome-headless-shell` is alive (listing pid + command line: on this
   machine it may be a sibling worktree's or an interactive session's live
   e2e, not a leak) and waits until free+inactive memory is above
   `--cooldown-gb` (6 GB). `--kill-strays` opts into SIGKILL for unattended
   re-runs. Every probe closes its browser in `finally`.
-- **Latency.** `editing-latency.mjs` records `switchBusySeenMs` = header edit
-  → first `$/lean/fileProgress` (read from the shim's progress clock
-  `qed64.shim.lastProgressAt`) — the covered-switch metric the design budgets
-  at ≤ 300 ms. Each round records `progressClockSource`; `busy-label` means
-  the shim stopped exposing the clock and the number is the 15 s-ceiling
-  fallback, not a measurement.
+- **Latency.** `editing-latency.mjs` measures header gestures from
+  `qed64.status()` facts only: `switchAdmitMs` = header edit → the first
+  status change after it (the front door admits the didChange: the document
+  version moves and the phase leaves `ready`) — the transport's admit
+  latency, about one 50 ms poll, not the worker's first
+  `$/lean/fileProgress`; the design's ≤ 300 ms covered-switch metric (ux
+  item 4) is not measured by this lane — and
+  `headerSwitchMs` = edit → the version has advanced past the edit AND the
+  phase is `ready` again; each round also records `headerMode`
+  (exact / covered / refused). A page whose status carries no header fact
+  after boot (`status().header === null`, i.e. no `$/qed64/headerStatus`
+  reached the page) is an infrastructure refusal — `latency: REFUSED — …`,
+  exit 3, `outcome: "infra"` in the JSON — never a number. There is no pill
+  fallback and no progress clock any more; `resident-gate.sh` runs one lane.
 
 ## Artifact discipline (pipeline/, tests/unit/artifact-discipline.test.ts)
 

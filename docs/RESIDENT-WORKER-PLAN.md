@@ -1,13 +1,20 @@
 # Resident FileWorker — the plan (PATCH-BACKLOG #4, promoted)
 
-Status: THE SECOND-REVIEW DESIGN IS IMPLEMENTED behind `?resident=1`
-(2026-09-03; docs/ARCHITECTURE-REEVALUATION-2-2026-09-02.md, phases 0–5 of
-its plan). Kernel patch 0032 (single header resolver in `setupImports`, one
-environment registry, one normalized header key, `$/qed64/headerStatus`,
-exports generated at build) is validated on runtime `wasm64-5dcdda005a7c5ae0`;
-the worker is a byte-exact channel with a pure LSP front door; the page side
-is a 159-line relay with three states and no timers. Measured on the same
-harness, same machine (median of 3):
+Status (2026-09-04): **resident is the page's only transport.** The
+second-review design is implemented (docs/ARCHITECTURE-REEVALUATION-2-2026-09-02.md,
+phases 0–6 of its plan) and, as of 2026-09-04, phase 7 is done at the page,
+worker and test level: the pump shim, the umbrella rewrite, the batch app,
+the pump worker ops and the pump lanes of the harness are deleted
+(docs/PUMP-REMOVAL-ASSESSMENT-2026-09-04.md, step 1); the kernel-side pump
+entry points stay until the next pairing bump (step 3). Kernel patch 0032
+(single header resolver in `setupImports`, one environment registry, one
+normalized header key, `$/qed64/headerStatus`, exports generated at build) is
+the served pairing (`wasm64-5dcdda005a7c5ae0`); the worker is a byte-exact
+channel with a pure LSP front door; the page side is a ~160-line relay with
+three states and no timers. The living description is docs/ARCHITECTURE.md
+"Transport". The table below is the historical A/B record — the pump column
+cannot be re-measured any more. Measured on the same harness, same machine
+(median of 3):
 
 | | pump (shipped) | resident (implemented) |
 |---|---|---|
@@ -21,20 +28,32 @@ harness, same machine (median of 3):
 | compiler battery (0032 pairing) | 49/49 | 49/49 |
 | e2e | 17/22 on the production pairing (3 known wedge-cohort items + 2 oracle artifacts since fixed) | 21/22 (the miss is the exact-imports action, not yet built) |
 
-The three resident misses: `mathlib-name-shadow-faithful-switch` expects the
-automatic exact-imports reboot that the design replaces with an explicit
-"Load exact imports" action (phase 6, not built); `worker-kill-recovery` and
-`final-memory` were a harness accessor (fixed; both pass on rerun — a
-terminated worker is detected, replayed and back to `ready` with the edits
-present). What remains for the default flip (phase 5/6 of the second review):
-the exact-imports action, the lean4game port to the relay (it vendors qed64 at
-a pin), and one kernel follow-up — `$/qed64/headerStatus.version` is stamped
-with the initial document version on later setups (the FileWorker binds the
-first `DocumentMeta` into `setupImports`; the UI keys on progress versions
-and the mode, so nothing user-visible depends on it). Phase 7 (retire the
-pump transport) is deliberately not scheduled until the game passes on
-resident. The served pairing is promoted only when the pump transport passes
-its e2e on the 0032 pairing (see the promote rule in HARDENING/PATCHES).
+The three resident misses at the time: `mathlib-name-shadow-faithful-switch`
+expected the automatic exact-imports reboot that the design replaces with an
+explicit "Load exact imports" action (built 2026-09-04, below);
+`worker-kill-recovery` and `final-memory` were a harness accessor (they read
+the pump shim's fields and passed vacuously on resident; since 2026-09-04
+they read `relay.session.lean` telemetry and `relay.stats` and fail when
+those are unreadable). One kernel follow-up remains —
+`$/qed64/headerStatus.version` is stamped with the initial document version
+on later setups (the FileWorker binds the first `DocumentMeta` into
+`setupImports`; the UI keys on progress versions and the mode, so nothing
+user-visible depends on it). The lean4game port to the relay is that
+campaign's own (it vendors qed64 at a pin and stays frozen there until it
+ports; the adapter is `frontend/src/resident-session.ts` with policy hooks
+for it).
+
+**Promote rule (resident only, since 2026-09-04).** A staged pairing
+(`work/staging/<buildId>/{runtime,snapshots}`) is promoted to the served
+`public/runtime` + `public/snapshots` when, on the *resident* page against
+that pairing: `preflight.mjs` passes (manifest, chunks, index, pairing, boot
+smoke), `e2e.mjs` is green including `worker-kill-recovery` and
+`final-memory` with their non-vacuous taps, both crash gauntlets finish
+without a page crash or a breaker `halted`, `editing-latency.mjs` reports
+numbers (not an infra refusal) and `compiler-battery.mjs` is green — i.e.
+`resident-gate.sh` ends `GATE-DONE` with every lane clean. There is no pump
+lane to wait for and no A/B control; `promote-staging.mjs` then switches the
+manifest and index atomically (docs/TESTING.md "Artifact discipline").
 
 ## Phase-1 spike results (2026-09-02) — transport PROVEN; all blockers resolved by the afternoon
 
@@ -137,10 +156,10 @@ served from the upload, not this tree). Install only the manifest as
 content-addressed under public/runtime/chunks). Snapshots: bake with
 `--out work/snapshot-staging`, expose via the `public/snapshots-0031 →
 ../work/snapshot-staging` symlink (in .git/info/exclude). Boot with
-`?resident=1&runtime=<buildId>&snapshots=snapshots-0031` —
-`tests/adversarial/resident-url.sh` prints it; `resident-gate.sh` runs the
-e2e suite, the pump-vs-resident `editing-latency.mjs` benchmark, and the
-compiler battery against that pairing.
+`?runtime=<buildId>&snapshots=snapshots-0031` (`?resident=` is ignored since
+2026-09-04) — `tests/adversarial/resident-url.sh` prints it;
+`resident-gate.sh` runs the e2e suite, the `editing-latency.mjs` benchmark
+and the compiler battery against that pairing.
 
 Integration lessons already banked (all reused by the browser phase):
 opening sequence is `initialize` then `didOpen` with NOTHING between;
@@ -336,3 +355,6 @@ is now a hard cap of 220 (was 160) for the contract below.
   this.lean.terminate(); }` — the compiler then holds every adapter (the
   page's and lean4game's) to the synchronous kill; without it the kill stays
   deferred and reload storms stack heaps again.
+Two fixes landed on the way to parity: the front door fails import-line completions fast by *position* (a status-based rule raced the keystroke's own header status and hid Monaco's suggest widget; HARDENING #45), and the pump shim stops counting kind-2 (fatalError) progress entries as in-flight work and lets every published header failure set the sticky flag the drain reads (HARDENING #46). `?resident=0` kept the pump reachable for this measurement; W5 is closed by attribution (HARDENING #44).
+
+**2026-09-04 (later still), the pump transport is removed at the page level.** The shim (`frontend/src/watchdog-shim.ts`), the umbrella rewrite (`src/runtime/umbrella.ts`), the batch app (`src/app.ts`), the worker's `lsp-init`/`lsp-send`/`lsp-threads` and dead `lsp-resident-*` ops, the client's compiling/ready mirror, the Node pump probe (`pipeline/lsp/lsp-pump-probe.mjs`) and the harness's pump lanes are deleted; `?resident=` is ignored. The table above is the last A/B measurement there will be. `ResidentSession` is a module (`frontend/src/resident-session.ts`, `ResidentPolicy {snapshotsFor?, initialBytesFor?, maximumBytes?}`) for the lean4game port; the relay carries `lastDeath` and remembers `restartOpts` across a crash reboot with an unchanged header; the breaker posts one in-document diagnostic. The kernel keeps its pump exports until the next pairing bump (docs/PUMP-REMOVAL-ASSESSMENT-2026-09-04.md, step 3; pipeline/toolchain/PATCHES.md "Retirement at the next pairing bump").

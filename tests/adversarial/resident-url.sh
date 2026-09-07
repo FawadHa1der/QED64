@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Prints the resident dev URL for the pairing the dev server actually serves:
+# Prints the dev URL for the pairing the dev server actually serves (the page
+# has one transport, so only the ?runtime= / ?snapshots= overrides remain):
 # public/snapshots-0031 is a symlink into work/staging/<runtime-id>/snapshots,
 # and that directory name is the runtime id the page must boot (KERNEL-PIN:
 # snapshots are binary-paired to one runtime). Falls back to the newest
@@ -11,4 +12,4 @@ if [[ ! "$H" =~ ^wasm64-[0-9a-f]+$ ]]; then
   LOG=$(ls -t work/chunk-*.log 2>/dev/null | head -1)
   H=$(grep -oE 'runtime wasm64-[0-9a-f]+' "$LOG" | tail -1 | sed 's/runtime //')
 fi
-echo "http://localhost:${PORT}/?resident=1&runtime=${H}&snapshots=snapshots-0031${2:+&$2}"
+echo "http://localhost:${PORT}/?runtime=${H}&snapshots=snapshots-0031${2:+&$2}"

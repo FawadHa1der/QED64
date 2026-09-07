@@ -139,6 +139,14 @@ loader and delivery patterns follow the Browser64 workspace evidence.
 ## Transport
 
 The editor talks to the Lean worker over one transport, the **resident**
+worker: one real `lean --worker` stays alive in the tab, header changes are
+resolved in-process against the preloaded environments, and the page sees
+only facts the worker reports (`docs/ARCHITECTURE.md`, "Transport";
+`docs/RESIDENT-WORKER-PLAN.md` for the plan and the A/B record). The older
+**pump** transport (a header-probe shim with in-place restarts) left the page
+on 2026-09-04; a `?resident=` query is ignored.
+
+The editor talks to the Lean worker over one transport, the **resident**
 one: a real `lean --worker` stays alive on a pthread inside
 `public/workers/lean.worker.js`, the page's LSP frames reach its stdin
 through a futex ring, and a pure front door (`public/workers/lsp-front-door.js`)
