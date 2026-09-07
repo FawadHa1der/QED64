@@ -21,7 +21,7 @@ export interface RelaySession {
    * dispose() alone hard-terminates 250 ms later behind a timer a closing document never runs (reload storms
    * stacked dead multi-GiB heaps; the pump's disposeHard). Optional ONLY while main.ts's inline ResidentSession
    * predates it: integration makes this `terminate(): void` so the compiler holds resident-session.ts to it. */
-  terminate?(): void;
+  terminate(): void;
 }
 export interface RestartOptions { snapshots?: string[]; warmHeader?: string; packs?: string[] } // boot inputs for a replacement session (S4 "Load exact imports")
 type Reason = "boot" | "crash" | "heartbeat" | "user" | "bootFailed";
@@ -130,7 +130,7 @@ export class LspRelay {
   }
 
   /** Unload (§2.3): dispose, then the synchronous kill — both complete inside the pagehide handler's own turn. */
-  unload(): void { this.session.dispose(); this.session.terminate?.(); }
+  unload(): void { this.session.dispose(); this.session.terminate(); }
 
   private attach(s: RelaySession): RelaySession {
     this.lastStatus = null;

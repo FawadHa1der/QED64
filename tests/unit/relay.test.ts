@@ -567,15 +567,4 @@ describe("relay contract: unload is synchronous", () => {
     expect(live.disposed).toBe(true);
     expect(live.terminated).toBe(true);
   });
-  it("tolerates an adapter without terminate() (the kill is then LeanSession.dispose()'s deferred one)", async () => {
-    await bootCurrent();
-    const live = current();
-    // FakeSession.terminate is a prototype method, so `delete live.terminate` would be a no-op (the test would
-    // silently re-run the previous one); an own property shadowing it with undefined is what "no terminate()" is.
-    Object.defineProperty(live, "terminate", { value: undefined, configurable: true, writable: true });
-    expect(typeof live.terminate).toBe("undefined");
-    expect(() => relay.unload()).not.toThrow();
-    expect(live.disposed).toBe(true);
-    expect(live.terminated).toBe(false); // the optional-chaining branch: nothing was called unconditionally
-  });
 });

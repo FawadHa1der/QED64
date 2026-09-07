@@ -199,7 +199,7 @@ const PHASE_LABEL: Record<RelayStatus["phase"], string> = {
  * memory of the death that halted it (`onDied(code, reason, message)`, or
  * the boot rejection), null once a session reaches `ready`; optional here so
  * the page compiles against a relay that does not carry it yet. */
-type PageStatus = RelayStatus & { lastDeath?: { reason: string; message: string } | null };
+type PageStatus = RelayStatus; // lastDeath is on RelayStatus since the relay contract (2026-09-07)
 
 // GAP 2 (page side): a halt BEFORE any session ever reached `ready` is a boot
 // that never worked — a Memory64 reservation refused, a capability missing,

@@ -295,16 +295,17 @@ After the loop opens, `loadSnapshot` and `compile` are refused `BAD_STATE`
 (invariant K-i: no environment is published after open, so Lean's
 `unchanged` reuse is sound).
 
-*The stdin ring.* `RESIDENT_RING_CAP` = 4 MiB at the time of writing (one
-constant in `lean.worker.js`; the pump-removal assessment's gap 6 proposes
-64 MiB so that documents over 2 MiB are not refused): a 16-byte control
+*The stdin ring.* `RESIDENT_RING_CAP` = 64 MiB (one constant in
+`lean.worker.js`; raised from 4 MiB on 2026-09-07, the pump-removal
+assessment's gap 6, so that whole-document frames over 2 MiB are no longer
+refused — `pipeline/snapshot/resident-probe.mjs` pins the same value): a 16-byte control
 block (`READ`, `WRITE`, `CLOSED`, `WAKE` as `Int32`, `Atomics.notify` on
 `WAKE`) followed by the byte ring, `malloc`'d in the shared Memory64 heap.
 The outer worker is Emscripten's main thread (it services Lean's proxied
 stdout and filesystem calls) so it must never `Atomics.wait`: writes are
 non-blocking, whole frames in FIFO order; a frame that meets a full ring
 parks the pump (`setTimeout(…, 2)`) and reports `{kind:"ring", busy:true}`
-to the front door; a frame larger than half the ring (2 MiB) is refused
+to the front door; a frame larger than half the ring (32 MiB) is refused
 before it is queued and counted in `ring.refused`. Frames are
 `Content-Length: N\r\n\r\n` + UTF-8 body.
 
@@ -408,11 +409,12 @@ packs: ["essential"]})`: the essential olean pack is installed *before* boot
 exact-first — the FileWorker then serves this header `exact` (no umbrella
 names, no collision) while every other header stays covered. For a header
 that is only one of the four aliases the exact environment *is* the
-umbrella, so no offer is useful there — the assessment's gap 1. As of
-2026-09-07 the front door's publish branch gates the fact on
-`header.mode === "covered"` alone (an alias-only header still gets the
-offer); closing the gap means also gating on the normalized `key` the header
-status carries.
+umbrella, so no offer is useful there — the assessment's gap 1, closed on
+2026-09-07: the front door's publish branch gates the fact on
+`header.mode === "covered"` AND on the normalized `key` the header status
+carries — a key that is `Init` plus only umbrella aliases
+(`UMBRELLA_ALIASES`, exported by the front door) produces no collision fact
+and no note; the "already declared" error is then simply the user's error.
 
 **The page** (`frontend/src/main.ts`): the pill is `render(status)` —
 `PHASE_LABEL[phase]`, busy for `booting | starting | elaborating | dead`,
@@ -426,7 +428,7 @@ editor }`; `relay.session.lean` is the `LeanSession`
 (`relay.session.lean.telemetry()` feeds the heap meter and the e2e memory
 rows), `relay.stats` the counters the e2e lane diffs.
 
-Numbers that are load-bearing: ring 4 MiB (frames > 2 MiB refused);
+Numbers that are load-bearing: ring 64 MiB (frames > 32 MiB refused);
 heartbeat 2 s, loss 6 s + 2 s probe; breaker 3 deaths / 120 s; reboot
 settle 1.5 s; boot 2 GiB initial / 6 GiB cap; measured on the served 0032
 pairing: covered header switch 322 ms edit → ready, boot 12.5 s warm, kill
