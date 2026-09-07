@@ -2,9 +2,10 @@
 //
 // One LeanSession owns one Worker running the persistent wasm64 runtime.
 // Requests are correlated by id; progress/log events stream to subscribers.
-// A session that dies (capability failure, runtime abort) reports `dead` and
-// the app creates a fresh session — Worker teardown is the only reliable way
-// to reclaim the resident Lean environment.
+// A session that dies (capability failure, runtime abort, heartbeat loss)
+// reports it exactly once through `onDied` and the relay creates a fresh
+// session — Worker teardown is the only reliable way to reclaim the resident
+// Lean environment.
 
 export const PROTOCOL = 1;
 
@@ -93,8 +94,6 @@ export interface WorkerError {
   recoverable: boolean;
 }
 
-export type SessionState = "starting" | "booting" | "ready" | "compiling" | "dead";
-
 /** One JSON-RPC message on the resident LSP channel (either direction). */
 export interface JsonRpcMessage {
   jsonrpc: "2.0";
@@ -132,8 +131,8 @@ export interface WorkerStatus {
   /** The front door's collision fact (`statusOf().collision`; §3 row 8,
    * HARDENING #43): names the worker's last publish reported "already
    * declared" under a COVERED header, null after a clean burst. Optional
-   * because only the resident front door produces it; the pump path's
-   * status never carries it. */
+   * only for the relay's pre-status placeholder (before the first `status`
+   * event); every event the session delivers carries it (null when none). */
   collision?: { names: string[]; version: number | null } | null;
 }
 
@@ -172,10 +171,12 @@ export class LeanSession {
    * Serializing here makes that guard unreachable from a single session
    * regardless of caller timing. */
   private turn: Promise<unknown> = Promise.resolve();
-  state: SessionState = "starting";
+  /** The runtime is gone (worker crash, unrecoverable error reply, dispose):
+   * `exclusive()` rejects queued turns instead of posting to a terminated
+   * worker and hanging forever. The typed death fact itself is `onDied`. */
+  private dead = false;
   onProgress: (event: ProgressEvent) => void = () => {};
   onLog: (stream: string, text: string) => void = () => {};
-  onStateChange: (state: SessionState) => void = () => {};
   /** A server frame from the resident front door (rebased to client versions). */
   onLsp: (msg: JsonRpcMessage) => void = () => {};
   onStatus: (status: WorkerStatus) => void = () => {};
@@ -191,7 +192,7 @@ export class LeanSession {
     this.onWorkerMessage = (e) => { if (!this.detached) this.dispatch(e.data); };
     this.onWorkerError = (e) => {
       if (this.detached) return;
-      this.transition("dead");
+      this.dead = true;
       const error = Object.assign(new Error(`Worker crashed: ${e.message}`), { code: "WORKER_CRASHED" });
       for (const p of this.pending.values()) p.reject(error);
       this.pending.clear();
@@ -229,12 +230,6 @@ export class LeanSession {
     this.worker.postMessage({ protocol: PROTOCOL, type: "lsp", msg, ...(replay ? { replay: true } : {}) });
   }
 
-  private transition(next: SessionState) {
-    if (this.state === next) return;
-    this.state = next;
-    this.onStateChange(next);
-  }
-
   private dispatch(msg: any) {
     if (!msg || msg.protocol !== PROTOCOL) return;
     switch (msg.type) {
@@ -251,13 +246,11 @@ export class LeanSession {
         // silently dropped it once; keep the list and WorkerStatus in step.
         else if (msg.kind === "status") this.onStatus({ phase: msg.phase, version: msg.version ?? null, header: msg.header ?? null, ring: msg.ring, pool: msg.pool, dropped: msg.dropped ?? 0, collision: msg.collision ?? null });
         else if (msg.kind === "heartbeat") this.armHeartbeat();
-        // `died` is a fact for the typed listener only: the legacy `state`
-        // mirror stays as it was so the shipped pump path (which keys on
-        // error replies, not on this event) is unchanged.
+        // The worker's one death fact (W2): code, reason and the message the
+        // relay carries into its status (`lastDeath`) for the page to render.
         else if (msg.kind === "died") this.died(msg.code ?? null, String(msg.reason ?? "died"), String(msg.message ?? ""));
         return;
       case "ready": {
-        this.transition("ready");
         const p = this.pending.get(msg.requestId);
         if (p) {
           this.pending.delete(msg.requestId);
@@ -266,7 +259,6 @@ export class LeanSession {
         return;
       }
       case "result": {
-        if (this.state === "compiling") this.transition("ready");
         const p = this.pending.get(msg.requestId);
         if (p) {
           this.pending.delete(msg.requestId);
@@ -283,11 +275,9 @@ export class LeanSession {
         }
         if (!error.recoverable) {
           // The runtime is gone: every other in-flight request dies with it.
-          this.transition("dead");
+          this.dead = true;
           this.rejectAll(Object.assign(new Error(`Worker unrecoverable: ${error.message}`), { code: error.code }));
           this.died(null, error.code, error.message);
-        } else if (this.state === "compiling") {
-          this.transition("ready");
         }
         return;
       }
@@ -300,7 +290,7 @@ export class LeanSession {
    * terminated worker and hanging forever. */
   private exclusive<T>(op: () => Promise<T>): Promise<T> {
     const run = (): Promise<T> =>
-      this.state === "dead"
+      this.dead
         ? Promise.reject(Object.assign(new Error("Session is dead; request not sent."), { code: "DEAD" }))
         : op();
     const turn = this.turn.then(run, run);
@@ -308,7 +298,10 @@ export class LeanSession {
     return turn;
   }
 
-  private request<T>(type: string, payload: Record<string, unknown> = {}, transfer: Transferable[] = []): Promise<T> {
+  /** One correlated worker request. Public for the raw taps the page and the
+   * harness use (`relay.session.lean.request("telemetry")`); the typed
+   * methods below are the product surface. */
+  request<T>(type: string, payload: Record<string, unknown> = {}, transfer: Transferable[] = []): Promise<T> {
     const requestId = `r${(this.seq += 1)}`;
     return new Promise<T>((resolve, reject) => {
       this.pending.set(requestId, { resolve: resolve as (v: unknown) => void, reject });
@@ -316,12 +309,7 @@ export class LeanSession {
     });
   }
 
-  capabilities(): Promise<Capabilities> {
-    return this.request("capabilities");
-  }
-
   async boot(config: BootConfig): Promise<ReadyInfo> {
-    this.transition("booting");
     // Transfer byte-backed pack buffers instead of structured-cloning ~GBs.
     // Transfer DETACHES the page-side buffers: reject already-detached ones
     // up front (a re-boot must reinstall memory-backed profiles), and report
@@ -339,20 +327,11 @@ export class LeanSession {
         transfer.push(pack.bytes.buffer);
       }
     }
-    const ready = await this.request<ReadyInfo>("boot", { config }, transfer);
-    this.transition("ready");
-    return ready;
+    return this.request<ReadyInfo>("boot", { config }, transfer);
   }
 
   compile(source: string, fileName?: string): Promise<CompileResult> {
-    return this.exclusive(async () => {
-      this.transition("compiling");
-      try {
-        return await this.request<CompileResult>("compile", { input: { source, fileName } });
-      } finally {
-        if (this.state === "compiling") this.transition("ready");
-      }
-    });
+    return this.exclusive(() => this.request<CompileResult>("compile", { input: { source, fileName } }));
   }
 
   loadSnapshot(
@@ -386,17 +365,14 @@ export class LeanSession {
   /** Deliberate teardown. Listeners detach FIRST (§2.2 L2): nothing the
    * dying worker still posts, and nothing this method does, reaches
    * `onLsp`/`onStatus`/`onDied` — a disposed session is never a death, so a
-   * relay reboot cannot re-enter death handling (bug class C4). The legacy
-   * `state`/`onStateChange` mirror below is left exactly as shipped for the
-   * pump path (watchdog-shim.ts keys its pending-death bookkeeping on it)
-   * until S6 deletes both. */
+   * relay reboot cannot re-enter death handling (bug class C4). */
   dispose() {
     this.detached = true;
     clearTimeout(this.heartbeatTimer);
     this.onLsp = () => {};
     this.onStatus = () => {};
     this.onDied = () => {};
-    this.transition("dead");
+    this.dead = true;
     this.rejectAll(Object.assign(new Error("Session disposed."), { code: "DISPOSED" }));
     // The ack can no longer be observed (listeners are gone); the worker
     // still closes itself on `dispose`, and the terminate below is the floor.

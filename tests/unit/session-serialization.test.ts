@@ -95,7 +95,6 @@ describe("LeanSession runtime-RPC serialization", () => {
     expect(compileMsg).toHaveLength(1);
     worker.reply(compileMsg[0]!.requestId, { type: "result", result: COMPILE_RESULT });
     await expect(compilePromise).resolves.toEqual(COMPILE_RESULT);
-    expect(session.state).toBe("ready");
   });
 
   it("runs concurrent compiles one at a time, in order", async () => {

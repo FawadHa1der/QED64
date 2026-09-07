@@ -35,33 +35,34 @@ let M = null; // the live Emscripten module (window.Module is the glue's)
 let sink = null;
 
 // ---------------------------------------------------------------------------
-// LSP mode (the pump path's `lsp-init`, patch 0018, and the resident path's
-// `lsp-resident-init`, patch 0031)
+// LSP mode (the resident FileWorker, patch 0031; opened by the front door
+// below once the page arms it)
 //
-// In both modes the Lean FileWorker writes Content-Length-framed JSON-RPC to
-// stdout. Frames are read BYTE BY BYTE (spec W1): `installStdoutTap` swaps
-// the stdout TTY's ops so every byte reaches the shared decoder in
-// lsp-frames.js the moment it is written. The glue's default `put_char`
-// buffers until byte 10 and a frame body has no trailing newline, so under
-// the old print() path the last frame of every burst sat in the TTY buffer
-// until the NEXT write — the "stuck last frame" that the shim's tickler and
-// the resident probe's tickler existed to flush (bug 1, HARDENING #27).
-// Frames are byte-exact now: no newline heuristics, no CR/LF skipping, no
-// orphan resync. Non-frame stdout bytes (library progress lines until the
-// kernel's trace import lands, spec K3) surface as `log` events and are
-// counted for the gate's `nonFrameStdoutBytes === 0` assertion.
+// The Lean FileWorker writes Content-Length-framed JSON-RPC to stdout. Frames
+// are read BYTE BY BYTE (spec W1): `installStdoutTap` swaps the stdout TTY's
+// ops so every byte reaches the shared decoder in lsp-frames.js the moment
+// it is written. The glue's default `put_char` buffers until byte 10 and a
+// frame body has no trailing newline, so under the old print() path the last
+// frame of every burst sat in the TTY buffer until the NEXT write — the
+// "stuck last frame" that the resident probe's tickler existed to flush
+// (bug 1, HARDENING #27). Frames are byte-exact now: no newline heuristics,
+// no CR/LF skipping, no orphan resync. Non-frame stdout bytes (library
+// progress lines until the kernel's trace import lands, spec K3) surface as
+// `log` events and are counted for the gate's `nonFrameStdoutBytes === 0`
+// assertion.
 // ---------------------------------------------------------------------------
 // The decoder is shared with Node's resident-probe (one parser, not two that
 // drift — architecture review A1). Absent only under the vitest vm harness,
 // which loads lsp-frames.js into the sandbox itself.
 //
 // lsp-front-door.js is deliberately NOT loaded here: it is imported lazily by
-// `frontDoorApply` on the first `lsp`/`lsp-arm` message. The pump path never
-// sends either, and lean4game vendors this worker as a fixed closure
-// (sync-qed64.sh PATHS + stage-game-assets.sh copy lean.worker.js,
-// snapshot-prefetch.worker.js and lsp-frames.js by name) — an unconditional
-// import of a file that closure lacks would throw at script load, never post
-// {type:"boot"}, and hang every game session (review fix 3).
+// `frontDoorApply` on the first `lsp`/`lsp-arm` message. A consumer that only
+// ever compiles (batch `compile` + `write-files`, the shape lean4game vendors
+// as a fixed closure — sync-qed64.sh PATHS + stage-game-assets.sh copy
+// lean.worker.js, snapshot-prefetch.worker.js and lsp-frames.js by name)
+// never loads it; an unconditional import of a file such a closure lacks
+// would throw at script load, never post {type:"boot"}, and hang every
+// session (review fix 3).
 if (typeof importScripts === "function") {
   try {
     importScripts("lsp-frames.js");
@@ -99,11 +100,11 @@ function installStdoutTap() {
         event(null, "log", { stream: "stderr", text: `lsp: unparseable ${body.length}-char frame` });
         return;
       }
-      // Front-door sessions see every server frame through the machine
-      // (inbound version rebasing, status from fileProgress/headerStatus —
-      // §2.2(e)); the pump / lsp-resident-init transports get it raw.
-      if (frontDoor) frontDoorApply({ kind: "server", msg });
-      else event(null, "lsp", { msg });
+      // Every server frame goes through the machine (inbound version
+      // rebasing, status from fileProgress/headerStatus — §2.2(e)): the loop
+      // only ever opens from the front door, so one exists whenever the tap
+      // is live.
+      frontDoorApply({ kind: "server", msg });
     },
     onJunk: (line) => event(null, "log", { stream: "stdout", text: line }),
   });
@@ -130,13 +131,15 @@ function installStdoutTap() {
 // Resident FileWorker transport (patch 0031, docs/RESIDENT-WORKER-PLAN.md):
 // the REAL `lean --worker` loop runs on the application pthread and reads
 // stdin from a futex ring in shared memory; stdout keeps the normal proxied
-// path, so the per-byte tap above serves both transports unchanged. The pump
-// exports (lspInit/lspSend) coexist — one binary, both modes.
+// path, so the per-byte tap above serves it unchanged.
 // ---------------------------------------------------------------------------
-// 4 MiB (spec W4): at least 4× the largest full-text frame the shim may send
-// once the wire is full-text (change=1); a frame over half the ring is
-// refused with a structured error instead of parking the pump forever.
-const RESIDENT_RING_CAP = 4 << 20;
+// 64 MiB (spec W4; pump-removal assessment gap 6): the wire is full-text
+// (change=1), so every didChange carries the whole document, and a frame over
+// half the ring (32 MiB) is refused with a structured error instead of
+// parking the pump forever. The old 4 MiB cap refused documents past 2 MiB —
+// an order of magnitude outside the product envelope, but a refusal the
+// editor could not explain. The ring is one wasm allocation per session.
+const RESIDENT_RING_CAP = 64 << 20;
 const RESIDENT_IDX = { READ: 0, WRITE: 1, CLOSED: 2, WAKE: 3 };
 let residentRingPtr = 0; // control words at ptr, byte ring at ptr + 16
 let residentMode = false;
@@ -161,8 +164,10 @@ const residentQueue = [];
 let residentPumping = false;
 /** A frame larger than half the ring could never be written without the
  * consumer draining mid-frame, and a parked pump blocks every later send:
- * refuse it (with `.bytes`) before it is queued — and, for the opening
- * sequence, before the runtime is touched (see residentInit). */
+ * refuse it (with `.bytes`) before it is queued. The front door counts the
+ * refusal (`status.ring.refused`) and logs it; the machine's version
+ * bookkeeping already moved on, so the next full-text didChange resyncs the
+ * FileWorker's document. */
 function residentCheckFrame(payload) {
   if (payload.length > RESIDENT_RING_CAP / 2) {
     throw Object.assign(
@@ -224,11 +229,15 @@ function residentFrame(json) {
   return frame;
 }
 
-/** Open the resident loop: ring + callMain("--worker"). Shared by the
- * lsp-resident-init transport and the front door (§2.4 Ready → Open); the
- * caller writes the opening sequence. Throws before any state change. */
+/** Open the resident loop: ring + callMain("--worker"), for the front door
+ * (§2.4 Ready → Open); the caller writes the opening sequence. Throws before
+ * any state change. */
 function residentOpenLoop() {
   if (state !== "ready") throw new Error(`Worker is '${state}', not ready.`);
+  // One worker, one session (W2): after `died` the runtime's session is gone
+  // and the latch has fired, so a second loop here could never report its
+  // own death — refuse rather than swallow it (the C10 class).
+  if (died) throw new Error("worker already died; dispose and boot a new worker");
   if (typeof M._lean_browser64_configure_input_ring !== "function" ||
       typeof M._lean_wasm_shell_mark_preinitialized !== "function" ||
       typeof M.callMain !== "function") {
@@ -245,70 +254,8 @@ function residentOpenLoop() {
   if (Number(status) !== 0) throw new Error(`resident stdin ring rejected (${status})`);
   residentMode = true;
   // reportDelayMs=0: the reporter's first act is IO.sleep(reportDelayMs) on
-  // a task pthread (the pump path sets the same via wasmLspInit).
+  // a task pthread.
   M.callMain(["--worker", "-Dserver.reportDelayMs=0"]);
-}
-
-/** Start the resident FileWorker: ring + callMain("--worker") + the opening
- * sequence. The FileWorker reads `initialize` then `didOpen` DIRECTLY —
- * nothing may come between them — and never answers `initialize` (that is
- * the watchdog's job; the shim answers it to the client itself). */
-function residentInit(msg) {
-  try {
-    if (state !== "ready") throw new Error(`Worker is '${state}', not ready.`);
-    // One worker, one session (W2): after `died` the runtime's session is
-    // gone and the latch has fired, so a second session here could never
-    // report its own death — refuse rather than swallow it (the C10 class).
-    if (died) throw new Error("worker already died; dispose and boot a new worker");
-    if (residentMode) throw new Error("resident FileWorker already started in this process");
-    if (typeof M._lean_browser64_configure_input_ring !== "function" ||
-        typeof M._lean_wasm_shell_mark_preinitialized !== "function" ||
-        typeof M.callMain !== "function") {
-      throw new Error("runtime lacks the resident transport exports (patch 0031)");
-    }
-    // Build and size-check BOTH opening frames before the runtime is touched:
-    // a didOpen over cap/2 is refused with the worker exactly as it was, not
-    // after mark_preinitialized + ring + callMain have left a FileWorker
-    // running whose frames go nowhere and whose next init is "already started".
-    const initFrame = residentCheckFrame(residentFrame(JSON.stringify({
-      jsonrpc: "2.0", id: 0, method: "initialize", params: JSON.parse(msg.input.initParams || "{}"),
-    })));
-    const openFrame = residentCheckFrame(residentFrame(JSON.stringify({
-      jsonrpc: "2.0", method: "textDocument/didOpen", params: JSON.parse(msg.input.didOpen),
-    })));
-    residentOpenLoop();
-    residentRingWrite(initFrame);
-    // Acked only once the whole opening sequence is in the ring (W4); a death
-    // meanwhile fails the init instead of leaving it pending.
-    residentRingWrite(openFrame, () => {
-      event(null, "log", { stream: "stderr", text: "[resident] FileWorker started on the application pthread" });
-      post({ type: "result", requestId: msg.requestId, result: { operation: "lsp-resident-init", tag: 0 } });
-    }, (error) => fail(msg.requestId, error, "LSP_RESIDENT_INIT_FAILED", false));
-  } catch (error) {
-    lspMode = false;
-    // An oversized opening frame was refused before anything ran: the worker
-    // is intact, so the port may retry with a smaller document (recoverable).
-    const oversize = error && typeof error.bytes === "number";
-    fail(msg.requestId, error, "LSP_RESIDENT_INIT_FAILED", oversize, oversize ? { bytes: error.bytes } : undefined);
-  }
-}
-
-function residentSend(msg) {
-  try {
-    if (!residentMode) throw new Error("resident FileWorker not started");
-    // The result is the completion ack: posted inside the FIFO's `done`, i.e.
-    // after the frame's last byte is in the ring (spec W4; the old immediate
-    // ack let the port believe a parked frame had been delivered). If the
-    // worker dies first the ack fails (non-recoverable) instead of hanging.
-    residentRingWrite(residentFrame(msg.input.message), () => {
-      post({ type: "result", requestId: msg.requestId, result: { operation: "lsp-resident-send", tag: 0 } });
-    }, (error) => fail(msg.requestId, error, "LSP_RESIDENT_SEND_FAILED", false));
-  } catch (error) {
-    // An oversized frame is refused, not fatal: the session is intact and the
-    // port can decide what to do with `bytes` — so it is recoverable.
-    const oversize = error && typeof error.bytes === "number";
-    fail(msg.requestId, error, "LSP_RESIDENT_SEND_FAILED", oversize, oversize ? { bytes: error.bytes } : undefined);
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -337,7 +284,7 @@ let ringBusy = false;
 let heartbeat = null;
 let hostStatus = { phase: "booting", version: null, header: null, dropped: 0 };
 let lastStatusJson = "";
-let ringRefused = 0; // frames over cap/2 the ring refused (a > 2 MB document)
+let ringRefused = 0; // frames over cap/2 the ring refused (a > 32 MiB document)
 
 function poolSample() {
   // In a MODULARIZE glue `PThread` is factory-local; only an
@@ -424,39 +371,6 @@ function frontDoorArm(msg) {
   post({ type: "result", requestId: msg.requestId, result: { operation: "lsp-arm", open: residentMode } });
 }
 
-function lspInit(msg) {
-  try {
-    if (state !== "ready") throw new Error(`Worker is '${state}', not ready.`);
-    lspMode = true;
-    const rc = callP(M._lean_wasm_lsp_init, mkLeanString(msg.input.initParams), mkLeanString(msg.input.didOpen));
-    // wasmLspInit reports failure as a SUCCESSFUL IO returning 1 (its catch
-    // prints the error and returns 1) — the IO-level tag alone reads such a
-    // failure as success, which left the shim believing a session existed
-    // after a bad import ("send without a session" forever, diagnostics
-    // frozen). Unbox the returned value like loadSnapshot does.
-    const tag = ioResultTag(rc);
-    const scalar = unboxScalar(ioResultValue(rc));
-    // Preserve the RETURNED VALUE: 0 = session initialized, 1 = hard failure,
-    // 2 = header unresolvable with the previous session kept intact.
-    const value = tag !== 0 ? 1 : Number(scalar ?? 0n);
-    post({ type: "result", requestId: msg.requestId, result: { operation: "lsp-init", tag: value } });
-  } catch (error) {
-    lspMode = false;
-    fail(msg.requestId, error, "LSP_INIT_FAILED", false);
-  }
-}
-
-function lspSend(msg) {
-  try {
-    const rc = callP(M._lean_wasm_lsp_send, mkLeanString(msg.input.message));
-    const sTag = ioResultTag(rc);
-    const sVal = unboxScalar(ioResultValue(rc));
-    const sOk = sTag === 0 && (sVal === null || sVal === 0n);
-    post({ type: "result", requestId: msg.requestId, result: { operation: "lsp-send", tag: sOk ? 0 : 1 } });
-  } catch (error) {
-    fail(msg.requestId, error, "LSP_SEND_FAILED", false);
-  }
-}
 /** Write host-provided files into the worker's virtual FS (MEMFS). Game
  * builds use this to place `.lake/gamedata/*.json` where GameServer's
  * `Runner` reads them at proof-check time; generic for any small aux file.
@@ -521,13 +435,14 @@ function fail(requestId, error, code, recoverable, extra) {
 // replies (the boot's settled-once guard) and are not deaths of a session.
 // The payload carries `mode` because not every death is a crashed LSP
 // session: `reason:"exit"` with code 0 is `lean --worker` returning normally
-// (a watchdog restart request), and mode "batch" means no session existed —
-// the port must key on {mode, reason, code}, not on the event's presence.
+// (a watchdog restart request), and mode "batch" means no resident session
+// existed — the port must key on {mode, reason, code}, not on the event's
+// presence.
 let died = false;
 function die(code, reason, message) {
   if (died) return;
   died = true;
-  const mode = residentMode ? "resident" : lspMode ? "pump" : "batch";
+  const mode = residentMode ? "resident" : "batch";
   residentMode = false;
   if (heartbeat !== null) { clearInterval(heartbeat); heartbeat = null; }
   if (frontDoor) frontDoorApply({ kind: "died" });
@@ -564,7 +479,7 @@ self.addEventListener("unhandledrejection", (e) => {
   } else {
     // Post-boot with nothing in flight: a fact the port must hear once (W2)
     // rather than a log line it cannot act on. No exit code exists here.
-    // Only a worker with an LSP session (pump or resident) can die of it — a
+    // Only a worker with an open resident loop (`lspMode`) can die of it — a
     // batch worker's stray rejection (e.g. a best-effort OPFS `removeEntry`
     // in openRawSnapshot's self-heal) is a log line, not a false death.
     event(null, "log", { stream: "stderr", text: `unhandled rejection: ${error.message}` });
@@ -1130,8 +1045,8 @@ async function boot(msg) {
         }
         // A post-boot abort means the wasm runtime is gone for good: report
         // the in-flight request (if any) as unrecoverable and go dead. The
-        // error reply is what the pump path's port keys on; `died` is the
-        // one death fact (W2) for the resident port.
+        // error reply settles the batch caller (compile / loadSnapshot);
+        // `died` is the one death fact (W2) for the resident port.
         state = "dead";
         fail(currentRequest, new Error(`Lean runtime aborted: ${reason || "unknown"}`), "RUNTIME_ABORTED", false);
         die(null, "abort", String(reason || "unknown"));
@@ -1510,36 +1425,8 @@ self.addEventListener("message", (e) => {
         result: { operation: "telemetry", state, memory: memoryTelemetry(), status: frontDoor ? { ...hostStatus } : undefined },
       });
       break;
-    case "lsp-threads": {
-      const PT = typeof PThread !== "undefined" ? PThread : null;
-      post({
-        type: "result",
-        requestId: msg.requestId,
-        result: {
-          operation: "lsp-threads",
-          unused: PT?.unusedWorkers?.length ?? -1,
-          running: PT ? Object.keys(PT.pthreads ?? {}).length : -1,
-          lspBufLen: lspFrames ? lspFrames.pendingBytes : 0,
-          frames: lspFrames ? { ...lspFrames.stats } : null,
-          ringQueued: residentQueue.reduce((n, item) => n + item.payload.length - item.off, 0),
-        },
-      });
-      break;
-    }
-    case "lsp-init":
-      lspInit(msg);
-      break;
-    case "lsp-resident-init":
-      residentInit(msg);
-      break;
-    case "lsp-resident-send":
-      residentSend(msg);
-      break;
     case "lsp-arm":
       frontDoorArm(msg);
-      break;
-    case "lsp-send":
-      lspSend(msg);
       break;
     case "write-files":
       writeFiles(msg);
@@ -1564,8 +1451,10 @@ self.__qed64TestExports = {
   capabilities,
   createSharedMemory64,
   // Ring writer under test (tests/unit/ring-writer.test.ts): a fake shared
-  // memory stands in for the wasm heap, and `residentMode` is forced so
-  // residentSend's completion ack and cap/2 refusal run against the real code.
+  // memory stands in for the wasm heap, and `residentMode` is forced so the
+  // FIFO, the park/drain and the cap/2 refusal run against the real code;
+  // the front-door path on top is driven through `frontDoor.host` + the
+  // real `lsp` / `lsp-arm` dispatch.
   resident: {
     RESIDENT_RING_CAP,
     attachRing(memory, ctrlPtr) {
@@ -1573,19 +1462,8 @@ self.__qed64TestExports = {
       residentRingPtr = ctrlPtr;
       residentMode = true;
     },
-    // A fake Emscripten module with the three transport exports plus _malloc,
-    // and the `ready` state, so residentInit's preflight/refusal paths run
-    // against the real code without a runtime.
-    attachRuntime(fakeModule, memory) {
-      M = fakeModule;
-      bootMemory = memory;
-      state = "ready";
-      residentMode = false;
-      lspMode = false;
-    },
     residentRingWrite,
-    residentSend,
-    residentInit,
+    residentOpenLoop,
     residentFrame,
     die,
     snapshot: () => ({ died, residentMode, lspMode, queued: residentQueue.length, pumping: residentPumping }),
