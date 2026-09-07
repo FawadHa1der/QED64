@@ -161,9 +161,7 @@ export async function newSession(
   session.onLog = (stream: string, text: string) => console.debug(`[lean:${stream}] ${text}`);
   session.onProgress = (p: { phase: string; label?: string; loaded?: number; total?: number; unit?: string }) =>
     ui.progress(p.label ?? p.phase, { phase: p.phase, loaded: p.loaded, total: p.total, unit: p.unit });
-  session.onStateChange = (state: string) => {
-    if (state === "dead") onDead();
-  };
+  session.onDied = () => onDead();
   await session.boot({
     runtime: artifacts.runtime,
     // Maximum = address-space reservation, not commit — but it is also the

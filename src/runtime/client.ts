@@ -205,6 +205,10 @@ export class LeanSession {
   private died(code: number | null, reason: string, message: string) {
     if (this.diedReported || this.detached) return;
     this.diedReported = true;
+    // Every death path (worker `died` event and heartbeat loss included, not
+    // only a crash or an unrecoverable reply) closes the runtime to queued
+    // turns: nothing posts to a worker that no longer answers.
+    this.dead = true;
     clearTimeout(this.heartbeatTimer);
     this.onDied(code, reason, message);
   }

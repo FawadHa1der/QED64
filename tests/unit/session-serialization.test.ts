@@ -140,6 +140,23 @@ describe("LeanSession runtime-RPC serialization", () => {
     // The queued compile must never have been posted to the (dead) worker.
     expect(worker.ofType("compile")).toHaveLength(1);
   });
+
+  it("a worker `died` event closes the runtime to later turns (not only a crash or an unrecoverable reply)", async () => {
+    const first = session.compile("A");
+    await settle();
+    worker.reply(worker.ofType("compile")[0]!.requestId, { type: "result", result: COMPILE_RESULT });
+    await expect(first).resolves.toEqual(COMPILE_RESULT);
+
+    const deaths: unknown[] = [];
+    session.onDied = (code, reason, message) => deaths.push([code, reason, message]);
+    worker.reply("", { type: "event", kind: "died", code: 0, reason: "exit", message: "lean --worker returned", mode: "resident" });
+    expect(deaths).toEqual([[0, "exit", "lean --worker returned"]]);
+
+    // Between the death fact and the relay's dispose() a queued turn must
+    // reject instead of posting to a worker that no longer answers.
+    await expect(session.compile("B")).rejects.toMatchObject({ code: "DEAD" });
+    expect(worker.ofType("compile")).toHaveLength(1);
+  });
 });
 
 // The `status` event is rebuilt from declared fields on purpose (the event
