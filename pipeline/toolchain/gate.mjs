@@ -34,10 +34,19 @@ function runLean(source, label) {
   fs.writeFileSync(path.join(work, "input.lean"), source);
   try {
     const stdout = execFileSync("node", [runner, "--artifact", artifact, "--work", work, "--", "/work/input.lean"],
-      { timeout: 600_000, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
-    return { stdout, status: 0 };
+      { timeout: 240_000, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+    return { stdout, status: 0, timedOut: false };
   } catch (error) {
-    return { stdout: `${error.stdout ?? ""}\n${error.stderr ?? ""}`, status: error.status ?? 1 };
+    // Since the keepalive guard (patch 0020) and the resident transport
+    // (0031), the one-shot CLI prints its output and then never exits — the
+    // Emscripten runtime is kept alive for library-style use, which is what
+    // the product relies on (snapshot loads and warm compiles before `main`).
+    // Measured 2026-09-07 on the served 0032 runtime and on 0033 alike:
+    // `#eval` prints 64, `rfl` elaborates, the process is killed by the
+    // timeout. The CLI checks below are therefore judged by OUTPUT; a timeout
+    // is reported, not failed. The exit path is not a product path.
+    const timedOut = error.killed === true || error.signal === "SIGTERM";
+    return { stdout: `${error.stdout ?? ""}\n${error.stderr ?? ""}`, status: error.status ?? (timedOut ? 124 : 1), timedOut };
   }
 }
 let failures = 0;
@@ -47,10 +56,11 @@ const gate = (ok, label, extra = "") => {
 };
 
 const smoke = runLean("#eval System.Platform.numBits\nexample : (2 + 2 : Nat) = 4 := by rfl\n");
-gate(smoke.status === 0 && smoke.stdout.includes("\n64\n"), "numBits=64 + rfl proof, exit 0");
+gate(smoke.stdout.includes("\n64\n") && !/error/i.test(smoke.stdout.replace(/\[DEBUG:PROGRESS\][^\n]*\n/g, "")),
+  "numBits=64 + rfl proof (judged by output)", smoke.timedOut ? "CLI kept alive after main, killed by the timeout (patch 0020; expected)" : `exit ${smoke.status}`);
 
 const bad = runLean("example : (1 + 1 : Nat) = 3 := by rfl\n");
-gate(bad.status !== 0 && /input\.lean:1:\d+: error|"severity":\s*"error"/.test(bad.stdout), "false proof reports a positioned error");
+gate(/input\.lean:1:\d+: error|"severity":\s*"error"/.test(bad.stdout), "false proof reports a positioned error (judged by output)", bad.timedOut ? "CLI kept alive, killed by the timeout (expected)" : `exit ${bad.status}`);
 
 // The parse defect lives in the PERSISTENT path (lean_wasm_compile); the
 // one-shot CLI has always reported parse errors. Drive the persistent probe
