@@ -2,13 +2,17 @@
 // invariants docs/ARCHITECTURE-REEVALUATION-2-2026-09-02.md §2.3 names:
 // `hash(fake.lastFullText) === hash(lastText)` after every scenario, zero
 // client-facing messages synthesized except responses to failed in-flight
-// ids, `setTimeout` never called by the relay module, and a death carrying a
+// ids and the breaker's one halted note (PUMP-REMOVAL-ASSESSMENT gap 5),
+// `setTimeout` never called by the relay module, and a death carrying a
 // stale session changing nothing. The 1.5 s settle is injected (§8 item 9).
+// The pump-retirement contract (docs/RESIDENT-WORKER-PLAN.md "relay contract")
+// is pinned at the end: lastDeath, the halted note, restartOpts across a
+// crash, and a synchronous unload.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { LspRelay, type RelaySession, type RelayStatus, type RestartOptions } from "../../frontend/src/lsp-relay";
+import { LspRelay, isImport, type RelaySession, type RelayStatus, type RestartOptions } from "../../frontend/src/lsp-relay";
 import type { JsonRpcMessage as Msg, WorkerStatus } from "../../src/runtime/client";
 
 class FakeSession implements RelaySession {
@@ -18,6 +22,7 @@ class FakeSession implements RelaySession {
   readonly sent: Array<{ msg: Msg; replay: boolean }> = [];
   lastFullText: string | null = null;
   disposed = false;
+  terminated = false;
   started = false;
   armed = false;
   /** `sent.length` when arm() was called: proves the BootOk replay preceded the arm (§2.3 → §2.4 Ready → Open). */
@@ -55,6 +60,8 @@ class FakeSession implements RelaySession {
     // Like LeanSession.dispose(): an in-flight boot is rejected (DISPOSED).
     if (this.started) this.bootFailed(new Error("Session disposed."));
   }
+  /** The synchronous kill the relay's unload() must reach (the pump's disposeHard). */
+  terminate() { this.terminated = true; }
   methods() { return this.sent.map((s) => `${s.msg.method}${s.replay ? "(replay)" : ""}`); }
 }
 
@@ -111,11 +118,29 @@ describe("relay: line and timer budget (§8 item 9)", () => {
   it("owns no timer of any kind — the settle is injected", () => {
     expect(/setTimeout|setInterval|requestIdleCallback|requestAnimationFrame|performance\.now/.test(source)).toBe(false);
   });
-  it("parses no text: no regex literal over messages, no split/indexOf on text", () => {
-    expect(/\.split\(|\.match\(|\.test\(|\.exec\(|new RegExp/.test(source)).toBe(false);
+  it("parses no text beyond splitting it into lines: no regex literal, no match/test/exec, no other split", () => {
+    // The one text operation the pump's retirement added (gaps 2/5, restart options across a crash): the
+    // import lines, found with startsWith over `text.split("\n")` — never a regex, and exactly ONE such split
+    // (linesOf), so a second unrelated line split cannot slip in under the whitelist.
+    expect(source.split('.split("\\n")').length - 1).toBe(1);
+    const withoutLineSplit = source.replaceAll('.split("\\n")', "");
+    expect(/\.split\(|\.match\(|\.test\(|\.exec\(|new RegExp/.test(withoutLineSplit)).toBe(false);
   });
-  it("stays within the ~150-line budget (hard cap 160 including comments)", () => {
-    expect(source.split("\n").length).toBeLessThanOrEqual(160);
+  it("finds import lines exactly as the front door's and main.ts's IMPORT_LINE regex does (tabs, modifiers, order)", () => {
+    // The regex both public/workers/lsp-front-door.js and frontend/src/main.ts spell; the relay must agree line for
+    // line, or the halted note and the warm-compiled header it remembers a restart for would drift from them.
+    const IMPORT_LINE = /^\s*(?:public\s+|private\s+)?(?:meta\s+)?import\s+/;
+    const lines = [
+      "import Mathlib.Tactic", "  import Foo", "\timport\tFoo", "import  Foo", "public import X", "private import X",
+      "public\timport X", "meta import X", "public meta import X", "private\tmeta\timport X", " import Foo",
+      "import", "import\n", "importFoo", "meta public import X", "public private import X", "public  private import X",
+      "publicimport X", "metaimport X", "-- import Foo", "/- import -/", "theorem import_ok : True := trivial", "", "   ",
+      "open Nat in import X", "public", "private meta", "Import Foo", "IMPORT Foo",
+    ];
+    for (const line of lines) expect(isImport(line), JSON.stringify(line)).toBe(IMPORT_LINE.test(line));
+  });
+  it("stays within the line budget (hard cap 220 including comments; ~150 before the pump-retirement contract)", () => {
+    expect(source.split("\n").length).toBeLessThanOrEqual(220);
   });
 });
 
@@ -237,7 +262,8 @@ describe("relay: deaths (§2.3 SessionDied; §3 rows 9-11)", () => {
     relay.fromClient(request(9, "textDocument/hover"));
     relay.fromClient({ jsonrpc: "2.0", method: "$/lean/rpc/keepAlive", params: {} });
     await settle();
-    expect(toClient).toEqual([{ jsonrpc: "2.0", id: 9, error: { code: -32603, message: expect.stringContaining("halted") } }]);
+    expect(errorsToClient()).toEqual([{ jsonrpc: "2.0", id: 9, error: { code: -32603, message: expect.stringContaining("halted") } }]);
+    expect(toClient.filter((m) => m.error === undefined).map((m) => m.method)).toEqual(["textDocument/publishDiagnostics"]); // the halted note, once
     expect(FakeSession.all).toHaveLength(3);
     // The user edits: deaths reset, a fresh session boots, the edit reaches it.
     relay.fromClient(didChange(2, "AB"));
@@ -344,10 +370,212 @@ describe("relay: text-hash property", () => {
     await settle();
     // Every client-facing message was either the worker's initialize answer or
     // an error response to a client id — a failed in-flight request or a
-    // halted refusal — never anything synthesized.
-    expect(toClient.every((m) => m.id !== undefined)).toBe(true);
+    // halted refusal — never anything synthesized, except the breaker's one
+    // halted note per trip (gap 5).
+    const notes = toClient.filter((m) => m.id === undefined);
+    expect(notes.every((m) => m.method === "textDocument/publishDiagnostics")).toBe(true);
+    expect(notes).toHaveLength(relay.stats.breakerTrips);
     expect(toClient.filter((m) => m.result !== undefined).map((m) => m.id)).toEqual([0]);
     expect(errorsToClient()).toHaveLength(relay.stats.failedInFlight + haltedRefusals);
     expect(relay.stats.workerDeaths).toBeGreaterThan(0);
+  });
+});
+
+// ---- The pump-retirement contract (docs/RESIDENT-WORKER-PLAN.md "relay contract") ----
+
+const HEADER = "import Mathlib.Data.Real.Basic";
+const publishes = () => toClient.filter((m) => m.method === "textDocument/publishDiagnostics");
+
+describe("relay contract: lastDeath (gap 2 — the boot failure reason reaches the page)", () => {
+  it("is null until a death, then carries the worker's (reason, message) on status() and on every sink status", async () => {
+    relay.fromClient(didOpen(1, "A"));
+    expect(relay.status().lastDeath).toBeNull();
+    await bootCurrent();
+    current().onDied(137, "abort", "Lean runtime aborted: out of memory");
+    await settle();
+    expect(relay.status().lastDeath).toEqual({ reason: "abort", message: "Lean runtime aborted: out of memory" });
+    expect(statuses.at(-1)?.lastDeath).toEqual({ reason: "abort", message: "Lean runtime aborted: out of memory" });
+    await bootCurrent();
+  });
+  it("a start() rejection is reason 'bootFailed' with the rejection's message (Memory64 reservation, runtime fetch, pairing)", async () => {
+    await settle();
+    current().bootFailed(new Error("Memory64 reservation of 6 GiB refused"));
+    await settle();
+    expect(relay.status().lastDeath).toEqual({ reason: "bootFailed", message: "Memory64 reservation of 6 GiB refused" });
+    expect(relay.state).toEqual({ kind: "rebooting", reason: "bootFailed" });
+    await bootCurrent();
+  });
+  it("an arm() the worker refuses is 'bootFailed' with the worker's own words", async () => {
+    await settle();
+    current().armFails = true;
+    current().bootOk();
+    await settle();
+    expect(relay.status().lastDeath).toEqual({ reason: "bootFailed", message: "Worker is 'compiling', not ready" });
+    await bootCurrent();
+  });
+  it("survives the halt (the page reads it beside phase 'halted') and clears only when a session reports phase 'ready'", async () => {
+    relay.fromClient(didOpen(1, "A"));
+    for (let i = 0; i < 3; i += 1) { current().bootFailed(new Error(`boot ${i}`)); await settle(); clock += 1000; }
+    expect(relay.status()).toMatchObject({ phase: "halted", lastDeath: { reason: "bootFailed", message: "boot 2" } });
+    relay.fromClient(didChange(2, "AB"));
+    await bootCurrent();
+    // Serving is not yet ready: the death stands until the worker says so.
+    expect(relay.state.kind).toBe("serving");
+    expect(relay.status().lastDeath).toEqual({ reason: "bootFailed", message: "boot 2" });
+    const base: WorkerStatus = { phase: "elaborating", version: 2, header: null, ring: { bytesQueued: 0, refused: 0 }, pool: { unused: 3, running: 2 }, dropped: 0 };
+    current().onStatus(base);
+    expect(relay.status().lastDeath).not.toBeNull();
+    current().onStatus({ ...base, phase: "ready" });
+    expect(relay.status().lastDeath).toBeNull();
+    expect(statuses.at(-1)).toMatchObject({ phase: "ready", lastDeath: null });
+  });
+  it("a stale death sets nothing", async () => {
+    await bootCurrent();
+    const old = current();
+    old.onDied(null, "abort", "first");
+    await settle();
+    (relay as unknown as { onDied(s: RelaySession, r: string, m: string): void }).onDied.call(relay, old, "abort", "stale");
+    expect(relay.status().lastDeath).toEqual({ reason: "abort", message: "first" });
+    await bootCurrent();
+  });
+});
+
+describe("relay contract: the halted note (gap 5 — one whole-document publish replaces the dead session's markers)", () => {
+  const text = `-- a comment first\n${HEADER}\nimport Mathlib.Tactic\n\ninductive Tree\n`;
+  async function halt() {
+    for (let i = 0; i < 3; i += 1) { current().onDied(null, "abort", "x"); await settle(); clock += 1000; await settle(); }
+    expect(relay.state).toEqual({ kind: "halted" });
+  }
+  it("is exactly one severity-1 QED64 diagnostic on the first import line, spanning it, at the client's version", async () => {
+    relay.fromClient(initialize);
+    relay.fromClient(didOpen(1, "A"));
+    await bootCurrent();
+    relay.fromClient(didChange(7, text));
+    await halt();
+    expect(publishes()).toEqual([{
+      jsonrpc: "2.0",
+      method: "textDocument/publishDiagnostics",
+      params: {
+        uri: URI,
+        version: 7,
+        diagnostics: [{
+          range: { start: { line: 1, character: 0 }, end: { line: 1, character: HEADER.length } },
+          severity: 1,
+          source: "QED64",
+          message: "imports could not be loaded: the checker crashed repeatedly while processing this content. Edit the file (or pick an example from the menu) to restart it.",
+        }],
+      },
+    }]);
+    // A later didChange re-arms as before; the note is not re-posted, and the next session's own publish replaces it.
+    relay.fromClient(didChange(8, `${text}\n`));
+    expect(relay.state).toEqual({ kind: "rebooting", reason: "user" });
+    await bootCurrent();
+    expect(publishes()).toHaveLength(1);
+  });
+  it("sits on line 0 when no line is an import, and the front door's modifiers (public/private/meta) still count as imports", async () => {
+    relay.fromClient(didOpen(1, "theorem t : True := trivial\n"));
+    await bootCurrent();
+    await halt();
+    expect(publishes()[0]!.params).toMatchObject({ diagnostics: [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: "theorem t : True := trivial".length } } }] });
+    relay.fromClient(didChange(2, "\n  public meta import Foo.Bar\nimport Baz\n"));
+    await bootCurrent();
+    await halt();
+    expect(publishes()[1]!.params).toMatchObject({ version: 2, diagnostics: [{ range: { start: { line: 1, character: 0 }, end: { line: 1, character: "  public meta import Foo.Bar".length } } }] });
+    relay.fromClient(didChange(3, "import Baz\n")); // re-arm so the scenario ends served (the afterEach text invariant)
+    await bootCurrent();
+  });
+  it("an empty document still gets a 1-character range on line 0", async () => {
+    relay.fromClient(didOpen(1, ""));
+    await bootCurrent();
+    await halt();
+    expect(publishes()[0]!.params).toMatchObject({ diagnostics: [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } }] });
+    relay.fromClient(didChange(2, "x"));
+    await bootCurrent();
+  });
+  it("no document, no note", async () => {
+    await bootCurrent();
+    await halt();
+    expect(publishes()).toEqual([]);
+    expect(relay.status().phase).toBe("halted");
+  });
+});
+
+describe("relay contract: restart options outlive a crash while the header stands", () => {
+  const exact: RestartOptions = { snapshots: ["init", "mathlib"], warmHeader: `${HEADER}\nx`, packs: ["essential"] };
+  it("a death-reboot reuses the last restart(opts) when the import lines are unchanged (body edits do not count)", async () => {
+    relay.fromClient(didOpen(1, `${HEADER}\nx`));
+    await bootCurrent();
+    relay.restart(exact);
+    expect(relay.restartOpts).toEqual(exact);
+    await bootCurrent();
+    relay.fromClient(didChange(2, `${HEADER}\n\ntheorem t : 1 + 1 = 2 := by norm_num\n`));
+    current().onDied(null, "abort", "x");
+    await settle();
+    expect(current().opts).toEqual(exact);
+    expect(relay.restartOpts).toEqual(exact);
+    expect(relay.state).toEqual({ kind: "rebooting", reason: "crash" });
+    await bootCurrent();
+  });
+  it("a header change forgets them: the reboot after it boots the default (umbrella) session", async () => {
+    relay.fromClient(didOpen(1, `${HEADER}\nx`));
+    await bootCurrent();
+    relay.restart(exact);
+    await bootCurrent();
+    relay.fromClient(didChange(2, "import Mathlib.Data.Nat.Basic\nx"));
+    current().onDied(null, "abort", "x");
+    await settle();
+    expect(current().opts).toBeUndefined();
+    expect(relay.restartOpts).toBeNull();
+    // ...and they do not come back when the header is edited back: only a fresh restart() sets them.
+    relay.fromClient(didChange(3, `${HEADER}\nx`));
+    await bootCurrent();
+    current().onDied(null, "abort", "x");
+    await settle();
+    expect(current().opts).toBeUndefined();
+    await bootCurrent();
+  });
+  it("the breaker forgets them: the halted re-arm boots the default (umbrella) session even with the header unchanged, and only a later restart() sets them again", async () => {
+    // The exact import itself may be what kills the worker (an OOM warm compile); re-arming into the same mode
+    // would halt again on every body edit until the HEADER changed. The umbrella at least serves the header.
+    relay.fromClient(didOpen(1, `${HEADER}\nx`));
+    await bootCurrent();
+    relay.restart(exact);
+    await bootCurrent();
+    current().onDied(null, "abort", "x"); await settle(); clock += 1000; await settle();
+    expect(current().opts).toEqual(exact); // the first two reboots still reuse them
+    for (let i = 0; i < 2; i += 1) { current().onDied(null, "abort", "x"); await settle(); clock += 1000; await settle(); }
+    expect(relay.state).toEqual({ kind: "halted" });
+    expect(relay.restartOpts).toBeNull();
+    relay.fromClient(didChange(2, `${HEADER}\nxy`)); // a body-only edit: the header stands, the options are gone
+    expect(relay.state).toEqual({ kind: "rebooting", reason: "user" });
+    expect(current().opts).toBeUndefined();
+    await bootCurrent();
+    const other: RestartOptions = { snapshots: ["init"], warmHeader: "", packs: [] };
+    relay.restart(other);
+    expect(relay.restartOpts).toEqual(other);
+    await bootCurrent();
+    expect(current().opts).toEqual(other);
+  });
+});
+
+describe("relay contract: unload is synchronous", () => {
+  it("disposes and terminates the live session inside the caller's turn — nothing awaited, nothing deferred", async () => {
+    relay.fromClient(didOpen(1, "A"));
+    await bootCurrent();
+    const live = current();
+    relay.unload();
+    expect(live.disposed).toBe(true);
+    expect(live.terminated).toBe(true);
+  });
+  it("tolerates an adapter without terminate() (the kill is then LeanSession.dispose()'s deferred one)", async () => {
+    await bootCurrent();
+    const live = current();
+    // FakeSession.terminate is a prototype method, so `delete live.terminate` would be a no-op (the test would
+    // silently re-run the previous one); an own property shadowing it with undefined is what "no terminate()" is.
+    Object.defineProperty(live, "terminate", { value: undefined, configurable: true, writable: true });
+    expect(typeof live.terminate).toBe("undefined");
+    expect(() => relay.unload()).not.toThrow();
+    expect(live.disposed).toBe(true);
+    expect(live.terminated).toBe(false); // the optional-chaining branch: nothing was called unconditionally
   });
 });

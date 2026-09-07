@@ -384,6 +384,19 @@ export class LeanSession {
     // Give the worker a beat to acknowledge, then hard-terminate.
     setTimeout(() => this.worker.terminate(), 250);
   }
+
+  /** Kill the worker NOW. `dispose()` above defers its `Worker.terminate()`
+   * 250 ms behind a timer a closing document never runs, so a reload storm
+   * stacked dead multi-GiB heaps until the OS jetsammed the renderer — the
+   * pump shim's `disposeHard` terminated inline for exactly that reason, and
+   * the relay's `unload()` (pagehide) calls this through the adapter's
+   * `terminate()`. Disposes first when the caller has not (listeners detach,
+   * pending RPCs reject DISPOSED, never a death); the terminate is immediate
+   * and idempotent, so the polite dispose's own timer firing later is inert. */
+  terminate(): void {
+    if (!this.detached) this.dispose();
+    this.worker.terminate();
+  }
 }
 
 /** Fast local probe (mirrors the worker's, callable before any Worker spawn). */

@@ -181,3 +181,47 @@ describe("LeanSession status events", () => {
     ]);
   });
 });
+
+// The synchronous kill the relay's `unload()` (pagehide) reaches through the
+// adapter's `terminate()` (PUMP-REMOVAL-ASSESSMENT gap 4): `dispose()` alone
+// defers `Worker.terminate()` 250 ms behind a timer a closing document never
+// runs, which is how reload storms stacked dead multi-GiB heaps before the
+// pump's `disposeHard`. The relay tests prove the relay calls the hook; these
+// prove the hook kills the Worker inside the caller's own turn.
+describe("LeanSession.terminate() (the relay's unload floor)", () => {
+  it("dispose() alone leaves Worker.terminate() to a 250 ms timer", () => {
+    vi.useFakeTimers();
+    try {
+      session.dispose();
+      expect(worker.ofType("dispose")).toHaveLength(1);
+      expect(worker.terminated).toBe(false);
+      vi.advanceTimersByTime(249);
+      expect(worker.terminated).toBe(false);
+      vi.advanceTimersByTime(1);
+      expect(worker.terminated).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("terminate() kills the Worker synchronously — the polite dispose posted first, in-flight RPCs rejected DISPOSED, never a death", async () => {
+    let deaths = 0;
+    session.onDied = () => { deaths += 1; };
+    const inFlight = session.telemetry();
+    session.terminate();
+    expect(worker.terminated).toBe(true); // in this turn, nothing awaited
+    expect(worker.ofType("dispose")).toHaveLength(1);
+    await expect(inFlight).rejects.toMatchObject({ code: "DISPOSED" });
+    expect(deaths).toBe(0);
+    // Detached: a late worker message or error reaches nothing.
+    worker.reply("", { type: "event", kind: "died", code: 1, reason: "abort", message: "late" });
+    expect(deaths).toBe(0);
+  });
+  it("after dispose(), terminate() is the immediate floor and does not dispose twice", () => {
+    session.dispose();
+    session.terminate();
+    expect(worker.terminated).toBe(true);
+    expect(worker.ofType("dispose")).toHaveLength(1);
+    session.terminate(); // idempotent
+    expect(worker.ofType("dispose")).toHaveLength(1);
+  });
+});
