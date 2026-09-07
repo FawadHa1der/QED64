@@ -275,3 +275,49 @@ sharing (separate backlog line), and any Mathlib curation changes.
 | compiler battery | 49/49 (shared) | |
 
 Two fixes landed on the way to parity: the front door fails import-line completions fast by *position* (a status-based rule raced the keystroke's own header status and hid Monaco's suggest widget; HARDENING #45), and the pump shim stops counting kind-2 (fatalError) progress entries as in-flight work and lets every published header failure set the sticky flag the drain reads (HARDENING #46). `?resident=0` keeps the pump reachable while it is still served; W5 is closed by attribution (HARDENING #44).
+
+## Relay contract addendum (2026-09-07, pump retirement step 1)
+
+The page-side pump deletion (docs/PUMP-REMOVAL-ASSESSMENT-2026-09-04.md) moved
+four facts the pump shim used to own into the L3 relay
+(`frontend/src/lsp-relay.ts`), pinned in `tests/unit/relay.test.ts` under
+"relay contract". The relay still owns no timer and no regex; the one text
+operation it gained is `text.split("\n")` plus `startsWith` over the lines
+(the lint permits exactly that split and nothing else), and the line budget
+is now a hard cap of 220 (was 160) for the contract below.
+
+- **`status().lastDeath: { reason, message } | null`** (assessment gap 2).
+  Set by every counted death — `LeanSession.onDied(code, reason, message)`
+  is forwarded whole, and a `start()`/`arm()` rejection is
+  `{ reason: "bootFailed", message: <the rejection's message> }` — and
+  cleared when the current session reports phase `ready`. It survives the
+  breaker: the page maps `phase: "halted"` + `lastDeath` before any session
+  ever reached `ready` to its boot-failure card ("QED64 could not start:
+  <message>", Reload), and after one to the "halted — <reason>" pill.
+- **The halted note** (gap 5). The breaker branch (state → halted) posts ONE
+  `textDocument/publishDiagnostics` for `doc.uri` at the client's current
+  version: a single severity-1 diagnostic, source `QED64`, on the first
+  import line (else line 0) spanning that line, message "imports could not
+  be loaded: the checker crashed repeatedly while processing this content.
+  Edit the file (or pick an example from the menu) to restart it." LSP
+  diagnostics are a whole-document replacement per URI, so this clears the
+  dead session's stale markers; the next session's own first publish
+  replaces the note. No document, no note. A didChange re-arms as before.
+- **Restart options outlive a crash.** `restart(opts)` remembers `opts` as
+  `relay.restartOpts` together with the header it was chosen for (the text's
+  import lines — the same lines `ResidentSession` warm-compiles). A
+  death-reboot, and the didChange re-arm out of halted, reuse them while the
+  import lines still read the same (body edits do not count); a header
+  change forgets them, and only a fresh `restart()` sets them again. So
+  "Load exact imports" survives a crash instead of coming back covered with
+  the collision note. Open question for the integrator: the breaker does NOT
+  forget them, so a header whose exact import itself kills the worker
+  re-arms into the same mode until the header is edited.
+- **`unload()` is synchronous.** `LeanSession.dispose()` posts `dispose` and
+  hard-terminates the Worker 250 ms later on a timer — a closing document
+  never runs it, which is the reload-storm stacking the pump's
+  `disposeForUnload` (dispose + immediate `worker.terminate()`) fixed.
+  `RelaySession` therefore gains an optional `terminate?(): void`; `unload()`
+  calls `dispose()` then `terminate?.()` in the pagehide handler's own turn.
+  The adapter (`frontend/src/resident-session.ts`) must implement it with the
+  synchronous `Worker.terminate()`; without it the kill stays deferred.
