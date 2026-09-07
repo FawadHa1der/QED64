@@ -27,8 +27,13 @@ const GiB = 1073741824;
 export interface ResidentPolicy {
   /** Boot-only snapshot names, loaded in order before the loop opens. */
   snapshotsFor?(headerText: string): string[];
-  /** Initial commit of the shared Memory64 (bytes). */
-  initialBytesFor?(headerText: string): number;
+  /** Initial commit of the shared Memory64 (bytes). `snapshots` is the list
+   * this session WILL load — explicit restart options win over
+   * `snapshotsFor` — so a policy sizes the commit for what is streamed, not
+   * for what the header alone suggests (an umbrella boot on an Init-only
+   * header, e.g. a remembered "Load exact imports", must not commit small
+   * and then grow by gigabytes through the repeated-grow path). */
+  initialBytesFor?(headerText: string, snapshots: readonly string[]): number;
   /** Ceiling for the reservation ladder (bytes): the address space a dead-
    * but-not-yet-reclaimed page keeps holding across reloads. */
   maximumBytes?: number;
@@ -79,16 +84,30 @@ export const needsMathlib = (headerText: string): boolean => importedModulesOf(h
  * restarts with the umbrella (main.ts, `widenForMathlib`). */
 export const snapshotsForHeader = (headerText: string): string[] => (needsMathlib(headerText) ? ["init", "mathlib"] : ["init"]);
 
-/** The umbrella-sized initial commit (2 GiB) for a Mathlib document; 256 MiB
- * otherwise. Growing a shared Memory64 by gigabytes in many steps while
- * streaming the snapshot is where nondeterministic renderer crashes were
- * observed; one large initial commit sidesteps the repeated-grow path. */
-export const initialBytesForHeader = (headerText: string): number => (needsMathlib(headerText) ? 2048 * MiB : 256 * MiB);
+/** The umbrella-sized initial commit (2 GiB) whenever the umbrella snapshot
+ * is among the boot loads; 256 MiB otherwise. Growing a shared Memory64 by
+ * gigabytes in many steps while streaming the snapshot is where
+ * nondeterministic renderer crashes were observed; one large initial commit
+ * sidesteps the repeated-grow path. Keyed on the snapshot list, not the
+ * header: an explicit umbrella boot over an Init-only header (a remembered
+ * exact-imports restart) streams the same ~1.5 GB region. */
+export const initialBytesForSnapshots = (snapshots: readonly string[]): number => (snapshots.includes("mathlib") ? 2048 * MiB : 256 * MiB);
+/** The header form: what the editor's policy commits for a document it boots by its own snapshot choice. */
+export const initialBytesForHeader = (headerText: string): number => initialBytesForSnapshots(snapshotsForHeader(headerText));
 
 /** 6 GiB: 2.5x headroom over the heaviest legitimate editor session measured
  * (2.5 GiB after a full library search). Growth past the cap is a clean
  * worker abort the relay reboots from, which beats the renderer dying first. */
 export const DEFAULT_MAXIMUM_BYTES = 6 * GiB;
+
+/** The editor's policy as one object: the page passes it, the unit tests pin
+ * it. The commit is sized by what the session WILL load (explicit restart
+ * options included), not by the header alone. */
+export const EDITOR_POLICY: ResidentPolicy = {
+  snapshotsFor: snapshotsForHeader,
+  initialBytesFor: (_header, snapshots) => initialBytesForSnapshots(snapshots),
+  maximumBytes: DEFAULT_MAXIMUM_BYTES,
+};
 
 export class ResidentSession implements RelaySession {
   readonly lean = new LeanSession();
@@ -106,7 +125,7 @@ export class ResidentSession implements RelaySession {
     this.ui = host.ui;
     const policy = host.policy ?? {};
     this.snapshots = opts.snapshots ?? policy.snapshotsFor?.(host.headerText) ?? ["init", "mathlib"];
-    this.initialBytes = policy.initialBytesFor?.(host.headerText) ?? 2048 * MiB;
+    this.initialBytes = policy.initialBytesFor?.(host.headerText, this.snapshots) ?? 2048 * MiB;
     this.maximumBytes = policy.maximumBytes ?? DEFAULT_MAXIMUM_BYTES;
     this.id = this.lean.id;
     this.lean.onLog = (stream, text) => console.debug(`[lean:${stream}] ${text}`);
@@ -121,6 +140,13 @@ export class ResidentSession implements RelaySession {
   lsp(msg: JsonRpcMessage, replay?: boolean) { this.lean.lsp(msg, replay); }
   arm() { return this.lean.arm(); }
   dispose() { this.lean.dispose(); }
+  /** The synchronous kill (Unload only): the relay's `unload()` calls
+   * `dispose()` then `terminate()` inside the pagehide handler's own turn.
+   * `LeanSession.dispose()` alone hard-terminates 250 ms later behind a timer
+   * a closing document never runs — reload storms stacked dead multi-GiB
+   * heaps until the OS jetsammed the renderer (the pump shim's
+   * `disposeForUnload`); `LeanSession.terminate()` kills the Worker NOW. */
+  terminate(): void { this.lean.terminate(); }
 
   async start(): Promise<void> {
     const a = this.artifacts;

@@ -5,7 +5,7 @@ import { LeanMonaco, LeanMonacoEditor, type LeanMonacoOptions } from "lean4monac
 import { installArtifacts, type ProgressInfo, type StatusSink } from "./qed64-boot";
 import { registerImportCompletion } from "./import-completion";
 import { LspRelay, type RelayStatus } from "./lsp-relay";
-import { DEFAULT_MAXIMUM_BYTES, ResidentSession, initialBytesForHeader, isUmbrellaModule, snapshotsForHeader, type ResidentPolicy } from "./resident-session";
+import { EDITOR_POLICY, ResidentSession, isUmbrellaModule } from "./resident-session";
 
 const editorEl = document.getElementById("editor")! as HTMLElement;
 const infoviewEl = document.getElementById("infoview")! as HTMLElement;
@@ -249,7 +249,10 @@ function renderStatus(s: PageStatus) {
   trackSearch(s);
   if (s.phase === "halted") {
     const d = s.lastDeath ?? null;
-    if (d && !everReady && !bootDone) {
+    // Not gated on the overlay: once it is gone (the 120 s fallback, or a
+    // first boot that settled in headerRefused) `bootFail` is a no-op and the
+    // pill alone must carry the message, not a bare "halted — bootFailed".
+    if (d && !everReady) {
       ui.idle(`could not start — ${d.message || d.reason}`);
       bootFail(d.message || d.reason);
       return;
@@ -337,7 +340,8 @@ async function main() {
   let restored: string | null = null;
   try { restored = window.localStorage.getItem("qed64.buffer"); } catch { /* storage unavailable */ }
   const initialText = restored ?? EXAMPLES.mathlib;
-  const policy: ResidentPolicy = { snapshotsFor: snapshotsForHeader, initialBytesFor: initialBytesForHeader, maximumBytes: DEFAULT_MAXIMUM_BYTES };
+  // The editor's boot policy (resident-session.ts); an embedder passes its own.
+  const policy = EDITOR_POLICY;
   let relay: LspRelay; // assigned below; the closures here run only from the relay's status sink or a click
 
   // EXPLAIN AND OFFER, never reboot on the user's behalf (§3 row 8;
@@ -383,11 +387,13 @@ async function main() {
   };
   // The session adapter reads the document it will serve: the initial text
   // at first boot (the relay constructs its first session before `relay` is
-  // assigned, so the factory sees `undefined`), the relay's last full text
-  // on every reboot — a header change between sessions changes the boot
-  // inputs with it.
+  // assigned, so the factory sees `undefined`) AND on a reboot that precedes
+  // the editor's first didOpen (`lastText` is still "" — `||`, not `??`: a
+  // Mathlib document must not boot light there and pay a widen reboot once
+  // the didOpen lands), the relay's last full text on every later reboot —
+  // a header change between sessions changes the boot inputs with it.
   relay = new LspRelay(
-    (opts) => new ResidentSession({ artifacts, ui, policy, headerText: relay?.lastText ?? initialText }, opts ?? {}),
+    (opts) => new ResidentSession({ artifacts, ui, policy, headerText: relay?.lastText || initialText }, opts ?? {}),
     { status: (s) => { renderStatus(s); offerExactImports(s); widenForMathlib(s); } },
     () => new Promise((r) => window.setTimeout(r, 1500)),
   );
