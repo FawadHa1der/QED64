@@ -1,15 +1,17 @@
 // Import-path completion, client-side (live.lean-lang.org parity).
 //
 // The Lean server's own import completion needs a filesystem inventory the
-// wasm worker doesn't have, and our header-probe flow deliberately holds the
-// session while an import line is being composed — exactly when completions
-// help most. So this is a plain Monaco provider over data every client
-// already downloads: the pack manifests list one `.olean` per module, and
-// module names are just those paths with dots. No worker, no toolchain, no
-// new artifacts; Monaco merges these with the LSP's identifier completions.
+// wasm worker doesn't have, and the front door fails a completion request on
+// an import line fast (-32801) rather than let the worker hold it — exactly
+// when completions help most. So this is a plain Monaco provider over data
+// every client already downloads: the pack manifests list one `.olean` per
+// module, and module names are just those paths with dots. No worker, no
+// toolchain, no new artifacts; Monaco merges these with the LSP's identifier
+// completions.
 import * as monaco from "monaco-editor";
 
-/** Umbrella aliases the header rewrite accepts (kept in sync by the tests). */
+/** The umbrella aliases the kernel's resolver serves from `QED64.Essential`
+ * (patch 0032 K1: `lookupPrebuiltEnv`'s `aliasOk`). */
 const ALIASES = ["Mathlib", "Mathlib.Tactic", "Batteries", "MIL.Common"];
 const MANIFESTS = ["/profiles/lean-core.manifest.json", "/profiles/mathlib-essential.manifest.json"];
 

@@ -13,8 +13,9 @@ The setup that fits: **Cloudflare Workers static assets (app shell) + R2
 The deployed shell is the lean4monaco editor in `frontend/` (Monaco + the
 real vscode-lean4 InfoView on the in-browser wasm64 LSP). `npm run
 build:site` builds it into the repo-root `dist/` that `wrangler deploy`
-ships; the older shell at the repo root remains dev-only (`npm run dev`,
-port 5183). All of the editor's runtime paths are root-absolute
+ships; `npm run dev` at the root starts its dev server (the older batch
+shell at the repo root was retired with the pump transport in September
+2026). All of the editor's runtime paths are root-absolute
 (`/infoview/*`, `/workers/*`, `/runtime/*`), so the shell must stay mounted
 at the origin root.
 

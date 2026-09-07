@@ -1,9 +1,10 @@
 // QED64 runtime boot for the lean4web-style front end, split for restarts:
 // artifacts install once per page (OPFS-cached across visits), sessions are
-// created repeatedly — a header edit exits the Lean file worker (the
-// watchdog restart contract), which under wasm tears down the instance, so
-// "restart the worker" means "boot a fresh session and reload snapshots".
-import { LeanSession, memoryCandidates, type LibraryPack, type RuntimeManifest } from "../../src/runtime/client";
+// created repeatedly — the relay replaces a crashed worker, and a user
+// restart ("Load exact imports", widening a light session) boots a fresh
+// one — so the pieces a session boot needs (pack install on demand, snapshot
+// prefetch + load) live here, and the boot itself in resident-session.ts.
+import type { LeanSession, RuntimeManifest } from "../../src/runtime/client";
 import { fetchProfileIndex, installProfile, type InstalledProfile, type ProfileIndex } from "../../src/install/profiles";
 import { fetchSnapshotIndex, snapshotCacheKey, type SnapshotIndex } from "../../src/runtime/snapshots";
 
@@ -94,98 +95,6 @@ export async function installArtifacts(ui: StatusSink): Promise<Qed64Artifacts> 
       })
     : await fetchSnapshotIndex();
   return { runtime, index, installed, snapshots };
-}
-
-export interface SessionOptions {
-  /** The session will host the Mathlib umbrella: commit the heap up front.
-   * Growing a shared Memory64 by gigabytes in many steps while streaming
-   * the snapshot is where nondeterministic renderer crashes were observed;
-   * one large initial commit sidesteps the repeated-grow path. */
-  mathlib?: boolean;
-  /** Ceiling for the shared Memory64 reservation ladder (bytes). The
-   * editor's default is 6 GiB — 2.5x headroom over its heaviest measured
-   * session; a host whose sessions peak lower (a game environment stays
-   * under 2 GiB) should pass a tighter cap: the reservation is what a
-   * dead-but-not-yet-reclaimed page keeps holding across reloads, so a
-   * smaller cap directly shrinks the stacked-heap window that kills
-   * renderers under reload + switch storms. */
-  maximumBytes?: number;
-}
-
-/** The device-derived candidate ladder capped at `cap`; a cap below every
- * rung becomes the sole candidate, so a small cap never yields an empty
- * ladder (which would make boot fail instead of reserving less). */
-function candidatesUnder(cap: number): number[] {
-  const under = memoryCandidates().filter((b) => b <= cap);
-  return under.length ? under : [cap];
-}
-
-export async function newSession(
-  artifacts: Qed64Artifacts,
-  ui: StatusSink,
-  onDead: () => void,
-  opts: SessionOptions = {},
-): Promise<Qed64Session> {
-  // Memory-backed pack segments are TRANSFERRED to the worker at boot and
-  // detach page-side; a restarted session must re-install them (an OPFS-
-  // backed install revalidates in milliseconds; memory-mode re-downloads).
-  for (const [id, profile] of [...artifacts.installed]) {
-    const consumed = profile.segments.some((seg) => seg.bytes && seg.bytes.buffer.byteLength === 0);
-    if (!consumed) continue;
-    const entry = artifacts.index.profiles.find((p) => p.id === id);
-    if (!entry) {
-      artifacts.installed.delete(id);
-      continue;
-    }
-    ui.busy(`re-preparing the ${id} library for the new session`);
-    artifacts.installed.set(
-      id,
-      await installProfile(entry, (p) => {
-        ui.progress(`${p.phase} ${id}`, { phase: `pack-${p.phase}`, loaded: p.loaded, total: p.total ?? 0, unit: "bytes" });
-      }),
-    );
-  }
-  const packs: LibraryPack[] = [...artifacts.installed.values()].flatMap((p) =>
-    p.segments.map((segment, i) => ({
-      id: `${p.id}#${i}`,
-      ...(segment.blob ? { blob: segment.blob } : {}),
-      ...(segment.bytes ? { bytes: segment.bytes } : {}),
-      metadata: segment.metadata,
-      mountPoint: `/lib/packs/${p.id}`,
-    })),
-  );
-  const searchPath = [...artifacts.installed.keys()].map((id) => `/lib/packs/${id}`).join(":");
-
-  ui.busy("starting Lean");
-  const session = new LeanSession();
-  session.onLog = (stream: string, text: string) => console.debug(`[lean:${stream}] ${text}`);
-  session.onProgress = (p: { phase: string; label?: string; loaded?: number; total?: number; unit?: string }) =>
-    ui.progress(p.label ?? p.phase, { phase: p.phase, loaded: p.loaded, total: p.total, unit: p.unit });
-  session.onStateChange = (state: string) => {
-    if (state === "dead") onDead();
-  };
-  await session.boot({
-    runtime: artifacts.runtime,
-    // Maximum = address-space reservation, not commit — but it is also the
-    // only bound on runaway growth (a garbage-elaboration storm ballooned a
-    // session to 9 GB and the RENDERER died first, losing the tab). A wasm
-    // "Cannot enlarge memory" abort at the cap is the BETTER failure now:
-    // the worker dies cleanly and the shim's death recovery reboots in
-    // seconds with the document replayed. 6 GiB leaves 2.5x headroom over
-    // the heaviest legitimate session measured on the slim stack (2.5 GiB
-    // after a full library search).
-    memory: {
-      initialBytes: (opts.mathlib ? 2048 : 256) * 1048576,
-      maximumCandidates: candidatesUnder(opts.maximumBytes ?? 6 * 1073741824),
-    },
-    leanPath: searchPath,
-    packs,
-  });
-  const qs: Qed64Session = { session, loadedSnapshots: new Set() };
-  // The init snapshot makes Init-only worker sessions instant (covering-env
-  // aliasing in lean_wasm_lsp_init serves any covered header from it).
-  await loadSnapshotByName(artifacts, qs, "init", ui);
-  return qs;
 }
 
 /** Install a profile on demand (for headers that must import from oleans). */

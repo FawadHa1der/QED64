@@ -27,18 +27,19 @@ mounted read-only from verified, content-addressed packs.
 ## Quick start
 
 ```sh
-npm install
+npm install && npm --prefix frontend ci
 npm run sync:artifacts   # verified copy of runtime + profiles into public/
 npm run verify:release   # recompute every digest the browser will trust
-npm run dev              # http://localhost:5173 (COOP/COEP set by Vite)
+npm run dev              # http://localhost:5184 (COOP/COEP set by Vite)
 ```
 
-First visit installs the Lean core profile (~120 MB download → 389 MB in OPFS)
-and boots the runtime; the **Check** button (or Ctrl/⌘-Enter, or just typing
-with *auto* on) elaborates and kernel-checks the buffer. The Setup tab installs
-the Mathlib profile (~993 MB download → 3.5 GB in OPFS). The first compile for
-a given import set pays that set's import once; the resident environment then
-serves rechecks in milliseconds.
+First visit installs the Lean core profile (~120 MB download → 389 MB in OPFS),
+boots the runtime and loads the baked environment the opened document needs
+(the `init` snapshot alone for an Init-only buffer; the Mathlib umbrella too
+when an import line names Mathlib); the resident file worker then elaborates
+and kernel-checks the buffer on every keystroke, and the InfoView shows goals
+and messages. The 1 GB Mathlib olean pack is only installed on demand, by the
+explicit "Load exact imports" action.
 
 Live-verified performance (in-app Chromium, Apple Silicon): boot loads a
 107 MB `init` snapshot in ~0.7 s, so the first Init-only check is ~300 ms.
@@ -59,7 +60,8 @@ survives is `docs/HARDENING.md`.
 
 | Path | What lives there |
 |---|---|
-| `src/` | the app: editor (`editor/`), worker RPC client (`runtime/`), OPFS installer (`install/`), UI (`app.ts`) |
+| `frontend/` | the deployed shell: lean4monaco (Monaco + the vscode-lean4 InfoView) over the in-browser LSP — page (`main.ts`), relay, session adapter, import completion |
+| `src/` | shared runtime code: worker RPC client (`runtime/`), OPFS installer (`install/`), editor helpers pinned by the unit suite (`editor/`) |
 | `public/workers/lean.worker.js` | the Lean worker: verified runtime materialization, Memory64 heap, WORKERFS mounts, persistent compile loop |
 | `public/runtime`, `public/profiles` | content-addressed artifacts (synced, never committed) |
 | `pipeline/release` | `sync-artifacts` (provenance-checked copy), `verify-release` (out-of-band digest audit) |
@@ -134,13 +136,21 @@ Lean, Mathlib, Batteries: Apache-2.0. The wasm build derives from
 [cauli/lean4](https://github.com/cauli/lean4) `reinstate-wasm` (Apache-2.0);
 loader and delivery patterns follow the Browser64 workspace evidence.
 
-## Transports
+## Transport
 
-The editor talks to the Lean worker over the **resident** transport by
-default: one real `lean --worker` stays alive in the tab, header changes are
-resolved in-process against the preloaded environments, and the page sees
-only facts the worker reports (see `docs/RESIDENT-WORKER-PLAN.md`). Append
-`?resident=0` to fall back to the older **pump** transport (the header-probe
-shim with in-place restarts) while it is still served; the served artifacts
-are identical for both.
-
+The editor talks to the Lean worker over one transport, the **resident**
+one: a real `lean --worker` stays alive on a pthread inside
+`public/workers/lean.worker.js`, the page's LSP frames reach its stdin
+through a futex ring, and a pure front door (`public/workers/lsp-front-door.js`)
+answers `initialize` and shapes what the worker sees. Header changes are
+resolved in-kernel against the environments loaded at boot (exact key,
+else the umbrella that covers it, else refused with the missing modules
+named); the page relay (`frontend/src/lsp-relay.ts`) only re-establishes
+the document on a fresh session, fails requests a death orphaned, and
+breaks crash loops. The session adapter (`frontend/src/resident-session.ts`)
+turns the page's artifacts into a booted worker behind a small per-host
+policy — which snapshots to load and how much memory to commit, read from
+the document's import lines — so an embedder (lean4game) passes its own.
+The older pump transport (a header-probe shim with in-place restarts) was
+removed on the page side in September 2026; see
+`docs/PUMP-REMOVAL-ASSESSMENT-2026-09-04.md` and `docs/RESIDENT-WORKER-PLAN.md`.
