@@ -420,6 +420,14 @@ describe("promote-staging.mjs", () => {
     fs.writeFileSync(indexFile, pristineIndex);
     expect(run(promote, ["--staging", stage, "--public", pub, "--dry-run"]).status).toBe(0);
 
+    // two profiles naming ONE manifest: every per-entry check passes, and the
+    // switch phase would rename the same temp file twice (half-switched tree)
+    const dupIndex = JSON.parse(pristineIndex.toString());
+    dupIndex.profiles.push({ ...dupIndex.profiles[0], id: "core-again" });
+    fs.writeFileSync(indexFile, JSON.stringify(dupIndex));
+    refuse(stage, /two profiles name the same manifest/);
+    fs.writeFileSync(indexFile, pristineIndex);
+
     // packs of another Lean version than the runtime they are staged with
     const versions = path.join(tmp, "stage-packs-version");
     stagePairing(versions, "pk-ver", { packLeanVersion: "4.33.0-pre" });

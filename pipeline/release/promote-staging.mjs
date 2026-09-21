@@ -188,6 +188,11 @@ function verifyStagedProfiles() {
   if (!Array.isArray(profileIndex.profiles) || profileIndex.profiles.length === 0) fail("staged profile index lists no profiles");
   const ids = profileIndex.profiles.map((p) => p?.id);
   if (ids.some((id) => typeof id !== "string" || !id) || new Set(ids).size !== ids.length) fail(`staged profile index: profile ids must be unique strings (${JSON.stringify(ids)})`);
+  // Two entries naming one manifest pass every per-entry check and then
+  // collide in the switch phase (same target, same temp name): the second
+  // rename throws with the served tree half-switched (review, reproduced).
+  const manifestNames = profileIndex.profiles.map((p) => (typeof p?.manifest === "string" ? path.basename(p.manifest) : ""));
+  if (new Set(manifestNames).size !== manifestNames.length) fail(`staged profile index: two profiles name the same manifest (${JSON.stringify(manifestNames)})`);
   // qed64-boot.ts installs `core` at boot and throws without it.
   if (!ids.includes("core")) fail("staged profile index has no `core` profile — the page cannot boot without it");
 
@@ -304,7 +309,15 @@ const copyAdditive = (from, toDir, base, sha) => {
 // first, then all are renamed over their targets back to back (POSIX rename
 // replaces in one step, so no reader ever sees a partial or missing file).
 const switches = [];
-const switchFile = (to, data) => { plan.push(`swap  ${rel(to)}`); switches.push({ to, data }); };
+const switchTargets = new Set();
+const switchFile = (to, data) => {
+  // One switch per target, ever: a duplicate would share a temp name and
+  // tear the rename phase.
+  if (switchTargets.has(to)) fail(`internal: ${rel(to)} is queued for switching twice — refusing before anything is touched`);
+  switchTargets.add(to);
+  plan.push(`swap  ${rel(to)}`);
+  switches.push({ to, data });
+};
 
 // 2. content-addressed files
 for (const { base, from, sha } of chunkFiles) copyAdditive(from, path.join(publicRuntime, "chunks"), base, sha);
@@ -334,7 +347,17 @@ if (!dryRun) {
     for (const tmp of written) fs.rmSync(tmp, { force: true });
     fail(`could not write the new manifests (${e.message}) — nothing was switched; the served pairing is unchanged`);
   }
-  for (const { to } of switches) fs.renameSync(tmpName(to), to);
+  const switched = [];
+  try {
+    for (const { to } of switches) { fs.renameSync(tmpName(to), to); switched.push(to); }
+  } catch (e) {
+    const pending = switches.map((w) => w.to).filter((to) => !switched.includes(to));
+    for (const to of pending) fs.rmSync(tmpName(to), { force: true });
+    console.error(`promote: switching failed at ${rel(pending[0])} (${e.message})`);
+    console.error(`  switched:     ${switched.map(rel).join(", ") || "(none)"}`);
+    console.error(`  NOT switched: ${pending.map(rel).join(", ")}`);
+    fail("the served tree is mid-switch — fix the cause and rerun the same promote (it is idempotent)");
+  }
 }
 
 // Inventory, not deletion: report chunks under public/runtime that no

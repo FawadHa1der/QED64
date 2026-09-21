@@ -59,9 +59,14 @@ describe("validateManifest", () => {
 describe("real manifest invariants", () => {
   const manifest = loadRealManifest();
 
-  test("629 modules, five facets each, 3145 WORKERFS files", () => {
-    expect(Object.keys(manifest.content.modules)).toHaveLength(629);
-    expect(manifest.content.workerfs.metadata.files).toHaveLength(3145);
+  // Structural, not literal: the served manifest changes at every library
+  // import (4.33: 629 modules / 3145 files), and deploy.yml gates on this suite.
+  test("the Init closure, every module with an .olean, one WORKERFS file per artifact", () => {
+    const modules = Object.values(manifest.content.modules) as { artifacts: Record<string, unknown> }[];
+    expect(modules.length).toBeGreaterThan(600);
+    for (const m of modules) expect(Object.keys(m.artifacts)).toContain("olean");
+    const artifactCount = modules.reduce((n, m) => n + Object.keys(m.artifacts).length, 0);
+    expect(manifest.content.workerfs.metadata.files).toHaveLength(artifactCount);
   });
 
   test("module import graph is closed (every import resolves)", () => {
@@ -69,11 +74,11 @@ describe("real manifest invariants", () => {
     expect(missing).toEqual([]);
   });
 
-  test("Init closure covers all 629 modules", () => {
+  test("the import closure of the roots stays inside the pack", () => {
     const { closure } = importClosure(["Init", "Std", "Lean"], manifest.content.modules);
     // The core profile is exactly the closure of its roots.
     expect(closure.length).toBeGreaterThan(600);
-    expect(closure.length).toBeLessThanOrEqual(629);
+    expect(closure.length).toBeLessThanOrEqual(Object.keys(manifest.content.modules).length);
   });
 
   test("WORKERFS ranges are disjoint and ascending", () => {
