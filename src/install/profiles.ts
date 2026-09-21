@@ -463,8 +463,14 @@ export async function inflateTransport(
 export async function installProfile(
   entry: ProfileIndexEntry,
   onProgress: (p: InstallProgress) => void = () => {},
+  reroot: (url: string) => string = (url) => url,
 ): Promise<InstalledProfile> {
-  const manifest = await fetchManifest(entry.manifest);
+  // `reroot` serves an UNPROMOTED profile set (dev `?profiles=<dir>`): staged
+  // manifests name their parts under /profiles/, where they are not served
+  // yet. The pack cache is keyed by the pack digest, so a staged pack never
+  // collides with a served one.
+  const manifest = await fetchManifest(reroot(entry.manifest));
+  for (const part of manifest.content.pack.transport.parts) part.url = reroot(part.url);
   const { pack, workerfs, release, modules } = manifest.content;
   const expected: PackMeta = {
     digest: pack.digest,

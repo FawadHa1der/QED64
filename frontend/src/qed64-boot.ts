@@ -45,10 +45,20 @@ export interface StatusSink {
 
 declare const __QED64_BUILD_ID__: string;
 
+/** Set once by installArtifacts from `?profiles=`; identity in production. */
+let profileReroot: (url: string) => string = (url) => url;
+
 export async function installArtifacts(ui: StatusSink): Promise<Qed64Artifacts> {
   ui.busy("fetching manifests");
-  const index = await fetchProfileIndex();
-  if (!index) throw new Error("profile index missing (/profiles/index.json)");
+  // Dev-only override (?profiles=<dir>): an unpromoted profile set served
+  // from public/<dir> (a symlink to work/staging/<buildId>/profiles). A staged
+  // runtime of another Lean version must never mount the SERVED packs — the
+  // olean githash gate is compiled off, so foreign oleans would be misread,
+  // not refused. Index, manifests and parts are all re-rooted by basename.
+  const devProfiles = new URLSearchParams(location.search).get("profiles");
+  profileReroot = devProfiles ? (url: string) => url.replace(/^\/profiles\//, `/${devProfiles}/`) : (url: string) => url;
+  const index = await fetchProfileIndex(profileReroot("/profiles/index.json"));
+  if (!index) throw new Error(`profile index missing (${profileReroot("/profiles/index.json")})`);
   // Prefer the immutable manifest of the runtime this shell was built
   // against (uploaded by scripts/upload-artifacts.sh) so a shell deploy
   // never races the mutable manifest switch; the mutable path serves dev
@@ -81,7 +91,7 @@ export async function installArtifacts(ui: StatusSink): Promise<Qed64Artifacts> 
     await installProfile(core, (p) => {
       const verb = p.phase === "cached" ? "checking cached" : p.phase === "download" ? "downloading" : p.phase === "inflate" ? "unpacking" : "committing";
       ui.progress(`${verb} the Lean core library`, { phase: `core-${p.phase}`, loaded: p.loaded, total: p.total ?? 0, unit: "bytes" });
-    }),
+    }, profileReroot),
   );
   // Dev-only override (?snapshots=<dir>): an unpromoted snapshot set served
   // from public/<dir> (a symlink to a staging bake); the index's urls name
@@ -111,7 +121,7 @@ export async function ensureProfile(
     id,
     await installProfile(entry, (p) => {
       ui.progress(`${p.phase} ${id} — ${(p.loaded / 1048576) | 0} / ${((p.total ?? 0) / 1048576) | 0} MiB`);
-    }),
+    }, profileReroot),
   );
   return true;
 }

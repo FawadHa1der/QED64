@@ -33,6 +33,7 @@ export function resolveTarget(url) {
   const u = new URL(url);
   const runtimeOverride = u.searchParams.get("runtime");
   const snapshotsDir = u.searchParams.get("snapshots") || "snapshots";
+  const profilesDir = u.searchParams.get("profiles") || "profiles";
   const mode = MODE;
   return {
     url: u.toString(),
@@ -40,9 +41,10 @@ export function resolveTarget(url) {
     mode,
     runtimeOverride,
     snapshotsDir,
+    profilesDir,
     manifestUrl: `${u.origin}/runtime/runtime-manifest${runtimeOverride ? `.${runtimeOverride}` : ""}.json`,
     indexUrl: `${u.origin}/${snapshotsDir}/index.json`,
-    profilesUrl: `${u.origin}/profiles/index.json`,
+    profilesUrl: `${u.origin}/${profilesDir}/index.json`,
   };
 }
 

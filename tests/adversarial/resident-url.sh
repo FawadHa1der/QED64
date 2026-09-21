@@ -12,4 +12,8 @@ if [[ ! "$H" =~ ^wasm64-[0-9a-f]+$ ]]; then
   LOG=$(ls -t work/chunk-*.log 2>/dev/null | head -1)
   H=$(grep -oE 'runtime wasm64-[0-9a-f]+' "$LOG" | tail -1 | sed 's/runtime //')
 fi
-echo "http://localhost:${PORT}/?runtime=${H}&snapshots=snapshots-0031${2:+&$2}"
+# public/profiles-staged → ../work/staging/<runtime-id>/profiles when the staged
+# pairing brings its own packs (a version import); absent for a kernel-only bump.
+PT=$(readlink public/profiles-staged 2>/dev/null)
+PQ=""; if [ -n "$PT" ] && [ "$(basename "$(dirname "$PT")")" = "$H" ]; then PQ="&profiles=profiles-staged"; fi
+echo "http://localhost:${PORT}/?runtime=${H}&snapshots=snapshots-0031${PQ}${2:+&$2}"

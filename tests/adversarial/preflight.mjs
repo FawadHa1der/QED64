@@ -91,7 +91,11 @@ export async function runPreflight(target, { boot = true, bootBudgetMs = 180000,
   try {
     const profiles = await fetchJson(target.profilesUrl);
     if (!profiles?.profiles?.some((p) => p.id === "core")) return refuse("profile index has no core profile", buildId);
-    ok(`profiles: ${profiles.profiles.map((p) => p.id).join(", ")}`);
+    // The index's `runtime` is owned by the promote (and by the import lane
+    // for a staged set): packs of another runtime's Lean version are misread,
+    // not refused, so a mismatch is a refusal here.
+    if (profiles.runtime?.buildId && profiles.runtime.buildId !== buildId) return refuse(`profile index ${target.profilesUrl} is for runtime ${profiles.runtime.buildId}, page boots ${buildId}`, buildId);
+    ok(`profiles (${target.profilesDir}): ${profiles.profiles.map((p) => p.id).join(", ")}`);
   } catch (e) { return refuse(`profile index: ${e.message}`, buildId); }
 
   if (boot) {
