@@ -6,7 +6,7 @@ export function has(flag: string): boolean;
 export const MODE: "resident";
 export function resolveTarget(url: string): {
   url: string; origin: string; mode: "resident"; runtimeOverride: string | null;
-  snapshotsDir: string; manifestUrl: string; indexUrl: string; profilesUrl: string;
+  snapshotsDir: string; profilesDir: string; manifestUrl: string; indexUrl: string; profilesUrl: string;
 };
 export function fetchJson(url: string, timeoutMs?: number): Promise<unknown>;
 export function onlyMatches(name: string, pattern: string): boolean;

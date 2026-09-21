@@ -9,3 +9,4 @@ work/
 public/snapshots/*
 !public/snapshots/index.json
 public/runtime/runtime-manifest.wasm64-*.json
+public/profiles-staged
