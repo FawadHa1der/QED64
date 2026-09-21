@@ -62,7 +62,7 @@ describe("real manifest invariants", () => {
   // Structural, not literal: the served manifest changes at every library
   // import (4.33: 629 modules / 3145 files), and deploy.yml gates on this suite.
   test("the Init closure, every module with an .olean, one WORKERFS file per artifact", () => {
-    const modules = Object.values(manifest.content.modules) as { artifacts: Record<string, unknown> }[];
+    const modules = Object.values(manifest.content.modules) as unknown as { artifacts: Record<string, unknown> }[];
     expect(modules.length).toBeGreaterThan(600);
     for (const m of modules) expect(Object.keys(m.artifacts)).toContain("olean");
     const artifactCount = modules.reduce((n, m) => n + Object.keys(m.artifacts).length, 0);
