@@ -4,7 +4,8 @@
 // The in-browser installer verifies transport parts (streaming) but cannot
 // stream-digest the multi-GB raw pack; this job closes that gap by inflating
 // each published profile and recomputing the raw pack digest, plus the
-// runtime chunk/whole digests. Run before every deploy.
+// runtime chunk/whole digests, and checks that the profile index is paired
+// with the served runtime. Run before every deploy.
 //
 // Usage: node pipeline/release/verify-release.mjs [--public <dir>]
 
@@ -46,11 +47,29 @@ for (const [name, file] of Object.entries(runtime.files)) {
   check(bytes === file.bytes && whole.digest("hex") === file.sha256, `${name}: whole-file digest`);
 }
 
-// Profiles: stream-inflate and digest the raw pack
+// Profile index ↔ runtime. `runtime` in profiles/index.json names the runtime
+// the profiles are SERVED with; promote-staging.mjs owns it and re-points it
+// on every promote (kernel-only bumps included), switching it LAST — so an
+// index that names another runtime is either an interrupted promote or a
+// runtime that was put in public/ some other way. The Lean version is the
+// part with teeth: oleans are only readable by the Lean version that wrote
+// them, and the runtime does not check (githash gate off, REBUILD.md §2).
 const index = JSON.parse(fs.readFileSync(path.join(publicDir, "profiles/index.json"), "utf8"));
+check(index.schema === "qed64.profile-index/v1", `profile index: schema ${index.schema}`);
+check(index.runtime?.buildId === runtime.buildId,
+  `profile index: runtime ${index.runtime?.buildId ?? "(none)"} is the served runtime ${runtime.buildId}` +
+    (index.runtime?.buildId === runtime.buildId ? "" : " — rerun promote-staging (it re-points the index)"));
+check(index.runtime?.leanVersion === runtime.leanVersion,
+  `profile index: Lean ${index.runtime?.leanVersion ?? "(none)"} is the served runtime's Lean ${runtime.leanVersion}`);
+
+// Profiles: stream-inflate and digest the raw pack
 for (const profile of index.profiles) {
   const manifest = JSON.parse(fs.readFileSync(path.join(publicDir, profile.manifest.replace(/^\//, "")), "utf8"));
   const { pack } = manifest.content;
+  check(manifest.content.lean?.version === runtime.leanVersion,
+    `${profile.id}: packed for Lean ${manifest.content.lean?.version ?? "(none)"}, served runtime is Lean ${runtime.leanVersion}`);
+  check(profile.release === manifest.content.release && profile.modules === Object.keys(manifest.content.modules ?? {}).length,
+    `${profile.id}: index entry (${profile.release}, ${profile.modules} modules) describes its manifest`);
   const gunzip = createGunzip();
   const rawHash = createHash("sha256");
   let rawBytes = 0;

@@ -11,7 +11,13 @@
 //
 // Usage:
 //   node pipeline/toolchain/chunk-runtime.mjs --bin <dir with lean.js+lean.wasm> \
-//        [--lean-version 4.33.0-pre] [--revision <githash>] [--out work/staging/<buildId>/runtime]
+//        [--lean-version 4.33.0-pre] [--revision <githash>] [--upstream-base 5732b84] \
+//        [--out work/staging/<buildId>/runtime]
+//
+// --lean-version is what the product bar shows and what promote-staging pairs
+// the library packs against (profiles/index.json runtime.leanVersion, each
+// pack's content.lean.version): omitting it is a loud warning, not an error —
+// bump-chain.sh only passes it when QED64_LEAN_VERSION is set.
 
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -26,12 +32,22 @@ function arg(name, fallback) {
   return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : fallback;
 }
 const binDir = path.resolve(arg("bin", ""));
-const leanVersion = arg("lean-version", "4.33.0-pre");
+const DEFAULT_LEAN_VERSION = "4.33.0-pre";
+const leanVersion = arg("lean-version", null) ?? DEFAULT_LEAN_VERSION;
+if (arg("lean-version", null) === null) {
+  console.error(
+    `chunk-runtime: WARNING — no --lean-version given; the manifest will say Lean ${DEFAULT_LEAN_VERSION}.\n` +
+      "  After a version import that is WRONG: the page shows it, and promote-staging refuses a runtime whose\n" +
+      "  leanVersion differs from the packs'. Pass --lean-version <x.y.z> (bump-chain.sh: QED64_LEAN_VERSION=<x.y.z>).",
+  );
+}
 // Default the source revision to the fork checkout that (by the pipeline's
 // build-then-chunk sequence) produced the binary being chunked, so every
-// manifest identifies its exact compiler commit. The pinned upstream base is
-// the lean4 commit the qed64-wasm64 branch is rebased on.
-const UPSTREAM_BASE = "5732b84";
+// manifest identifies its exact compiler commit. The upstream base is the
+// lean4 commit the qed64-wasm64 branch sits on: 5732b84 for the 4.33.0-pre
+// line; a version import passes its own (--upstream-base <tag or sha>). Only
+// the default --revision string uses it — an explicit --revision wins.
+const UPSTREAM_BASE = arg("upstream-base", "5732b84");
 function forkRevision() {
   try {
     const head = execSync("git -C pipeline/toolchain/work/lean4 rev-parse --short=9 HEAD", { encoding: "utf8" }).trim();
@@ -42,8 +58,17 @@ function forkRevision() {
 }
 const revision = arg("revision", forkRevision());
 if (!binDir) {
-  console.error("usage: chunk-runtime.mjs --bin <dir> [--lean-version v] [--revision sha] [--out dir]");
+  console.error("usage: chunk-runtime.mjs --bin <dir> [--lean-version v] [--revision sha] [--upstream-base sha] [--out dir]");
   process.exit(2);
+}
+// The default revision describes pipeline/toolchain/work/lean4. For a binary
+// built anywhere else (a version import in its own build dir) that checkout
+// is NOT the compiler that produced it — say so rather than record it quietly.
+if (arg("revision", null) === null && path.relative(path.join(root, "pipeline/toolchain/work"), binDir).startsWith("..")) {
+  console.error(
+    `chunk-runtime: WARNING — no --revision given for a binary outside pipeline/toolchain/work; sourceRevision will be "${revision}",\n` +
+      "  which describes pipeline/toolchain/work/lean4, not this build. Pass --revision \"qed64-wasm64@<built commit> (base <upstream>)\".",
+  );
 }
 
 const PART = 16 * 1024 * 1024;
