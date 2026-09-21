@@ -112,6 +112,11 @@ npm run bake:snapshot -- --name mathlib --lib work/lib-tree --probe 'import QED6
 <the bundled Mathlib examples>'
 ```
 
+The served pairings are baked from the slim trees (the same oleans without
+`*.olean.private`) with explicit reserves — the exact commands, the staging
+layout and the promote flow are in docs/REBUILD.md § 3 and
+`pipeline/release/bump-chain.sh`.
+
 Validate the result with the snapshot probe, which loads the raw .snap
 (kept in `work/snapshot/`) through `lean_wasm_load_snapshot` — the worker's
 exact path — and asserts the follow-up compile is an env-cache hit rather
