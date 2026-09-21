@@ -143,6 +143,15 @@ touches, in this order:
    e2e corpus may need re-goldening where upstream changed message text.
 5. Records: `docs/PROVENANCE.md` (toolchain identity, Mathlib revision, pack
    digests), `PATCHES.md`, KERNEL-PIN, `--lean-version` at chunk time.
+   A runtime built in its own directory is staged with
+   `pipeline/release/bump-chain.sh stage-artifact` and the environment
+   `QED64_ARTIFACT` (dir with `bin/` and `lib/lean`), `QED64_LIB_TREE` (the
+   new unpacked olean tree), `QED64_SLIM`, `QED64_LEAN_VERSION`, and —
+   mandatory for a foreign runtime, the script refuses without it —
+   `QED64_SNAP_WORK`: the bake's raw `.snap` files default to `work/snapshot`,
+   which is the set the compiler battery and the Node probes load against the
+   SERVED binary; overwriting it unpairs them. Only at promotion time do the
+   new raw snapshots replace `work/snapshot/{init,mathlib}.snap`.
 6. lean4game vendors qed64 at its own pin and has its own kernel pin and
    build lane (`wasm/build-from-source.sh` there); it is a separate bump.
 

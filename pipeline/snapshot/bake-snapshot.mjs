@@ -65,7 +65,11 @@ if (unpaired.length) {
   process.exit(2);
 }
 
-const work = path.join(root, "work/snapshot");
+// The raw .snap lands here. The default, work/snapshot, is the PAIRED set the
+// Node probes and the compiler battery load against the served binary — a
+// bake for any other runtime (a version import, an experiment) must pass
+// --work <dir> or it silently unpairs them (KERNEL-PIN invariant).
+const work = path.resolve(root, arg("work", "work/snapshot"));
 fs.mkdirSync(work, { recursive: true });
 fs.writeFileSync(path.join(work, "probe.lean"), `${probe}\n`);
 
