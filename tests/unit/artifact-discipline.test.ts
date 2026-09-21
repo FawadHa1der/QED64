@@ -271,7 +271,8 @@ describe("promote-staging.mjs", () => {
         fs.mkdirSync(path.dirname(path.join(lib, relPath)), { recursive: true });
         fs.writeFileSync(path.join(lib, relPath), text);
       }
-      const r = run(packer, ["--lib", lib, "--id", p.base, "--out", out, "--lean-version", opts.leanVersion ?? LEAN]);
+      // fixture oleans are plain text, not compacted regions: --no-imports
+      const r = run(packer, ["--lib", lib, "--id", p.base, "--out", out, "--lean-version", opts.leanVersion ?? LEAN, "--no-imports"]);
       expect(r.status).toBe(0);
       const file = path.join(out, `${p.base}.manifest.json`);
       const m = readManifest(file);
