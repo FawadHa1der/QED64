@@ -61,7 +61,12 @@ node pipeline/toolchain/chunk-runtime.mjs --bin pipeline/toolchain/work/build/st
 The default `--out` is `work/staging/<buildId>/runtime`; keep it. NEVER pass
 `--out public/runtime` (it destroyed the served chunks once — only
 `promote-staging.mjs` writes there, additively). `--lean-version` defaults to
-`4.33.0-pre`: pass the real one after a version import.
+`4.33.0-pre` with a loud warning: pass the real one after a version import
+(the promote refuses a runtime whose Lean version is not the packs'), and
+`--upstream-base <tag or sha>` so the default `--revision` string names the
+new base instead of `5732b84`. For a binary built outside
+`pipeline/toolchain/work`, pass `--revision` explicitly — the default
+describes `work/lean4`, not that build.
 
 The resulting `buildId` (`wasm64-<sha256(lean.wasm)[:16]>`) names the
 runtime; snapshots are only valid against the exact binary that baked them.
@@ -119,6 +124,30 @@ kill each other's browsers. Then write KERNEL-PIN and
 `pipeline/release/bump-chain.sh promote` (promote-staging + verify:release).
 The user uploads artifacts (`scripts/upload-artifacts.sh`) and pushes; the
 kernel commit must be on `origin/qed64-wasm64` first.
+
+**What one promote moves.** `promote-staging.mjs --staging work/staging/<buildId>`
+verifies everything staged before it touches `public/` (sizes, SHA-256,
+snapshot ↔ runtime pairing), copies the content-addressed files additively
+(chunks, snapshots, pack parts — each via a temp name, so a crash never
+leaves a short file under a final name), and only then switches the mutable
+files by atomic rename, all written beside their targets first and renamed
+back to back: per-build runtime manifest, profile manifests, snapshot index,
+default runtime manifest, and `profiles/index.json` last. No mutable file is
+ever switched in before every file it names is in place, and the profile
+index is the commit record. If `work/staging/<buildId>/profiles/index.json`
+exists (a version import: `index.json` with `runtime.buildId` = the staged
+runtime, the two manifests, and every part file by basename; part and
+manifest URLs must read `/profiles/<file>` and each manifest's `digest` must
+be `sha256(JSON.stringify(content))` re-derived after the last edit), the
+packs are promoted in the same step; without a staged `profiles/` directory
+it is a kernel-only bump and the served packs stay. Either way the promote
+owns `public/profiles/index.json` `runtime`: it means "the runtime these
+profiles are served with", is re-pointed at the promoted `{buildId,
+leanVersion}` on every promote, and a pack whose `content.lean.version` is
+not the promoted runtime's is refused (oleans of another Lean version are
+not rejected by the runtime, they are misread). `verify:release` checks the
+same pairing, so an interrupted promote shows up there; rerun it, it is
+idempotent. `--dry-run` prints the exact plan and writes nothing.
 
 ## 3b. Importing a new upstream Lean version
 
