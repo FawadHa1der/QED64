@@ -92,6 +92,8 @@ async function main() {
   const jobs = Number(arg("jobs", "3"));
   const snap = arg("snap", path.join(root, "work/snapshot/mathlib.snap"));
   const artifact = arg("artifact", path.join(root, "pipeline/toolchain/work/build/stage1"));
+  // The olean tree the snapshot was baked from (a staged pairing brings its own).
+  const lib = arg("lib", path.join(root, "work/lib-tree-slim"));
   const dir = arg("run-dir", "");
   if (dir) { fs.mkdirSync(dir, { recursive: true }); teeLog(dir, "compiler.log"); }
 
@@ -110,7 +112,7 @@ async function main() {
       const child = spawn("node", ["--stack-size=8192", path.join(root, "pipeline/snapshot/snapshot-probe.mjs"),
         "--snap", snap, "--probe-file", file, "--budget-ms", String(budget + 30000),
         "--via-mem", "--init-flags", "1", "--artifact", artifact,
-        "--lib", path.join(root, "work/lib-tree-slim"), "--dump-messages"], { cwd: root });
+        "--lib", lib, "--dump-messages"], { cwd: root });
       let out = "";
       let spawnError = null;
       child.stdout.on("data", (d) => { out += d; });

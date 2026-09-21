@@ -31,7 +31,7 @@ print(f\"e2e: {r['total']-r['failed']}/{r['total']} (infra {r.get('infra',0)}, a
 [print('  ', x.get('outcome','fail').upper(), x['name'], '::', str(x.get('detail',''))[:140]) for x in r['results'] if x.get('outcome','fail')!='pass']"
 cool
 echo "=== editing latency ==="; node tests/adversarial/editing-latency.mjs --url "$URL" --label resident --rounds 3 --run-dir "$RUN" 2>&1 | grep -E "SUMMARY|round|alive|REFUSED"
-echo "=== compiler battery (0031 pairing) ==="; node tests/adversarial/compiler-battery.mjs --run-dir "$RUN" > work/adversarial/battery-0031h.log 2>&1; echo "battery-exit=$?"
+echo "=== compiler battery (${QED64_BATTERY_ARGS:-served pairing: work/snapshot + stage1 + work/lib-tree-slim}) ==="; node tests/adversarial/compiler-battery.mjs --run-dir "$RUN" ${QED64_BATTERY_ARGS:-} > work/adversarial/battery-0031h.log 2>&1; echo "battery-exit=$?"
 python3 -c "
 import json; r=json.load(open('work/adversarial/compiler-report.json')); print(f\"battery: {r['total']-r['failed']}/{r['total']} (infra {r.get('infra',0)})\")"
 echo "run dir: $RUN"
