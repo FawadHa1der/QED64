@@ -411,4 +411,20 @@ describe("import-packs.sh contract validation (--dry-run)", () => {
     expect(step.status).toBe(2);
     expect(step.stdout).toMatch(/unknown step 'bake'/);
   });
+  test("K whose runtime is already served: a full run refuses (nothing to import); a partial re-issue without 'stage' proceeds", () => {
+    const k = fakeK("k-served", true);
+    const wasm = fs.readFileSync(path.join(k, "build/stage1/bin/lean.wasm"));
+    const id = `wasm64-${createHash("sha256").update(wasm).digest("hex").slice(0, 16)}`;
+    const pub = fs.mkdtempSync(path.join(tmp, "public-served-"));
+    fs.mkdirSync(path.join(pub, "runtime"), { recursive: true });
+    fs.writeFileSync(path.join(pub, "runtime/runtime-manifest.json"), JSON.stringify({ buildId: id, leanVersion: "4.34.0", files: {} }));
+    const env = { ...process.env, QED64_PUBLIC_DIR: pub };
+    const full = spawnSync("bash", [lane, k, "--lean-version", "4.34.0", "--dry-run"], { cwd: root, encoding: "utf8", env });
+    expect(full.status).toBe(1);
+    expect(full.stdout).toMatch(/IS the served runtime .* nothing to import/);
+    const partial = spawnSync("bash", [lane, k, "--lean-version", "4.34.0", "--dry-run", "--only", "pack-extra"], { cwd: root, encoding: "utf8", env });
+    expect(partial.status).toBe(0);
+    expect(partial.stdout).toMatch(/partial re-issue of: +pack-extra/);
+    expect(partial.stdout).toMatch(/DRY RUN/);
+  });
 });

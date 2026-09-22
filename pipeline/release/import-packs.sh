@@ -113,10 +113,17 @@ fi
 ID=""
 if [ -s "$ART/bin/lean.wasm" ]; then
   ID="wasm64-$(shasum -a 256 "$ART/bin/lean.wasm" | cut -c1-16)"
-  SERVED=$(node -p 'JSON.parse(require("fs").readFileSync("public/runtime/runtime-manifest.json","utf8")).buildId' 2>/dev/null)
+  PUBLIC_DIR=${QED64_PUBLIC_DIR:-public}
+  SERVED=$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1]+"/runtime/runtime-manifest.json","utf8")).buildId' "$PUBLIC_DIR" 2>/dev/null)
   echo "  buildId  $ID   (served: ${SERVED:-unknown})"
-  [ -n "$SERVED" ] || fail "cannot read the served buildId from public/runtime/runtime-manifest.json"
-  [ "$ID" != "$SERVED" ] || fail "K's runtime IS the served runtime ($ID) — nothing to import"
+  [ -n "$SERVED" ] || fail "cannot read the served buildId from $PUBLIC_DIR/runtime/runtime-manifest.json"
+  # A full run against the served runtime has nothing to import. A partial
+  # re-issue (--only pack-extra after the game's tree changed, --only umbrella
+  # …) is legitimate after promotion: the runtime is the same by design.
+  if [ "$ID" = "$SERVED" ]; then
+    if want stage; then fail "K's runtime IS the served runtime ($ID) — nothing to import (a partial re-issue needs --only <steps> without 'stage')"; fi
+    echo "  note     K's runtime is the served runtime — partial re-issue of: $RUN"
+  fi
 fi
 
 # What the new packs mirror: id, mount point and roots of the served manifests.
