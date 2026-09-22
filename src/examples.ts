@@ -80,7 +80,7 @@ example (G : Type*) [Group G] (a : G) : a * a⁻¹ = 1 := by
     id: "mathlib-reals",
     title: "Mathlib — real numbers",
     profile: "essential",
-    source: `import Mathlib.Data.Real.Basic
+    source: `import Mathlib.Basic.Real.Basic
 import Mathlib.Tactic.Linarith
 
 example (x y : ℝ) : x * y = y * x := mul_comm x y

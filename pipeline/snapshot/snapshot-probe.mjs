@@ -43,8 +43,16 @@ const viaMemfs = process.argv.includes("--via-memfs");
 // --via-mem streams the snapshot into a wasm-malloc'd buffer and loads through
 // lean_wasm_load_snapshot_mem — the browser worker's direct path.
 const viaMem = process.argv.includes("--via-mem");
-if (!snapHost || !probeSource) {
-  console.error("usage: snapshot-probe.mjs --snap <file> (--probe-file <file> | --probe <source>)");
+// --fresh-import: no snapshot at all — the probe's header is imported from
+// the mounted --lib tree by lean_wasm_compile (getOrCreateWasmEnvFor), which
+// is what a native import with every facet present would produce. Its only
+// use is the differential half of the slim-bake audit (docs/REBUILD.md §3):
+// the SAME probe file through a slim snapshot and through a fresh import of
+// the fat tree must print byte-identical messages. The compile budget is the
+// import's, so pass a large --budget-ms.
+const freshImport = process.argv.includes("--fresh-import");
+if ((!snapHost && !freshImport) || !probeSource) {
+  console.error("usage: snapshot-probe.mjs (--snap <file> | --fresh-import --lib <tree>) (--probe-file <file> | --probe <source>)");
   process.exit(2);
 }
 const leanJs = path.join(artifactDir, "bin/lean.js");
@@ -52,8 +60,10 @@ const leanJs = path.join(artifactDir, "bin/lean.js");
 // The runtime expects a .deps sidecar next to the snapshot (the worker writes
 // "[]"); stage both into a scratch dir so the real snapshot dir stays clean.
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "qed64-snap-probe-"));
-fs.linkSync(snapHost, path.join(scratch, "probe.snap"));
-fs.writeFileSync(path.join(scratch, "probe.snap.deps"), "[]");
+if (!freshImport) {
+  fs.linkSync(snapHost, path.join(scratch, "probe.snap"));
+  fs.writeFileSync(path.join(scratch, "probe.snap.deps"), "[]");
+}
 process.on("exit", () => fs.rmSync(scratch, { recursive: true, force: true }));
 
 const asPtr = (v) => (typeof v === "bigint" ? v : BigInt(Math.trunc(v)));
@@ -123,6 +133,10 @@ globalThis.Module = {
       const sp = M._lean_init_search_path();
       if (ioTag(sp) !== 0) throw new Error("lean_init_search_path failed");
 
+      let lr, t0;
+      if (freshImport) {
+        console.log(`== fresh import: no snapshot; the header imports from ${libDir} ==`);
+      } else {
       console.log(`== load snapshot: ${path.basename(snapHost)} (${fs.statSync(snapHost).size} bytes) ==`);
       let snapPath = "/snapshots/probe.snap";
       if (viaMemfs) {
@@ -145,8 +159,8 @@ globalThis.Module = {
         snapPath = "/memsnap.snap";
         console.log(`staged ${total} bytes into MEMFS`);
       }
-      let t0 = performance.now();
-      let lr;
+      t0 = performance.now();
+      lr;
       if (viaMem) {
         const total = fs.statSync(snapHost).size;
         const heapPtr = M._malloc(asPtr(total));
@@ -183,7 +197,8 @@ globalThis.Module = {
         throw new Error("snapshot load reported failure");
       }
 
-      console.log("== compile the probe against the seeded environment ==");
+      }
+      console.log(freshImport ? "== compile the probe with a fresh import ==" : "== compile the probe against the seeded environment ==");
       captured.length = 0;
       t0 = performance.now();
       const cr = M._lean_wasm_compile(mkString(probeSource), mkString("/workspace/input.lean"));

@@ -82,3 +82,26 @@ runtime real-imports consistent with the bake.
 3. `scripts/upload-artifacts.sh` (additive; old snapshots stay for the
    currently-deployed shell), then push — the pinned-manifest scheme keeps
    the window closed as usual.
+
+## Audit at Mathlib `5ed2965` (v4.34.0), 2026-09-22 — slim ships
+
+Runtime `wasm64-36a96239e08fd2e0`, essential 4,354 modules (incl. 80
+deprecated shims), umbrella of 5,004 modules. Static half: 308 `import all`
+edges in the tree, 14 outside Init/Std/Lean/Lake, all library-internal
+(Batteries.Control.*, Batteries.Tactic.Lint.Simp, a few Mathlib.Tactic files
+importing Lean.Meta.*); the slim bake imported every umbrella module with
+zero errors. Differential half (`work/slim-stress.lean`: rw chains, linarith,
+norm_num, decide, simp, field lemmas, omega, term proofs, `#check`, `#eval`):
+the **slim snapshot** versus a **fresh import of the fat tree** through the
+same `lean_wasm_compile` path (`pipeline/snapshot/snapshot-probe.mjs
+--fresh-import --lib <fat tree>`, added for this audit) print byte-identical
+messages — 4 lines each, one of them the same "unsolved goals ⊢ Nat.Prime 37"
+in both (norm_num's `Prime` extension is outside the essential closure, as it
+was at de3a9cf; a scope fact, not a slim effect). A fat SNAPSHOT can no
+longer be baked on this runtime: the compactor's object-offset table
+(patch 0012, 16-byte slots, doubling at 70% load) crosses 2^27 → 2^28 slots
+for the 5,004-module fat tree, and the 6 GiB rehash transient plus the
+output reserve no longer fit the 16 GiB space — recorded in the kernel
+repo's PATCHES.md; the fat-import differential is the audit method from now
+on. Repeat this audit at every Mathlib pin.
+

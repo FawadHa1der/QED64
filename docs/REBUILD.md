@@ -9,8 +9,9 @@ commit named in `pipeline/toolchain/KERNEL-PIN` on branch `qed64-wasm64` of
 build environment is the Dockerfile under `docker-wasm64/` in that tree, and
 every downstream artifact is a deterministic function of those.
 
-> Last checked against the tree on 2026-09-21 (pairing
-> `wasm64-c645477e817ac857`, series through 0033). The one-command form of
+> Last checked against the tree on 2026-09-22 (pairing
+> `wasm64-36a96239e08fd2e0`, Lean 4.34.0 — the first version import,
+> done with `pipeline/release/import-packs.sh`, §3b). The one-command form of
 > sections 1 and 3 is `pipeline/release/bump-chain.sh stage` … pyramid …
 > `pipeline/release/bump-chain.sh promote`.
 

@@ -274,7 +274,7 @@ const collisionOf = (s: RelayStatus) => s.collision ?? null;
 
 // ---- Examples -------------------------------------------------------------
 const EXAMPLES: Record<string, string> = {
-  mathlib: `import Mathlib.Data.Real.Basic
+  mathlib: `import Mathlib.Basic.Real.Basic
 
 example (a b c : ℝ) : c * b * a = b * (a * c) := by
   rw [mul_comm c b]
@@ -287,7 +287,7 @@ example (x y : ℝ) (h1 : x < y) (h2 : 0 < x) : x * 2 < y * 2 := by
 example : False := sorry
 `,
   mil: `import MIL.Common
-import Mathlib.Data.Real.Basic
+import Mathlib.Basic.Real.Basic
 
 example (a b c : ℝ) : a * (b * c) = b * (a * c) := by
   rw [← mul_assoc]
