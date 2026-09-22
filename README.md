@@ -141,6 +141,31 @@ Lean, Mathlib, Batteries: Apache-2.0. The wasm build derives from
 [cauli/lean4](https://github.com/cauli/lean4) `reinstate-wasm` (Apache-2.0);
 loader and delivery patterns follow the Browser64 workspace evidence.
 
+## What changed for users with Lean 4.34.0 (2026-09-22)
+
+The playground serves Lean `4.34.0` and Mathlib at tag `v4.34.0`
+(`docs/PROVENANCE.md`). Visible differences from the 4.33 era:
+
+- **Module renames.** Mathlib moved its most-imported modules under
+  `Mathlib.Basic.*` (`Mathlib.Data.Real.Basic` → `Mathlib.Basic.Real.Basic`,
+  `Data.Complex.Basic` → `Basic.Complex.Basic`, …). The old names still
+  resolve here — the library ships upstream's deprecated shims — but a few
+  were removed outright with no shim (`Mathlib.Logic.Basic` →
+  `Mathlib.Basic.Logic.Basic`), exactly as on live.lean-lang.org. A header
+  served from the preloaded Mathlib environment does not show upstream's
+  deprecation warning for an old name.
+- **`deriving Fintype` needs an option.** Upstream Lean 4.34 turned
+  `backward.isDefEq.respectTransparency` on by default and Mathlib's
+  `Fintype` deriving handler was not adapted, so
+  `inductive Foo | a | b deriving Fintype` fails in any file
+  ("Application type mismatch … `Foo.enumList.Nodup`"). Write
+  `set_option backward.isDefEq.respectTransparency false in` before the
+  `inductive`, as Mathlib's own tests do. Not a playground defect; the
+  compiler battery pins both behaviours.
+- **`norm_num` for primality** (`Nat.Prime 37`) needs
+  `Mathlib.Tactic.NormNum.Prime`, which is outside the preloaded environment,
+  as it was before; `decide` and `norm_num` on arithmetic are unaffected.
+
 ## Transport
 
 The editor talks to the Lean worker over one transport, the **resident**

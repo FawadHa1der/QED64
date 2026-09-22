@@ -182,6 +182,17 @@ touches, in this order:
    which is the set the compiler battery and the Node probes load against the
    SERVED binary; overwriting it unpairs them. Only at promotion time do the
    new raw snapshots replace `work/snapshot/{init,mathlib}.snap`.
+   After the promote, make the toolchain working directory mirror what is
+   served, so the battery and the Node probes (whose defaults are
+   `pipeline/toolchain/work/build/stage1`, `work/snapshot`, `work/lib-tree-slim`)
+   test the served pairing: install the artifact's `bin/`, `lib/lean` and
+   `lib/temp` into `pipeline/toolchain/work/build/stage1` **with
+   `bin/package.json` = `{ "type": "commonjs" }`** (the glue's pthread workers
+   `require` it; under this repo's `"type": "module"` a bare `.js` is ESM and
+   every probe dies with "require is not defined"), check out `work/lean4` at
+   the pin, and move the new `work/{lib-tree,lib-tree-slim,core-lib-slim,umbrella}`
+   and `work/snapshot/{init,mathlib}.snap` into place (keep the previous
+   sets aside as `*-<old version>`).
 6. lean4game vendors qed64 at its own pin and has its own kernel pin and
    build lane (`wasm/build-from-source.sh` there); it is a separate bump.
 

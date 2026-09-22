@@ -2102,6 +2102,35 @@
       },
       "notes": "Same genre in the live pane: paste into the init tab. The covering env first produces 'Tree has already been declared'; nothing reboots on its own — the page offers 'Load exact imports', the scenario's clickAction drives `relay.restart` once into exact imports, and the file settles ready with ZERO errors.",
       "rationale": "A pasted file whose names collide with the preloaded Mathlib umbrella must NOT reboot on its own: the page explains the collision and offers 'Load exact imports'; clicking it reboots into faithful mode (pack install once + exact olean import) and the file then checks clean."
+    },
+    {
+      "name": "msg-deriving-fintype-4.34-default",
+      "category": "goldens/message-output",
+      "source": "import Mathlib.Tactic\n\ninductive Foo | a | b\n  deriving Fintype, DecidableEq\n\nexample : Fintype.card Foo = 2 := rfl\n",
+      "expect": {
+        "panicFree": true,
+        "budgetMs": 30000,
+        "mustError": true,
+        "mustSucceed": false,
+        "containsMsgs": [
+          "Tactic `rewrite` failed",
+          "Finset"
+        ]
+      },
+      "rationale": "Lean 4.34 turned backward.isDefEq.respectTransparency on by default and Mathlib v4.34.0's Fintype deriving handler was not adapted (Mathlib's own MathlibTest/DeriveFintype.lean wraps every enum derive in the option). Without the option the derive fails at the handler's `rw [Finset.mem_mk]` — reproduced on the served wasm64-36a96239e08fd2e0 pairing at 4:11 and natively by the kernel session. Pinned so the next library bump notices when upstream fixes the handler (this case will then FAIL and should be retired together with its twin)."
+    },
+    {
+      "name": "msg-deriving-fintype-4.34-workaround",
+      "category": "goldens/message-output",
+      "source": "import Mathlib.Tactic\n\nset_option backward.isDefEq.respectTransparency false in\ninductive Foo | a | b\n  deriving Fintype, DecidableEq\n\nexample : Fintype.card Foo = 2 := rfl\n",
+      "expect": {
+        "panicFree": true,
+        "budgetMs": 30000,
+        "mustError": false,
+        "mustSucceed": true,
+        "containsMsgs": []
+      },
+      "rationale": "The documented workaround (README, 'What changed for users with Lean 4.34.0'): the same derive under `set_option backward.isDefEq.respectTransparency false in` compiles clean and `Fintype.card Foo = 2 := rfl` closes — the environment carries the derive handler and the instances users rely on."
     }
   ]
 }
