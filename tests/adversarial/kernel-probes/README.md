@@ -22,7 +22,13 @@ corpus until the fixed runtime is staged; then merge and run the battery
 against the staged pairing:
 
 ```sh
-python3 -c "import json; c=json.load(open('tests/adversarial/corpus.json')); n={x['name'] for x in c}; c+=[x for x in json.load(open('tests/adversarial/kernel-probes/corpus-cases.json')) if x['name'] not in n]; json.dump(c, open('tests/adversarial/corpus.json','w'), indent=2, ensure_ascii=False)"
+python3 - <<'EOF'
+import json
+p='tests/adversarial/corpus.json'; c=json.load(open(p)); items=c['items'] if isinstance(c,dict) else c
+have={x['name'] for x in items}
+items+=[x for x in json.load(open('tests/adversarial/kernel-probes/corpus-cases.json')) if x['name'] not in have]
+json.dump(c, open(p,'w'), indent=2, ensure_ascii=False); open(p,'a').write('\n')
+EOF
 ```
 
 `module-file.lean` needs the compile path to accept a `module` header

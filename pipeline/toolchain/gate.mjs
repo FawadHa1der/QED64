@@ -7,11 +7,15 @@
 //  3. error smoke        — a false proof must produce a positioned error
 //  4. THE PARSE GATE     — garbage input must produce >=1 error diagnostic
 //                          (the defect motivating the rebuild)
-// Exits nonzero on the first failing gate.
+//  5. module semantics   — a file without `module` is NOT elaborated as a
+//                          module (HARDENING #51): isModule=false, plain defs
+//                          public, attributed rpc/tactic/unexpander defs
+//                          compile; a `module` file still reports true
+// Exits nonzero if any gate fails (all are run).
 //
 // Usage: node pipeline/toolchain/gate.mjs --artifact <dir>
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -29,26 +33,24 @@ if (!fs.existsSync(path.join(artifact, "bin/lean.js"))) {
 }
 const runner = path.join(root, "pipeline/snapshot/node-runner.mjs");
 
-function runLean(source, label) {
+// Since the keepalive guard (patch 0020) and the resident transport (0031)
+// the one-shot CLI prints its output and then never exits — the Emscripten
+// runtime is kept alive for library-style use, which is what the product
+// relies on. The CLI checks are therefore judged by OUTPUT: the runner is
+// given a bounded budget and killed; `done` marks the child having printed
+// its verdict line(s) before the budget ran out. (execFileSync's timeout is
+// the reaper: a stability-based reaper would need a streaming child, and the
+// 4-minute budget is cheap next to the bakes.)
+function runLean(source, label, budgetMs = 240_000) {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "qed64-gate-"));
   fs.writeFileSync(path.join(work, "input.lean"), source);
-  try {
-    const stdout = execFileSync("node", [runner, "--artifact", artifact, "--work", work, "--", "/work/input.lean"],
-      { timeout: 240_000, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
-    return { stdout, status: 0, timedOut: false };
-  } catch (error) {
-    // Since the keepalive guard (patch 0020) and the resident transport
-    // (0031), the one-shot CLI prints its output and then never exits — the
-    // Emscripten runtime is kept alive for library-style use, which is what
-    // the product relies on (snapshot loads and warm compiles before `main`).
-    // Measured 2026-09-07 on the served 0032 runtime and on 0033 alike:
-    // `#eval` prints 64, `rfl` elaborates, the process is killed by the
-    // timeout. The CLI checks below are therefore judged by OUTPUT; a timeout
-    // is reported, not failed. The exit path is not a product path.
-    const timedOut = error.killed === true || error.signal === "SIGTERM";
-    return { stdout: `${error.stdout ?? ""}\n${error.stderr ?? ""}`, status: error.status ?? (timedOut ? 124 : 1), timedOut };
-  }
+  const r = spawnSync("node", [runner, "--artifact", artifact, "--work", work, "--", "/work/input.lean"],
+    { timeout: budgetMs, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, killSignal: "SIGKILL" });
+  const timedOut = r.signal === "SIGKILL" || r.signal === "SIGTERM";
+  return { stdout: `${r.stdout ?? ""}\n${r.stderr ?? ""}`, status: r.status ?? (timedOut ? 124 : 1), timedOut };
 }
+/** Lean's own messages in the run's output, DEBUG/PROFILE noise stripped. */
+const leanOut = (r) => r.stdout.replace(/\[(DEBUG:PROGRESS|WASM (DEBUG|PROFILE|LSP))\][^\n]*\n?/g, "");
 let failures = 0;
 const gate = (ok, label, extra = "") => {
   console.log(`${ok ? " ok " : "FAIL"}  ${label}${extra ? ` — ${extra}` : ""}`);
@@ -79,6 +81,23 @@ gate(probeStatus === 0 && probeOut.includes("PERSISTENT PROBE PASS"), "persisten
 const parseFixed = probeOut.includes("runtime defect is FIXED");
 gate(parseFixed, "THE PARSE GATE: lean_wasm_compile reports parser diagnostics",
   parseFixed ? "" : "persistent shell still swallows parse errors");
+
+
+// 5. module semantics (HARDENING #51). The three legacy probes share one run;
+//    the `module` probe must be a file of its own (the keyword is the header).
+const PROBES = path.join(root, "tests/adversarial/kernel-probes");
+const legacy = runLean([
+  fs.readFileSync(path.join(PROBES, "is-module.lean"), "utf8"),
+  fs.readFileSync(path.join(PROBES, "private-default.lean"), "utf8").replace(/^import Lean\n/, ""),
+  fs.readFileSync(path.join(PROBES, "rpc-attr.lean"), "utf8").replace(/^import Lean\n/, ""),
+].join("\n"));
+const legacyOut = leanOut(legacy);
+gate(/isModule=false/.test(legacyOut), "legacy file: environment header says isModule=false", /isModule=true/.test(legacyOut) ? "the buffer is elaborated as a module (HARDENING #51)" : "");
+gate(/\(`plainDef, false\)/.test(legacyOut) && !/_private\.[^\n]*plainDef/.test(legacyOut), "legacy file: a plain def is public", /_private\.[^\n]*plainDef/.test(legacyOut) ? "plainDef is private by default" : "");
+gate(!/must be marked as `meta`|must be public|error/i.test(legacyOut), "legacy file: @[server_rpc_method], attribute [tactic …], @[app_unexpander] on plain defs compile",
+  (legacyOut.match(/[^\n]*(must be marked as `meta`|must be public)[^\n]*/) || [""])[0].slice(0, 120));
+const modFile = runLean(fs.readFileSync(path.join(PROBES, "module-file.lean"), "utf8"));
+gate(/isModule=true/.test(leanOut(modFile)), "module file: environment header says isModule=true");
 
 console.log(failures === 0 ? "\nGATE PASSED" : `\nGATE FAILED (${failures})`);
 process.exit(failures === 0 ? 0 : 1);
