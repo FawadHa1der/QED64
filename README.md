@@ -162,6 +162,14 @@ The playground serves Lean `4.34.0` and Mathlib at tag `v4.34.0`
   `set_option backward.isDefEq.respectTransparency false in` before the
   `inductive`, as Mathlib's own tests do. Not a playground defect; the
   compiler battery pins both behaviours.
+- **Known defect (fix pending, found 2026-09-30): the editor buffer is treated
+  as a `module` file.** Declarations you type are private by default and
+  metaprogramming attributes on plain definitions are rejected
+  (`@[server_rpc_method]`, `attribute [tactic …]`, `@[app_unexpander]`,
+  `@[simproc]`: "must be marked as `meta`"). `macro`, `elab`, `syntax`,
+  `@[simp]`, `#eval` and all tactics are unaffected, and so is code compiled
+  into the library packs. Stock Lean does not do this for a file without
+  `module`; the cause and fix are in docs/HARDENING.md #51.
 - **`norm_num` for primality** (`Nat.Prime 37`) needs
   `Mathlib.Tactic.NormNum.Prime`, which is outside the preloaded environment,
   as it was before; `decide` and `norm_num` on arithmetic are unaffected.
