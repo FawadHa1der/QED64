@@ -5,8 +5,11 @@ served 4.34 pairing a LEGACY buffer is elaborated with module semantics
 because the fork imports at `OLeanLevel.exported` on Emscripten and lets
 `importModules` default `isModule := level != .private` (true). Expected
 behaviour is stock Lean's. Run each with the one-shot CLI (node-runner) or
-in the browser (`work/widget-probe2.cjs <url> <file> <line> <regex>`); the
-same four become compiler-battery cases with the fixing pairing bump.
+in the browser (`work/widget-probe2.cjs <url> <file> <line> <regex>`); three of them become compiler-battery cases with the fixing pairing bump
+(`module-file.lean` stays a gate + browser probe: the battery cannot express
+a `module` header). `browser-check.sh <url>` runs all four through the real
+resident FileWorker (the prebuilt-environment branch, which the compile path
+of the battery does not exercise).
 
 | file | expected (stock Lean) | served wasm64-36a96239e08fd2e0 |
 |---|---|---|
