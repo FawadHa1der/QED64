@@ -1821,7 +1821,7 @@ self.__qed64TestExports = {
   },
   // Lean-side liveness under test (tests/unit/liveness.test.ts): the pure
   // bookkeeping with a fake clock, the mailbox kick, and the live state.
-  liveness: { LIVENESS, LIVENESS_PROBE_PREFIX, createLiveness, livenessClientRequest, livenessServerFrame, livenessTick, mailboxTick, mailboxConfirm, locateRuntimeMailbox, readMailboxWord, kickMailbox, instrumentRuntimeMailbox, runtimeMailbox, state: () => liveness },
+  liveness: { LIVENESS, LIVENESS_PROBE_PREFIX, createLiveness, livenessClientRequest, livenessServerFrame, livenessTick, mailboxTick, mailboxConfirm, locateRuntimeMailbox, readMailboxWord, kickMailbox, instrumentRuntimeMailbox, runtimeMailbox, state: () => liveness, step: () => livenessStep() },
   // Front-door host wiring under test (tests/unit/front-door.test.ts): the
   // machine's state and the merged status, read-only.
   frontDoor: {

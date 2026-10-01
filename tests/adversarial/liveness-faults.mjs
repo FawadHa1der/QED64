@@ -224,15 +224,26 @@ try {
       await edit(DOC, 2, 120000);
       const s0 = await stats();
       const k0 = await counters();
-      // The page is never silent for 6 s on its own (the editor's requests and
-      // Lean's refresh loop keep frames coming), so every 8 s the drill makes
-      // the watchdog believe it has been: the REAL probe is then written into
-      // the ring and must be answered by the FileWorker while the command runs.
+      // The page is never silent for 6 s on its own (frames arrive more than
+      // once a second while a command runs: progress, refreshes, answers), so
+      // every 8 s the drill makes the watchdog believe it has been and runs
+      // its tick at once (a later tick would see the next frame first): the
+      // REAL probe is written into the ring and must be answered by the
+      // FileWorker while the command runs.
       let forced = 0;
+      const forcedPhases = [];
       const force = async (t0) => {
         if (Date.now() - t0 < (forced + 1) * 8000) return;
         forced += 1;
-        await inWorker(() => { const L = globalThis.__qed64TestExports.liveness.state(); if (L && L.probe === null) L.lastFrameAt -= 7000; }).catch(() => {});
+        const r = await inWorker(() => {
+          const t = globalThis.__qed64TestExports.liveness;
+          const L = t.state();
+          if (!L || L.probe !== null) return null;
+          L.lastFrameAt -= 7000;
+          t.step();
+          return { phase: globalThis.__qed64TestExports.frontDoor.status().phase ?? null, probed: L.probe !== null };
+        }).catch((e) => ({ error: String(e).slice(0, 80) }));
+        forcedPhases.push(r);
       };
       let longRun = await edit(longEval(n), 3, 600000, [String(3 * n)], force);
       if (longRun.ok && longRun.ms < 25000 && n < 60 * n0) { // too short to prove anything: rescale once
@@ -246,7 +257,7 @@ try {
       const lv = delta(k0?.liveness, k1?.liveness);
       const ok = c1.ok && c2.ok && longRun.ok && longRun.ms >= 25000 && d?.workerDeaths === 0 && lv?.stalls === 0 && lv?.rescues === 0 && lv?.answered >= 2 && lv?.answered === lv?.probes;
       record("long-silent-command", ok,
-        `calibration ${c1.ms}/${c2.ms} ms → n=${n}; command settled=${longRun.ok} in ${longRun.ms} ms (value ${3 * n}); ${forced} forced silences; liveness ${JSON.stringify(lv)}; deaths +${d?.workerDeaths}`,
+        `calibration ${c1.ms}/${c2.ms} ms → n=${n}; command settled=${longRun.ok} in ${longRun.ms} ms (value ${3 * n}); ${forced} forced silences ${JSON.stringify(forcedPhases.slice(0, 4))}; liveness ${JSON.stringify(lv)}; deaths +${d?.workerDeaths}`,
         { n, commandMs: longRun.ms, liveness: lv });
       await edit(DOC, 2, 120000);
     }
