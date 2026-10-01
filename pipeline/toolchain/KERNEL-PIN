@@ -1,11 +1,13 @@
-9fbb45afcb9bfe152215bd670711a3b37f782ea3  qed64-wasm64 @ FawadHa1der/lean4
+3ae65d36f96b2434881f27fffe9f03d608d974f0  qed64-wasm64 @ FawadHa1der/lean4
 # Lean 4.34.0: upstream tag v4.34.0 merged over the wasm64 series (resident
 # transport 0031, resolver 0032, pump entry points retired 0033, generated
-# exports) plus 0034: a file without `module` is no longer elaborated with
-# module semantics (docs/HARDENING.md #51 — processHeaderCore passes the
-# header's isModule, the env cache imports as legacy, the prebuilt-environment
-# branch sets the served env's flag from the user's header). This is the commit
-# that BUILT the served binary (kernel repo's wasm64-build/ lane, gate 8/8).
+# exports), 0034 (a file without `module` is no longer elaborated with module
+# semantics — docs/HARDENING.md #51) and 0035: the task manager never creates
+# a thread while holding its global mutex, and dedicated tasks reuse parked
+# threads (docs/HARDENING.md #52 — the "elaborating forever" freeze; the
+# runtime sources are kernel commit 6b3a491f76, this pin adds the kernel
+# lane's gate). This is the commit that BUILT the served binary (kernel repo's
+# wasm64-build/ lane, gate 11/11).
 # Bump deliberately: a stage1 rebuild from a new pin REQUIRES rebaking the
 # snapshot pairing and, for served artifacts, the full flow
 # (pipeline/release/import-packs.sh for a version import,
@@ -14,8 +16,8 @@
 #
 # Paired build identity (the other half of the invariant — a stage1 rebuilt
 # from any other commit UNPAIRS these and the compiler battery breaks):
-#   runtime        wasm64-4b025db7729c5f89 (sha256[:16] of stage1/bin/lean.wasm, 109,872,982 bytes)
+#   runtime        wasm64-2c18773ecfba45bb (sha256[:16] of stage1/bin/lean.wasm, 109,875,254 bytes)
 #   mathlib.snap   1127272685 bytes raw (probe: import QED64.Essential, lib-tree-slim; Mathlib 5ed2965 = v4.34.0, 4,354 modules incl. 80 deprecated shims)
 #   init.snap      122364117 bytes raw (lib: core-lib-slim, 649 modules)
 #   packs          UNCHANGED from the 4.34 import: lean-core 1c5c75db… (390,065,102 B), mathlib-essential eeab078f… (3,568,001,947 B) — oleans built natively at 8d91aadcda, layout-compatible
-#   staging        work/staging/wasm64-4b025db7729c5f89/{runtime,snapshots,profiles} (index entries carry `runtime`)
+#   staging        work/staging/wasm64-2c18773ecfba45bb/{runtime,snapshots,profiles} (index entries carry `runtime`)

@@ -3,23 +3,23 @@
   "snapshots": [
     {
       "name": "init",
-      "url": "/snapshots/init.35c8c5f5419e0c33.snapz",
-      "digest": "sha256:35c8c5f5419e0c3391055a293082c723068b0293ee062b214fb89593192563da",
+      "url": "/snapshots/init.7cf361eb941eda2c.snapz",
+      "digest": "sha256:7cf361eb941eda2c36b4c1bb1ac358f59de5c250af58aa5937571c1cb289ab57",
       "bytes": 122364117,
-      "transfer": 32643645,
+      "transfer": 32643664,
       "imports": [],
-      "runtime": "wasm64-4b025db7729c5f89"
+      "runtime": "wasm64-2c18773ecfba45bb"
     },
     {
       "name": "mathlib",
-      "url": "/snapshots/mathlib.8df0689fbc323eab.snapz",
-      "digest": "sha256:8df0689fbc323eababbeeb5c475206722fc649820ffc83fbe272675ef0dd3f5c",
+      "url": "/snapshots/mathlib.bf13acc48d0efb21.snapz",
+      "digest": "sha256:bf13acc48d0efb21ccbb391b14f3d3cae0f909acd386d1a0861875678926a71f",
       "bytes": 1127272685,
-      "transfer": 321484932,
+      "transfer": 321484881,
       "imports": [
         "QED64.Essential"
       ],
-      "runtime": "wasm64-4b025db7729c5f89"
+      "runtime": "wasm64-2c18773ecfba45bb"
     }
   ]
 }

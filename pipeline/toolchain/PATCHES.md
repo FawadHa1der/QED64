@@ -310,6 +310,46 @@ the stdlib compile, so it read the PREVIOUS build's C — a deleted `wanted`
 name could still have been exported and failed the link; `make_stdlib` now
 precedes the scan and `finish.sh` regenerates the list before its relink.
 
+## 0035 — task manager: no thread creation under `m_mutex`; dedicated tasks reuse parked threads (2026-10-01; the pairing bump)
+Kernel commit `6b3a491f76` (runtime sources; KERNEL-PIN `3ae65d36f9` adds only the
+kernel lane's gate), patch file
+`0035-wasm-task-manager-no-spawn-under-mutex-parked-dedicated-threads.patch`
+(`object.cpp`, `io.cpp/h`, the export seed). Wasm only (`LEAN_EMSCRIPTEN`);
+the native branch keeps upstream's behaviour with the new signatures.
+docs/HARDENING.md #52: under Emscripten a pthread's `pthread_create` is a
+synchronous round trip to the runtime's main JS thread, and the task manager
+made it while holding its one global mutex — for every output message,
+request and continuation the server spawns (~150 per edit). One round trip
+that never completed (a lost runtime-mailbox wakeup) froze every Lean thread.
+- `spawn_worker` / `spawn_dedicated_worker` drop the caller's lock around
+  `lthread` construction (a std worker's slot is reserved first, so every
+  decision taken meanwhile counts it); every caller of `enqueue_core` already
+  tolerated the drop (a sync-priority task runs unlocked inside it);
+  `resolve_core` notifies waiters before handing off dependents, and
+  `wait_for`'s sync-task panic prints with the lock released.
+- A dedicated task is handed to a PARKED dedicated thread when one exists
+  (each parked thread waits on its own slot and takes exactly one task, so a
+  dedicated task never waits behind another, as with one fresh thread per
+  task). At most 8 stay parked: 1 app + 14 std + 8 = 23 of the 24
+  preallocated Workers, so parking never forces a Worker load. A reused
+  thread gets fresh std streams (a handler that left `IO.setStderr` installed
+  would otherwise swallow later server output) and the heartbeat limit a
+  fresh thread would inherit.
+- Export `_lean_wasm_task_manager_parked_threads()` (lock-free; the worker's
+  pool sample reports it as `parked`).
+Reviewed adversarially twice (kernel lane: 5 lenses, 12 agents — hand-off
+protocol, every lock-drop site, slot lifetime, shutdown, TLS; no defect in the
+final). Kernel gate 11/11 on the served binary, including a task-manager storm
+(2,140 dedicated tasks: forAsync chains, nested fan-outs, a ladder of 24
+dedicated tasks blocked on each other — beyond the park cap —, pool waits,
+waitAny): 161 pthreads created vs 2,956 on `wasm64-4b025db7729c5f89`, and a
+stream-fidelity line (0 bytes reach a leaked redirection). This narrows the
+exposure to a lost wakeup and lets a frozen pool drain; it does not cure one
+(every output frame is still a proxied `fd_write`) — the worker's message
+mailbox, mailbox kick and Lean-side liveness probe do (HARDENING #52).
+Build identity: runtime `wasm64-2c18773ecfba45bb`, `lean.wasm` 109,875,254
+bytes; both snapshots rebaked against it (raw sizes identical to 0034's).
+
 ## (not in the series) `-sPTHREAD_POOL_DELAY_LOAD=1` — tried 2026-09-04, measured no effect, dropped
 Hypothesis: the +4 GB the renderer gains during "Initializing the Lean runtime"
 was the 24 preallocated pthread workers each parsing the 48 MB glue. Built,
