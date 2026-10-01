@@ -126,7 +126,7 @@ export interface WorkerStatus {
   version: number | null;
   header: HeaderStatus | null;
   ring: { bytesQueued: number; refused: number };
-  pool: { unused: number; running: number };
+  pool: { unused: number; running: number; parked?: number };
   dropped: number;
   /** The front door's collision fact (`statusOf().collision`; §3 row 8,
    * HARDENING #43): names the worker's last publish reported "already
@@ -134,6 +134,14 @@ export interface WorkerStatus {
    * only for the relay's pre-status placeholder (before the first `status`
    * event); every event the session delivers carries it (null when none). */
   collision?: { names: string[]; version: number | null } | null;
+  /** The worker's Lean-side liveness counters (HARDENING #52), present (all
+   * zero) from the moment the resident loop opens: probes sent while the
+   * FileWorker was silent with work owed, probes answered, stalls (a probe
+   * unanswered for 12 s: the grace window before a "wedged" death), stalls
+   * that ended because output resumed, and rescues (the periodic mailbox
+   * kick served a proxied call whose wakeup never arrived — a lost wakeup
+   * healed; a notification merely in flight is not counted). */
+  liveness?: { probes: number; answered: number; stalls: number; resumed: number; rescues: number };
 }
 
 interface Pending {
@@ -248,7 +256,7 @@ export class LeanSession {
         // `collision` rides along because the page's "Load exact imports"
         // offer keys on it (§3 row 8) — rebuilding from declared fields
         // silently dropped it once; keep the list and WorkerStatus in step.
-        else if (msg.kind === "status") this.onStatus({ phase: msg.phase, version: msg.version ?? null, header: msg.header ?? null, ring: msg.ring, pool: msg.pool, dropped: msg.dropped ?? 0, collision: msg.collision ?? null });
+        else if (msg.kind === "status") this.onStatus({ phase: msg.phase, version: msg.version ?? null, header: msg.header ?? null, ring: msg.ring, pool: msg.pool, dropped: msg.dropped ?? 0, collision: msg.collision ?? null, ...(msg.liveness ? { liveness: msg.liveness } : {}) });
         else if (msg.kind === "heartbeat") this.armHeartbeat();
         // The worker's one death fact (W2): code, reason and the message the
         // relay carries into its status (`lastDeath`) for the page to render.

@@ -24,11 +24,11 @@ export interface RelaySession {
   terminate(): void;
 }
 export interface RestartOptions { snapshots?: string[]; warmHeader?: string; packs?: string[] } // boot inputs for a replacement session (S4 "Load exact imports")
-type Reason = "boot" | "crash" | "heartbeat" | "user" | "bootFailed";
+type Reason = "boot" | "crash" | "heartbeat" | "wedged" | "user" | "bootFailed";
 export type RelayState = { kind: "serving" } | { kind: "rebooting"; reason: Reason } | { kind: "halted" };
 /** The last death as the page shows it (gap 2): LeanSession's (reason, message), or "bootFailed" + the boot rejection's message. */
 export type Death = { reason: string; message: string };
-export type RelayStatus = Omit<WorkerStatus, "phase"> & { phase: WorkerStatus["phase"] | "halted"; relay: RelayState["kind"]; session: string; lastDeath: Death | null };
+export type RelayStatus = Omit<WorkerStatus, "phase"> & { phase: WorkerStatus["phase"] | "halted"; relay: RelayState["kind"]; rebootReason: string | null; session: string; lastDeath: Death | null };
 const EMPTY: WorkerStatus = { phase: "booting", version: null, header: null, ring: { bytesQueued: 0, refused: 0 }, pool: { unused: -1, running: -1 }, dropped: 0 };
 const BREAKER_DEATHS = 3;
 const BREAKER_WINDOW_MS = 120_000;
@@ -91,7 +91,7 @@ export class LspRelay {
   /** The page-facing datum (§2.2 L4, C7): the worker's own status, the relay's state and last death on top. */
   status(): RelayStatus {
     const s = this.lastStatus ?? EMPTY;
-    return { ...s, phase: this.state.kind === "halted" ? "halted" : s.phase, relay: this.state.kind, session: this.session.id, lastDeath: this.lastDeath };
+    return { ...s, phase: this.state.kind === "halted" ? "halted" : s.phase, relay: this.state.kind, rebootReason: this.state.kind === "rebooting" ? this.state.reason : null, session: this.session.id, lastDeath: this.lastDeath };
   }
 
   /** ClientMessage (§2.3): record, then forward — a booting worker queues it. */
@@ -170,7 +170,7 @@ export class LspRelay {
     s.dispose();
     const t = this.now();
     this.deaths = [...this.deaths.filter((d) => t - d < BREAKER_WINDOW_MS), t];
-    if (this.deaths.length < BREAKER_DEATHS) return this.reboot(reason === "bootFailed" || reason === "heartbeat" ? reason : "crash", true);
+    if (this.deaths.length < BREAKER_DEATHS) return this.reboot(reason === "bootFailed" || reason === "heartbeat" || reason === "wedged" ? reason : "crash", true);
     // Crash-loop breaker: the content kills the checker on every replay; keep the editor alive, an edit re-arms — on
     // the default (umbrella) session: the remembered exact mode may be the very thing that dies (it serves the header, with the offer back).
     this.stats.breakerTrips += 1;

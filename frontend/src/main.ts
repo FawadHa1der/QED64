@@ -195,6 +195,7 @@ const PHASE_LABEL: Record<RelayStatus["phase"], string> = {
   dead: "the checker crashed — restarting (~15 s)",
   halted: "the checker keeps crashing on this content — edit the file to retry",
 };
+const WEDGED_LABEL = "the checker stopped responding — restarting (~15 s)";
 /** The relay's status as this page consumes it. `lastDeath` is the relay's
  * memory of the death that halted it (`onDied(code, reason, message)`, or
  * the boot rejection), null once a session reaches `ready`; optional here so
@@ -261,7 +262,12 @@ function renderStatus(s: PageStatus) {
     return;
   }
   if (s.phase !== "booting" && s.phase !== "starting") widening = false;
-  const label = widening ? "loading Mathlib…" : s.phase === "elaborating" && hintShown ? SEARCH_HINT : PHASE_LABEL[s.phase];
+  // A liveness death (HARDENING #52: the Lean side stopped answering) is not
+  // a crash; say what happened while the relay reboots for it (keyed on why
+  // THIS reboot happens, not on the sticky lastDeath a later user restart
+  // would inherit).
+  const wedged = s.relay === "rebooting" && s.rebootReason === "wedged";
+  const label = widening ? "loading Mathlib…" : wedged ? WEDGED_LABEL : s.phase === "elaborating" && hintShown ? SEARCH_HINT : PHASE_LABEL[s.phase];
   if (s.phase === "booting" || s.phase === "starting" || s.phase === "elaborating" || s.phase === "dead") ui.busy(label);
   else ui.idle(label);
   if (s.phase === "ready" || s.phase === "headerRefused") bootFinish();
