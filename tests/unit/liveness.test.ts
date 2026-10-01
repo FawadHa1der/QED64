@@ -13,15 +13,16 @@ import vm from "node:vm";
 type Msg = { jsonrpc?: string; id?: number | string; method?: string; params?: unknown; error?: unknown; result?: unknown };
 interface Counters { probes: number; answered: number; stalls: number; resumed: number; rescues: number }
 interface Liveness {
-  cfg: { tickMs: number; probeAfterMs: number; wedgeAfterMs: number; graceMs: number; requestTtlMs: number };
+  cfg: { tickMs: number; probeAfterMs: number; wedgeAfterMs: number; graceMs: number; confirmMs: number; lateTimerMs: number; requestTtlMs: number };
   outstanding: Map<number | string, number>;
   probe: { id: string; sentAt: number } | null;
   stalledAt: number;
-  rescue: { notifiedAtLastKick: number; pending: { empty: number } | null };
+  watch: { at: number; notified: number } | null;
+  watchRetries: number;
   counters: Counters;
 }
 type Action = null | { kind: "probe"; msg: Msg } | { kind: "stall"; silentMs: number } | { kind: "dead"; silentMs: number };
-interface Mailbox { mode: string; notified: number; empty: number; served: number; counting: boolean; exitHooked: boolean }
+interface Mailbox { mode: string; notified: number; served: number; counting: boolean; exitHooked: boolean; mailboxPtr: number | null }
 interface Hooks {
   LIVENESS: Liveness["cfg"];
   LIVENESS_PROBE_PREFIX: string;
@@ -29,7 +30,10 @@ interface Hooks {
   livenessClientRequest(L: Liveness, msg: Msg, now: number): void;
   livenessServerFrame(L: Liveness, msg: Msg, now: number): { probe: boolean; resumedAfterMs: number | null };
   livenessTick(L: Liveness, now: number, phase: string, docOpen?: boolean): Action;
-  livenessKicked(L: Liveness, served: boolean | null, notified: number, empty: number): boolean;
+  mailboxTick(L: Liveness, word: number | null, notified: number, now: number): null | "kick" | "watch";
+  mailboxConfirm(L: Liveness, word: number | null, notified: number, now: number): null | "rescue" | "delivered" | "retry" | "kick";
+  locateRuntimeMailbox(): number | null;
+  readMailboxWord(): number | null;
   kickMailbox(): { kicked: boolean; served: boolean | null };
   instrumentRuntimeMailbox(): Mailbox;
   runtimeMailbox: Mailbox;
@@ -199,29 +203,80 @@ describe("liveness: a frozen Lean side", () => {
   });
 });
 
-describe("liveness: rescues are confirmed, never guessed", () => {
-  it("a kick that served work with no notification since the previous kick is a candidate, confirmed one kick later when no late (empty) notification came", () => {
+describe("liveness: rescues are confirmed from the mailbox's own notification word", () => {
+  const NONE = 0, RECEIVED = 1, PENDING = 2;
+  it("kicks every tick unless the word reads PENDING (then it watches instead)", () => {
     const L = hooks.createLiveness(0);
-    expect(hooks.livenessKicked(L, false, 0, 0)).toBe(false); // idle: nothing served
-    expect(hooks.livenessKicked(L, true, 40, 0)).toBe(false); // served while notifications flowed: not a candidate
-    expect(hooks.livenessKicked(L, true, 40, 0)).toBe(false); // candidate (no notification since the last kick)
-    expect(hooks.livenessKicked(L, false, 41, 0)).toBe(true); //  a notification arrived and served NEW work: the candidate's wakeup was lost → confirmed
+    expect(hooks.mailboxTick(L, NONE, 3, 0)).toBe("kick");
+    expect(hooks.mailboxTick(L, RECEIVED, 3, 1000)).toBe("kick");
+    expect(hooks.mailboxTick(L, null, 3, 2000)).toBe("kick"); // word unreadable: kick, never count
+    expect(hooks.mailboxTick(L, PENDING, 3, 3000)).toBe("watch");
+    expect(hooks.mailboxTick(L, PENDING, 3, 3100)).toBeNull(); // already watching
+  });
+  it("still PENDING after confirmMs with no notification-driven check, timer on time → a lost wakeup: rescue", () => {
+    const L = hooks.createLiveness(0);
+    hooks.mailboxTick(L, PENDING, 7, 1000);
+    expect(hooks.mailboxConfirm(L, PENDING, 7, 1000 + L.cfg.confirmMs + 5)).toBe("rescue");
     expect(L.counters.rescues).toBe(1);
+    expect(L.watch).toBeNull();
   });
-  it("the in-flight notification for work the kick already served arrives empty and cancels the candidate (a race, not a lost wakeup)", () => {
+  it("a notification in flight is delivered within the window: never counted", () => {
     const L = hooks.createLiveness(0);
-    hooks.livenessKicked(L, false, 10, 2);
-    expect(hooks.livenessKicked(L, true, 10, 2)).toBe(false); // candidate
-    expect(hooks.livenessKicked(L, false, 11, 3)).toBe(false); // the late message found nothing to serve: cancelled
+    hooks.mailboxTick(L, PENDING, 7, 1000);
+    expect(hooks.mailboxConfirm(L, NONE, 8, 1000 + L.cfg.confirmMs)).toBe("delivered"); // the message ran and cleared the word
+    hooks.mailboxTick(L, PENDING, 8, 2000);
+    expect(hooks.mailboxConfirm(L, PENDING, 9, 2000 + L.cfg.confirmMs)).toBe("delivered"); // a check ran; a NEW edge is pending
     expect(L.counters.rescues).toBe(0);
-    expect(L.rescue.pending).toBeNull();
   });
-  it("an unobservable kick (no instrumented table) is never a candidate", () => {
+  it("a late timer (this thread was busy) watches again; three late timers in a row kick uncounted", () => {
     const L = hooks.createLiveness(0);
-    hooks.livenessKicked(L, null, 5, 0);
-    expect(hooks.livenessKicked(L, null, 5, 0)).toBe(false);
-    expect(hooks.livenessKicked(L, null, 5, 0)).toBe(false);
+    const late = L.cfg.confirmMs + L.cfg.lateTimerMs + 1;
+    hooks.mailboxTick(L, PENDING, 1, 0);
+    expect(hooks.mailboxConfirm(L, PENDING, 1, late)).toBe("retry");
+    expect(hooks.mailboxConfirm(L, PENDING, 1, 2 * late)).toBe("retry");
+    expect(hooks.mailboxConfirm(L, PENDING, 1, 3 * late)).toBe("retry");
+    expect(hooks.mailboxConfirm(L, PENDING, 1, 4 * late)).toBe("kick");
     expect(L.counters.rescues).toBe(0);
+    // ... and an on-time confirmation after a retry still counts.
+    hooks.mailboxTick(L, PENDING, 1, 10_000);
+    expect(hooks.mailboxConfirm(L, PENDING, 1, 10_000 + late)).toBe("retry");
+    expect(hooks.mailboxConfirm(L, PENDING, 1, 10_000 + late + L.cfg.confirmMs)).toBe("rescue");
+  });
+});
+
+describe("liveness: locating the runtime mailbox's notification word", () => {
+  /** A fake runtime heap: the main pthread at 4096, its mailbox pointer at
+   * +192 (waiting_async at +204 in the glue), the queue at 8192 whose owner
+   * (at +48) is the main pthread and whose word (at +0) is `word`. */
+  function fakeRuntime(sandbox: Record<string, unknown>, { owner = 4096, word = 0, glueOffset = 204 } = {}) {
+    const buf = new SharedArrayBuffer(1 << 16);
+    new BigInt64Array(buf, 4096 + 192, 1)[0] = 8192n;
+    new BigInt64Array(buf, 8192 + 48, 1)[0] = BigInt(owner);
+    new Int32Array(buf, 8192, 1)[0] = word;
+    sandbox.wasmMemory = { buffer: buf };
+    sandbox._pthread_self = () => 4096n;
+    // The glue's own text, with the struct offset it was compiled with.
+    sandbox.__emscripten_thread_mailbox_await = new Function("pthread_ptr", `var waitingAsync=pthread_ptr+${glueOffset};return waitingAsync`);
+    return buf;
+  }
+  it("finds it through the glue's own waiting_async offset and verifies the owner", () => {
+    const { sandbox, hooks: h } = loadWorker();
+    const buf = fakeRuntime(sandbox, { word: 2 });
+    expect(h.locateRuntimeMailbox()).toBe(8192);
+    h.runtimeMailbox.mailboxPtr = 8192;
+    expect(h.readMailboxWord()).toBe(2);
+    new Int32Array(buf, 8192, 1)[0] = 0;
+    expect(h.readMailboxWord()).toBe(0);
+  });
+  it("refuses a layout it cannot verify (wrong owner, impossible word, missing glue text)", () => {
+    for (const bad of [{ owner: 4100 }, { word: 7 }, { glueOffset: 300 }]) {
+      const { sandbox, hooks: h } = loadWorker();
+      fakeRuntime(sandbox, bad);
+      expect(h.locateRuntimeMailbox()).toBeNull();
+    }
+    const { hooks: h } = loadWorker();
+    expect(h.locateRuntimeMailbox()).toBeNull();
+    expect(h.readMailboxWord()).toBeNull();
   });
 });
 
@@ -279,7 +334,7 @@ describe("liveness: boot-time instrumentation of the glue", () => {
     const { hooks: h } = loadWorker();
     expect(h.instrumentRuntimeMailbox()).toMatchObject({ mode: "as built", counting: false, exitHooked: false });
   });
-  it("turns off the Atomics.waitAsync waiter and counts notification-driven checks, and those that served nothing", () => {
+  it("turns off the Atomics.waitAsync waiter and counts notification-driven checks and served proxied calls", () => {
     const { sandbox, hooks: h } = loadWorker();
     const table = [() => 0];
     sandbox.proxiedFunctionTable = table;
@@ -295,7 +350,7 @@ describe("liveness: boot-time instrumentation of the glue", () => {
     (sandbox.checkMailbox as () => void)();
     (sandbox.checkMailbox as () => void)();
     expect(delivered).toBe(2);
-    expect(m).toMatchObject({ notified: 2, empty: 1, served: 1 });
+    expect(m).toMatchObject({ notified: 2, served: 1 });
   });
   it("reports a FileWorker exit (proxied `_proc_exit` / `exitOnMainThread`) as a death in resident mode, before the glue swallows it", () => {
     for (const index of [0, 1]) {

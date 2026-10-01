@@ -106,6 +106,19 @@ try {
     return f && f.contentDocument ? f.contentDocument.body.innerText : "";
   }).catch(() => "");
   const badge = async () => (((await infoview()).match(/All Messages \(([^)]*)\)/) || [])[1] || "").trim();
+  // The messages themselves: the InfoView's "All Messages" list is collapsed,
+  // so its text has no values. A listener on the relay's client port (the
+  // LSP client's end of the channel; the relay outlives every session) keeps
+  // the last publishDiagnostics the client received.
+  const installDiagTap = () => page.evaluate(() => {
+    if (globalThis.__qed64DiagTap) return;
+    globalThis.__qed64DiagTap = true;
+    globalThis.qed64.relay.clientPort.addEventListener("message", (e) => {
+      const m = e.data;
+      if (m && m.method === "textDocument/publishDiagnostics") globalThis.__qed64Diags = m.params;
+    });
+  });
+  const diagText = () => page.evaluate(() => (globalThis.__qed64Diags?.diagnostics ?? []).map((d) => d.message).join("\n")).catch(() => "");
   /** The live lean.worker (a reboot replaces it: always look it up again). */
   const leanWorker = () => page.workers().find((w) => /\/workers\/lean\.worker\.js(\?|$)/.test(w.url())) ?? null;
   async function inWorker(fn, a) {
@@ -128,20 +141,21 @@ try {
       await page.waitForTimeout(every);
     }
   }
-  /** Ready at a version past `fromVersion` with `want` messages (and every `contains` string in the InfoView). */
-  const settledAfter = (fromVersion, want, ms, contains = []) => waitFor(async () => {
+  /** Ready at a version past `fromVersion` with `want` messages (and every `contains` string among them). */
+  const settledAfter = (fromVersion, want, ms, contains = [], onPoll = null) => waitFor(async () => {
+    if (onPoll) await onPoll();
     const s = await status();
     if (!(s?.phase === "ready" && s.version !== null && (fromVersion === null || s.version > fromVersion))) return null;
     if ((await badge()) !== String(want)) return null;
-    const iv = contains.length ? await infoview() : "";
-    return contains.every((c) => iv.includes(c)) ? s : null;
+    const msgs = contains.length ? (await diagText()).split("\n") : [];
+    return contains.every((c) => msgs.includes(c)) ? s : null;
   }, ms, 250);
   /** Edit and wait for THIS edit to settle. */
-  async function edit(text, want, ms, contains = []) {
+  async function edit(text, want, ms, contains = [], onPoll = null) {
     const v0 = (await status())?.version ?? null;
     const t0 = Date.now();
     await setBuffer(text);
-    const r = await settledAfter(v0, want, ms, contains);
+    const r = await settledAfter(v0, want, ms, contains, onPoll ? () => onPoll(t0) : null);
     return { ...r, ms: Date.now() - t0 };
   }
   const delta = (a, b) => (a && b ? Object.fromEntries(Object.keys(b).map((k) => [k, (b[k] ?? 0) - (a[k] ?? 0)])) : null);
@@ -149,7 +163,7 @@ try {
   // ---------- boot ----------
   const tBoot = Date.now();
   await page.goto(url, { waitUntil: "domcontentloaded" });
-  const booted = await settledAfter(null, 2, bootBudgetMs, ["42", "10"]);
+  const booted = await settledAfter(null, 2, bootBudgetMs);
   if (!booted.ok) {
     console.error(`liveness-faults: refused — the page did not settle (phase ${(await status())?.phase}, badge '${await badge()}', pill '${await pill()}') within ${bootBudgetMs} ms`);
     console.error(`status: ${JSON.stringify(await status()).slice(0, 1500)}`);
@@ -157,6 +171,11 @@ try {
     process.exitCode = 3;
   } else {
     console.log(`boot: ready with 2 messages in ${Date.now() - tBoot} ms`);
+    await installDiagTap();
+    // Prove the tap before any scenario relies on it: one edit, exact values.
+    const tap = await edit(withEvals(1, 1), 3, 120000, ["42", "10", "2"]);
+    if (!tap.ok) record("diagnostics-tap", false, `the edit adding '#eval f 1' did not publish ["42","10","2"] (got ${JSON.stringify(await diagText())})`);
+    await edit(DOC, 2, 120000, ["42", "10"]);
 
     // ---------- mailbox-mode ----------
     if (runs("mailbox-mode")) {
@@ -175,9 +194,11 @@ try {
         };
       });
       const st = (await status())?.liveness ?? null;
+      const word = await inWorker(() => globalThis.__qed64TestExports.liveness.readMailboxWord());
       const ok = m.polyfilled === true && m.wrapper === "checkMailboxCounted" && m.waitingAsync === 0 && m.livenessArmed
-        && m.mailbox.mode === "message" && m.mailbox.counting && m.mailbox.exitHooked && m.mailbox.notified > 0 && m.mailbox.served > 0 && st !== null;
-      record("mailbox-mode", ok, `${JSON.stringify(m)} status.liveness=${JSON.stringify(st)}`);
+        && m.mailbox.mode === "message" && m.mailbox.counting && m.mailbox.exitHooked && m.mailbox.notified > 0 && m.mailbox.served > 0
+        && m.mailbox.mailboxPtr !== null && [0, 1, 2].includes(word) && st !== null;
+      record("mailbox-mode", ok, `${JSON.stringify(m)} word=${word} status.liveness=${JSON.stringify(st)}`);
     }
 
     // ---------- idle-no-probes ----------
@@ -203,18 +224,29 @@ try {
       await edit(DOC, 2, 120000);
       const s0 = await stats();
       const k0 = await counters();
-      let longRun = await edit(longEval(n), 3, 600000, [String(3 * n)]);
+      // The page is never silent for 6 s on its own (the editor's requests and
+      // Lean's refresh loop keep frames coming), so every 8 s the drill makes
+      // the watchdog believe it has been: the REAL probe is then written into
+      // the ring and must be answered by the FileWorker while the command runs.
+      let forced = 0;
+      const force = async (t0) => {
+        if (Date.now() - t0 < (forced + 1) * 8000) return;
+        forced += 1;
+        await inWorker(() => { const L = globalThis.__qed64TestExports.liveness.state(); if (L && L.probe === null) L.lastFrameAt -= 7000; }).catch(() => {});
+      };
+      let longRun = await edit(longEval(n), 3, 600000, [String(3 * n)], force);
       if (longRun.ok && longRun.ms < 25000 && n < 60 * n0) { // too short to prove anything: rescale once
         n = Math.min(60 * n0, Math.floor((n * 40000) / Math.max(1, longRun.ms) / 7) * 7);
         await edit(DOC, 2, 120000);
-        longRun = await edit(longEval(n), 3, 600000, [String(3 * n)]);
+        forced = 0;
+        longRun = await edit(longEval(n), 3, 600000, [String(3 * n)], force);
       }
       const k1 = await counters();
       const d = delta(s0, await stats());
       const lv = delta(k0?.liveness, k1?.liveness);
-      const ok = c1.ok && c2.ok && longRun.ok && longRun.ms >= 25000 && d?.workerDeaths === 0 && lv?.stalls === 0 && lv?.rescues === 0 && lv?.answered >= 3;
+      const ok = c1.ok && c2.ok && longRun.ok && longRun.ms >= 25000 && d?.workerDeaths === 0 && lv?.stalls === 0 && lv?.rescues === 0 && lv?.answered >= 2 && lv?.answered === lv?.probes;
       record("long-silent-command", ok,
-        `calibration ${c1.ms}/${c2.ms} ms → n=${n}; command settled=${longRun.ok} in ${longRun.ms} ms (value ${3 * n}); liveness ${JSON.stringify(lv)}; deaths +${d?.workerDeaths}`,
+        `calibration ${c1.ms}/${c2.ms} ms → n=${n}; command settled=${longRun.ok} in ${longRun.ms} ms (value ${3 * n}); ${forced} forced silences; liveness ${JSON.stringify(lv)}; deaths +${d?.workerDeaths}`,
         { n, commandMs: longRun.ms, liveness: lv });
       await edit(DOC, 2, 120000);
     }
@@ -243,7 +275,8 @@ try {
       const after = await edit(withEvals(1, 500), 3, 120000, ["501"]);
       const d = delta(s0, await stats());
       const lv = delta(k0?.liveness, k1?.liveness);
-      const ok = rounds.every((r) => r.ok) && after.ok && d?.workerDeaths === 0 && dropped > 0 && lv?.rescues > 0;
+      // Every confirmed rescue is a dropped notification (several drops can share one stall, so ≤).
+      const ok = rounds.every((r) => r.ok) && after.ok && d?.workerDeaths === 0 && dropped > 0 && lv?.rescues > 0 && lv?.rescues <= dropped;
       record("lost-wakeups-healed", ok,
         `rounds ${rounds.map((r) => `${r.ok ? "ok" : "STUCK"}@${r.ms}ms`).join(", ")}; dropped ${dropped} notifications, liveness ${JSON.stringify(lv)}, deaths +${d?.workerDeaths}; fault removed → settled ${after.ok} in ${after.ms} ms`,
         { rounds, dropped, liveness: lv });
@@ -265,7 +298,7 @@ try {
         const p = await pill();
         if (/stopped responding/.test(p) && !sawLabel) sawLabel = { ms: Date.now() - t0, pill: p };
         if (!(s?.phase === "ready" && s.session !== session0)) return null;
-        return (await badge()) === "3" && (await infoview()).includes("8") ? s : null;
+        return (await badge()) === "3" && (await diagText()).split("\n").includes("8") ? s : null;
       }, 300000, 200);
       const d = delta(s0, await stats());
       const editorIntact = (await editorText()) === text;
@@ -291,7 +324,7 @@ try {
         const s = await status();
         if (s?.lastDeath && !sawExit) sawExit = { ms: Date.now() - t0, reason: s.lastDeath.reason, message: s.lastDeath.message };
         if (!(s?.phase === "ready" && s.session !== session0)) return null;
-        return (await badge()) === "2" && (await infoview()).includes("42") ? s : null;
+        return (await badge()) === "2" && (await diagText()).split("\n").includes("42") ? s : null;
       }, 300000, 200);
       const d = delta(s0, await stats());
       const ok = recovered.ok && sawExit?.reason === "exit" && sawExit.ms <= 10000 && d?.workerDeaths === 1 && d?.reboots === 1;
