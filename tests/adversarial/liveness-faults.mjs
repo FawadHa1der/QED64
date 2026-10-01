@@ -158,6 +158,8 @@ try {
     const r = await settledAfter(v0, want, ms, contains, onPoll ? () => onPoll(t0) : null);
     return { ...r, ms: Date.now() - t0 };
   }
+  /** A screenshot into the run directory (UX review); never fails a scenario. */
+  const shot = (name) => page.screenshot({ path: path.join(dir, `${name}.png`) }).catch(() => {});
   const delta = (a, b) => (a && b ? Object.fromEntries(Object.keys(b).map((k) => [k, (b[k] ?? 0) - (a[k] ?? 0)])) : null);
 
   // ---------- boot ----------
@@ -171,6 +173,7 @@ try {
     process.exitCode = 3;
   } else {
     console.log(`boot: ready with 2 messages in ${Date.now() - tBoot} ms`);
+    await shot("01-boot-ready");
     await installDiagTap();
     // Prove the tap before any scenario relies on it: one edit, exact values.
     const tap = await edit(withEvals(1, 1), 3, 120000, ["42", "10", "2"]);
@@ -307,10 +310,11 @@ try {
         const s = await status();
         if (s?.lastDeath?.reason === "wedged" && !sawWedged) sawWedged = { ms: Date.now() - t0, message: s.lastDeath.message };
         const p = await pill();
-        if (/stopped responding/.test(p) && !sawLabel) sawLabel = { ms: Date.now() - t0, pill: p };
+        if (/stopped responding/.test(p) && !sawLabel) { sawLabel = { ms: Date.now() - t0, pill: p }; await shot("02-wedge-restarting"); }
         if (!(s?.phase === "ready" && s.session !== session0)) return null;
         return (await badge()) === "3" && (await diagText()).split("\n").includes("8") ? s : null;
       }, 300000, 200);
+      await shot("03-wedge-recovered");
       const d = delta(s0, await stats());
       const editorIntact = (await editorText()) === text;
       const ok = recovered.ok && !!sawWedged && sawWedged.ms <= 45000 && d?.workerDeaths === 1 && d?.reboots === 1 && d?.breakerTrips === 0 && !!sawLabel && editorIntact;
