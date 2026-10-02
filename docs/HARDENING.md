@@ -279,3 +279,15 @@ Mechanism: every pthread is a Worker isolate, and all isolates in a renderer sha
 Fix: the parked-thread cap defaults to 0 (kernel 0035 rebuilt; env `LEAN_WASM_PARKED_DEDICATED` re-enables it, read once at task-manager creation). A finished dedicated thread exits and returns its Worker to the pool idle, as in 0034. The lock-free thread creation that was 0035's point stays. Until the rebuilt runtime is re-gated, the served pairing is 0034 again with the #52 worker fixes. The reload storm is now a release gate.
 
 Rule: count what a runtime keeps BLOCKED, not just what it keeps alive. Idle pool Workers die with their page at once; a thread waiting inside wasm holds its isolate through the browser's grace period. Any change that keeps more threads parked in wasm must pass the reload storm before it ships.
+
+**#53 fixed (2026-10-02, kernel 0035b = commit a8817d01f9, runtime wasm64-3ab1c6a9da03bc29):** parking off by default. Gated on the staged pairing:
+- reload storm 0/5 crashed, pool at ready {unused 12–14, running 10–12, parked 0}, ready again ~6.2 s after each storm;
+- e2e 23/23;
+- editing latency unchanged (header switch 334 ms, completion 344 ms);
+- liveness drills 6/6 (24 dropped notifications = 24 confirmed rescues; wedge recovered at 27.7 s; exit in 206 ms);
+- #51 kernel probes 4/4;
+- crash gauntlets mixed 225 and imports 73 steps, alive and `ready`;
+- compiler battery 54/54; `verify:release`.
+
+Kernel gate 13/13: thread churn with parking off equals 0034's (2,961 pthreads in the task-manager storm); the opt-in path (`LEAN_WASM_PARKED_DEDICATED=8`, 163 pthreads) stays gated for a host that has measured its reload behaviour.
+

@@ -349,6 +349,21 @@ exposure to a lost wakeup and lets a frozen pool drain; it does not cure one
 mailbox, mailbox kick and Lean-side liveness probe do (HARDENING #52).
 Build identity: runtime `wasm64-2c18773ecfba45bb`, `lean.wasm` 109,875,254
 bytes; both snapshots rebaked against it (raw sizes identical to 0034's).
+**0035b — parking off by default (2026-10-02; HARDENING #53).** Kernel commit
+`a8817d01f9` (= KERNEL-PIN), patch file
+`0035b-wasm-dedicated-thread-parking-off-by-default.patch`. The served 0035
+runtime OOM-crashed the renderer on a page reload (3/5 vs 0/5 on 0034,
+`tests/adversarial/reload-storm.mjs`): a parked dedicated thread is a Worker
+blocked in a futex inside wasm, which Blink tears down only after a ~2 s
+forcible-termination grace, so 8 of them overlapped the next page's boot in the
+renderer's shared pointer-compression cage. The cap is now
+`m_max_parked_dedicated`, default 0 (a finished dedicated thread exits and
+returns its Worker to the pool idle, as in 0034); env
+`LEAN_WASM_PARKED_DEDICATED=<n>` opts in (read once at task-manager creation,
+clamped to 64). Everything else of 0035 stays. Kernel gate 13/13: the storm
+runs with parking off (2,961 pthreads — 0034's churn) and with it at 8 (163,
+reuse bound) so the opt-in path stays verified. Build identity: runtime
+`wasm64-3ab1c6a9da03bc29`, `lean.wasm` 109,875,453 bytes.
 
 ## (not in the series) `-sPTHREAD_POOL_DELAY_LOAD=1` — tried 2026-09-04, measured no effect, dropped
 Hypothesis: the +4 GB the renderer gains during "Initializing the Lean runtime"

@@ -1,0 +1,180 @@
+From a8817d01f97227b1b04cc7d661b9e396f6ca8f34 Mon Sep 17 00:00:00 2001
+From: fawad haider <153737+FawadHa1der@users.noreply.github.com>
+Date: Fri, 2 Oct 2026 01:31:56 -0400
+Subject: [PATCH] wasm: dedicated-thread parking off by default (qed64 L9:
+ reload crash); opt-in via LEAN_WASM_PARKED_DEDICATED
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The promoted 0035 runtime crashed the renderer on page reload ("V8 javascript
+OOM (Scavenger: semi-space copy)" in a DedicatedWorker, ~2.2 s after the
+reload): QED64's A/B crashed 1/1 and the widgets lane 3/5 on 0035, 0/5 on 0034,
+same page and worker. A parked dedicated thread is a Worker blocked in a futex
+wait inside wasm; Blink tears such a Worker down only after a ~2 s forcible-
+termination grace, so its isolate overlaps the next page's boot, and 8 parked
+threads (pool at ready: running 19 vs 11) exhausted the renderer's shared
+pointer-compression cage.
+
+The cap is now m_max_parked_dedicated, default 0: a finished dedicated thread
+exits and its Worker returns to the pool idle, exactly as in 0034. Everything
+else of 0035 stays: no lthread under m_mutex (the amplifier fix), slot
+reservation, notify-before-hand-off, the unlocked panic print, fresh streams
+and heartbeat on reuse, and the parked-count export (reads 0). A host that has
+measured its reload behaviour may opt in with LEAN_WASM_PARKED_DEDICATED=<n>
+(read once at task-manager creation, clamped to 64) — no new runtime, so no
+snapshot rebake, to tune it.
+
+Gate: the storm runs twice — default (no parking, as served) and with
+LEAN_WASM_PARKED_DEDICATED=8 (completion, stream fidelity, reuse bound) — so
+the opt-in path stays verified. node-runner passes the variable through.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/runtime/object.cpp       | 31 +++++++++++++++++--------
+ wasm64-build/gate.mjs        | 44 ++++++++++++++++++++----------------
+ wasm64-build/node-runner.mjs |  5 ++++
+ 3 files changed, 51 insertions(+), 29 deletions(-)
+
+diff --git a/src/runtime/object.cpp b/src/runtime/object.cpp
+index d51cd02bdc..9e717c2c2e 100644
+--- a/src/runtime/object.cpp
++++ b/src/runtime/object.cpp
+@@ -5,6 +5,7 @@ Released under Apache 2.0 license as described in the file LICENSE.
+ Author: Leonardo de Moura
+ */
+ #include <atomic>
++#include <cstdlib>
+ #include <string>
+ #include <algorithm>
+ #include <vector>
+@@ -789,19 +790,25 @@ class task_manager {
+          inherit travels with the task, and the thread-local std streams are
+          reset to the process defaults (a task may leave a redirection
+          installed; a fresh thread would never see it).
+-       At most `LEAN_MAX_PARKED_DEDICATED` threads stay parked; beyond that a
+-       finished thread exits as before. A parked thread keeps its Emscripten
+-       Worker, which std workers cannot use: 8 keeps the application thread,
+-       a full std pool (hardware_concurrency, 14 on the reference machine) and
+-       the parked threads within the 24 preallocated Workers, so parking never
+-       forces a fresh Worker (a 49 MB glue load). Bursts beyond 8 concurrent
+-       dedicated tasks still create threads (outside the lock), which then exit. */
++       At most `m_max_parked_dedicated` threads stay parked; beyond that a
++       finished thread exits as before. DEFAULT 0 = no parking: every finished
++       dedicated thread exits and its Worker returns to the pool idle, exactly
++       as before this patch. A parked thread is a Worker blocked in a futex
++       wait inside wasm; on a page reload Blink tears such a Worker down only
++       after a ~2 s forcible-termination grace, so its isolate overlaps the
++       next page's boot, and 8 parked threads were enough to exhaust the
++       renderer's shared pointer-compression cage ("V8 javascript OOM",
++       qed64 L9; 0 of 5 reloads crash without parking). The host may opt in
++       with the environment variable `LEAN_WASM_PARKED_DEDICATED=<n>` (read
++       once when the task manager is created, clamped to 64) after measuring
++       its reload behaviour; the lock-free thread creation does not depend on
++       it. */
+     struct dedicated_slot {
+         lean_task_object * m_task{nullptr};
+         size_t             m_max_heartbeat{0};
+         condition_variable m_cv;
+     };
+-    static constexpr size_t                       LEAN_MAX_PARKED_DEDICATED = 8;
++    size_t                                        m_max_parked_dedicated{0};
+     std::vector<dedicated_slot *>                 m_parked_dedicated;
+     // mirrors m_parked_dedicated.size() for lean_wasm_task_manager_parked_threads,
+     // which the host's main JS thread reads without taking m_mutex
+@@ -960,7 +967,7 @@ class task_manager {
+             run_task(lock, t);
+             m_num_dedicated_workers--;
+             m_dedicated_finished_cv.notify_all();
+-            if (m_shutting_down || m_parked_dedicated.size() >= LEAN_MAX_PARKED_DEDICATED)
++            if (m_shutting_down || m_parked_dedicated.size() >= m_max_parked_dedicated)
+                 return;
+             dedicated_slot slot;
+             m_parked_dedicated.push_back(&slot);
+@@ -1103,6 +1110,12 @@ class task_manager {
+ public:
+     task_manager(unsigned max_std_workers):
+         m_max_std_workers(max_std_workers) {
++#if defined(LEAN_EMSCRIPTEN)
++        if (char const * env = getenv("LEAN_WASM_PARKED_DEDICATED")) {
++            unsigned long n = strtoul(env, nullptr, 10);
++            m_max_parked_dedicated = n > 64 ? 64 : static_cast<size_t>(n);
++        }
++#endif
+     }
+ 
+     ~task_manager() {
+diff --git a/wasm64-build/gate.mjs b/wasm64-build/gate.mjs
+index e021db4fd4..0463536e9d 100644
+--- a/wasm64-build/gate.mjs
++++ b/wasm64-build/gate.mjs
+@@ -107,26 +107,30 @@ gate(/isModule=true/.test(moduleOut) && !/error/i.test(moduleOut), "`module` fil
+ // TASK-MANAGER STORM (patch 0035). Every shape of task traffic the language
+ // server produces, at volume (wasm64-build/probes/task-storm.lean): a forAsync
+ // chain of dedicated continuations, a fan-out released by one promise, a ladder
+-// of dedicated tasks that each block on the next (more live at once than the
+-// parked-thread cap; deadlocks if a dedicated task ever waits behind another),
+-// pool tasks blocked on dedicated ones, waitAny. Under Emscripten every
+-// pthread_create is a synchronous round trip to the main JS thread; the patch
+-// hands dedicated tasks to parked threads, so the storm must also show reuse.
+-const storm = runLean(readProbe("task-storm.lean"), "storm", { QED64_COUNT_PTHREADS: "1" });
+-const stormOut = stripDebug(storm.stdout);
+-const stormOk = /STORM OK dedicated=(\d+) checksum=(\d+)/.exec(stormOut);
+-gate(!!stormOk, "task-manager storm completes (chain, fan-out, ladder beyond the park cap, pool waits, waitAny)",
+-  stormOk ? `${stormOk[1]} dedicated tasks, checksum ${stormOk[2]}`
+-          : (/STORM FAIL[^\n]*/.exec(stormOut)?.[0] ?? (storm.timedOut ? "no result before the timeout — deadlock?" : `exit ${storm.status}`)));
+-const created = /\[pthreads\] created=(\d+)/.exec(stormOut);
+-gate(!!stormOk && !!created && Number(created[1]) * 4 <= Number(stormOk[1]),
+-  "task-manager storm: dedicated tasks reuse parked threads (at most 1 pthread created per 4 dedicated tasks)",
+-  created ? `${created[1]} pthreads created for ${stormOk ? stormOk[1] : "?"} dedicated tasks` : "pthread count unavailable");
+-// A reused thread must look fresh: a stderr redirection one dedicated task leaves
+-// installed must not capture a later task's output (native Lean: a fresh thread).
+-const leaked = /LEAKED-STDERR bytes=(\d+)/.exec(stormOut);
+-gate(!!leaked && leaked[1] === "0", "thread reuse: a later dedicated task does not inherit a leaked stream redirection",
+-  leaked ? `${leaked[1]} bytes reached the leaked buffer` : "no result");
++// of dedicated tasks that each block on the next (deadlocks if a dedicated task
++// ever waits behind another), pool tasks blocked on dedicated ones, waitAny.
++// Threads are created with the task-manager lock released (under Emscripten
++// every pthread_create is a synchronous round trip to the main JS thread).
++// Run twice: the DEFAULT (no parking — qed64 L9) as served, and with parking
++// enabled (LEAN_WASM_PARKED_DEDICATED=8) so the opt-in path stays verified.
++const stormRun = (env, tag) => {
++  const r = runLean(readProbe("task-storm.lean"), "storm", { QED64_COUNT_PTHREADS: "1", ...env });
++  const out = stripDebug(r.stdout);
++  const ok = /STORM OK dedicated=(\d+) checksum=(\d+)/.exec(out);
++  const created = /\[pthreads\] created=(\d+)/.exec(out);
++  const leaked = /LEAKED-STDERR bytes=(\d+)/.exec(out);
++  gate(!!ok, `task-manager storm completes [${tag}] (chain, fan-out, ladder, pool waits, waitAny)`,
++    ok ? `${ok[1]} dedicated tasks, checksum ${ok[2]}${created ? `, ${created[1]} pthreads created` : ""}`
++       : (/STORM FAIL[^\n]*/.exec(out)?.[0] ?? (r.timedOut ? "no result before the timeout — deadlock?" : `exit ${r.status}`)));
++  gate(!!leaked && leaked[1] === "0", `[${tag}] a later dedicated task does not inherit a leaked stream redirection`,
++    leaked ? `${leaked[1]} bytes reached the leaked buffer` : "no result");
++  return { ok, created };
++};
++stormRun({}, "default: no parking");
++const parked = stormRun({ LEAN_WASM_PARKED_DEDICATED: "8" }, "parking 8");
++gate(!!parked.ok && !!parked.created && Number(parked.created[1]) * 4 <= Number(parked.ok[1]),
++  "[parking 8] dedicated tasks reuse parked threads (at most 1 pthread created per 4 dedicated tasks)",
++  parked.created ? `${parked.created[1]} pthreads created for ${parked.ok ? parked.ok[1] : "?"} dedicated tasks` : "pthread count unavailable");
+ gate(parseFixed, "THE PARSE GATE: lean_wasm_compile reports parser diagnostics",
+   parseFixed ? "" : "persistent shell still swallows parse errors");
+ 
+diff --git a/wasm64-build/node-runner.mjs b/wasm64-build/node-runner.mjs
+index 35dbbdb5a3..3f5f7df334 100644
+--- a/wasm64-build/node-runner.mjs
++++ b/wasm64-build/node-runner.mjs
+@@ -138,6 +138,11 @@ globalThis.Module = {
+       if (process.env.LEAN_COMPACTOR_RESERVE) {
+         globalThis.Module.ENV.LEAN_COMPACTOR_RESERVE = process.env.LEAN_COMPACTOR_RESERVE;
+       }
++      // Patch 0035: dedicated-thread parking is off by default (qed64 L9);
++      // the gate opts in to exercise the parking path.
++      if (process.env.LEAN_WASM_PARKED_DEDICATED) {
++        globalThis.Module.ENV.LEAN_WASM_PARKED_DEDICATED = process.env.LEAN_WASM_PARKED_DEDICATED;
++      }
+       if (process.env.QED64_PROFILE_INIT) {
+         globalThis.Module.ENV.QED64_PROFILE_INIT = process.env.QED64_PROFILE_INIT;
+       }
+-- 
+2.54.0 (Apple Git-157)
+
