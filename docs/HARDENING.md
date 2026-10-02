@@ -269,3 +269,13 @@ Rules: a liveness signal must come from the component whose liveness you need �
 - Pyramid on the staged pairing: e2e 23/23; editing latency unchanged (header switch 333 ms, completion 279 ms, error clear 9 ms); crash gauntlets mixed (226 steps) and imports (73), both alive and `ready`; the four #51 kernel probes; the compiler battery 54/54; `verify:release` after the promote.
 - Open follow-up: a batch compile, which runs on the runtime thread, that calls `exit` ends as a recoverable `COMPILE_CRASHED` after unwinding the C++ stack. It is unreachable today, since the only batch compile is the import-only warm header.
 
+
+### 53. A thread parked inside wasm is a Worker that outlives its page by two seconds
+
+Found 2026-10-02 by the widgets showcase (`qed64-showcase/docs/UPSTREAM-REPORT-QED64.md`, L9) a day after #52's 0035 runtime went live. When a ready page is reloaded, or the relay restarts and boots a second runtime in the same renderer, the renderer dies with `V8 javascript OOM (Scavenger: semi-space copy)` in a DedicatedWorker thread, about 2.2 s after the reload. `tests/adversarial/reload-storm.mjs` measured it: the stock page with the Mathlib default, a fresh browser per run, reloads every 3 s, the same worker in both arms. The 0035 runtime `wasm64-2c18773ecfba45bb` crashed in 3 of 5 runs, every crash at 19–20 running pthreads (the survivors had 17). The 0034 runtime crashed in 0 of 5, at 10–11 running.
+
+Mechanism: every pthread is a Worker isolate, and all isolates in a renderer share one pointer-compression cage. Blink terminates a worker gracefully only through its event loop. A worker blocked inside wasm (a futex wait) is force-terminated only after a ~2 s grace, and its heap stays allocated until then. 0035 parked up to 8 finished dedicated threads in a condition-variable wait, which is 8 more Workers blocked in wasm. On reload, 18–20 old isolates overlapped the new page's 25 Workers, each parsing the 48 MB glue, and the cage ran out. The worker-side #52 changes were cleared by the same A/B.
+
+Fix: the parked-thread cap defaults to 0 (kernel 0035 rebuilt; env `LEAN_WASM_PARKED_DEDICATED` re-enables it, read once at task-manager creation). A finished dedicated thread exits and returns its Worker to the pool idle, as in 0034. The lock-free thread creation that was 0035's point stays. Until the rebuilt runtime is re-gated, the served pairing is 0034 again with the #52 worker fixes. The reload storm is now a release gate.
+
+Rule: count what a runtime keeps BLOCKED, not just what it keeps alive. Idle pool Workers die with their page at once; a thread waiting inside wasm holds its isolate through the browser's grace period. Any change that keeps more threads parked in wasm must pass the reload storm before it ships.
