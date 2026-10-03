@@ -255,6 +255,8 @@ try {
       // "64 MB / 1.05 GB · 1.9 MB/s · ~2 min left", "12 / 4192 modules", or "" (an indeterminate bar)
       longestWithoutNumbersMs: longest(samples, 0, readyAt ?? end.t, (s) => s.shown && !/ \/ /.test(s.nums)),
       longestStillCardMs: longestStill(samples, 0, readyAt ?? end.t),
+      // per checklist step: the runtime download used to move only at 16 MiB chunk boundaries
+      longestStillByStageMs: Object.fromEntries(Object.keys(stages).map((st) => [st, longestStill(samples.filter((s) => s.stage === st), 0, readyAt ?? end.t)])),
       rssAtReady,
     };
     console.log(`slow-link facts: ${JSON.stringify(facts)}`);

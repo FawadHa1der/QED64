@@ -928,16 +928,41 @@ async function sha256(blobOrBytes) {
   return hex(await crypto.subtle.digest("SHA-256", bytes));
 }
 
-async function fetchChunkOnce(chunk, index, label, cacheMode) {
+async function fetchChunkOnce(chunk, index, label, cacheMode, onBytes) {
   const response = await fetch(chunk.url, { cache: cacheMode });
   if (!response.ok) throw new Error(`${label} chunk ${index}: HTTP ${response.status}`);
   const encoding = response.headers.get("Content-Encoding");
   if (encoding && encoding !== "identity") {
     throw new Error(`${label} chunk ${index} was transformed by Content-Encoding: ${encoding}.`);
   }
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  if (bytes.byteLength !== chunk.bytes) {
-    throw new Error(`${label} chunk ${index}: ${bytes.byteLength} bytes, expected ${chunk.bytes}.`);
+  // Read the body as it arrives so the page can show bytes INSIDE a chunk:
+  // one 16 MiB chunk is ~56 s at 300 kB/s, and a count that moves only at
+  // chunk boundaries reads as stuck (HARDENING #54). Verification is
+  // unchanged: exact length, then SHA-256 over the whole chunk.
+  let bytes;
+  if (response.body) {
+    bytes = new Uint8Array(chunk.bytes);
+    let received = 0;
+    const reader = response.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (received + value.byteLength > chunk.bytes) {
+        reader.cancel().catch(() => {});
+        throw new Error(`${label} chunk ${index}: more than ${chunk.bytes} bytes, expected ${chunk.bytes}.`);
+      }
+      bytes.set(value, received);
+      received += value.byteLength;
+      onBytes(received);
+    }
+    if (received !== chunk.bytes) {
+      throw new Error(`${label} chunk ${index}: ${received} bytes, expected ${chunk.bytes}.`);
+    }
+  } else {
+    bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.byteLength !== chunk.bytes) {
+      throw new Error(`${label} chunk ${index}: ${bytes.byteLength} bytes, expected ${chunk.bytes}.`);
+    }
   }
   if ((await sha256(bytes)) !== chunk.sha256) {
     throw new Error(`${label} chunk ${index} failed SHA-256 verification.`);
@@ -946,14 +971,24 @@ async function fetchChunkOnce(chunk, index, label, cacheMode) {
 }
 
 async function fetchChunk(chunk, index, label, requestId, running) {
+  // In-chunk progress, every 500 ms while bytes arrive (the chunk-boundary
+  // report below stays: it is the verified count, so a complete chunk is
+  // left to it).
+  let reportedAt = performance.now();
+  const onBytes = (received) => {
+    const now = performance.now();
+    if (now - reportedAt < 500 || received === chunk.bytes) return;
+    reportedAt = now;
+    progress(requestId, "runtime", `Verifying ${label}`, running.loaded + received, running.total, "bytes");
+  };
   let bytes;
   try {
-    bytes = await fetchChunkOnce(chunk, index, label, "force-cache");
+    bytes = await fetchChunkOnce(chunk, index, label, "force-cache", onBytes);
   } catch {
     // The HTTP cache can hold a poisoned response for this URL (e.g. an SPA
     // fallback page cached before the artifact was deployed). Content
     // addressing makes the retry safe: bypass the cache once and re-verify.
-    bytes = await fetchChunkOnce(chunk, index, label, "reload");
+    bytes = await fetchChunkOnce(chunk, index, label, "reload", onBytes);
   }
   running.loaded += bytes.byteLength;
   progress(requestId, "runtime", `Verifying ${label}`, running.loaded, running.total, "bytes");
@@ -1801,6 +1836,9 @@ self.__qed64TestExports = {
   asNum,
   capabilities,
   createSharedMemory64,
+  // Runtime chunk fetch under test (tests/unit/runtime-chunk-progress.test.ts):
+  // in-chunk progress over a scripted body, verification unchanged.
+  fetchChunk,
   // Ring writer under test (tests/unit/ring-writer.test.ts): a fake shared
   // memory stands in for the wasm heap, and `residentMode` is forced so the
   // FIFO, the park/drain and the cap/2 refusal run against the real code;
