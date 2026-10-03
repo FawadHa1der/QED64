@@ -156,6 +156,15 @@ interface Pending {
 const HEARTBEAT_LOSS_MS = 6000;
 const HEARTBEAT_PROBE_MS = 2000;
 
+// Runtime lifetime locks (HARDENING #55; lean.worker.js has the other half):
+// the session holds `qed64-wanted:<runtime id>` from construction until
+// dispose()/terminate() (or the document's end), and its worker waits before
+// allocating — at most this long — while runtimes still alive but no longer
+// wanted keep more Workers alive than a ready runtime's busy threads.
+const PREDECESSOR_WAIT_MS = 6000;
+const newRuntimeId = (): string =>
+  globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+
 let sessionSeq = 0;
 
 export class LeanSession {
@@ -165,6 +174,10 @@ export class LeanSession {
   /** Session identity: the relay filters every event by it (§2.3 — a death
    * carrying a stale session changes nothing), and the harness reads it. */
   readonly id = `s${(sessionSeq += 1)}`;
+  /** The runtime's lifetime-lock id (HARDENING #55). */
+  private readonly runtimeId = newRuntimeId();
+  private unwanted = false;
+  private releaseWanted: () => void = () => {};
   private readonly onWorkerMessage: (e: MessageEvent) => void;
   private readonly onWorkerError: (e: ErrorEvent) => void;
   private detached = false;
@@ -208,6 +221,13 @@ export class LeanSession {
     };
     this.worker.addEventListener("message", this.onWorkerMessage);
     this.worker.addEventListener("error", this.onWorkerError);
+    try {
+      navigator.locks?.request(`qed64-wanted:${this.runtimeId}`, () => new Promise<void>((resolve) => {
+        if (this.unwanted) resolve(); else this.releaseWanted = resolve;
+      })).catch(() => {});
+    } catch {
+      /* no Web Locks: the worker then waits for nothing */
+    }
   }
 
   private died(code: number | null, reason: string, message: string) {
@@ -339,7 +359,7 @@ export class LeanSession {
         transfer.push(pack.bytes.buffer);
       }
     }
-    return this.request<ReadyInfo>("boot", { config }, transfer);
+    return this.request<ReadyInfo>("boot", { config, instance: { id: this.runtimeId, waitMs: PREDECESSOR_WAIT_MS } }, transfer);
   }
 
   compile(source: string, fileName?: string): Promise<CompileResult> {
@@ -380,6 +400,8 @@ export class LeanSession {
    * relay reboot cannot re-enter death handling (bug class C4). */
   dispose() {
     this.detached = true;
+    this.unwanted = true;
+    this.releaseWanted();
     clearTimeout(this.heartbeatTimer);
     this.onLsp = () => {};
     this.onStatus = () => {};
