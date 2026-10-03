@@ -126,6 +126,10 @@ export async function ensureProfile(
   return true;
 }
 
+/** How long the raw prefetch may go without a message before the page stops
+ * waiting for it (it reports every 500 ms while bytes arrive). */
+export const PREFETCH_SILENCE_MS = 3 * 60 * 1000;
+
 /** Load a named snapshot into the session's runtime (idempotent). */
 /** Make sure the RAW (inflated) region cache exists BEFORE the Lean worker
  * touches this snapshot. The download and gunzip run in a disposable
@@ -151,11 +155,27 @@ async function ensureRawSnapshotCached(
   const gib = (entry.bytes / 1073741824).toFixed(1);
   await new Promise<void>((resolve) => {
     const w = new Worker("/workers/snapshot-prefetch.worker.js");
-    const bail = window.setTimeout(() => { w.terminate(); resolve(); }, 15 * 60 * 1000);
+    // Give up on the prefetch only after a SILENCE (a wedged worker or a dead
+    // connection), never after a fixed total: it reports every 500 ms
+    // while bytes arrive, and a slow first visit legitimately
+    // downloads for longer than any deadline — the old 15-minute one
+    // abandoned the Mathlib download on links under ~3 Mbit/s, and the Lean
+    // worker then fetched it again from the start (HARDENING #54).
+    let bail = 0;
+    const arm = () => {
+      window.clearTimeout(bail);
+      bail = window.setTimeout(() => {
+        console.warn(`[qed64] raw prefetch silent for ${PREFETCH_SILENCE_MS / 1000} s — the checker will stream it instead`);
+        w.terminate();
+        resolve();
+      }, PREFETCH_SILENCE_MS);
+    };
+    arm();
     w.postMessage({ url: entry.url, cacheKey, rawBytes: entry.bytes });
     w.onmessage = (e) => {
       const m = e.data as { status?: string; bytes?: number; total?: number; phase?: string; error?: string };
       if (m.status === "progress") {
+        arm();
         ui.progress(`preparing the ${name} environment (${gib} GiB — one-time)`,
           { phase: "snapshot", loaded: m.bytes ?? 0, total: m.total ?? entry.bytes, unit: "bytes" });
         return;

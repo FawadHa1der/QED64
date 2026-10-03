@@ -32,10 +32,14 @@ const ptime = document.getElementById("ptime")!;
 const examplesEl = document.getElementById("examples")! as HTMLSelectElement;
 
 // ---- Boot overlay: staged first-visit progress with speed and ETA ---------
-// The heavy startup (a ~1 GB first-visit download, then a minutes-class
-// environment load) gets a full card over the workspace: a progress bar with
-// real byte counts, download speed, a time-left estimate, and a stage
-// checklist — the status pill alone reads as "stuck" at this scale.
+// The heavy startup (a ~600 MB first-visit download, then the environment
+// load) gets a full card over the workspace: a progress bar with real byte
+// counts, download speed, a time-left estimate, and a stage checklist — the
+// status pill alone reads as "stuck" at this scale. The card stays for the
+// WHOLE boot: on a slow link the downloads alone take many minutes, and the
+// card is the only place their progress is shown (HARDENING #54). It goes
+// when the checker is actionable (`renderStatus`), when the boot fails (it
+// turns into the failure card), or by the check fallback below.
 const bootEl = document.getElementById("boot")!;
 const bootCard = document.getElementById("bootcard")!;
 const bootBar = document.getElementById("bootbar")!;
@@ -79,8 +83,12 @@ function bootProgress(label: string, info?: ProgressInfo) {
   const stage = stageOf(label, info);
   if (stage) {
     const i = STAGES.indexOf(stage);
-    if (i > bootStage) speedWindow.length = 0;
-    if (i >= bootStage) { bootStage = i; renderStages(); }
+    // Snapshots load one after another (init, then mathlib): the next one's
+    // download follows the previous one's load, and the checklist must show
+    // that download as the active step, not as done (HARDENING #54).
+    const next = stage === "env" && STAGES[bootStage] === "load";
+    if (i > bootStage || next) speedWindow.length = 0;
+    if (i >= bootStage || next) { bootStage = i; renderStages(); }
   }
   bootLabel.textContent = label;
   const { loaded, total, unit } = info ?? {};
@@ -112,9 +120,24 @@ function bootProgress(label: string, info?: ProgressInfo) {
   }
 }
 
+// The check fallback: once the relay SERVES (environment loaded, document
+// open, loop armed), what is left is Lean checking the document. A restored
+// buffer can make that minutes long or endless (`#eval` loops, a heavy
+// search), and the editor must not stay hidden behind the card while it
+// does; the pill keeps the phase and its elapsed time. Armed by the first
+// serving status, never by anything earlier: before it, the boot is still
+// downloading or loading, which is what the card is for.
+const CHECK_FALLBACK_MS = 30000;
+let checkFallback: number | undefined;
+function armCheckFallback() {
+  if (bootDone || checkFallback !== undefined) return;
+  checkFallback = window.setTimeout(bootFinish, CHECK_FALLBACK_MS);
+}
+
 function bootFinish() {
   if (bootDone) return;
   bootDone = true;
+  window.clearTimeout(checkFallback);
   bootStage = STAGES.length;
   renderStages();
   bootEl.classList.add("done");
@@ -171,10 +194,6 @@ const ui: StatusSink = {
     // half-typed import that needs editing) — the workspace must be visible
     // for the user to act, so these dismiss the overlay too.
     else if (/^imports (incomplete|failed)/.test(label)) bootFinish();
-    // The editor-ready idle precedes the first elaboration; if that final
-    // "ready" never lands (nothing to elaborate, a missed transition), the
-    // overlay must still get out of the way eventually.
-    else if (/^ready/.test(label)) window.setTimeout(bootFinish, 120000);
     console.log(`[qed64] ${label}`);
   },
   action(label, run) { renderAction(label, run); },
@@ -250,7 +269,7 @@ function renderStatus(s: PageStatus) {
   trackSearch(s);
   if (s.phase === "halted") {
     const d = s.lastDeath ?? null;
-    // Not gated on the overlay: once it is gone (the 120 s fallback, or a
+    // Not gated on the overlay: once it is gone (the check fallback, or a
     // first boot that settled in headerRefused) `bootFail` is a no-op and the
     // pill alone must carry the message, not a bare "halted — bootFailed".
     if (d && !everReady) {
@@ -271,6 +290,7 @@ function renderStatus(s: PageStatus) {
   if (s.phase === "booting" || s.phase === "starting" || s.phase === "elaborating" || s.phase === "dead") ui.busy(label);
   else ui.idle(label);
   if (s.phase === "ready" || s.phase === "headerRefused") bootFinish();
+  else if (s.relay === "serving") armCheckFallback();
 }
 
 /** The worker's collision fact (front door `statusOf().collision`, carried
@@ -418,7 +438,11 @@ async function main() {
   startMemoryMeter(() => (relay.session as ResidentSession).lean as unknown as Tel);
   window.setInterval(tickSearchHint, 1000);
 
-  ui.busy("starting the editor");
+  // The editor starts while the session boots; it reports nothing to the
+  // pill or the card — both belong to the boot (downloads, environment
+  // load), and a mounted editor is not a working checker: on a slow first
+  // visit the editor is up minutes before the checker is (HARDENING #54).
+  // The pill turns idle and "ready" only from the relay's status.
   const leanMonaco = new LeanMonaco();
   const editor = new LeanMonacoEditor();
   leanMonaco.setInfoviewElement(infoviewEl);
@@ -455,7 +479,6 @@ async function main() {
       } catch { /* quota or private mode — persistence is best-effort */ }
     }, 400);
   });
-  ui.idle("ready — put the cursor inside a proof");
 
   // Example switching = a document edit; a header change is resolved
   // in-kernel against the loaded environments (K1), a light session widens
@@ -469,7 +492,10 @@ async function main() {
       // nothing would ever clear the busy label — the pill wedged forever.
       if (model.getValue() === src) return;
       model.setValue(src);
-      ui.busy("checking the example");
+      // During the boot the card and the pill keep the boot's own progress
+      // (the edit waits for the checker); "checking" would jump the card's
+      // checklist past a download that is still running.
+      if (bootDone) ui.busy("checking the example");
     }
   });
 }

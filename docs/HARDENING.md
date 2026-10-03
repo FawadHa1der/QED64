@@ -291,3 +291,34 @@ Rule: count what a runtime keeps BLOCKED, not just what it keeps alive. Idle poo
 
 Kernel gate 13/13: thread churn with parking off equals 0034's (2,961 pthreads in the task-manager storm); the opt-in path (`LEAN_WASM_PARKED_DEDICATED=8`, 163 pthreads) stays gated for a host that has measured its reload behaviour.
 
+
+### 54. A progress card is dismissed by the fact it describes, not by a timer something else started
+
+Found 2026-10-03 by the widgets showcase (`qed64-showcase/docs/UPSTREAM-REPORT-QED64.md`, S1). On a 10 Mbit/s first visit the boot card disappeared at 230 s while the Mathlib environment was still downloading, and from then until `ready` at 577 s the visitor saw only the pill and its elapsed timer. The card also claimed the full Mathlib environment needs "~3 GB of memory".
+
+`tests/adversarial/boot-card.mjs` reproduced it on the production build. The page sat behind a link-shaping TCP proxy: 16 Mbit/s, 40 ms RTT, cold profile. CDP network emulation does not reach the Lean worker's downloads. Results on the old shell:
+- the editor mounted at 71 s, and `main.ts` then called `ui.idle("ready — put the cursor inside a proof")`;
+- that label turned the pill idle and green mid-download, restarted its elapsed timer, and armed a 120 s fallback that removed the card;
+- the card went at 191 s, 144 s before `ready` (334 s), with 278 MB of the 650 MB first-visit download still to come.
+
+The fallback dates from the pump shim, when the editor mounted after the checker. Under the relay, the editor mounts while the session is still downloading.
+
+Two more slow-link defects showed up in the same run or in the code:
+- **Checklist stuck past the download.** The stage list only moved forward. Loading the 32 MB init snapshot advanced it to "Load the environment into Lean", so during the Mathlib download, the longest step, the card showed "Download the Mathlib environment" as done.
+- **Prefetch abandoned on slow links.** The page terminated the raw-snapshot prefetch worker 15 minutes after starting it, however steadily bytes were arriving. On links under about 3 Mbit/s (321 MB of transfer), the Mathlib download was abandoned and the Lean worker fetched it again from zero, on its heavier in-worker inflate path. The prefetch also reported progress once per 64 MiB of output, which is minutes apart at 100 KB/s.
+
+Fix (`frontend/src/main.ts`, `qed64-boot.ts`, `public/workers/snapshot-prefetch.worker.js`):
+- The editor's start reports nothing to the pill or the card; only the relay's status turns the pill idle.
+- The card goes on `ready` / `headerRefused`, or turns into the failure card. The one fallback is armed by the first status in which the relay **serves** (environment loaded, document open) and fires 30 s later. It exists for restored buffers that keep Lean busy (`#eval` loops, a heavy first search), where the editor must not stay hidden.
+- An example switch during the boot no longer jumps the checklist to "Check".
+- The checklist returns from "load" to "env" when the next snapshot starts downloading.
+- The prefetch reports every 500 ms while bytes arrive. The page gives up on it only after 3 minutes of silence (`PREFETCH_SILENCE_MS`; `tests/unit/prefetch-bail.test.ts` fails on the old deadline).
+- The memory figure is measured, not guessed: "about 8–9 GB" for the tab (README Requirements says the same). At `ready` (+8 s) in the two boot-card runs, the renderer was 7.3 and 7.6 GiB (7.8–8.2 GB) and the browser process 1.8 GiB (OPFS file cache), 9.2–9.5 GiB in all. The widgets lane measured 8.2–9.0 GiB of renderer RSS, and #44 explains why the 2 GiB heap is the smaller part.
+
+Verified on the same link and build pairing (`work/adversarial/runs/bootcard-fix/`):
+- **slow-link:** PASS. The card was shown in all 328 samples until `ready` at 334 s, gone at 334 s, with 0 MB downloaded after it went. The pill stayed busy throughout, its elapsed timer unbroken. "Download the Mathlib environment" was the active step for the whole Mathlib download. The longest stretch without numbers on the card was 11 s (runtime initialisation). The old shell had no card at all for the last 144 s.
+- **check-fallback:** PASS. The card went 30.1 s after the relay served, in `elaborating`, and the page reached `ready` at 66 s.
+- **e2e:** 23/23 on the same build (`boot`: settled at 13.6 s, `overlayGone=true`).
+- **unit:** 276/276, including the two in `prefetch-bail.test.ts`.
+
+Rule: a progress surface stays until the fact it describes is true (here: the checker is serving), and a fallback timer starts at the stage it covers. A timer armed by a neighbouring event (the editor mounting) is correct only while that event happens to come last, and on a slow link it does not.

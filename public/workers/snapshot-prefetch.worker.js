@@ -145,6 +145,11 @@ async function rawPrefetch(url, cacheKey, rawBytes, report) {
     const body = isGzip ? replay.pipeThrough(new DecompressionStream("gzip")) : replay;
     const out = body.getReader();
     let at = 0;
+    // Report every 500 ms while bytes arrive: the page's boot card shows
+    // them, and the page gives up on this worker only after a long SILENCE
+    // (HARDENING #54) — on a 100 KB/s link, one report per 64 MiB of output
+    // would be one every few minutes.
+    let reportedAt = 0;
     for (;;) {
       const { done, value } = await out.read();
       if (done) break;
@@ -154,7 +159,11 @@ async function rawPrefetch(url, cacheKey, rawBytes, report) {
       }
       handle.write(value, { at });
       at += value.length;
-      if ((at & 0x3ffffff) < value.length) report({ status: "progress", bytes: at, total: rawBytes, phase: sourceTotal ? "inflate" : "download", sourceTotal: sourceTotal || downloadedTotal });
+      const now = Date.now();
+      if (now - reportedAt >= 500) {
+        reportedAt = now;
+        report({ status: "progress", bytes: at, total: rawBytes, phase: sourceTotal ? "inflate" : "download", sourceTotal: sourceTotal || downloadedTotal });
+      }
     }
     if (at !== rawBytes) throw new Error(`raw size mismatch: got ${at}, expected ${rawBytes}`);
     handle.flush();

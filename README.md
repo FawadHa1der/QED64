@@ -23,6 +23,10 @@ mounted read-only from verified, content-addressed packs.
   Safari has no Memory64 as of 2026 and is out of scope.
 - Node **24+** for the pipeline and tests (Memory64 on by default).
 - ~5 GB free disk in the browser profile for the Mathlib tier.
+- About 8–9 GB of memory for the tab once the Mathlib environment is loaded
+  (the renderer's resident size at `ready`; the 2 GiB wasm heap is the smaller
+  part — the rest is V8's compiled code for the 106 MB module, see
+  `docs/HARDENING.md` #44). On a 16 GB machine, close other heavy tabs first.
 
 ## Quick start
 

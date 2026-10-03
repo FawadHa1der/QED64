@@ -102,6 +102,19 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   reached the page) is an infrastructure refusal — `latency: REFUSED — …`,
   exit 3, `outcome: "infra"` in the JSON — never a number. There is no pill
   fallback and no progress clock any more; `resident-gate.sh` runs one lane.
+- **Boot card** (`boot-card.mjs --url <prod preview> [--scenario
+  slow-link|check-fallback|all] [--mbps 16] [--rtt 40]`, HARDENING #54): a
+  cold first visit through its own link-shaping TCP proxy (one shared
+  downlink bucket; CDP network emulation does not reach the Lean worker's
+  downloads), sampled every second. `slow-link` fails when the card is hidden
+  or the pill reads idle before `status().phase` is `ready`, and reports
+  each stage's start, the longest stretches without numbers and without
+  any change on the card, the bytes carried, and RSS per process type at
+  ready. `check-fallback` restores an Init-only buffer that elaborates for
+  60 s and requires the card to go ~30 s after the relay serves, while the
+  phase is still `elaborating`. Serve `dist/` (`npm run build:site`, then
+  `PORT=… node scripts/serve-dist.mjs`), not the dev server: unbundled
+  modules over a shaped link measure Vite, not the product.
 
 ## Artifact discipline (pipeline/, tests/unit/artifact-discipline.test.ts)
 
