@@ -231,6 +231,33 @@ function hex(buffer: ArrayBuffer): string {
   return out;
 }
 
+/** A transport part's body, read as it arrives (`onBytes` gets the running
+ * count) into exactly `expected` bytes; a longer or shorter body is refused
+ * as before. Falls back to `arrayBuffer()` when the response has no stream. */
+async function readPart(response: Response, expected: number, i: number, onBytes: (received: number) => void): Promise<Uint8Array<ArrayBuffer>> {
+  if (!response.body) {
+    const whole = new Uint8Array(await response.arrayBuffer()) as Uint8Array<ArrayBuffer>;
+    if (whole.byteLength !== expected) throw new Error(`Part ${i}: ${whole.byteLength} bytes, expected ${expected}.`);
+    return whole;
+  }
+  const out = new Uint8Array(new ArrayBuffer(expected));
+  let received = 0;
+  const reader = response.body.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (received + value.byteLength > expected) {
+      reader.cancel().catch(() => {});
+      throw new Error(`Part ${i}: more than ${expected} bytes, expected ${expected}.`);
+    }
+    out.set(value, received);
+    received += value.byteLength;
+    onBytes(received);
+  }
+  if (received !== expected) throw new Error(`Part ${i}: ${received} bytes, expected ${expected}.`);
+  return out;
+}
+
 async function sha256(bytes: Uint8Array): Promise<string> {
   const copy = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
     ? bytes
@@ -361,6 +388,7 @@ export async function inflateTransport(
   const { transport, byteLength } = manifest.content.pack;
   let downloaded = 0;
   let inflated = 0;
+  let reportedAt = performance.now();
 
   const gunzip = new DecompressionStream("gzip");
   let sinkError: unknown = null;
@@ -405,10 +433,15 @@ export async function inflateTransport(
       const fetchPart = async (cacheMode: RequestCache): Promise<Uint8Array<ArrayBuffer>> => {
         const response = await fetch(part.url, { cache: cacheMode });
         if (!response.ok) throw new Error(`Part ${i}: HTTP ${response.status}`);
-        const partBytes = new Uint8Array(await response.arrayBuffer()) as Uint8Array<ArrayBuffer>;
-        if (partBytes.byteLength !== part.byteLength) {
-          throw new Error(`Part ${i}: ${partBytes.byteLength} bytes, expected ${part.byteLength}.`);
-        }
+        const partBytes = await readPart(response, part.byteLength, i, (received) => {
+          // In-part download progress every 500 ms (HARDENING #54): one
+          // 16 MiB part is ~56 s at 300 kB/s; a complete part is left to the
+          // verified report below.
+          const now = performance.now();
+          if (now - reportedAt < 500 || received === part.byteLength) return;
+          reportedAt = now;
+          onProgress({ phase: "download", loaded: downloaded + received, total: transport.byteLength });
+        });
         if ((await sha256(partBytes)) !== stripSha(part.digest)) {
           throw new Error(`Part ${i} failed SHA-256 verification.`);
         }

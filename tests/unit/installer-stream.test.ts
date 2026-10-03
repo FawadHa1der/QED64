@@ -71,6 +71,38 @@ describe("inflateTransport", () => {
     expect(Buffer.compare(Buffer.from(joined), Buffer.from(raw))).toBe(0);
   });
 
+  test("a slow part reports download progress inside the part every 500 ms (HARDENING #54)", async () => {
+    // A 16 MiB part is ~56 s at 300 kB/s: the count must move while it arrives,
+    // not only when the whole part is in. Each part arrives in 8 reads, 250 ms apart.
+    const { manifest, parts } = makeManifest(raw);
+    let clock = 0;
+    const now = vi.spyOn(performance, "now").mockImplementation(() => clock);
+    try {
+      vi.stubGlobal("fetch", async (url: string) => {
+        const bytes = parts[Number(/part-(\d+)/.exec(url)![1])]!;
+        const step = Math.ceil(bytes.length / 8);
+        let o = 0;
+        const body = new ReadableStream<Uint8Array>({
+          pull(c) {
+            if (o < bytes.length) { clock += 250; c.enqueue(bytes.slice(o, o + step)); o += step; } else c.close();
+          },
+        }, { highWaterMark: 0 });
+        return new Response(body, { status: 200 });
+      });
+      const downloads: number[] = [];
+      const n = await inflateTransport(manifest, async () => {}, (p) => { if (p.phase === "download") downloads.push(p.loaded); });
+      expect(n).toBe(raw.length);
+      const { transport } = manifest.content.pack;
+      let at = 0;
+      const boundaries = new Set(transport.parts.map((p) => (at += p.byteLength)));
+      expect(downloads.filter((d) => !boundaries.has(d)).length).toBeGreaterThanOrEqual(transport.parts.length); // in-part reports
+      expect(downloads.every((v, i) => i === 0 || v > downloads[i - 1]!)).toBe(true);
+      expect(downloads.at(-1)).toBe(transport.byteLength); // the last verified part
+    } finally {
+      now.mockRestore();
+    }
+  });
+
   test("a corrupted part is rejected before any sink write of its bytes", async () => {
     const { manifest, parts } = makeManifest(raw);
     stubFetch(parts, (i, b) => {
