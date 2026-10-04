@@ -6,7 +6,7 @@
 //                     exists at DOMContentLoaded (an embedder's own bridge
 //                     reads it and stands down).
 //   try-this-apply    init only: `example (n : Nat) : n + 0 = n := by simp?`,
-//                     cursor on simp?, click the core "Try this" suggestion →
+//                     cursor on simp?, click the core "Try this" [apply] link →
 //                     the line reads `by simp only [Nat.add_zero]` (applyEdit),
 //                     elaborates to ready with no error.
 //   conv-generate     Mathlib: `conv?` renders its ProofWidgets selection panel
@@ -37,7 +37,9 @@ console.log(`infoview-actions: ${url} → ${manifest.buildId}; reports in ${path
 
 const SEL = {
   frame: "#infoview iframe",
-  coreTryThis: "span.link.pointer.dim.font-code",
+  // Lean 4.34's core "Try this": `Try this: [apply] simp only […]`, the link is the
+  // separate "[apply]" span (title "Apply suggestion"), not the suggestion text.
+  coreTryThis: 'span.link.pointer[title="Apply suggestion"]',
   makeEditLink: "a.link.pointer.dim",
   panelSummary: "summary",
   goalTarget: "div:has(> .goal-vdash)",
@@ -112,7 +114,7 @@ try {
     await installDiagTap(page);
     await cursorAt(page, 1, DOC_A.indexOf("simp?") + 3);
     const iv = page.frameLocator(SEL.frame);
-    const link = iv.locator(SEL.coreTryThis, { hasText: "simp only" }).first();
+    const link = iv.locator(SEL.coreTryThis, { hasText: "[apply]" }).first();
     await link.waitFor({ timeout: 60000 });
     const before = await text(page);
     await link.click();
