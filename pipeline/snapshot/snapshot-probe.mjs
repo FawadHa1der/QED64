@@ -10,6 +10,7 @@
 //          --snap public/snapshots/mathlib-reals.snap \
 //          --probe-file <lean file with the matching imports> \
 //          [--lib <olean tree>] [--artifact <dir>] [--budget-ms 90000]
+// (--help lists every flag; the contract is docs/CLI-CONTRACT.md)
 
 import fs from "node:fs";
 import os from "node:os";
@@ -17,6 +18,87 @@ import path from "node:path";
 import vm from "node:vm";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+
+// <cli-contract> generated from SPECS["snapshot-probe"] in pipeline/snapshot/cli.mjs. Do not edit:
+// `node pipeline/snapshot/cli.mjs --write-preludes` rewrites it and tests/unit/cli-contract.test.ts
+// fails on drift. Inline, not imported, because downstream vendors this file without cli.mjs.
+// It runs before any side effect: --help/-h prints the help and exits 0, a missing required
+// flag prints the usage line and exits 2, an unknown flag is a WARNING on stderr, and
+// --flag=value is rewritten to the two-token form this script reads (docs/CLI-CONTRACT.md).
+{
+  const spec = {"tool":"snapshot-probe","usage":"snapshot-probe.mjs (--snap <file> | --fresh-import --lib <tree>) (--probe-file <file> | --probe <source>)","flags":{"snap":1,"fresh-import":0,"probe-file":1,"probe":1,"lib":1,"artifact":1,"budget-ms":1,"via-mem":0,"via-memfs":0,"init-flags":1,"workspace":1,"dump-messages":0},"required":[["snap","fresh-import"],["probe-file","probe"]],"passthrough":null,"passthroughRequired":false};
+  spec.help = [
+    "usage: snapshot-probe.mjs (--snap <file> | --fresh-import --lib <tree>) (--probe-file <file> | --probe <source>)",
+    "Load a baked snapshot through the worker's exact export (lean_wasm_load_snapshot, or _mem with --via-mem), then compile a probe whose header matches it: it must be error-free and within the budget (an env-cache hit).",
+    "run as: node --stack-size=8192 pipeline/snapshot/snapshot-probe.mjs",
+    "",
+    "flags:",
+    "  --snap <file>        raw .snap to load (hard-linked into a scratch dir under the OS tmpdir) [one of --snap, --fresh-import is required]",
+    "  --fresh-import       no snapshot: import the probe's header from --lib (the slim-bake differential audit) [one of --snap, --fresh-import is required]",
+    "  --probe-file <file>  the Lean file to compile after the load [one of --probe-file, --probe is required]",
+    "  --probe <source>     the probe text inline (read only when --probe-file is absent) [one of --probe-file, --probe is required]",
+    "  --lib <tree>         olean tree mounted at /lib/lean (default: work/lib-tree under the repo root)",
+    "  --artifact <dir>     stage1 dir holding bin/lean.js + bin/lean.wasm (default: $QED64_LEAN_ARTIFACT, else pipeline/toolchain/work/build/stage1)",
+    "  --budget-ms <ms>     compile budget; slower means the load seeded the wrong env-cache key (default: 90000)",
+    "  --via-mem            stream the snapshot into a wasm-malloc'd buffer (lean_wasm_load_snapshot_mem, the browser's path)",
+    "  --via-memfs          copy the snapshot into MEMFS in 64 MiB chunks before loading",
+    "  --init-flags <n>     replay-control flags passed with --via-mem (patch 0016) (default: 1)",
+    "  --workspace <dir>    host dir mounted at /workspace, the compile's cwd (game probes need .lake/gamedata)",
+    "  --dump-messages      echo every line Lean prints on stdout as `[lean:stdout] <line>`",
+    "  -h, --help           print this help and exit 0, before any side effect",
+    "",
+    "environment:",
+    "  QED64_LEAN_ARTIFACT  stage1 artifact dir (bin/lean.js, bin/lean.wasm, lib/lean) used when --artifact is absent",
+    "  QED64_PROFILE_INIT   when set, forwarded into the wasm environment to profile the [init] replay",
+    "",
+    "exit codes:",
+    "  0  SNAPSHOT PROBE PASS",
+    "  1  SNAPSHOT PROBE FAIL (load failed, the probe has errors or blew the budget), or a crash before the runtime started (an unreadable --probe-file, a missing lean.js)",
+    "  2  usage: no snapshot source or no probe",
+    "  3  the wasm runtime aborted (legacy overload of class 3)",
+    "",
+    "tier 1 (downstream-stable). Contract: docs/CLI-CONTRACT.md",
+  ].join("\n");
+  const args = process.argv.slice(2);
+  const normalized = (function cliContract(spec, args, io = { out: (s) => console.log(s), err: (s) => console.error(s), exit: (c) => process.exit(c) }) {
+    const values = {};
+    const warnings = [];
+    const normalized = [];
+    let passthrough = [];
+    let help = false;
+    for (let i = 0; i < args.length; i += 1) {
+      const token = args[i];
+      if (token === "--help" || token === "-h") { help = true; continue; }
+      if (token === "--" && spec.passthrough) { passthrough = args.slice(i + 1); normalized.push(...args.slice(i)); break; }
+      const m = /^--([^=]+)(=[\s\S]*)?$/.exec(token);
+      const arity = m && Object.hasOwn(spec.flags, m[1]) ? spec.flags[m[1]] : -1;
+      if (arity < 0 || (arity === 0 && m[2] !== undefined)) {
+        if (spec.passthrough === "implicit") { passthrough = args.slice(i); normalized.push(...passthrough); break; }
+        warnings.push(token.startsWith("-") ? `unknown flag ${token} ignored` : `unexpected argument ${token} ignored`);
+        normalized.push(token);
+        continue;
+      }
+      const name = m[1];
+      let value = true;
+      if (arity === 1) {
+        value = m[2] !== undefined ? m[2].slice(1) : i + 1 < args.length ? args[(i += 1)] : undefined;
+        if (value === "--help" || value === "-h") help = true;
+        normalized.push(`--${name}`, ...(value === undefined ? [] : [value]));
+        if (!value) warnings.push(`flag --${name} has no value; ignored`);
+      } else normalized.push(token);
+      if (!Object.hasOwn(values, name)) values[name] = value ?? "";
+      else if (arity === 1) warnings.push(`flag --${name} repeated; the first value wins`);
+    }
+    if (help) { io.out(spec.help); io.exit(0); return null; }
+    for (const w of warnings) io.err(`${spec.tool}: WARNING — ${w}`);
+    for (const name of Object.keys(values)) if (values[name] === "") delete values[name];
+    const missing = (spec.required || []).some((group) => !group.some((name) => Object.hasOwn(values, name)));
+    if (missing || (spec.passthroughRequired && passthrough.length === 0)) { io.err(`usage: ${spec.usage}`); io.exit(2); return null; }
+    return { values, passthrough, args: normalized };
+  })(spec, args)?.args ?? args;
+  if (normalized.join("\0") !== args.join("\0")) process.argv.splice(2, args.length, ...normalized);
+}
+// </cli-contract>
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "../..");

@@ -8,12 +8,81 @@
 // surfaces an error diagnostic without killing the runtime.
 //
 // Usage: node pipeline/snapshot/persistent-probe.mjs [--artifact <dir>]
+// (--help; the contract is docs/CLI-CONTRACT.md)
 
 import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+
+// <cli-contract> generated from SPECS["persistent-probe"] in pipeline/snapshot/cli.mjs. Do not edit:
+// `node pipeline/snapshot/cli.mjs --write-preludes` rewrites it and tests/unit/cli-contract.test.ts
+// fails on drift. Inline, not imported, because downstream vendors this file without cli.mjs.
+// It runs before any side effect: --help/-h prints the help and exits 0, a missing required
+// flag prints the usage line and exits 2, an unknown flag is a WARNING on stderr, and
+// --flag=value is rewritten to the two-token form this script reads (docs/CLI-CONTRACT.md).
+{
+  const spec = {"tool":"persistent-probe","usage":"persistent-probe.mjs [--artifact <dir>]","flags":{"artifact":1},"required":[],"passthrough":null,"passthroughRequired":false};
+  spec.help = [
+    "usage: persistent-probe.mjs [--artifact <dir>]",
+    "Drive the persistent runtime path under Node (noInitialRun, manual init, repeated lean_wasm_compile): a good compile, a resident recompile, an error that does not kill the runtime, and survival after it.",
+    "run as: node --stack-size=8192 pipeline/snapshot/persistent-probe.mjs",
+    "",
+    "flags:",
+    "  --artifact <dir>  stage1 dir; its lib/lean is mounted at /lib/lean (default: $QED64_LEAN_ARTIFACT, else pipeline/toolchain/work/build/stage1 when it has bin/lean.js, else ../../wasm64-lean-codex/experiments/lean4-wasm64-build/stage1, both relative to the repo root)",
+    "  -h, --help        print this help and exit 0, before any side effect",
+    "",
+    "environment:",
+    "  QED64_LEAN_ARTIFACT  stage1 artifact dir (bin/lean.js, bin/lean.wasm, lib/lean) used when --artifact is absent",
+    "",
+    "exit codes:",
+    "  0  PERSISTENT PROBE PASS",
+    "  1  PERSISTENT PROBE FAIL, or the artifact is unreadable (an unhandled ENOENT before the runtime starts)",
+    "  3  the wasm runtime aborted (legacy overload of class 3)",
+    "",
+    "tier 2 (internal-stable). Contract: docs/CLI-CONTRACT.md",
+  ].join("\n");
+  const args = process.argv.slice(2);
+  const normalized = (function cliContract(spec, args, io = { out: (s) => console.log(s), err: (s) => console.error(s), exit: (c) => process.exit(c) }) {
+    const values = {};
+    const warnings = [];
+    const normalized = [];
+    let passthrough = [];
+    let help = false;
+    for (let i = 0; i < args.length; i += 1) {
+      const token = args[i];
+      if (token === "--help" || token === "-h") { help = true; continue; }
+      if (token === "--" && spec.passthrough) { passthrough = args.slice(i + 1); normalized.push(...args.slice(i)); break; }
+      const m = /^--([^=]+)(=[\s\S]*)?$/.exec(token);
+      const arity = m && Object.hasOwn(spec.flags, m[1]) ? spec.flags[m[1]] : -1;
+      if (arity < 0 || (arity === 0 && m[2] !== undefined)) {
+        if (spec.passthrough === "implicit") { passthrough = args.slice(i); normalized.push(...passthrough); break; }
+        warnings.push(token.startsWith("-") ? `unknown flag ${token} ignored` : `unexpected argument ${token} ignored`);
+        normalized.push(token);
+        continue;
+      }
+      const name = m[1];
+      let value = true;
+      if (arity === 1) {
+        value = m[2] !== undefined ? m[2].slice(1) : i + 1 < args.length ? args[(i += 1)] : undefined;
+        if (value === "--help" || value === "-h") help = true;
+        normalized.push(`--${name}`, ...(value === undefined ? [] : [value]));
+        if (!value) warnings.push(`flag --${name} has no value; ignored`);
+      } else normalized.push(token);
+      if (!Object.hasOwn(values, name)) values[name] = value ?? "";
+      else if (arity === 1) warnings.push(`flag --${name} repeated; the first value wins`);
+    }
+    if (help) { io.out(spec.help); io.exit(0); return null; }
+    for (const w of warnings) io.err(`${spec.tool}: WARNING — ${w}`);
+    for (const name of Object.keys(values)) if (values[name] === "") delete values[name];
+    const missing = (spec.required || []).some((group) => !group.some((name) => Object.hasOwn(values, name)));
+    if (missing || (spec.passthroughRequired && passthrough.length === 0)) { io.err(`usage: ${spec.usage}`); io.exit(2); return null; }
+    return { values, passthrough, args: normalized };
+  })(spec, args)?.args ?? args;
+  if (normalized.join("\0") !== args.join("\0")) process.argv.splice(2, args.length, ...normalized);
+}
+// </cli-contract>
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "../..");

@@ -31,6 +31,7 @@
 // output arrives. Nothing pack-sized is ever held in memory — a multi-GB pack
 // cannot be hashed in one update() (Node refuses > 2 GiB) nor gzipped in one
 // gzipSync() (32-bit input length), and the essential pack is 3.5 GB.
+// (--help; the contract is docs/CLI-CONTRACT.md)
 
 import { createHash } from "node:crypto";
 import { once } from "node:events";
@@ -38,6 +39,80 @@ import { createGzip } from "node:zlib";
 import fs from "node:fs";
 import path from "node:path";
 import { oleanImports } from "./olean-imports.mjs";
+
+// <cli-contract> generated from SPECS["pack"] in pipeline/snapshot/cli.mjs. Do not edit:
+// `node pipeline/snapshot/cli.mjs --write-preludes` rewrites it and tests/unit/cli-contract.test.ts
+// fails on drift. Inline, not imported, because downstream vendors this file without cli.mjs.
+// It runs before any side effect: --help/-h prints the help and exits 0, a missing required
+// flag prints the usage line and exits 2, an unknown flag is a WARNING on stderr, and
+// --flag=value is rewritten to the two-token form this script reads (docs/CLI-CONTRACT.md).
+{
+  const spec = {"tool":"pack","usage":"pack.mjs --lib <dir> --id <name> --out <dir> [...]","flags":{"lib":1,"id":1,"out":1,"mount":1,"lean-version":1,"revision":1,"roots":1,"url-prefix":1,"release":1,"no-imports":0},"required":[["lib"],["id"]],"passthrough":null,"passthroughRequired":false};
+  spec.help = [
+    "usage: pack.mjs --lib <dir> --id <name> --out <dir> [...]",
+    "Pack every olean/ir facet under --lib into a raw pack + browser64.artifact-manifest: 8-byte-aligned bytes, an index, gzip transport cut into 16 MiB content-addressed parts, a WORKERFS byte-range table; each module's imports read from its .olean.",
+    "run as: node pipeline/artifacts/pack.mjs (or npm run pack -- …)",
+    "",
+    "flags:",
+    "  --lib <dir>             the olean tree to pack [required]",
+    "  --id <name>             pack id: <id>.pack, <id>.manifest.json, part names [required]",
+    "  --out <dir>             output dir (default: work/packs, relative to the cwd)",
+    "  --mount <path>          the WORKERFS mount point recorded in the manifest (default: /lib/lean/library)",
+    "  --lean-version <x.y.z>  content.lean.version (default: 4.33.0-pre)",
+    "  --revision <string>     content.lean.gitRevision (default: unpinned)",
+    "  --roots <A,B,…>         content.roots (default: none)",
+    "  --url-prefix <prefix>   where the parts will be SERVED from, e.g. /profiles/ (default: empty: bare part names)",
+    "  --release <string>      content.release (default: <id>-<lean-version>-local)",
+    "  --no-imports            do not read imports from the .olean files (fixtures that are not real regions)",
+    "  -h, --help              print this help and exit 0, before any side effect",
+    "",
+    "exit codes:",
+    "  0  packed",
+    "  1  packed, but some .olean files had no readable import table (pass --no-imports if intended)",
+    "  2  usage, or no artifacts under --lib",
+    "",
+    "tier 2 (internal-stable). Contract: docs/CLI-CONTRACT.md",
+  ].join("\n");
+  const args = process.argv.slice(2);
+  const normalized = (function cliContract(spec, args, io = { out: (s) => console.log(s), err: (s) => console.error(s), exit: (c) => process.exit(c) }) {
+    const values = {};
+    const warnings = [];
+    const normalized = [];
+    let passthrough = [];
+    let help = false;
+    for (let i = 0; i < args.length; i += 1) {
+      const token = args[i];
+      if (token === "--help" || token === "-h") { help = true; continue; }
+      if (token === "--" && spec.passthrough) { passthrough = args.slice(i + 1); normalized.push(...args.slice(i)); break; }
+      const m = /^--([^=]+)(=[\s\S]*)?$/.exec(token);
+      const arity = m && Object.hasOwn(spec.flags, m[1]) ? spec.flags[m[1]] : -1;
+      if (arity < 0 || (arity === 0 && m[2] !== undefined)) {
+        if (spec.passthrough === "implicit") { passthrough = args.slice(i); normalized.push(...passthrough); break; }
+        warnings.push(token.startsWith("-") ? `unknown flag ${token} ignored` : `unexpected argument ${token} ignored`);
+        normalized.push(token);
+        continue;
+      }
+      const name = m[1];
+      let value = true;
+      if (arity === 1) {
+        value = m[2] !== undefined ? m[2].slice(1) : i + 1 < args.length ? args[(i += 1)] : undefined;
+        if (value === "--help" || value === "-h") help = true;
+        normalized.push(`--${name}`, ...(value === undefined ? [] : [value]));
+        if (!value) warnings.push(`flag --${name} has no value; ignored`);
+      } else normalized.push(token);
+      if (!Object.hasOwn(values, name)) values[name] = value ?? "";
+      else if (arity === 1) warnings.push(`flag --${name} repeated; the first value wins`);
+    }
+    if (help) { io.out(spec.help); io.exit(0); return null; }
+    for (const w of warnings) io.err(`${spec.tool}: WARNING — ${w}`);
+    for (const name of Object.keys(values)) if (values[name] === "") delete values[name];
+    const missing = (spec.required || []).some((group) => !group.some((name) => Object.hasOwn(values, name)));
+    if (missing || (spec.passthroughRequired && passthrough.length === 0)) { io.err(`usage: ${spec.usage}`); io.exit(2); return null; }
+    return { values, passthrough, args: normalized };
+  })(spec, args)?.args ?? args;
+  if (normalized.join("\0") !== args.join("\0")) process.argv.splice(2, args.length, ...normalized);
+}
+// </cli-contract>
 
 const FACETS = [".olean.server", ".olean.private", ".olean", ".ir.sig", ".ir"];
 const PART_BYTES = 16 * 1024 * 1024;

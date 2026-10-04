@@ -18,6 +18,7 @@
 // the library packs against (profiles/index.json runtime.leanVersion, each
 // pack's content.lean.version): omitting it is a loud warning, not an error —
 // bump-chain.sh only passes it when QED64_LEAN_VERSION is set.
+// (--help; the contract is docs/CLI-CONTRACT.md)
 
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -25,6 +26,76 @@ import { execSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { refuseInsidePublic, runtimeBuildId, stagingDir } from "./artifact-paths.mjs";
+
+// <cli-contract> generated from SPECS["chunk-runtime"] in pipeline/snapshot/cli.mjs. Do not edit:
+// `node pipeline/snapshot/cli.mjs --write-preludes` rewrites it and tests/unit/cli-contract.test.ts
+// fails on drift. Inline, not imported, because downstream vendors this file without cli.mjs.
+// It runs before any side effect: --help/-h prints the help and exits 0, a missing required
+// flag prints the usage line and exits 2, an unknown flag is a WARNING on stderr, and
+// --flag=value is rewritten to the two-token form this script reads (docs/CLI-CONTRACT.md).
+{
+  const spec = {"tool":"chunk-runtime","usage":"chunk-runtime.mjs --bin <dir> [--lean-version v] [--revision sha] [--upstream-base sha] [--out dir]","flags":{"bin":1,"lean-version":1,"revision":1,"upstream-base":1,"out":1},"required":[["bin"]],"passthrough":null,"passthroughRequired":false};
+  spec.help = [
+    "usage: chunk-runtime.mjs --bin <dir> [--lean-version v] [--revision sha] [--upstream-base sha] [--out dir]",
+    "Chunk a built lean.js/lean.wasm pair into the verified runtime layout (16 MiB sha256-addressed parts + runtime-manifest.json and runtime-manifest.<buildId>.json) in a staging dir; additive, never inside public/.",
+    "run as: node pipeline/toolchain/chunk-runtime.mjs",
+    "",
+    "flags:",
+    "  --bin <dir>               dir holding lean.js + lean.wasm [required]",
+    "  --lean-version <x.y.z>    the manifest's leanVersion; promote pairs packs against it (default: 4.33.0-pre, with a WARNING on stderr)",
+    "  --revision <string>       the manifest's sourceRevision (default: qed64-wasm64@<HEAD of pipeline/toolchain/work/lean4> (base <upstream-base>), else unspecified)",
+    "  --upstream-base <sha|tag>",
+    "                            the upstream base named in the default --revision (default: 5732b84)",
+    "  --out <dir>               staging dir; refused inside public/ (default: work/staging/<buildId>/runtime under the repo root)",
+    "  -h, --help                print this help and exit 0, before any side effect",
+    "",
+    "exit codes:",
+    "  0  chunked",
+    "  1  a crash (lean.js or lean.wasm unreadable under --bin)",
+    "  2  usage, or --out inside public/",
+    "",
+    "tier 2 (internal-stable). Contract: docs/CLI-CONTRACT.md",
+  ].join("\n");
+  const args = process.argv.slice(2);
+  const normalized = (function cliContract(spec, args, io = { out: (s) => console.log(s), err: (s) => console.error(s), exit: (c) => process.exit(c) }) {
+    const values = {};
+    const warnings = [];
+    const normalized = [];
+    let passthrough = [];
+    let help = false;
+    for (let i = 0; i < args.length; i += 1) {
+      const token = args[i];
+      if (token === "--help" || token === "-h") { help = true; continue; }
+      if (token === "--" && spec.passthrough) { passthrough = args.slice(i + 1); normalized.push(...args.slice(i)); break; }
+      const m = /^--([^=]+)(=[\s\S]*)?$/.exec(token);
+      const arity = m && Object.hasOwn(spec.flags, m[1]) ? spec.flags[m[1]] : -1;
+      if (arity < 0 || (arity === 0 && m[2] !== undefined)) {
+        if (spec.passthrough === "implicit") { passthrough = args.slice(i); normalized.push(...passthrough); break; }
+        warnings.push(token.startsWith("-") ? `unknown flag ${token} ignored` : `unexpected argument ${token} ignored`);
+        normalized.push(token);
+        continue;
+      }
+      const name = m[1];
+      let value = true;
+      if (arity === 1) {
+        value = m[2] !== undefined ? m[2].slice(1) : i + 1 < args.length ? args[(i += 1)] : undefined;
+        if (value === "--help" || value === "-h") help = true;
+        normalized.push(`--${name}`, ...(value === undefined ? [] : [value]));
+        if (!value) warnings.push(`flag --${name} has no value; ignored`);
+      } else normalized.push(token);
+      if (!Object.hasOwn(values, name)) values[name] = value ?? "";
+      else if (arity === 1) warnings.push(`flag --${name} repeated; the first value wins`);
+    }
+    if (help) { io.out(spec.help); io.exit(0); return null; }
+    for (const w of warnings) io.err(`${spec.tool}: WARNING — ${w}`);
+    for (const name of Object.keys(values)) if (values[name] === "") delete values[name];
+    const missing = (spec.required || []).some((group) => !group.some((name) => Object.hasOwn(values, name)));
+    if (missing || (spec.passthroughRequired && passthrough.length === 0)) { io.err(`usage: ${spec.usage}`); io.exit(2); return null; }
+    return { values, passthrough, args: normalized };
+  })(spec, args)?.args ?? args;
+  if (normalized.join("\0") !== args.join("\0")) process.argv.splice(2, args.length, ...normalized);
+}
+// </cli-contract>
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 function arg(name, fallback) {

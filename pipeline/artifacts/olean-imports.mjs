@@ -97,6 +97,70 @@ function walkOleans(dir, out = []) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  // <cli-contract> generated from SPECS["olean-imports"] in pipeline/snapshot/cli.mjs. Do not edit:
+  // `node pipeline/snapshot/cli.mjs --write-preludes` rewrites it and tests/unit/cli-contract.test.ts
+  // fails on drift. Inline, not imported, because downstream vendors this file without cli.mjs.
+  // It runs before any side effect: --help/-h prints the help and exits 0, a missing required
+  // flag prints the usage line and exits 2, an unknown flag is a WARNING on stderr, and
+  // --flag=value is rewritten to the two-token form this script reads (docs/CLI-CONTRACT.md).
+  {
+    const spec = {"tool":"olean-imports","usage":"olean-imports.mjs --audit <olean tree>","flags":{"audit":1},"required":[["audit"]],"passthrough":null,"passthroughRequired":false};
+    spec.help = [
+      "usage: olean-imports.mjs --audit <olean tree>",
+      "The `import all` edges of an olean tree, by importing library: the static half of the slim-bake audit (`import all M` needs M.olean.private, which a slim tree lacks). As a module it exports oleanImportEntries / oleanImports.",
+      "run as: node pipeline/artifacts/olean-imports.mjs",
+      "",
+      "flags:",
+      "  --audit <olean tree>  the tree to audit (every *.olean under it) [required]",
+      "  -h, --help            print this help and exit 0, before any side effect",
+      "",
+      "exit codes:",
+      "  0  audited",
+      "  1  audited, but some .olean files had no readable import table",
+      "  2  usage: --audit missing or the tree does not exist",
+      "",
+      "tier 1 (downstream-stable). Contract: docs/CLI-CONTRACT.md",
+    ].join("\n");
+    const args = process.argv.slice(2);
+    const normalized = (function cliContract(spec, args, io = { out: (s) => console.log(s), err: (s) => console.error(s), exit: (c) => process.exit(c) }) {
+      const values = {};
+      const warnings = [];
+      const normalized = [];
+      let passthrough = [];
+      let help = false;
+      for (let i = 0; i < args.length; i += 1) {
+        const token = args[i];
+        if (token === "--help" || token === "-h") { help = true; continue; }
+        if (token === "--" && spec.passthrough) { passthrough = args.slice(i + 1); normalized.push(...args.slice(i)); break; }
+        const m = /^--([^=]+)(=[\s\S]*)?$/.exec(token);
+        const arity = m && Object.hasOwn(spec.flags, m[1]) ? spec.flags[m[1]] : -1;
+        if (arity < 0 || (arity === 0 && m[2] !== undefined)) {
+          if (spec.passthrough === "implicit") { passthrough = args.slice(i); normalized.push(...passthrough); break; }
+          warnings.push(token.startsWith("-") ? `unknown flag ${token} ignored` : `unexpected argument ${token} ignored`);
+          normalized.push(token);
+          continue;
+        }
+        const name = m[1];
+        let value = true;
+        if (arity === 1) {
+          value = m[2] !== undefined ? m[2].slice(1) : i + 1 < args.length ? args[(i += 1)] : undefined;
+          if (value === "--help" || value === "-h") help = true;
+          normalized.push(`--${name}`, ...(value === undefined ? [] : [value]));
+          if (!value) warnings.push(`flag --${name} has no value; ignored`);
+        } else normalized.push(token);
+        if (!Object.hasOwn(values, name)) values[name] = value ?? "";
+        else if (arity === 1) warnings.push(`flag --${name} repeated; the first value wins`);
+      }
+      if (help) { io.out(spec.help); io.exit(0); return null; }
+      for (const w of warnings) io.err(`${spec.tool}: WARNING — ${w}`);
+      for (const name of Object.keys(values)) if (values[name] === "") delete values[name];
+      const missing = (spec.required || []).some((group) => !group.some((name) => Object.hasOwn(values, name)));
+      if (missing || (spec.passthroughRequired && passthrough.length === 0)) { io.err(`usage: ${spec.usage}`); io.exit(2); return null; }
+      return { values, passthrough, args: normalized };
+    })(spec, args)?.args ?? args;
+    if (normalized.join("\0") !== args.join("\0")) process.argv.splice(2, args.length, ...normalized);
+  }
+  // </cli-contract>
   const i = process.argv.indexOf("--audit");
   const tree = i >= 0 && process.argv[i + 1] ? path.resolve(process.argv[i + 1]) : null;
   if (!tree || !fs.existsSync(tree)) {

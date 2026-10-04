@@ -12,7 +12,8 @@
 // the pairing is a datum rather than prose (review C6). `--out` inside
 // public/ is refused before the runner starts; promotion is a separate step.
 //
-// Usage: node pipeline/snapshot/bake-snapshot.mjs [--name init] [--probe '#check 2+2'] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--out <dir>]
+// Usage: node pipeline/snapshot/bake-snapshot.mjs [--name init] [--probe '#check 2+2'] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>]
+// (--help; the contract — flags, exit codes, stable output — is docs/CLI-CONTRACT.md)
 
 import { execFileSync, execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -22,6 +23,84 @@ import { pipeline } from "node:stream/promises";
 import { createGzip } from "node:zlib";
 import { fileURLToPath } from "node:url";
 import { buildIdOfArtifact, refuseInsidePublic, stagingDir } from "../toolchain/artifact-paths.mjs";
+
+// <cli-contract> generated from SPECS["bake-snapshot"] in pipeline/snapshot/cli.mjs. Do not edit:
+// `node pipeline/snapshot/cli.mjs --write-preludes` rewrites it and tests/unit/cli-contract.test.ts
+// fails on drift. Inline, not imported, because downstream vendors this file without cli.mjs.
+// It runs before any side effect: --help/-h prints the help and exits 0, a missing required
+// flag prints the usage line and exits 2, an unknown flag is a WARNING on stderr, and
+// --flag=value is rewritten to the two-token form this script reads (docs/CLI-CONTRACT.md).
+{
+  const spec = {"tool":"bake-snapshot","usage":"bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>]","flags":{"name":1,"probe":1,"artifact":1,"lib":1,"reserve":1,"work":1,"out":1},"required":[],"passthrough":null,"passthroughRequired":false};
+  spec.help = [
+    "usage: bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>]",
+    "Bake an environment snapshot with the exact wasm64 runtime under Node (the runner is supervised and reaped), gzip it content-addressed into the staging dir and upsert its index entry.",
+    "run as: node pipeline/snapshot/bake-snapshot.mjs (or npm run bake:snapshot -- …)",
+    "",
+    "flags:",
+    "  --name <name>          snapshot name: <work>/<name>.snap, <name>.<digest16>.snapz and the index entry (default: init)",
+    "  --probe <lean source>  the baked file; its import lines become the entry's imports (the env-cache key) (default: #check (2 + 2 : Nat))",
+    "  --artifact <dir>       stage1 dir whose bin/lean.wasm bakes and is stamped as `runtime`; always passed to the runner (default: $QED64_LEAN_ARTIFACT, else pipeline/toolchain/work/build/stage1)",
+    "  --lib <olean tree>     olean tree mounted at /lib/lean (default: the runner's <artifact>/lib/lean)",
+    "  --reserve <bytes>      compactor buffer reserved up front (LEAN_COMPACTOR_RESERVE for the runner) (default: 3758096384 (3.5 GiB))",
+    "  --work <dir>           raw .snap + probe.lean; <work>/<name>.snap is deleted when the bake starts (default: work/snapshot under the repo root: the PAIRED set the probes load)",
+    "  --out <dir>            staged .snapz + index.json; refused inside public/ (default: work/staging/<buildId>/snapshots under the repo root)",
+    "  -h, --help             print this help and exit 0, before any side effect",
+    "",
+    "environment:",
+    "  QED64_LEAN_ARTIFACT       stage1 artifact dir (bin/lean.js, bin/lean.wasm, lib/lean) used when --artifact is absent",
+    "  LEAN_COMPACTOR_RESERVE    bytes the compactor reserves up front for a whole-environment save (toolchain patch 0011)",
+    "  QED64_ALLOW_LEGACY_IMPORTS",
+    "                            when set, lets the exported-level env cache load legacy non-module packages (patch 0030; the lean4game bakes)",
+    "  QED64_PROFILE_INIT        when set, forwarded into the wasm environment to profile the [init] replay",
+    "",
+    "exit codes:",
+    "  0  baked and the index upserted (also when the wedged runner was reaped); NOT a verdict on the probe's Lean messages",
+    "  1  the runner exited non-zero, or no .snap was produced",
+    "  2  refused before the runner: no lean.wasm under the artifact, --out inside public/, an index paired with another runtime or with none",
+    "",
+    "tier 1 (downstream-stable). Contract: docs/CLI-CONTRACT.md",
+  ].join("\n");
+  const args = process.argv.slice(2);
+  const normalized = (function cliContract(spec, args, io = { out: (s) => console.log(s), err: (s) => console.error(s), exit: (c) => process.exit(c) }) {
+    const values = {};
+    const warnings = [];
+    const normalized = [];
+    let passthrough = [];
+    let help = false;
+    for (let i = 0; i < args.length; i += 1) {
+      const token = args[i];
+      if (token === "--help" || token === "-h") { help = true; continue; }
+      if (token === "--" && spec.passthrough) { passthrough = args.slice(i + 1); normalized.push(...args.slice(i)); break; }
+      const m = /^--([^=]+)(=[\s\S]*)?$/.exec(token);
+      const arity = m && Object.hasOwn(spec.flags, m[1]) ? spec.flags[m[1]] : -1;
+      if (arity < 0 || (arity === 0 && m[2] !== undefined)) {
+        if (spec.passthrough === "implicit") { passthrough = args.slice(i); normalized.push(...passthrough); break; }
+        warnings.push(token.startsWith("-") ? `unknown flag ${token} ignored` : `unexpected argument ${token} ignored`);
+        normalized.push(token);
+        continue;
+      }
+      const name = m[1];
+      let value = true;
+      if (arity === 1) {
+        value = m[2] !== undefined ? m[2].slice(1) : i + 1 < args.length ? args[(i += 1)] : undefined;
+        if (value === "--help" || value === "-h") help = true;
+        normalized.push(`--${name}`, ...(value === undefined ? [] : [value]));
+        if (!value) warnings.push(`flag --${name} has no value; ignored`);
+      } else normalized.push(token);
+      if (!Object.hasOwn(values, name)) values[name] = value ?? "";
+      else if (arity === 1) warnings.push(`flag --${name} repeated; the first value wins`);
+    }
+    if (help) { io.out(spec.help); io.exit(0); return null; }
+    for (const w of warnings) io.err(`${spec.tool}: WARNING — ${w}`);
+    for (const name of Object.keys(values)) if (values[name] === "") delete values[name];
+    const missing = (spec.required || []).some((group) => !group.some((name) => Object.hasOwn(values, name)));
+    if (missing || (spec.passthroughRequired && passthrough.length === 0)) { io.err(`usage: ${spec.usage}`); io.exit(2); return null; }
+    return { values, passthrough, args: normalized };
+  })(spec, args)?.args ?? args;
+  if (normalized.join("\0") !== args.join("\0")) process.argv.splice(2, args.length, ...normalized);
+}
+// </cli-contract>
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "../..");
