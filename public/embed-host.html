@@ -1,0 +1,14 @@
+<!doctype html>
+<!-- Test-only host page (dev server only: the production build copies nothing from public/ but workers/).
+     tests/adversarial/reload-storm.mjs --embed loads it to reload QED64 the way an embedding site does: a
+     minimal same-origin document whose only content is one iframe of the QED64 page given as ?src= (a
+     same-origin path, default "/"). The dev server sends it with the same COOP/COEP headers as the app,
+     so the frame is cross-origin isolated exactly as at the top level. -->
+<meta charset="utf-8">
+<title>QED64 embed host (test)</title>
+<style>html, body { margin: 0; height: 100%; } iframe { display: block; border: 0; width: 100%; height: 100%; }</style>
+<iframe id="qed64-frame" allow="clipboard-read; clipboard-write"></iframe>
+<script>
+  const src = new URLSearchParams(location.search).get("src") || "/";
+  document.getElementById("qed64-frame").src = src.startsWith("/") && !src.startsWith("//") ? src : "/";
+</script>

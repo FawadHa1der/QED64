@@ -115,6 +115,26 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   phase is still `elaborating`. Serve `dist/` (`npm run build:site`, then
   `PORT=… node scripts/serve-dist.mjs`), not the dev server: unbundled
   modules over a shaped link measure Vite, not the product.
+- **Reload storm** (`reload-storm.mjs --url <dev url> [--runs 5] [--headed]
+  [--embed] [--sample-ms 100] [--ready-each] [--console-log]`, HARDENING #53,
+  #55; a release gate, the first lane of the pyramid): a fresh browser per
+  run, boot to `ready`, five reloads 3 s apart (`waitUntil: "commit"`), then
+  `ready` again. A crash is the page `crash` event, classified by the V8 OOM
+  line in the browser's stderr (V1 semi-space copy, V2 young object promotion
+  failed; kept in `reload-storm-<tag>-<n>.browser.log`). `--headed` is
+  Chrome for Testing in a window — V2 is a headed-Chrome crash and
+  chrome-headless-shell almost never shows it. `--embed` loads the page as
+  the only iframe of the dev server's `public/embed-host.html` (same origin,
+  same COOP/COEP) and reloads the host, as an embedding site does.
+  `--sample-ms` runs `renderer-sampler.py` (per child process: RSS,
+  footprint, threads — a Worker's thread exits only when its isolate is
+  disposed — and the macOS pressure level). For an A/B, interleave arms with
+  one `--runs 1 --tag <arm>-r<n>` invocation per run into one `--run-dir`,
+  then `reload-storm-summary.py <run dir>` (crash counts, Fisher tests,
+  per-reload process facts); `reload-storm-timeline.py <report>` lines one
+  run up against its samples. V2 is rare on the stock page: gate embedded
+  AND stock, headed AND headless, with a release control arm in the same
+  window.
 
 ## Artifact discipline (pipeline/, tests/unit/artifact-discipline.test.ts)
 

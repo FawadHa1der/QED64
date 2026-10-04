@@ -1232,6 +1232,78 @@ function makeOutputCollector(requestId, fallbackFile) {
 }
 
 // ---------------------------------------------------------------------------
+// Runtime lifetime locks (HARDENING #55)
+//
+// A Worker blocked inside wasm outlives the page that terminated it: Blink
+// force-terminates a busy worker only after a 2 s grace, and tells a nested
+// (pthread) Worker to terminate only when its parent's own shutdown task
+// runs, so the pthreads of a lean.worker caught inside wasm (mid-boot) live
+// up to ~4 s past a reload. Their V8 heaps share the renderer's one
+// pointer-compression cage with the next runtime's 25 glue-parsing Workers.
+// Two Web Locks per runtime id make the dying runtime visible: the page holds
+// `qed64-wanted:<id>` exactly while it wants that runtime (client.ts), and
+// every Worker of the runtime — this one and each pthread Worker, through
+// the prelude below — holds `qed64-alive:<id>` (shared) until Blink destroys
+// its context. Before a runtime allocates its memory and its pool it waits,
+// bounded, until the runtimes that are alive but no longer wanted — the
+// previous page of this tab, or the runtime a relay restart just killed —
+// keep at most STOPPING_WORKERS_TOLERATED Workers alive. Live runtimes in
+// other tabs or frames are still wanted, so never waited for.
+// ---------------------------------------------------------------------------
+
+const ALIVE_LOCK = "qed64-alive:";
+const WANTED_LOCK = "qed64-wanted:";
+
+function holdAliveLock(id) {
+  try {
+    navigator.locks.request(ALIVE_LOCK + id, { mode: "shared" }, () => new Promise(() => {})).catch(() => {});
+  } catch {
+    /* no Web Locks here: nothing to hold, nobody can wait for us */
+  }
+}
+
+/** The pthread Worker script: hold the runtime's alive lock, then run the
+ * glue in the same global scope (so it still sees `name === "em-pthread"`). */
+function pthreadPrelude(id, glueUrl) {
+  const lock = JSON.stringify(ALIVE_LOCK + id);
+  return `"use strict";try{navigator.locks.request(${lock},{mode:"shared"},()=>new Promise(()=>{})).catch(()=>{})}catch(e){}importScripts(${JSON.stringify(glueUrl)});\n`;
+}
+
+// How many Workers of stopping runtimes may still be alive when this one
+// allocates. A `ready` runtime's busy pthreads (10–11 on a 14-core host) wait
+// out the 2 s grace after every ordinary reload, and that overlap has never
+// crashed; what crashed is more — #53's 18–20 parked threads, or all 25
+// Workers of a runtime caught mid-boot. Waiting for those last busy threads
+// too would add ~1.9 s to every reload of a ready page. A host whose ready
+// runtime keeps more threads busy waits for them.
+const STOPPING_WORKERS_TOLERATED = 12;
+
+async function waitForUnwantedRuntimes(selfId, budgetMs) {
+  const t0 = performance.now();
+  const locks = typeof navigator !== "undefined" ? navigator.locks : undefined;
+  if (!locks || !selfId) return { ids: [], waitedMs: 0, timedOut: false, workers: [0, 0] };
+  // One held (or pending) alive lock per live Worker: count them per poll.
+  const stopping = async () => {
+    const { held = [], pending = [] } = await locks.query();
+    const wanted = new Set(held.filter((l) => l.name.startsWith(WANTED_LOCK)).map((l) => l.name.slice(WANTED_LOCK.length)));
+    return [...held, ...pending]
+      .filter((l) => l.name.startsWith(ALIVE_LOCK))
+      .map((l) => l.name.slice(ALIVE_LOCK.length))
+      .filter((id) => id !== selfId && !wanted.has(id));
+  };
+  let alive = await stopping();
+  const ids = [...new Set(alive)];
+  const first = alive.length;
+  let timedOut = false;
+  while (alive.length > STOPPING_WORKERS_TOLERATED) {
+    if (performance.now() - t0 > budgetMs) { timedOut = true; break; }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    alive = await stopping();
+  }
+  return { ids, waitedMs: Math.round(performance.now() - t0), timedOut, workers: [first, alive.length] };
+}
+
+// ---------------------------------------------------------------------------
 // Boot (persistent runtime)
 // ---------------------------------------------------------------------------
 
@@ -1274,6 +1346,11 @@ async function boot(msg) {
     loaded: 0,
     total: files["lean.js"].bytes + files["lean.wasm"].bytes,
   };
+  // HARDENING #55: measured while the chunks download and verify.
+  const instanceId = msg.instance && typeof msg.instance.id === "string" ? msg.instance.id : null;
+  if (instanceId) holdAliveLock(instanceId);
+  const predecessors = waitForUnwantedRuntimes(instanceId, Number(msg.instance && msg.instance.waitMs) || 6000)
+    .catch((error) => ({ ids: [], waitedMs: 0, timedOut: false, error: String(error) }));
 
   let scriptUrl;
   let wasmUrl;
@@ -1284,6 +1361,20 @@ async function boot(msg) {
     state = "dead";
     fail(requestId, error, "RUNTIME_FETCH_FAILED", false);
     return;
+  }
+  const pthreadUrl = instanceId
+    ? URL.createObjectURL(new Blob([pthreadPrelude(instanceId, scriptUrl)], { type: "text/javascript" }))
+    : scriptUrl;
+
+  // Nothing of this runtime's memory, glue or pool exists while a stopping
+  // predecessor keeps more Workers alive than tolerated (or until the wait's
+  // budget is spent).
+  const waited = await predecessors;
+  if (waited.ids.length || waited.error) {
+    event(null, "log", {
+      stream: "stderr",
+      text: `[boot] waited ${waited.waitedMs} ms for ${waited.ids.length} stopping runtime(s) (${(waited.workers || []).join(" → ")} Workers alive)${waited.timedOut ? " — budget spent, booting anyway" : ""}${waited.error ? ` (lock query failed: ${waited.error})` : ""}`,
+    });
   }
 
   let mem;
@@ -1337,7 +1428,7 @@ async function boot(msg) {
       locateFile(p) {
         return p.endsWith(".wasm") ? wasmUrl : new URL(p, scriptUrl).href;
       },
-      mainScriptUrlOrBlob: scriptUrl,
+      mainScriptUrlOrBlob: pthreadUrl,
       // Resident mode: `lean --worker`'s main returning (a watchdog-restart
       // request, a fatal header error) is a death FACT for the port (W2) —
       // the runtime keepalive keeps every environment resident, but the
@@ -1860,6 +1951,9 @@ self.__qed64TestExports = {
   // Lean-side liveness under test (tests/unit/liveness.test.ts): the pure
   // bookkeeping with a fake clock, the mailbox kick, and the live state.
   liveness: { LIVENESS, LIVENESS_PROBE_PREFIX, createLiveness, livenessClientRequest, livenessServerFrame, livenessTick, mailboxTick, mailboxConfirm, locateRuntimeMailbox, readMailboxWord, kickMailbox, instrumentRuntimeMailbox, runtimeMailbox, state: () => liveness, step: () => livenessStep() },
+  // Runtime lifetime locks under test (tests/unit/runtime-locks.test.ts): the
+  // predecessor wait against a fake navigator.locks, and the pthread prelude.
+  lifetime: { ALIVE_LOCK, WANTED_LOCK, STOPPING_WORKERS_TOLERATED, waitForUnwantedRuntimes, pthreadPrelude },
   // Front-door host wiring under test (tests/unit/front-door.test.ts): the
   // machine's state and the merged status, read-only.
   frontDoor: {
