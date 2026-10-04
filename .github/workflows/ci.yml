@@ -22,7 +22,7 @@ jobs:
       - run: npm ci
       - run: npx tsc --noEmit
       - run: npx vitest run tests/unit
-      - run: node --check public/workers/lean.worker.js && node --check infra/worker.js
+      - run: node --check public/workers/lean.worker.js && node --check infra/worker.js && node --check infra/edge-worker.js
       - run: npm ci --prefix frontend
       - run: npm run typecheck:site
       - run: npm run build:site
