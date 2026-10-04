@@ -45,8 +45,13 @@ describe("package.json", () => {
     expect(read("LICENSE")).toMatch(/^MIT License\n/);
   });
 
-  it("has no install-time scripts and no runtime dependencies", () => {
-    for (const s of ["preinstall", "install", "postinstall", "prepare", "prepack", "postpack"]) expect(pkg.scripts?.[s], s).toBeUndefined();
+  it("gives npm no reason to prepare it as a git dependency, and has no runtime dependencies", () => {
+    // pacote (lib/git.js) runs `npm install --include=dev` in a temporary clone
+    // of a git dependency whose root package.json has workspaces or any of
+    // these scripts — QED64's devDependencies are ~300 MB.
+    for (const s of ["build", "prepare", "prepack", "preinstall", "install", "postinstall"]) expect(pkg.scripts?.[s], `scripts.${s}`).toBeUndefined();
+    expect(pkg.workspaces).toBeUndefined();
+    expect(pkg.sideEffects).toBe(false);
     expect(Object.keys(pkg.dependencies ?? {})).toEqual([]);
     expect(Object.keys(pkg.optionalDependencies ?? {})).toEqual([]);
     expect(Object.keys(pkg.peerDependencies ?? {})).toEqual([]);
@@ -129,6 +134,23 @@ describe("embedding/closure.json", () => {
     for (const m of prefetch) expect(names.has(m.match(/workers\/([^"]+)/)![1]!), m).toBe(true);
     const lean = read("src/runtime/client.ts").match(/workerUrl = "\/workers\/([^"]+)"/);
     expect(lean && names.has(lean[1]!), "LeanSession's default worker URL").toBe(true);
+  });
+});
+
+describe("the worker protocol ledger (docs/EMBEDDING.md §7.7)", () => {
+  const c = closure as unknown as { runtime: { minKernelPatch: string }; workerProtocol: { revision: string; protocol: number; requests: string[]; deprecated: unknown[] } };
+  it("the three worker scripts carry the ledger's revision", () => {
+    expect(read("public/workers/lean.worker.js")).toContain(`const WORKER_REVISION = "${c.workerProtocol.revision}";`);
+    for (const f of ["public/workers/lsp-frames.js", "public/workers/lsp-front-door.js"]) expect(read(f), f).toContain(`REVISION: "${c.workerProtocol.revision}"`);
+  });
+  it("lists exactly the requests the worker answers, and the page protocol number", () => {
+    const src = read("public/workers/lean.worker.js");
+    expect(src).toContain(`const WORKER_REQUESTS = Object.freeze(${JSON.stringify(c.workerProtocol.requests).replace(/,/g, ", ")});`);
+    expect(read("src/runtime/client.ts")).toContain(`export const PROTOCOL = ${c.workerProtocol.protocol};`);
+    expect(Array.isArray(c.workerProtocol.deprecated)).toBe(true);
+  });
+  it("declares a runtime floor that is a patch the toolchain carries", () => {
+    expect(tracked.has(`pipeline/toolchain/patches/${c.runtime.minKernelPatch}`) || [...tracked].some((f) => f.startsWith(`pipeline/toolchain/patches/${c.runtime.minKernelPatch}-`))).toBe(true);
   });
 });
 

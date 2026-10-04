@@ -199,5 +199,8 @@
     }
   }
 
-  root.Qed64LspFrames = { LspFrameDecoder };
+  // REVISION: the worker-script set's interface revision (docs/EMBEDDING.md
+  // §7.7) — lean.worker.js, lsp-frames.js and lsp-front-door.js carry the same
+  // value and lean.worker.js refuses a sibling with another (WORKER_DEP_MISMATCH).
+  root.Qed64LspFrames = { LspFrameDecoder, REVISION: "1" };
 })(globalThis);

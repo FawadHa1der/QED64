@@ -33,7 +33,7 @@ class FakeSession implements RelaySession {
   private readonly booted = new Promise<void>((resolve, reject) => { this.bootOk = resolve; this.bootFailed = reject; });
   onLsp: (msg: Msg) => void = () => {};
   onStatus: (s: WorkerStatus) => void = () => {};
-  onDied: (code: number | null, reason: string, message: string) => void = () => {};
+  onDied: (code: number | null, reason: string, message: string, cause?: unknown) => void = () => {};
   constructor(readonly opts?: RestartOptions) { FakeSession.all.push(this); }
   start() { this.started = true; return this.booted; }
   arm() {
@@ -214,8 +214,8 @@ describe("relay: deaths (§2.3 SessionDied; §3 rows 9-11)", () => {
     dead.onDied(null, "abort", "Lean runtime aborted");
     await settle();
     expect(errorsToClient()).toEqual([
-      { jsonrpc: "2.0", id: 7, error: { code: -32900, message: expect.stringContaining("died") } },
-      { jsonrpc: "2.0", id: 8, error: { code: -32603, message: expect.stringContaining("died") } },
+      { jsonrpc: "2.0", id: 7, error: { code: -32900, message: expect.stringContaining("died"), data: { qed64: { kind: "orphaned", reason: expect.stringContaining("died") } } } },
+      { jsonrpc: "2.0", id: 8, error: { code: -32603, message: expect.stringContaining("died"), data: { qed64: { kind: "orphaned", reason: expect.stringContaining("died") } } } },
     ]);
     expect(dead.disposed).toBe(true);
     expect(relay.state).toEqual({ kind: "rebooting", reason: "crash" });
@@ -262,7 +262,7 @@ describe("relay: deaths (§2.3 SessionDied; §3 rows 9-11)", () => {
     relay.fromClient(request(9, "textDocument/hover"));
     relay.fromClient({ jsonrpc: "2.0", method: "$/lean/rpc/keepAlive", params: {} });
     await settle();
-    expect(errorsToClient()).toEqual([{ jsonrpc: "2.0", id: 9, error: { code: -32603, message: expect.stringContaining("halted") } }]);
+    expect(errorsToClient()).toEqual([{ jsonrpc: "2.0", id: 9, error: { code: -32603, message: expect.stringContaining("halted"), data: { qed64: { kind: "halted", reason: "repeated crashes" } } } }]);
     expect(toClient.filter((m) => m.error === undefined).map((m) => m.method)).toEqual(["textDocument/publishDiagnostics"]); // the halted note, once
     expect(FakeSession.all).toHaveLength(3);
     // The user edits: deaths reset, a fresh session boots, the edit reaches it.
@@ -325,7 +325,7 @@ describe("relay: RestartRequested (§2.3; §3 row 8)", () => {
     relay.restart({ snapshots: ["init", "mathlib"], warmHeader: relay.lastText, packs: ["essential"] });
     await settle();
     expect(old.disposed).toBe(true);
-    expect(errorsToClient()).toEqual([{ jsonrpc: "2.0", id: 3, error: { code: -32900, message: expect.stringContaining("exact imports") } }]);
+    expect(errorsToClient()).toEqual([{ jsonrpc: "2.0", id: 3, error: { code: -32900, message: expect.stringContaining("exact imports"), data: { qed64: { kind: "restart", reason: "restarting with exact imports" } } } }]);
     expect(relay.state).toEqual({ kind: "rebooting", reason: "user" });
     expect(current().opts).toEqual({ snapshots: ["init", "mathlib"], warmHeader: "import Mathlib.Data.Real.Basic\nx", packs: ["essential"] });
     expect(relay.stats).toMatchObject({ userRestarts: 1, workerDeaths: 0, reboots: 0 });
@@ -391,17 +391,21 @@ describe("relay contract: lastDeath (gap 2 — the boot failure reason reaches t
     relay.fromClient(didOpen(1, "A"));
     expect(relay.status().lastDeath).toBeNull();
     await bootCurrent();
+    const died = current().id;
     current().onDied(137, "abort", "Lean runtime aborted: out of memory");
     await settle();
-    expect(relay.status().lastDeath).toEqual({ reason: "abort", message: "Lean runtime aborted: out of memory" });
-    expect(statuses.at(-1)?.lastDeath).toEqual({ reason: "abort", message: "Lean runtime aborted: out of memory" });
+    // seq (this relay's death count) and session identify a death across copies (structuredClone); the exit code rides along.
+    const expected = { reason: "abort", message: "Lean runtime aborted: out of memory", seq: relay.stats.workerDeaths, session: died, exitCode: 137 };
+    expect(relay.status().lastDeath).toEqual(expected);
+    expect(statuses.at(-1)?.lastDeath).toEqual(expected);
+    expect(relay.status().lastDeath).toBe(relay.status().lastDeath); // the same object until the next death
     await bootCurrent();
   });
   it("a start() rejection is reason 'bootFailed' with the rejection's message (Memory64 reservation, runtime fetch, pairing)", async () => {
     await settle();
     current().bootFailed(new Error("Memory64 reservation of 6 GiB refused"));
     await settle();
-    expect(relay.status().lastDeath).toEqual({ reason: "bootFailed", message: "Memory64 reservation of 6 GiB refused" });
+    expect(relay.status().lastDeath).toMatchObject({ reason: "bootFailed", message: "Memory64 reservation of 6 GiB refused" });
     expect(relay.state).toEqual({ kind: "rebooting", reason: "bootFailed" });
     await bootCurrent();
   });
@@ -410,14 +414,15 @@ describe("relay contract: lastDeath (gap 2 — the boot failure reason reaches t
     const cause = { kind: "network" as const, stage: "snapshot" as const, subject: "mathlib", code: "SNAPSHOT_FAILED", message: "snapshot fetch: HTTP 503" };
     current().bootFailed(Object.assign(new Error("snapshot 'mathlib' failed to load"), { cause }));
     await settle();
-    expect(relay.status().lastDeath).toEqual({ reason: "bootFailed", message: "snapshot 'mathlib' failed to load", cause });
+    expect(relay.status().lastDeath).toMatchObject({ reason: "bootFailed", message: "snapshot 'mathlib' failed to load", cause });
     await bootCurrent();
   });
   it("an Error's standard `cause` that is not a FailureCause is not one", async () => {
     await settle();
     current().bootFailed(new Error("runtime manifest: HTTP 404", { cause: new TypeError("Failed to fetch") }));
     await settle();
-    expect(relay.status().lastDeath).toEqual({ reason: "bootFailed", message: "runtime manifest: HTTP 404" });
+    expect(relay.status().lastDeath).toMatchObject({ reason: "bootFailed", message: "runtime manifest: HTTP 404" });
+    expect(relay.status().lastDeath?.cause).toBeUndefined();
     await bootCurrent();
   });
   it("an arm() the worker refuses is 'bootFailed' with the worker's own words", async () => {
@@ -425,7 +430,7 @@ describe("relay contract: lastDeath (gap 2 — the boot failure reason reaches t
     current().armFails = true;
     current().bootOk();
     await settle();
-    expect(relay.status().lastDeath).toEqual({ reason: "bootFailed", message: "Worker is 'compiling', not ready" });
+    expect(relay.status().lastDeath).toMatchObject({ reason: "bootFailed", message: "Worker is 'compiling', not ready" });
     await bootCurrent();
   });
   it("survives the halt (the page reads it beside phase 'halted') and clears only when a session reports phase 'ready'", async () => {
@@ -436,7 +441,7 @@ describe("relay contract: lastDeath (gap 2 — the boot failure reason reaches t
     await bootCurrent();
     // Serving is not yet ready: the death stands until the worker says so.
     expect(relay.state.kind).toBe("serving");
-    expect(relay.status().lastDeath).toEqual({ reason: "bootFailed", message: "boot 2" });
+    expect(relay.status().lastDeath).toMatchObject({ reason: "bootFailed", message: "boot 2" });
     const base: WorkerStatus = { phase: "elaborating", version: 2, header: null, ring: { bytesQueued: 0, refused: 0 }, pool: { unused: 3, running: 2 }, dropped: 0 };
     current().onStatus(base);
     expect(relay.status().lastDeath).not.toBeNull();
@@ -444,13 +449,35 @@ describe("relay contract: lastDeath (gap 2 — the boot failure reason reaches t
     expect(relay.status().lastDeath).toBeNull();
     expect(statuses.at(-1)).toMatchObject({ phase: "ready", lastDeath: null });
   });
+  it("a death's cause from the session's died path rides along (a boot-time unrecoverable worker error: its start() rejection arrives stale)", async () => {
+    await settle();
+    const cause = { kind: "missing" as const, httpStatus: 404, code: "RUNTIME_FETCH_FAILED", stage: "runtime" as const, message: "lean.wasm chunk 3: HTTP 404" };
+    const booting = current();
+    booting.onDied(null, "RUNTIME_FETCH_FAILED", "lean.wasm chunk 3: HTTP 404", cause);
+    booting.bootFailed(new Error("Worker unrecoverable: lean.wasm chunk 3: HTTP 404")); // stale: not a second death
+    await settle();
+    expect(relay.status().lastDeath).toMatchObject({ reason: "RUNTIME_FETCH_FAILED", cause, seq: 1 });
+    expect(relay.stats.workerDeaths).toBe(1);
+    await bootCurrent();
+  });
+  it("rearm(): a halted relay reboots without an edit; anything else is refused", async () => {
+    relay.fromClient(didOpen(1, "A"));
+    await bootCurrent();
+    expect(relay.rearm()).toBe(false);
+    for (let i = 0; i < 3; i += 1) { current().onDied(null, "abort", "x"); await settle(); clock += 1000; await settle(); }
+    expect(relay.state).toEqual({ kind: "halted" });
+    expect(relay.rearm()).toBe(true);
+    expect(relay.state).toEqual({ kind: "rebooting", reason: "user" });
+    expect(relay.deaths).toEqual([]);
+    await bootCurrent();
+  });
   it("a stale death sets nothing", async () => {
     await bootCurrent();
     const old = current();
     old.onDied(null, "abort", "first");
     await settle();
     (relay as unknown as { onDied(s: RelaySession, r: string, m: string): void }).onDied.call(relay, old, "abort", "stale");
-    expect(relay.status().lastDeath).toEqual({ reason: "abort", message: "first" });
+    expect(relay.status().lastDeath).toMatchObject({ reason: "abort", message: "first" });
     await bootCurrent();
   });
 });

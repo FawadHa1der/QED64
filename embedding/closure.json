@@ -7,6 +7,7 @@
     "frontend/src/embed/params.ts",
     "frontend/src/embed/failure.ts",
     "frontend/src/qed64-boot.ts",
+    "frontend/src/embed/raw-cache.ts",
     "frontend/src/embed/urls.ts",
     "frontend/src/resident-session.ts",
     "frontend/src/lsp-relay.ts",
@@ -54,5 +55,26 @@
     "tests/adversarial/kernel-probes/module-file.lean",
     "tests/adversarial/kernel-probes/private-default.lean",
     "tests/adversarial/kernel-probes/rpc-attr.lean"
-  ]
+  ],
+  "runtime": {
+    "minKernelPatch": "0032",
+    "note": "the oldest kernel patch level whose runtime these workers drive correctly (the resident header resolver and $/qed64/headerStatus, patch 0032), not what QED64 serves; compare against your own KERNEL-PIN"
+  },
+  "workerProtocol": {
+    "revision": "1",
+    "protocol": 1,
+    "requests": [
+      "capabilities",
+      "boot",
+      "compile",
+      "loadSnapshot",
+      "telemetry",
+      "lsp-arm",
+      "write-files",
+      "dispose",
+      "lsp"
+    ],
+    "deprecated": [],
+    "note": "docs/EMBEDDING.md §7.7: the three worker scripts carry `revision` and refuse a sibling of another one (WORKER_DEP_MISMATCH); `requests` is what capabilities().requests reports; a removal is listed under deprecated with the release it went unused in, and leaves the worker one release later"
+  }
 }

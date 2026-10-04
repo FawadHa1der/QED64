@@ -16,24 +16,31 @@ export const EMBED_API_REVISION = "1.0.0-pre.2";
 // runtime
 export { LeanSession, PROTOCOL, probeMemory64, memoryCandidates } from "../../../src/runtime/client";
 export type {
-  BootConfig, Capabilities, CompileResult, Diagnostic, HeaderStatus, JsonRpcMessage, LibraryPack, MemoryTelemetry,
+  BootConfig, Capabilities, CompileResult, DeathFacts, Diagnostic, HeaderStatus, JsonRpcMessage, LibraryPack, MemoryTelemetry,
   ProgressEvent, ReadyInfo, RuntimeManifest, WorkerError, WorkerPhase, WorkerStatus,
 } from "../../../src/runtime/client";
 
 // snapshots
-export { fetchSnapshotIndex, loadSnapshotIndex, snapshotCacheKey } from "../../../src/runtime/snapshots";
-export type { SnapshotEntry, SnapshotIndex } from "../../../src/runtime/snapshots";
+export {
+  fetchSnapshotIndex, loadSnapshotIndex, snapshotCacheKey,
+  BASE_SNAPSHOTS, LEGACY_UMBRELLA_ROOTS, chooseSnapshots, coversModule, entryLabel, entryRoots, initialBytesForEntries, widenTarget,
+} from "../../../src/runtime/snapshots";
+export type { IndexOptions, SnapshotEntry, SnapshotIndex } from "../../../src/runtime/snapshots";
 
 // profiles (library packs)
 export { fetchProfileIndex, installProfile, storageEstimate } from "../../../src/install/profiles";
 export type { InstallProgress, InstalledProfile, ProfileIndex, ProfileIndexEntry, ProfileManifest } from "../../../src/install/profiles";
 
 // boot
-export { installArtifacts, ensureProfile, loadSnapshotByName, prefetchRaw, PREFETCH_SILENCE_MS } from "../qed64-boot";
-export type { InstallOptions, PrefetchRawOptions, PrefetchRawResult, ProgressInfo, Qed64Artifacts, Qed64Session, StatusSink } from "../qed64-boot";
+export { installArtifacts, ensureProfile, loadSnapshotByName, overridesOf, resolveRuntimeManifest, fetchSnapshotIndexFor } from "../qed64-boot";
+export type { InstallOptions, ProgressInfo, Qed64Artifacts, Qed64Session, StatusSink } from "../qed64-boot";
+
+// the raw snapshot region cache (docs/EMBEDDING.md §7.4)
+export { PREFETCH_SILENCE_MS, SNAPSHOT_CACHE_DIR, isCacheKeyOf, isRawCached, prefetchRaw, rawRegionName, removeRawRegion } from "./raw-cache";
+export type { PrefetchRawOptions, PrefetchRawResult } from "./raw-cache";
 
 // structured progress and failure causes (docs/EMBEDDING.md §7.1, §7.2)
-export { failureCauseOf, failureKindOf } from "./failure";
+export { deathCause, failureCauseOf, failureKindOf, httpStatusOf, WORKER_SCRIPT_LOAD_FAILED } from "./failure";
 export type { BootStage, BootStep, FailureCause, FailureKind } from "./failure";
 
 // offline URL list (docs/EMBEDDING.md §7.5)
@@ -45,7 +52,7 @@ export type { BootOverrides } from "./params";
 
 // session
 export {
-  DEFAULT_MAXIMUM_BYTES, EDITOR_POLICY, ResidentSession, UMBRELLA_ROOTS,
+  DEFAULT_MAXIMUM_BYTES, EDITOR_POLICY, ResidentSession, UMBRELLA_ROOTS, makeEditorPolicy,
   importLinesOf, importedModulesOf, initialBytesForHeader, initialBytesForSnapshots, isUmbrellaModule, needsMathlib, snapshotsForHeader,
 } from "../resident-session";
 export type { ResidentHost, ResidentPolicy, SessionFile } from "../resident-session";

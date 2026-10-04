@@ -254,12 +254,12 @@ describe("events", () => {
     t.api.on("reboot", (r) => seen.push(`reboot ${r.fromSession}→${r.toSession} ${r.reason}`));
     t.page.relayStatus(status({ version: 1 }));
     t.page.relayStatus(status({ version: 1 }));
-    const death = { reason: "bootFailed", message: "snapshot 'mathlib' failed to load", cause: { kind: "network" as const, message: "HTTP 503" } };
+    const death = { reason: "bootFailed", message: "snapshot 'mathlib' failed to load", seq: 1, session: "s1", cause: { kind: "network" as const, message: "HTTP 503" } };
     t.relay.session = { ...t.relay.session, id: "s2" };
     t.page.relayStatus(status({ phase: "booting", relay: "rebooting", rebootReason: "bootFailed", session: "s2", version: null, lastDeath: death }));
     t.page.relayStatus(status({ phase: "booting", relay: "rebooting", rebootReason: "bootFailed", session: "s2", version: null, lastDeath: death }));
     t.page.relayStatus(status({ phase: "headerRefused", session: "s2", version: 1, lastDeath: death }));
-    t.page.relayStatus(status({ phase: "halted", relay: "halted", session: "s2", version: 1, lastDeath: { reason: "abort", message: "OOM" } }));
+    t.page.relayStatus(status({ phase: "halted", relay: "halted", session: "s2", version: 1, lastDeath: { reason: "abort", message: "OOM", seq: 2, session: "s2", exitCode: 134 } }));
     expect(seen).toEqual([
       "ready s1@1",
       "reboot s1→s2 bootFailed",

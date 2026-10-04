@@ -28,7 +28,8 @@ export interface Capabilities {
 }
 export interface BuildInfo { buildId: string; leanVersion: string; sourceRevision: string | null; shell: string | null }
 export type DeathKind = "crash" | "exit" | "abort" | "wedged" | "heartbeat" | "bootFailed" | "other";
-export interface DeathInfo { kind: DeathKind; reason: string; message: string; cause: FailureCause | null }
+/** `seq` + `session` identify a death (the relay's death count; stable across copies); `cause` null = no evidence (docs/EMBEDDING.md §7.2). */
+export interface DeathInfo { kind: DeathKind; reason: string; message: string; cause: FailureCause | null; seq: number; session: string; exitCode: number | null }
 export interface BootInfo { stage: BootStage; label: string; done: boolean; failed: boolean; message: string | null; overlay: boolean }
 /** The worker's liveness machine (lean.worker.js LIVENESS; HARDENING #52) as an
  * embedder needs it: is the Lean side stalled right now, and how long since
@@ -66,7 +67,7 @@ export interface Events {
   document: { uri: string; version: number; length: number; text: string };
   diagnostics: { uri: string; version: number | null; diagnostics: LspDiagnostic[]; origin: "lean" | "qed64" };
   fileProgress: { uri: string; version: number | null; processing: Array<{ range: unknown; kind?: number }> };
-  death: { session: string; kind: DeathKind; reason: string; message: string; cause: FailureCause | null; willReboot: boolean; halted: boolean };
+  death: { session: string; kind: DeathKind; reason: string; message: string; cause: FailureCause | null; seq: number; exitCode: number | null; willReboot: boolean; halted: boolean };
   reboot: { reason: string | null; fromSession: string; toSession: string };
   liveness: { session: string; kind: "answered" | "stall" | "resumed" | "rescue" };
   offer: OfferInfo | null;
@@ -102,6 +103,8 @@ export interface RelayLike {
   readonly session: { id: string; snapshots?: readonly string[]; initialBytes?: number };
   restart(opts: RestartOptions): void;
   reusableOpts(): RestartOptions | undefined;
+  /** Re-arm a halted relay without an edit (false unless halted). */
+  rearm?(): boolean;
 }
 /** The slice of Monaco's editor the API drives. */
 export interface EditorLike {
@@ -137,7 +140,7 @@ export const FILE_PROGRESS_MS = 100;
 
 export function deathInfo(d: RelayStatus["lastDeath"]): DeathInfo | null {
   if (!d) return null;
-  return { kind: (DEATH_KINDS.has(d.reason) ? d.reason : "other") as DeathKind, reason: d.reason, message: d.message, cause: d.cause ?? null };
+  return { kind: (DEATH_KINDS.has(d.reason) ? d.reason : "other") as DeathKind, reason: d.reason, message: d.message, cause: d.cause ?? null, seq: d.seq, session: d.session, exitCode: d.exitCode ?? null };
 }
 
 /** The relay's own frames (the halted note, orphaned-request errors) say so;
@@ -351,6 +354,8 @@ export function createPageApi(
     },
     restart(opts: { snapshots?: string[]; initialBytes?: number } = {}): RestartResult {
       const fromSession = binding ? binding.relay.session.id : null;
+      // Halted (the crash-loop breaker): re-arm on the default session, as an edit would.
+      if (binding?.relay.state.kind === "halted" && opts.snapshots === undefined && opts.initialBytes === undefined) return { accepted: binding.relay.rearm?.() === true, fromSession };
       if (!binding || binding.relay.state.kind !== "serving") return { accepted: false, fromSession };
       const unknown = (opts.snapshots ?? []).filter((n) => !binding!.snapshotNames.includes(n));
       if (unknown.length > 0) throw new TypeError(`restart: unknown snapshot(s) ${unknown.join(", ")} (served: ${binding.snapshotNames.join(", ")})`);
@@ -438,7 +443,7 @@ export function createPageApi(
       if (prev && prev.session !== s.session) emit("reboot", { reason: s.rebootReason, fromSession: prev.session, toSession: s.session });
       if (s.lastDeath && s.lastDeath !== lastDeath) {
         const d = deathInfo(s.lastDeath)!;
-        emit("death", { session: prev?.session ?? s.session, kind: d.kind, reason: d.reason, message: d.message, cause: d.cause, willReboot: s.relay === "rebooting", halted: s.phase === "halted" });
+        emit("death", { session: d.session, kind: d.kind, reason: d.reason, message: d.message, cause: d.cause, seq: d.seq, exitCode: d.exitCode, willReboot: s.relay === "rebooting", halted: s.phase === "halted" });
       }
       lastDeath = s.lastDeath;
       trackLiveness(s);

@@ -49,9 +49,23 @@ export interface SnapshotIndex {
 /** A module-name root: dotted identifier components, no wildcard. */
 const ROOT = /^[A-Za-z_][\w']*(?:\.[A-Za-z_][\w']*)*$/;
 
+export interface IndexOptions {
+  /** Accept an index, or entry URLs, on another origin. Off by default: a
+   * region is committed to this site's storage under the key the index names
+   * and loaded on every later visit (docs/EMBEDDING.md §4, HARDENING #57). */
+  allowCrossOrigin?: boolean;
+  /** The page's origin (default `location.origin`; no check when neither is known). */
+  origin?: string;
+}
+
 /** The index, or a thrown Error naming what is wrong with it (an HTTP status,
- * a body that is not JSON, a schema or entry that does not validate). */
-export async function loadSnapshotIndex(url = "/snapshots/index.json"): Promise<SnapshotIndex> {
+ * a body that is not JSON, a schema or entry that does not validate, an index
+ * or entry URL on another origin). */
+export async function loadSnapshotIndex(url = "/snapshots/index.json", opts: IndexOptions = {}): Promise<SnapshotIndex> {
+  const origin = opts.origin ?? (globalThis as { location?: { origin?: string } }).location?.origin;
+  const indexUrl = origin ? new URL(url, origin) : null;
+  const foreign = (u: URL | null) => !opts.allowCrossOrigin && !!origin && (!u || u.origin !== new URL(origin).origin);
+  if (foreign(indexUrl)) throw Object.assign(new Error(`${url}: not on this site`), { code: "SNAPSHOT_URL_REFUSED", indexFault: "refused" as const });
   const response = await fetch(url, { cache: "no-cache" });
   if (!response.ok) throw Object.assign(new Error(`${url}: HTTP ${response.status}`), { indexFault: "network" as const });
   let index: SnapshotIndex;
@@ -71,14 +85,19 @@ export async function loadSnapshotIndex(url = "/snapshots/index.json"): Promise<
     ) {
       throw Object.assign(new Error(`${url}: malformed entry ${JSON.stringify(entry?.name ?? null)}`), { indexFault: "corrupt" as const });
     }
+    let entryUrl: URL | null = null;
+    try { entryUrl = indexUrl ? new URL(entry.url, indexUrl) : null; } catch { /* not a URL */ }
+    if (foreign(entryUrl)) {
+      throw Object.assign(new Error(`${url}: entry ${JSON.stringify(entry.name)} points off this site (${entryUrl?.origin ?? entry.url})`), { code: "SNAPSHOT_URL_REFUSED", indexFault: "refused" as const });
+    }
   }
   return index;
 }
 
-/** The index, or null when it is missing or malformed. */
-export async function fetchSnapshotIndex(url = "/snapshots/index.json"): Promise<SnapshotIndex | null> {
+/** The index, or null when it is missing, malformed or off this site. */
+export async function fetchSnapshotIndex(url = "/snapshots/index.json", opts: IndexOptions = {}): Promise<SnapshotIndex | null> {
   try {
-    return await loadSnapshotIndex(url);
+    return await loadSnapshotIndex(url, opts);
   } catch {
     return null;
   }

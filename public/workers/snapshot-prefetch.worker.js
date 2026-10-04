@@ -18,6 +18,16 @@ self.onmessage = async (e) => {
     report({ status: "error", error: "missing url/cacheKey" });
     return;
   }
+  // Same origin only (docs/EMBEDDING.md §4; HARDENING #57): what lands here is
+  // committed under a key the index names, and every later visit loads it
+  // into Lean — a region from another origin would persist in this site's
+  // storage under a genuine key.
+  let target = null;
+  try { target = new URL(url, self.location.href); } catch { /* not a URL */ }
+  if (!target || target.origin !== self.location.origin) {
+    report({ status: "error", code: "SNAPSHOT_URL_REFUSED", error: `SNAPSHOT_URL_REFUSED: ${target ? target.origin : String(url).slice(0, 80)} is not this site` });
+    return;
+  }
   // Raw mode: produce the INFLATED region cache entry (`<cacheKey>.raw`) the
   // Lean worker's fast path sync-reads straight into its heap. Doing the
   // download AND the gunzip here — in a worker that terminates when done —

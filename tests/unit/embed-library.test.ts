@@ -5,7 +5,7 @@
 // prefetch as a function, and the offline URL list. Over a fake Worker, a
 // spied LeanSession and an OPFS stub — no wasm.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { failureCauseOf, failureKindOf, stageOfWorkerPhase } from "../../frontend/src/embed/failure";
+import { deathCause, failureCauseOf, failureKindOf, stageOfWorkerPhase } from "../../frontend/src/embed/failure";
 import { runtimeUrls } from "../../frontend/src/embed/urls";
 import { prefetchRaw, type ProgressInfo, type Qed64Artifacts, type StatusSink } from "../../frontend/src/qed64-boot";
 import { ResidentSession, type ResidentHost } from "../../frontend/src/resident-session";
@@ -20,7 +20,11 @@ describe("failureKindOf: the worker's real messages", () => {
     ["SNAPSHOT_FAILED", "snapshot fetch: HTTP 503", "network"],
     [undefined, "Failed to fetch", "network"],
     [undefined, "NetworkError when attempting to fetch resource.", "network"],
-    ["RUNTIME_FETCH_FAILED", "lean.wasm chunk 3: HTTP 404", "network"],
+    ["RUNTIME_FETCH_FAILED", "lean.wasm chunk 3: HTTP 404", "missing"],
+    ["RUNTIME_FETCH_FAILED", "lean.wasm chunk 3: HTTP 410", "missing"],
+    ["RUNTIME_FETCH_FAILED", "lean.wasm chunk 3: HTTP 429", "network"],
+    [undefined, "runtime manifest: Unexpected token '<', \"<!doctype \"... is not valid JSON", "missing"],
+    ["SNAPSHOT_NOT_IN_INDEX", "snapshot 'x' is not in the snapshot index", "missing"],
     ["RUNTIME_FETCH_FAILED", "lean.wasm chunk 3 failed SHA-256 verification.", "corrupt"],
     ["RUNTIME_FETCH_FAILED", "lean.wasm chunk 3: 1048576 bytes, expected 4194304.", "corrupt"],
     [undefined, "incorrect header check", "corrupt"],
@@ -34,8 +38,21 @@ describe("failureKindOf: the worker's real messages", () => {
     const own = { kind: "corrupt" as const, stage: "snapshot" as const, subject: "init", message: "refused" };
     expect(failureCauseOf(Object.assign(new Error("x"), { cause: own }), { stage: "files" })).toEqual({ ...own, message: "refused" });
     expect(failureCauseOf(Object.assign(new Error("snapshot fetch: HTTP 404"), { code: "SNAPSHOT_FAILED" }), { stage: "snapshot", subject: "mathlib" }))
-      .toEqual({ kind: "network", stage: "snapshot", subject: "mathlib", code: "SNAPSHOT_FAILED", message: "snapshot fetch: HTTP 404" });
+      .toEqual({ kind: "missing", httpStatus: 404, stage: "snapshot", subject: "mathlib", code: "SNAPSHOT_FAILED", message: "snapshot fetch: HTTP 404" });
+    expect(failureCauseOf(Object.assign(new Error("snapshot fetch: HTTP 503"), { code: "SNAPSHOT_FAILED" }))).toMatchObject({ kind: "network", httpStatus: 503 });
     expect(failureCauseOf("plain string").kind).toBe("other");
+  });
+
+  it("deathCause: null only for a bare error event; a script that never ran is WORKER_SCRIPT_LOAD_FAILED; codes go through the table; the rest is the checker's own", () => {
+    expect(deathCause("crash", "", { bare: true, beforeHello: false })).toBeNull();
+    expect(deathCause("crash", "", { bare: true, beforeHello: true })).toMatchObject({ kind: "other", code: "WORKER_SCRIPT_LOAD_FAILED" });
+    expect(deathCause("WORKER_DEP_MISSING", "importScripts failed", { errorCode: "WORKER_DEP_MISSING" })).toMatchObject({ kind: "other", code: "WORKER_SCRIPT_LOAD_FAILED" });
+    expect(deathCause("RUNTIME_FETCH_FAILED", "lean.wasm chunk 3: HTTP 404", { errorCode: "RUNTIME_FETCH_FAILED" }, { stage: "runtime" }))
+      .toEqual({ kind: "missing", httpStatus: 404, stage: "runtime", code: "RUNTIME_FETCH_FAILED", message: "lean.wasm chunk 3: HTTP 404" });
+    expect(deathCause("RUNTIME_FETCH_FAILED", "lean.wasm chunk 3 failed SHA-256 verification.", { errorCode: "RUNTIME_FETCH_FAILED" })).toMatchObject({ kind: "corrupt" });
+    expect(deathCause("abort", "Aborted(Cannot enlarge memory)")).toEqual({ kind: "oom", code: "abort", message: "Aborted(Cannot enlarge memory)" });
+    expect(deathCause("wedged", "no frame for 16 s")).toEqual({ kind: "other", code: "wedged", message: "no frame for 16 s" });
+    expect(deathCause("crash", "Uncaught RuntimeError: memory access out of bounds", { beforeHello: false })).toMatchObject({ kind: "other", code: "crash" });
   });
 
   it("maps every worker progress phase to a stage", () => {
@@ -122,7 +139,7 @@ describe("prefetchRaw", () => {
     opfs(null);
     const r = prefetchRaw(entry);
     (await spawned()).emit({ status: "error", error: "snapshot fetch: HTTP 404" });
-    await expect(r).resolves.toEqual({ status: "error", error: { kind: "network", stage: "snapshot", subject: "mathlib", message: "snapshot fetch: HTTP 404" } });
+    await expect(r).resolves.toEqual({ status: "error", error: { kind: "missing", httpStatus: 404, stage: "snapshot", subject: "mathlib", message: "snapshot fetch: HTTP 404" } });
   });
   it("silent: no message for silenceMs terminates it", async () => {
     opfs(null);
@@ -222,17 +239,32 @@ describe("ResidentSession.start(): stages, files, beforeArm, causes", () => {
     loadSnapshot.mockImplementation(async () => { throw Object.assign(new Error("snapshot fetch: HTTP 503"), { code: "SNAPSHOT_FAILED" }); });
     const err = await s.start().then(() => null, (e: Error & { cause?: unknown }) => e);
     expect(err?.message).toBe("snapshot 'init' failed to load");
-    expect(err?.cause).toEqual({ kind: "network", stage: "snapshot", subject: "init", code: "SNAPSHOT_FAILED", message: "snapshot fetch: HTTP 503" });
+    expect(err?.cause).toEqual({ kind: "network", httpStatus: 503, stage: "snapshot", subject: "init", code: "SNAPSHOT_FAILED", message: "snapshot fetch: HTTP 503" });
     expect(calls).toContainEqual(expect.objectContaining({ kind: "progress", info: expect.objectContaining({ stage: "snapshot", subject: "init", error: expect.objectContaining({ kind: "network" }) }) }));
   });
 
   it("a region the loader refuses is corrupt; an unpaired one is unpaired", async () => {
     const a = session();
     a.loadSnapshot.mockImplementation(async () => ({ success: false, elapsedMs: 1 }));
-    await expect(a.s.start()).rejects.toMatchObject({ message: "snapshot 'init' failed to load", cause: { kind: "corrupt", stage: "snapshot", subject: "init" } });
+    await expect(a.s.start()).rejects.toMatchObject({ message: "snapshot 'init' failed to load", cause: { kind: "corrupt", stage: "snapshot", subject: "init", code: "SNAPSHOT_LOAD_RESULT" } });
     const b = session();
     b.loadSnapshot.mockImplementation(async () => { throw Object.assign(new Error("snapshot 'init.snap' was baked for runtime wasm64-aaaaaaaaaaaaaaaa; this worker booted wasm64-3ab1c6a9da03bc29"), { code: "SNAPSHOT_UNPAIRED" }); });
     await expect(b.s.start()).rejects.toMatchObject({ cause: { kind: "unpaired", code: "SNAPSHOT_UNPAIRED" } });
+  });
+
+  it("a death while booting carries the boot stage; after start() none", async () => {
+    const { s } = session();
+    const got: unknown[] = [];
+    s.onDied = (_c, reason, _m, cause) => { got.push([reason, cause]); };
+    s.lean.onDied(null, "RUNTIME_FETCH_FAILED", "lean.wasm chunk 1: HTTP 404", { errorCode: "RUNTIME_FETCH_FAILED" });
+    await s.start();
+    s.lean.onDied(null, "abort", "boom");
+    s.lean.onDied(null, "crash", "", { bare: true, beforeHello: false });
+    expect(got).toEqual([
+      ["RUNTIME_FETCH_FAILED", { kind: "missing", httpStatus: 404, stage: "runtime", code: "RUNTIME_FETCH_FAILED", message: "lean.wasm chunk 1: HTTP 404" }],
+      ["abort", { kind: "other", code: "abort", message: "boom" }],
+      ["crash", null],
+    ]);
   });
 
   it("a runtime boot failure keeps its message and gains a runtime-stage cause", async () => {

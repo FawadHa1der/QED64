@@ -40,6 +40,11 @@ export interface Capabilities {
   sharedArrayBuffer: boolean;
   atomics: boolean;
   crossOriginIsolated: boolean;
+  sharedMemory64?: boolean;
+  /** The worker-script set's revision (embedding/closure.json workerProtocol); absent before it existed. */
+  protocolRevision?: string;
+  /** Every request type this worker answers: feature-detect with `requests?.includes(type)`. */
+  requests?: string[];
   ok: boolean;
 }
 
@@ -85,6 +90,15 @@ export interface BootConfig {
   memory: { initialBytes: number; maximumCandidates: number[]; maximumBytes?: number };
   leanPath: string;
   packs: LibraryPack[];
+}
+
+/** What the session knows about a death beyond (code, reason, message):
+ * whether the worker script ever said hello, whether the error event was bare,
+ * and the worker's error code for an unrecoverable reply. */
+export interface DeathFacts {
+  beforeHello?: boolean;
+  bare?: boolean;
+  errorCode?: string;
 }
 
 export interface WorkerError {
@@ -196,6 +210,8 @@ export class LeanSession {
    * `exclusive()` rejects queued turns instead of posting to a terminated
    * worker and hanging forever. The typed death fact itself is `onDied`. */
   private dead = false;
+  /** The worker's `boot` hello arrived: its script loaded. */
+  private helloSeen = false;
   onProgress: (event: ProgressEvent) => void = () => {};
   onLog: (stream: string, text: string) => void = () => {};
   /** A server frame from the resident front door (rebased to client versions). */
@@ -204,7 +220,7 @@ export class LeanSession {
   /** The one death fact per session (K-v), fired at most once: worker
    * `error`, an unrecoverable error reply, the worker's `died` event, or
    * heartbeat loss. Never fired by `dispose()`. */
-  onDied: (code: number | null, reason: string, message: string) => void = () => {};
+  onDied: (code: number | null, reason: string, message: string, facts?: DeathFacts) => void = () => {};
 
   constructor(workerUrl = "/workers/lean.worker.js") {
     this.worker = new Worker(workerUrl);
@@ -217,7 +233,9 @@ export class LeanSession {
       const error = Object.assign(new Error(`Worker crashed: ${e.message}`), { code: "WORKER_CRASHED" });
       for (const p of this.pending.values()) p.reject(error);
       this.pending.clear();
-      this.died(null, "crash", e.message);
+      // Before the worker's hello the script itself did not load (a 404, an
+      // offline fetch, a syntax error); a bare event (no message) is no evidence.
+      this.died(null, "crash", e.message ?? "", { beforeHello: !this.helloSeen, bare: !e.message });
     };
     this.worker.addEventListener("message", this.onWorkerMessage);
     this.worker.addEventListener("error", this.onWorkerError);
@@ -230,7 +248,7 @@ export class LeanSession {
     }
   }
 
-  private died(code: number | null, reason: string, message: string) {
+  private died(code: number | null, reason: string, message: string, facts?: DeathFacts) {
     if (this.diedReported || this.detached) return;
     this.diedReported = true;
     // Every death path (worker `died` event and heartbeat loss included, not
@@ -238,7 +256,7 @@ export class LeanSession {
     // turns: nothing posts to a worker that no longer answers.
     this.dead = true;
     clearTimeout(this.heartbeatTimer);
-    this.onDied(code, reason, message);
+    this.onDied(code, reason, message, facts);
   }
 
   /** Each beat re-arms the loss window; on loss, one probe decides. */
@@ -266,6 +284,7 @@ export class LeanSession {
     if (!msg || msg.protocol !== PROTOCOL) return;
     switch (msg.type) {
       case "boot":
+        this.helloSeen = true;
         return; // worker script loaded
       case "event":
         if (msg.kind === "progress") this.onProgress(msg as ProgressEvent & { kind: string });
@@ -309,7 +328,7 @@ export class LeanSession {
           // The runtime is gone: every other in-flight request dies with it.
           this.dead = true;
           this.rejectAll(Object.assign(new Error(`Worker unrecoverable: ${error.message}`), { code: error.code }));
-          this.died(null, error.code, error.message);
+          this.died(null, error.code, error.message, { errorCode: error.code });
         }
         return;
       }

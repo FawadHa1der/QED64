@@ -15,19 +15,17 @@ export interface RelaySession {
   lsp(msg: JsonRpc, replay?: boolean): void;
   onLsp: (msg: JsonRpc) => void;
   onStatus: (status: WorkerStatus) => void;
-  onDied: (code: number | null, reason: string, message: string) => void;
+  onDied: (code: number | null, reason: string, message: string, cause?: unknown) => void; // cause: the adapter's FailureCause, carried unread
   dispose(): void; // detaches first, never emits a death (§2.2 L2)
-  /** Kill the worker NOW (Unload only): the adapter forwards to LeanSession.terminate(), the synchronous kill —
-   * dispose() alone hard-terminates 250 ms later behind a timer a closing document never runs (reload storms
-   * stacked dead multi-GiB heaps; the pump's disposeHard). Optional ONLY while main.ts's inline ResidentSession
-   * predates it: integration makes this `terminate(): void` so the compiler holds resident-session.ts to it. */
+  /** Kill the worker NOW (Unload only): LeanSession.terminate(), the synchronous kill — dispose() alone hard-terminates
+   * 250 ms later behind a timer a closing document never runs (reload storms stacked dead multi-GiB heaps). */
   terminate(): void;
 }
 export interface RestartOptions { snapshots?: string[]; warmHeader?: string; packs?: string[]; initialBytes?: number } // boot inputs for a replacement session (S4 "Load exact imports")
 type Reason = "boot" | "crash" | "heartbeat" | "wedged" | "user" | "bootFailed";
 export type RelayState = { kind: "serving" } | { kind: "rebooting"; reason: Reason } | { kind: "halted" };
-/** The last death as the page shows it (gap 2): LeanSession's (reason, message), or "bootFailed" + the boot rejection's message and its attached FailureCause (EMBEDDING §7.2). */
-export type Death = { reason: string; message: string; cause?: import("./embed/failure").FailureCause };
+/** The last death (gap 2; EMBEDDING §7.2): LeanSession's (reason, message, exit code) or "bootFailed" + the boot rejection's message; the FailureCause the session attached; `seq` (this relay's death count) and `session` identify it. */
+export type Death = { reason: string; message: string; seq: number; session: string; exitCode?: number; cause?: import("./embed/failure").FailureCause };
 export type RelayStatus = Omit<WorkerStatus, "phase"> & { phase: WorkerStatus["phase"] | "halted"; relay: RelayState["kind"]; rebootReason: string | null; session: string; lastDeath: Death | null };
 const EMPTY: WorkerStatus = { phase: "booting", version: null, header: null, ring: { bytesQueued: 0, refused: 0 }, pool: { unused: -1, running: -1 }, dropped: 0 };
 const BREAKER_DEATHS = 3;
@@ -109,10 +107,9 @@ export class LspRelay {
     }
     const isRequest = msg.id !== undefined && msg.method !== undefined;
     if (this.state.kind === "halted") {
-      if (isRequest) return this.toClient({ jsonrpc: "2.0", id: msg.id, error: { code: -32603, message: "QED64: checker halted after repeated crashes; edit the file to restart it" } });
+      if (isRequest) return this.toClient({ jsonrpc: "2.0", id: msg.id, error: { code: -32603, message: "QED64: checker halted after repeated crashes; edit the file to restart it", data: { qed64: { kind: "halted", reason: "repeated crashes" } } } });
       if (msg.method !== "textDocument/didChange") return;
-      this.deaths = []; // the user changed something: recovery gets a fresh chance
-      this.reboot("user", true);
+      this.rearm(); // the user changed something: recovery gets a fresh chance
     }
     if (isRequest) this.pending.set(msg.id!, msg.method!);
     this.session.lsp(msg);
@@ -124,7 +121,7 @@ export class LspRelay {
     this.stats.userRestarts += 1;
     this.restartOpts = opts;
     this.restartHeader = headerOf(this.lastText);
-    this.failInFlight("restarting with exact imports");
+    this.failInFlight("restarting with exact imports", "restart");
     this.session.dispose();
     this.reboot("user", true, opts, false);
   }
@@ -136,7 +133,7 @@ export class LspRelay {
     this.lastStatus = null;
     s.onLsp = (m) => { if (s === this.session) { if (m.id !== undefined && m.method === undefined) this.pending.delete(m.id); this.toClient(m); } };
     s.onStatus = (st) => { if (s === this.session) { this.lastStatus = st; if (st.phase === "ready") this.lastDeath = null; this.sink.status(this.status()); } };
-    s.onDied = (_code, reason, message) => this.onDied(s, reason, message);
+    s.onDied = (code, reason, message, cause) => this.onDied(s, reason, message, cause, code);
     return s;
   }
 
@@ -162,11 +159,11 @@ export class LspRelay {
   }
 
   /** SessionDied / BootFailed (§2.3): once per session, current only; ≥ 3 in 120 s halts. */
-  private onDied(s: RelaySession, reason: string, message: string, cause?: unknown): void {
+  private onDied(s: RelaySession, reason: string, message: string, cause?: unknown, code?: number | null): void {
     if (s !== this.session || this.state.kind === "halted") { this.stats.staleDeaths += 1; return; }
     this.stats.workerDeaths += 1;
-    this.lastDeath = typeof (cause as Death["cause"])?.kind === "string" ? { reason, message, cause: cause as Death["cause"] } : { reason, message }; // passed through unread
-    this.failInFlight(`the Lean checker died (${reason})`);
+    this.lastDeath = { reason, message, seq: this.stats.workerDeaths, session: s.id, ...(typeof code === "number" ? { exitCode: code } : {}), ...(typeof (cause as Death["cause"])?.kind === "string" ? { cause: cause as Death["cause"] } : {}) };
+    this.failInFlight(`the Lean checker died (${reason})`, "orphaned");
     s.dispose();
     const t = this.now();
     this.deaths = [...this.deaths.filter((d) => t - d < BREAKER_WINDOW_MS), t];
@@ -200,6 +197,9 @@ export class LspRelay {
     void this.boot(this.session, settle);
   }
 
+  /** A halted relay re-armed without an edit (what a didChange does while halted); false unless halted. */
+  rearm(): boolean { if (this.state.kind !== "halted") return false; this.deaths = []; this.reboot("user", true); return true; }
+
   /** The remembered restart options, iff the import lines still read as they did at that restart; otherwise forgotten. */
   reusableOpts(): RestartOptions | undefined {
     if (this.restartOpts && headerOf(this.lastText) !== this.restartHeader) this.restartOpts = null;
@@ -207,9 +207,9 @@ export class LspRelay {
   }
 
   /** §3 row 11: answer every orphaned request in the same turn — rpc calls get RpcNeedsReconnect (-32900) so the InfoView reconnects; the rest -32603. */
-  private failInFlight(why: string): void {
+  private failInFlight(why: string, kind: "orphaned" | "restart"): void {
     for (const [id, method] of this.pending) {
-      this.toClient({ jsonrpc: "2.0", id, error: { code: method.startsWith("$/lean/rpc/") ? -32900 : -32603, message: `QED64: ${why}` } });
+      this.toClient({ jsonrpc: "2.0", id, error: { code: method.startsWith("$/lean/rpc/") ? -32900 : -32603, message: `QED64: ${why}`, data: { qed64: { kind, reason: why } } } });
       this.stats.failedInFlight += 1;
     }
     this.pending.clear();

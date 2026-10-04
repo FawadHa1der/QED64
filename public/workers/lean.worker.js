@@ -63,6 +63,17 @@ let sink = null;
 // never loads it; an unconditional import of a file such a closure lacks
 // would throw at script load, never post {type:"boot"}, and hang every
 // session (review fix 3).
+// The worker-script set's interface revision (docs/EMBEDDING.md §7.7): the
+// three scripts are served by stable names and cached independently, so a
+// deploy between this script's load and a sibling's can pair two versions; a
+// sibling of another revision is refused (WORKER_DEP_MISMATCH), never run.
+const WORKER_REVISION = "1";
+function checkSibling(name, mod) {
+  if (mod && mod.REVISION === WORKER_REVISION) return;
+  const error = new Error(`${name} is revision ${mod ? JSON.stringify(mod.REVISION) : "missing"}, lean.worker.js needs ${WORKER_REVISION} (a deploy mixed versions; reload)`);
+  fail(undefined, error, "WORKER_DEP_MISMATCH", false);
+  throw error;
+}
 if (typeof importScripts === "function") {
   try {
     importScripts("lsp-frames.js");
@@ -70,6 +81,7 @@ if (typeof importScripts === "function") {
     fail(undefined, new Error(`lean.worker.js needs lsp-frames.js served beside it: ${error && error.message ? error.message : error}`), "WORKER_DEP_MISSING", false);
     throw error;
   }
+  checkSibling("lsp-frames.js", globalThis.Qed64LspFrames);
 }
 let lspMode = false;
 let lspFrames = null; // Qed64LspFrames.LspFrameDecoder, created by installStdoutTap
@@ -651,7 +663,10 @@ function emitStatus(delta) {
 function frontDoorApply(frame) {
   // Lazy load (see the import note at the top): synchronous and legal at any
   // time in a classic worker; the vitest vm harness injects the file itself.
-  if (typeof Qed64LspFrontDoor === "undefined" && typeof importScripts === "function") importScripts("lsp-front-door.js");
+  if (typeof Qed64LspFrontDoor === "undefined" && typeof importScripts === "function") {
+    importScripts("lsp-front-door.js");
+    checkSibling("lsp-front-door.js", globalThis.Qed64LspFrontDoor);
+  }
   const FD = Qed64LspFrontDoor;
   if (frontDoor === null) {
     frontDoor = FD.initialState();
@@ -883,6 +898,9 @@ function mkLeanString(text) {
 // Capability probe
 // ---------------------------------------------------------------------------
 
+/** Every request type the dispatcher below answers ("lsp" is fire-and-forget). */
+const WORKER_REQUESTS = Object.freeze(["capabilities", "boot", "compile", "loadSnapshot", "telemetry", "lsp-arm", "write-files", "dispose", "lsp"]);
+
 function capabilities() {
   const memory64 =
     typeof WebAssembly === "object" &&
@@ -906,6 +924,10 @@ function capabilities() {
     atomics: typeof Atomics === "object",
     crossOriginIsolated: self.crossOriginIsolated === true,
     sharedMemory64,
+    // The worker protocol (docs/EMBEDDING.md §7.7): a page feature-detects a
+    // request type by `requests.includes(type)` before using it.
+    protocolRevision: WORKER_REVISION,
+    requests: WORKER_REQUESTS,
     ok:
       memory64 &&
       typeof SharedArrayBuffer === "function" &&
@@ -1704,6 +1726,14 @@ async function loadSnapshot(msg) {
   }
   const { url, name, expectedBytes, cacheKey, runtime } = msg.input;
   const safeName = String(name || "boot.snap").replace(/[^A-Za-z0-9._-]/g, "_");
+  // Same origin only (HARDENING #57): a region is committed to this site's
+  // cache under the key the index names and loaded on every later visit.
+  let target = null;
+  try { target = new URL(url, self.location.href); } catch { /* not a URL */ }
+  if (!target || target.origin !== self.location.origin) {
+    fail(msg.requestId, new Error(`snapshot '${safeName}': ${target ? target.origin : "an invalid URL"} is not this site`), "SNAPSHOT_URL_REFUSED", true);
+    return;
+  }
   // Pairing (phase 1): a snapshot is a compacted region of the EXACT runtime
   // that baked it; loading one against another build traps "memory access
   // out of bounds" deep in the region loader. When the index entry names its
@@ -1913,7 +1943,10 @@ self.addEventListener("message", (e) => {
       self.close();
       break;
     default:
-      fail(msg.requestId, new Error(`Unknown request '${msg.type}'.`), "INVALID_MESSAGE", false);
+      // Recoverable: a page newer than this worker asks for something it lacks;
+      // the request fails, the session lives (a death here halted the relay on
+      // every reboot). Pages detect requests with `capabilities().requests`.
+      fail(msg.requestId, new Error(`Unknown request '${msg.type}'.`), "UNSUPPORTED_REQUEST", true);
   }
 });
 

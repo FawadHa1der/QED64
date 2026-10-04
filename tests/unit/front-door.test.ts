@@ -432,11 +432,17 @@ describe("front door: worker host wiring (lean.worker.js)", () => {
     deliver({ protocol: 1, requestId: "c1", type: "capabilities" });
     expect(posted.find((m) => m.requestId === "c1")).toMatchObject({ type: "result" });
     expect(imported).toEqual(["lsp-frames.js"]);
-    // The deleted pump-transport requests are unknown to the dispatcher (INVALID_MESSAGE), never silently accepted.
+    // The deleted pump-transport requests are unknown to the dispatcher, never silently accepted — and refused
+    // RECOVERABLY (docs/EMBEDDING.md §7.7: a page newer or older than its worker must not die on every reboot).
     for (const type of ["lsp-init", "lsp-send", "lsp-threads", "lsp-resident-init", "lsp-resident-send"]) {
       deliver({ protocol: 1, requestId: `gone-${type}`, type, input: {} });
-      expect(posted.find((m) => m.requestId === `gone-${type}`), type).toMatchObject({ type: "error", error: { code: "INVALID_MESSAGE" } });
+      expect(posted.find((m) => m.requestId === `gone-${type}`), type).toMatchObject({ type: "error", error: { code: "UNSUPPORTED_REQUEST", recoverable: true } });
     }
+    // capabilities() names every request the dispatcher answers, and the scripts' shared revision.
+    const caps = posted.find((m) => m.requestId === "c1") as unknown as { result: { requests: string[]; protocolRevision: string } };
+    const cases = [...readFileSync(path.resolve(__dirname, "../../public/workers/lean.worker.js"), "utf8").matchAll(/^    case "([A-Za-z-]+)":/gm)].map((m) => m[1]);
+    expect(new Set(caps.result.requests)).toEqual(new Set([...cases, "lsp"]));
+    expect(caps.result.protocolRevision).toBe("1");
     expect(imported).toEqual(["lsp-frames.js"]);
   });
   it("dispatches `lsp` without a requestId while a snapshot loads: answers initialize as an `lsp` event, queues the rest, reports status once per change, and does NOT open the loop", () => {

@@ -11,9 +11,20 @@
 export type BootStage = "manifests" | "profile" | "runtime" | "memory" | "snapshot" | "modules" | "warm" | "files" | "done" | "failed";
 export type BootStep = "check" | "download" | "inflate" | "commit" | "verify" | "read" | "load" | "init" | "write";
 
-export type FailureKind = "network" | "corrupt" | "unpaired" | "oom" | "storage" | "other";
+/** network: the fetch was rejected, the stream was cut, or the server
+ * answered 5xx/429 (retrying can help); missing: the server says it does not
+ * have it — 404/410, an HTML page where a binary or script belongs, a
+ * snapshot the index does not list (a deploy problem: retrying cannot help);
+ * corrupt: it arrived but is wrong (length, SHA-256, gzip, magic, a region the
+ * loader refuses); unpaired: a snapshot of another runtime build; oom: an
+ * allocation or memory reservation failed; storage: OPFS/quota; other: the
+ * checker's own failure. A death with NO cause is "no evidence" (a bare worker
+ * error event) — see docs/EMBEDDING.md §7.2. */
+export type FailureKind = "network" | "missing" | "corrupt" | "unpaired" | "oom" | "storage" | "other";
 export interface FailureCause {
   kind: FailureKind;
+  /** The HTTP status that decided it, when there was one. */
+  httpStatus?: number;
   /** The boot stage that failed; absent for a death while serving. */
   stage?: BootStage;
   /** Profile id, snapshot name or runtime file. */
@@ -30,11 +41,20 @@ export interface FailureCause {
  * or length check is corrupt, though its code says RUNTIME_FETCH_FAILED. */
 export function failureKindOf(code: string | undefined, message: string): FailureKind {
   if (code === "SNAPSHOT_UNPAIRED" || /was baked for runtime/.test(message)) return "unpaired";
+  if (code === "SNAPSHOT_NOT_IN_INDEX") return "missing";
+  const status = httpStatusOf(message);
+  if (status === 404 || status === 410 || /Unexpected token '?<|<!doctype|text\/html/i.test(message)) return "missing";
   if (code === "MEMORY_FAILED" || /could not allocate|out of memory|Cannot enlarge memory|Array buffer allocation failed|RangeError: .*memory/i.test(message)) return "oom";
   if (/SHA-256 verification|sha256|digest mismatch|checksum|integrity|bad magic|magic|truncated|short (?:read|region)|unexpected end|incorrect header check|invalid (?:block|stored|distance|code|literal)|gzip|inflate|corrupt|expected \d+ bytes|bytes, expected/i.test(message)) return "corrupt";
   if (code === "RUNTIME_FETCH_FAILED" || /\bHTTP \d{3}\b|Failed to fetch|NetworkError|network error|fetch failed|net::ERR_|ERR_NETWORK|ERR_CONNECTION|connection (?:reset|closed|refused)|socket hang up|terminated|The operation was aborted|body stream/i.test(message)) return "network";
   if (/QuotaExceeded|quota|NoModificationAllowed|NotReadableError|getDirectory|createWritable|OPFS|storage/i.test(message)) return "storage";
   return "other";
+}
+
+/** The HTTP status a worker or page message names ("HTTP 404"), if any. */
+export function httpStatusOf(message: string): number | undefined {
+  const m = /\bHTTP (\d{3})\b/.exec(message);
+  return m ? Number(m[1]) : undefined;
 }
 
 /** A FailureCause from a thrown value: its own `cause` when a page step
@@ -50,7 +70,28 @@ export function failureCauseOf(err: unknown, at: { stage?: BootStage; subject?: 
   }
   const message = String(e?.message ?? err);
   const code = typeof e?.code === "string" ? e.code : undefined;
-  return { kind: failureKindOf(code, message), ...at, ...(code ? { code } : {}), message };
+  const httpStatus = httpStatusOf(message);
+  return { kind: failureKindOf(code, message), ...at, ...(code ? { code } : {}), ...(httpStatus ? { httpStatus } : {}), message };
+}
+
+/** The script-load code: the worker (or a script it imports) never ran. It
+ * looks the same offline as on a 404, so it means "probe the link", not "our
+ * own crash" — the one `other` an embedder should not read as the checker's. */
+export const WORKER_SCRIPT_LOAD_FAILED = "WORKER_SCRIPT_LOAD_FAILED";
+
+/** The cause of a session death (LeanSession.onDied's facts, docs/EMBEDDING.md
+ * §7.2): null only for a bare worker error event (no evidence); a worker that
+ * never said hello, or could not import a script, is WORKER_SCRIPT_LOAD_FAILED;
+ * an error code is classified by the table; every other death is the
+ * checker's own (`other`, or `oom` when its message says so). */
+export function deathCause(reason: string, message: string, facts: { beforeHello?: boolean; bare?: boolean; errorCode?: string } = {}, at: { stage?: BootStage; subject?: string } = {}): FailureCause | null {
+  if (reason === "crash" && facts.bare && !facts.beforeHello) return null;
+  if ((reason === "crash" && facts.beforeHello) || facts.errorCode === "WORKER_DEP_MISSING") {
+    return { kind: "other", ...at, code: WORKER_SCRIPT_LOAD_FAILED, message: message || "the worker script did not load" };
+  }
+  if (facts.errorCode) return failureCauseOf(Object.assign(new Error(message), { code: facts.errorCode }), at);
+  const kind = failureKindOf(undefined, message) === "oom" ? "oom" : "other";
+  return { kind, ...at, code: reason, message };
 }
 
 /** The worker's own progress phases (lean.worker.js `progress(…)`) as stages. */

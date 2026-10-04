@@ -17,7 +17,7 @@ import { ensureProfile, loadSnapshotByName, type Qed64Artifacts, type Qed64Sessi
 import type { RelaySession, RestartOptions } from "./lsp-relay";
 import { LeanSession, memoryCandidates, type JsonRpcMessage, type LibraryPack, type WorkerStatus } from "../../src/runtime/client";
 import { installProfile } from "../../src/install/profiles";
-import { failureCauseOf, stageOfWorkerPhase, stepOfInstallPhase } from "./embed/failure";
+import { deathCause, failureCauseOf, stageOfWorkerPhase, stepOfInstallPhase, type BootStage } from "./embed/failure";
 import { chooseSnapshots, initialBytesForEntries, type SnapshotIndex } from "../../src/runtime/snapshots";
 
 const MiB = 1048576;
@@ -166,8 +166,17 @@ export class ResidentSession implements RelaySession {
   set onLsp(f: (msg: JsonRpcMessage) => void) { this.lean.onLsp = f; }
   get onStatus() { return this.lean.onStatus; }
   set onStatus(f: (s: WorkerStatus) => void) { this.lean.onStatus = f; }
-  get onDied() { return this.lean.onDied; }
-  set onDied(f: (code: number | null, reason: string, message: string) => void) { this.lean.onDied = f; }
+  /** The death fact with its cause (docs/EMBEDDING.md §7.2): classified here
+   * from what LeanSession knows, with the boot stage when the session died
+   * booting; null only for a bare worker error event (no evidence). */
+  private diedHook: (code: number | null, reason: string, message: string, cause?: unknown) => void = () => {};
+  get onDied() { return this.diedHook; }
+  set onDied(f: (code: number | null, reason: string, message: string, cause?: unknown) => void) {
+    this.diedHook = f;
+    this.lean.onDied = (code, reason, message, facts) => f(code, reason, message, deathCause(reason, message, facts, this.bootStage ? { stage: this.bootStage } : {}));
+  }
+  /** The boot step in progress, null once start() is done. */
+  private bootStage: BootStage | null = "runtime";
   lsp(msg: JsonRpcMessage, replay?: boolean) { this.lean.lsp(msg, replay); }
   arm() { return this.lean.arm(); }
   dispose() { this.lean.dispose(); }
@@ -234,6 +243,7 @@ export class ResidentSession implements RelaySession {
       throw Object.assign(err instanceof Error ? err : new Error(String(err)), { cause: failureCauseOf(err, { stage: "runtime" }) });
     }
     const qs: Qed64Session = { session: this.lean, loadedSnapshots: new Set() };
+    this.bootStage = "snapshot";
     for (const name of this.snapshots) {
       this.loading = name;
       const ok = await loadSnapshotByName(a, qs, name, ui);
@@ -244,7 +254,9 @@ export class ResidentSession implements RelaySession {
         });
       }
     }
+    this.bootStage = "warm";
     if (this.opts.warmHeader) await this.warm(this.opts.warmHeader);
+    this.bootStage = "files";
     const files = typeof this.files === "function" ? await this.files() : this.files;
     if (files && files.length > 0) {
       ui.progress(`preparing ${files.length} session file${files.length === 1 ? "" : "s"}`, { stage: "files", step: "write" });
@@ -255,6 +267,7 @@ export class ResidentSession implements RelaySession {
       }
     }
     if (this.beforeArm) await this.beforeArm(this.lean);
+    this.bootStage = null;
     // Deliberately no arm() here: the relay arms after its replay (§2.3 BootOk).
   }
 

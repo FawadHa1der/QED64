@@ -1,41 +1,43 @@
-# Embedding QED64 — contract v1 (DRAFT for review)
+# Embedding QED64 — contract v1
 
-Status: **draft, 2026-10-04**, sent to the two downstream consumers (the
-widgets showcase, lean4game) for review. Implemented on
-`feature/embedding-api`: §2.1's capability flag (47f50e8, HARDENING #56),
-§4's parameter validation (HARDENING #57), §6's package and §7's library API
-(`EMBED_API_REVISION = "1.0.0-pre.2"` until the review settles), and the
-page API with embed mode (§2 – §3; `frontend/src/page-api.ts`, browser lane
-`tests/adversarial/page-api.mjs`).
+Status: **v1 release candidate, 2026-10-04** (branch `feature/embedding-api`).
+The draft (daf9b63) was reviewed by both downstream consumers:
+- the widgets showcase: `qed64-showcase/docs/QED64-EMBEDDING-V1-REVIEW.md`;
+- lean4game: 24 items, adversarially verified.
+
+Their requests are folded in below. §12 lists what changed since the draft.
 
 QED64 is consumed in two ways, and this document is the contract for both:
 
-| Tier | Who | What they use | Where it is specified |
-|------|-----|---------------|-----------------------|
-| **Page API** | an embedder of the QED64 *page* (the widgets showcase frames QED64's own `dist/` on its origin) | `globalThis.qed64.api`, boot parameters, embed mode | §2 – §5 |
-| **Library** | an embedder of QED64's *modules* (lean4game builds its own page on the runtime) | the npm package's `qed64/embed`, `qed64/workers/*`, `qed64/pipeline/*` entries | §6 – §8 |
+| Tier | Who | What they use | Where |
+|------|-----|---------------|-------|
+| **Page API** | an embedder of the QED64 *page*. The widgets showcase frames QED64's own `dist/` on its origin. | `globalThis.qed64.api`, boot parameters, embed mode, the dist layout | §2 – §5 |
+| **Library** | an embedder of QED64's *modules*. lean4game builds its own page on the runtime. | the npm package's `qed64/embed`, `qed64/workers/*`, `qed64/pipeline/*` | §6 – §8 |
 
 Everything not named here is internal and may change in any commit (§9).
 
 ---
 
-## 1. Principles
+## 1. Principles and versioning
 
 1. **Additive within a major.** v1 only ever gains optional fields, new events,
    new methods and new capability flags. A breaking change is `version: 2`,
    shipped alongside v1 for at least one release.
-2. **Feature-detect with `capabilities`, never by comparing versions or
-   commits.**
+2. **Feature-detect with `capabilities`** (page tier) and with
+   `capabilities().requests` (worker tier). Never compare versions or
+   commits. `api.version === 1` has existed since 47f50e8 with only
+   `capabilities.editorRpc`, so a version check would assume methods that page
+   does not have.
 3. **Plain data across the boundary.** Every event payload and method result
-   is JSON (structured-clone-safe); a later postMessage transport (§5) carries
-   the identical objects.
-4. **The embedder never needs the DOM.** Every fact an embedder scrapes today
-   (`#boot`, the pill text, label strings) has a structured equivalent.
-   Labels stay prose for humans and are not API.
-5. **Same-origin first.** v1 is in-page (same-origin) only. Cross-origin
-   embedding needs a deployment allowlist and is v1.1 (§5), because Lean
-   source is script execution on the QED64 origin (widget modules run in the
-   same-origin InfoView iframe).
+   is JSON (structured-clone-safe).
+4. **The embedder never needs the DOM.** Labels are prose for humans and are
+   not API. Every fact an embedder scraped before has a structured equivalent.
+5. **Same-origin only in v1.** Lean source is script execution on the QED64
+   origin: widget modules run in the same-origin InfoView iframe.
+6. **A release** is one `main` commit that the user tagged and deployed. Its
+   page and its worker scripts are served together.
+   - Until tags exist, consumers pin pushed commit SHAs (full 40 hex).
+   - The two-release rule in §7.7 counts releases, not commits.
 
 ---
 
@@ -44,63 +46,67 @@ Everything not named here is internal and may change in any commit (§9).
 ### 2.1 Discovery
 
 `globalThis.qed64.api` is defined **synchronously at module start**, before
-the relay, the editor or any network request, and is frozen
-(`Object.isFrozen(api) && Object.isFrozen(api.capabilities)`). Its methods
-work at any time; the ones that need the editor or the relay wait for them
-(`whenReady`) or say so (`status().boot`).
+the relay, the editor or any network request.
+- It is frozen: `Object.isFrozen(api) && Object.isFrozen(api.capabilities)`.
+- Its methods work at any time. Those that need the editor or the relay wait
+  for them (`whenReady`) or say so (`status()`).
 
-At the same moment the page dispatches `new CustomEvent("qed64:api", {detail:
-api})` on its own `window`, and — when framed by a same-origin parent —
-`new CustomEvent("qed64:frame-api", {detail: {api, frame: window}})` on
-`window.parent`, so a parent can call `setDocument` before boot (§3.2)
-without polling.
+At the same moment, **once per page document and before the boot document is
+read** (§3.1), the page dispatches:
+- `new CustomEvent("qed64:api", {detail: api})` on its own `window`;
+- when framed by a same-origin parent,
+  `new CustomEvent("qed64:frame-api", {detail: {api, frame}})` on
+  `window.parent`, where `frame === iframe.contentWindow`.
+
+"The relay exists" is `whenReady()` or `status().relay`. Neither
+`!!window.qed64` nor `typeof qed64.api.status === "function"` tells you
+anything, because both are true at module start. An embedder's own InfoView
+message rewriting must stand down on `capabilities.editorRpc` (and on
+`capabilities.widgetSourceCache` for widget-source coalescing).
 
 ```ts
 interface Qed64ApiV1 {
-  readonly version: 1;                       // the major
-  readonly revision: string;                 // "1.0.0": semver of the API; minor = additive
+  readonly version: 1;
+  readonly revision: string;                 // "1.0.0": semver of this API
   readonly capabilities: Readonly<Capabilities>;
   build(): BuildInfo | null;                 // null until the runtime manifest loaded
 
   status(): ApiStatus;                       // synchronous, never throws, valid before boot
   whenReady(): Promise<ApiStatus>;           // editor mounted + relay bound (not "elaborated")
-  settled(opts?: { version?: number; timeoutMs?: number }): Promise<ApiStatus>;
+  settled(opts?: { version?: number; afterSession?: string; timeoutMs?: number }): Promise<ApiStatus>;
 
   on<E extends EventName>(type: E, fn: (payload: Events[E]) => void): () => void; // returns unsubscribe
   off<E extends EventName>(type: E, fn: (payload: Events[E]) => void): void;
 
   getDocument(): { uri: string; version: number | null; text: string } | null;
-  setDocument(text: string, opts?: { cursor?: Cursor; focus?: boolean; undoable?: boolean }):
-    Promise<{ version: number | null; unchanged: boolean }>;
+  setDocument(text: string, opts?: { cursor?: Cursor; focus?: boolean; undoable?: boolean }): Promise<{ version: number | null; unchanged: boolean }>;
+  getCursor(): Cursor | null;
   setCursor(cursor: Cursor, opts?: { focus?: boolean; reveal?: boolean }): boolean;
-  restart(opts?: { snapshots?: string[] }): boolean;
+  focus(): boolean;                          // focus the editor without moving the cursor
+  restart(opts?: { snapshots?: string[]; initialBytes?: number }): { accepted: boolean; fromSession: string | null };
+  acceptOffer(kind?: "exactImports"): boolean;
 }
 
 type Cursor = { lineNumber: number; column: number }; // 1-based; columns in UTF-16 code units (Monaco)
 
 interface Capabilities {
-  editorRpc: boolean;      // InfoView editor RPC is native (abortSignal, applyEdit, insertText, showDocument) — HARDENING #56
-  documents: boolean;      // getDocument / setDocument / setCursor
-  events: boolean;         // on / off and the events of §2.4
-  restart: boolean;        // restart()
-  embedMode: boolean;      // ?embed=1 (§3)
-  snapshotRoots: boolean;  // overlay snapshot indexes may declare `roots` and the page widens by itself (modularity item 4)
-  postMessage: boolean;    // false in v1.0 (§5)
+  editorRpc: boolean;          // the InfoView's editor RPC is native (abortSignal, applyEdit, insertText, showDocument) — HARDENING #56
+  widgetSourceCache: boolean;  // Lean.Widget.getWidgetSource coalesced by hash per session (§2.5)
+  documents: boolean;          // getDocument / setDocument / getCursor / setCursor / focus
+  events: boolean;             // on / off and §2.4
+  restart: boolean;            // restart()
+  embedMode: boolean;          // ?embed=1 (§3)
+  snapshotRoots: boolean;      // overlay indexes may declare roots; the page boots and widens by itself (§8)
+  liveness: boolean;           // status().liveness and the liveness event
+  memory: boolean;             // ?memory=, restart({initialBytes}), status().memory
+  offers: boolean;             // status().offer, the offer event, acceptOffer()
+  postMessage: boolean;        // false in v1 (§5)
 }
 
-interface BuildInfo {
-  buildId: string;                // runtime build, e.g. "wasm64-3ab1c6a9da03bc29"
-  leanVersion: string;            // e.g. "4.34.0"
-  sourceRevision: string | null;  // kernel fork commit
-  shell: string | null;           // the page bundle's identity (release manifest, modularity item 6); null until then
-}
+interface BuildInfo { buildId: string; leanVersion: string; sourceRevision: string | null; shell: string | null }
 ```
 
-### 2.2 `ApiStatus` — the stable projection
-
-`status()` is the embedder's oracle. It is a **projection** of the relay's
-internal status (which the test harness keeps reading directly, §9) with the
-volatile counters left out:
+### 2.2 `ApiStatus`, the stable projection
 
 ```ts
 interface ApiStatus {
@@ -112,420 +118,607 @@ interface ApiStatus {
   header: { mode: "exact" | "covered" | "refused"; missing: string[]; moduleCount: number } | null;
   collision: { names: string[]; version: number | null } | null;
   lastDeath: DeathInfo | null;
-  boot: { stage: BootStage; label: string; done: boolean; failed: boolean; message: string | null };
+  boot: { stage: BootStage; label: string; done: boolean; failed: boolean; message: string | null;
+          overlay: boolean };         // overlay: the page's own boot card is visible
   snapshots: string[] | null;         // the environments the current session loaded, e.g. ["init", "mathlib"]
+  liveness: LivenessInfo | null;      // null until the session's loop is open
+  memory: { initialBytes: number | null; currentBytes: number | null; maximumBytes: number | null } | null;
+  offer: { kind: "exactImports"; label: string } | null;
 }
 
 interface DeathInfo {
   kind: "crash" | "exit" | "abort" | "wedged" | "heartbeat" | "bootFailed" | "other";
-  reason: string;                     // the raw relay reason, kept verbatim
+  reason: string;                     // the raw relay reason, verbatim
   message: string;
-  cause: FailureCause | null;         // §7.2
+  cause: FailureCause | null;         // §7.2; null = no evidence
+  seq: number;                        // this page's death count: identity that survives copies
+  session: string;                    // the session that died
+  exitCode: number | null;
 }
 
-type BootStage = "manifests" | "profile" | "runtime" | "memory" | "snapshot" | "modules" | "warm" | "files" | "done" | "failed";
+interface LivenessInfo {              // the worker's liveness machine (HARDENING #52), projected
+  stalled: boolean;                   // a probe is unanswered past wedgeAfterMs; death follows graceMs later
+  lastAnswerAgoMs: number | null;     // since the Lean side last answered a liveness probe
+  lastFrameAgoMs: number | null;      // since the Lean side last sent any frame (QED64's own frames excluded)
+  probeAfterMs: number; wedgeAfterMs: number; graceMs: number; // the worker's timings: 6000, 12000, 4000
+}
 ```
 
-`ready` here means "this document version is fully elaborated" (`phase ===
-"ready"` or `"headerRefused"`), exactly as the relay reports it.
+- **`ready`** means "this document version is fully elaborated": phase
+  `ready` or `headerRefused` while the relay is `serving`.
+- **Superseded statuses are never reported.** A status of a session the page
+  has already replaced inside the same turn is dropped. The page's self-widen
+  of §8 restarts the session from inside the status sink, so a
+  `headerRefused` that is about to be widened never reaches `status`,
+  `ready` or `settled`.
 
 ### 2.3 Methods
 
 * **`setDocument(text, opts)`**
-  * Before the page has read its boot document (§3.2) it **becomes** the boot
-    document — the text is a boot input: an Init-only document boots the
-    light environment, a Mathlib one boots the umbrella. Resolves with
-    `{version: null}` once boot reads it.
-  * After that it replaces the editor's text (`undoable: true`, the default,
-    pushes one undo step; `false` uses `setValue`) and resolves once the relay
-    has forwarded that exact text, with its document version.
-  * Identical text resolves at once with `unchanged: true` and sends nothing
-    (an identical-text "reset" used to wedge an embedder waiting for a
-    version that never came). A halted relay re-arms on any *change*.
-* **`settled({version, timeoutMs})`** resolves with the status once the phase
-  is `ready`/`headerRefused` at a document version `>= version` (default: the
-  current document's version). It keeps waiting through reboots. It rejects
-  with `Error & {code: "HALTED"}` when the crash-loop breaker trips and
-  `{code: "TIMEOUT"}` after `timeoutMs` (default: none).
-* **`restart({snapshots})`** replaces the session (the "Load exact imports" /
-  widen machinery); default = the current session's snapshot list. Returns
-  `false` unless the relay is serving (a boot in flight, or halted — an edit
-  re-arms a halted relay); throws `TypeError` for a name the served snapshot
-  index lacks.
-* **`setCursor`**, **`getDocument`**: as typed. `getDocument()` is `null`
-  before the editor mounts.
+  * Before the page has read its boot document (§3.1), the text **becomes**
+    the boot document. It outranks `#code=`. It is a boot input: it decides
+    which environment boots. The promise resolves once the page is up.
+  * After that, it replaces the editor's text. `undoable: true` (the default)
+    pushes one undo step; `false` uses `setValue`. It resolves once the relay
+    has forwarded that exact text, with the text's document version.
+  * Identical text resolves at once with `unchanged: true` and sends nothing.
+* **`settled({version, afterSession, timeoutMs})`**
+  * Resolves with the status once the phase is `ready` or `headerRefused` at a
+    document version `>= version`. The default `version` is the current
+    document's version; before the first didOpen, it is the boot document's
+    first verdict.
+  * With `afterSession`, it resolves only on a different (replacement)
+    session.
+  * It keeps waiting through reboots.
+  * It rejects with `Error & {code: "HALTED"}` when the crash-loop breaker
+    trips, and with `{code: "TIMEOUT"}` after `timeoutMs`.
+* **`restart({snapshots, initialBytes})`**
+  * With no `snapshots`, it reuses **the current session's boot inputs** under
+    the relay's own rule: the remembered "Load exact imports" options
+    (warmHeader, packs) while the import lines still match, otherwise the
+    snapshot list the session loaded.
+  * `initialBytes` is normalized: rounded to 256 MiB and clamped to
+    [1, 6] GiB. It sticks for that session and its crash reboots until the
+    next explicit restart.
+  * On a halted relay, `restart()` with no arguments re-arms it on the
+    default session, as an edit would.
+  * It returns `{accepted: false}` while a boot is in flight.
+  * It throws `TypeError` for a snapshot name the served index lacks.
+* **`setCursor`** clamps the line to `[1, lineCount]` and the column to
+  `[1, lineLength + 1]`. It returns false only before the editor mounts.
+* **`acceptOffer()`** runs the page's current offer (today: "Load exact
+  imports") as its button would. It returns false when nothing is offered.
 
 ### 2.4 Events
 
-Listeners are called synchronously, each in its own `try/catch` (a throwing
-listener never reaches the relay). Payloads are fresh plain objects.
+Listeners are called synchronously, each in its own `try/catch`. Payloads are
+fresh plain objects.
 
 | Event | Payload | When |
 |-------|---------|------|
-| `status` | `ApiStatus` | every relay status change |
-| `boot` | `{stage, phase, subject, label, loaded, total, unit, done, failed, message}` | every boot progress step, first boot and every reboot (§7.1 defines the fields) |
-| `ready` | `{session, version, refused: boolean, header}` | once per (session, version) when the phase settles at `ready`/`headerRefused` |
-| `document` | `{uri, version, length, text}` | every didOpen/didChange the relay forwards — the text the checker will see. Embed mode's persistence hook. |
-| `diagnostics` | `{uri, version, diagnostics: LspDiagnostic[], origin: "lean" \| "qed64"}` | every `publishDiagnostics` the editor receives; `qed64` = the page's own notes (halted note, collision note), source `"QED64"` |
-| `fileProgress` | `{uri, version, processing: {range, kind?}[]}` | `$/lean/fileProgress`, coalesced to one per animation frame |
-| `death` | `{session, kind, reason, message, cause, willReboot, halted}` | a session died (once per session) |
+| `status` | `ApiStatus` | every relay status change (superseded ones excepted) |
+| `boot` | `{stage, phase, subject, label, loaded, total, unit, done, failed, message, error}` | every boot step: the first boot, every reboot, widen and restart, the snapshot prefetch and the exact-import pack download included (§7.1) |
+| `ready` | `{session, version, refused, header}` | once per (session, version), at a final verdict |
+| `document` | `{uri, version, length, text}` | every didOpen/didChange the relay forwards: the text the checker will see. This is the persistence hook in embed mode. |
+| `diagnostics` | `{uri, version, diagnostics, origin: "lean" \| "qed64"}` | every `publishDiagnostics` the editor receives. `qed64` = the page's own notes. |
+| `fileProgress` | `{uri, version, processing}` | `$/lean/fileProgress`, coalesced to at most one per 100 ms on a timer (rAF does not run in hidden frames), and flushed before the next `status` |
+| `death` | `{session, kind, reason, message, cause, seq, exitCode, willReboot, halted}` | a session died (once per session) |
 | `reboot` | `{reason, fromSession, toSession}` | the relay replaced the session |
+| `liveness` | `{session, kind: "answered" \| "stall" \| "resumed" \| "rescue"}` | each step of the worker's liveness counters |
+| `offer` | `{kind, label} \| null` | the page's offer appears or is withdrawn |
+
+### 2.5 Widget sources
+
+Every rendered user widget fetches its JS module by hash
+(`Lean.Widget.getWidgetSource`). The page coalesces these requests:
+- The first request for a hash goes to the worker; later ones wait for its
+  reply.
+- A result is cached for the session that produced it. A new session starts
+  empty.
+- An error reply releases every waiter with it. The one exception is a
+  cancellation of the leader alone, which promotes the next waiter.
+- A waiter's own `$/cancelRequest` is answered `RequestCancelled` locally.
+
+Since HARDENING #56 the InfoView's RPC crosses the iframe as
+`startClientRequest`/`awaitClientRequest`/`cancelClientRequest`, not
+`sendClientRequest`. An embedder bridge that matched the old names silently
+stops matching.
 
 ---
 
 ## 3. Embed mode: `?embed=1`
 
-For a page that is someone else's surface. In embed mode the page:
+In embed mode the page:
+1. **does not read or write `localStorage["qed64.buffer"]`** (the embedder
+   owns persistence through the `document` event and `setDocument`);
+2. hides the examples menu.
 
-1. **does not read or write `localStorage["qed64.buffer"]`** — the embedder
-   owns persistence (`document` event + `setDocument`);
-2. hides the examples menu (layout knobs beyond that are v1.1, §5);
-3. resolves its **boot document** (§3.2) without the stored buffer or the
-   default example.
+### 3.1 The boot document (both modes)
 
-### 3.1 Initial document
+The first match in this list wins:
+1. a `setDocument` call made before the boot document is read;
+2. `#code=<encodeURIComponent(text)>` in the fragment (lean4web's spelling,
+   at most 2 MiB). It is **read once**: the page drops the fragment with
+   `history.replaceState`, keeping the query, so a reload does not resurrect
+   stale text;
+3. in embed mode, a `setDocument` that arrives at most 5 s after module start
+   (the wait runs in parallel with the manifest fetches), else the empty
+   document; on the plain page, the stored buffer, else the default example.
 
-In priority order:
-
-1. `#code=<encodeURIComponent(text)>` in the URL fragment (lean4web's
-   spelling; fragments never reach a server). `#codez=` (lz-string) is v1.1;
-2. a `setDocument` call made before the boot document is read;
-3. after the page's manifests are in (`installArtifacts`), it waits — at most
-   **5 s from module start** — for (2); then boots with the empty document.
-
-A late `setDocument` (after 3's deadline) still works; it just costs a widen
-restart when the late text needs Mathlib.
-
-### 3.2 Persistence, outside embed mode
-
-Unchanged: the plain page restores and saves `qed64.buffer`. The key and its
-format are internal.
+Changing only `#code=` on a live frame is a same-document navigation and does
+**not** reboot it. To switch documents use `setDocument`. To replace the
+runtime (one QED64 per page), navigate the frame away first, e.g. to
+`about:blank`, which also releases the old heap.
 
 ---
 
-## 4. Boot parameters (supported, validated)
+## 4. Boot parameters and page-tier facts
 
 | Parameter | Meaning | Validation |
 |-----------|---------|-----------|
-| `embed=1` | §3 | exactly `1`; anything else is ignored |
-| `#code=` | §3.1 | URI-decoded; > 2 MiB refused |
-| `snapshots=<dir>` | boot from an overlay snapshot set served at `/<dir>/index.json` on **this origin** | `^(?:snapshots/)?[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` (`snapshots/widgets8`, `snapshots-0031`); resolved with `new URL()` and refused unless `url.origin === location.origin` |
-| `profiles=<dir>` | dev: an unpromoted profile set | same rule as `snapshots` |
-| `runtime=<buildId>` | dev: an unpromoted runtime | `^wasm64-[0-9a-f]{16}$` |
+| `embed=1` | §3 | exactly `1` |
+| `#code=` | §3.1 | URI-decoded, ≤ 2 MiB |
+| `snapshots=<dir>` | boot from a snapshot set served at `/<dir>/index.json` on **this origin** | `^(?:snapshots/)?[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`, resolving on this origin |
+| `profiles=<dir>` | an unpromoted profile set | `^(?:profiles/)?…` (same rule) |
+| `runtime=<buildId>` | an unpromoted runtime | `^wasm64-[0-9a-f]{16}$` |
+| `memory=<GiB>` | the initial Memory64 commit of **every** session | `^(?:[1-9]\d*\|0)(?:\.\d{1,3})?$`, rounded to 256 MiB and clamped to [1, 6] GiB |
 
-A refused value is a **boot failure that names the parameter** (`boot`
-event `{stage: "failed", message: "refused ?snapshots=…: …"}`), never a
-silent fallback to the served set.
+Refusals:
+- A refused value is a **boot failure that names the parameter**: a `boot`
+  event `{stage: "failed", message: "refused ?snapshots=…", error}`.
+- An overlay index that is missing, malformed or off-origin is also a named
+  failure, with cause `{kind: "missing" | "network" | "corrupt" | "other",
+  stage: "manifests", subject: "<dir>"}`. It is never a silent "no snapshots".
 
-**Security (fix ships first, independent of the rest of v1).** Today these
-three parameters are spliced into fetch URLs unchecked, so
-`?snapshots=/attacker.example/x` is protocol-relative and loads an
-environment from another origin, whose Lean widget modules then run in the
-same-origin InfoView iframe — with the page's storage. The validation above
-closes it. The same parse is exported for library embedders (§7.6).
+Page-tier facts (stable, for preflights and deploy tools):
+- **The snapshot index.** Schema `qed64.snapshot-index/v1`. Each entry
+  carries `name`, `url`, `digest` (`sha256:` of the served bytes), `bytes`
+  (raw), `transfer`, `imports`, `runtime` (the buildId that baked it), and
+  optionally `roots`, `label` and `initialBytes` (§8). Entry URLs must
+  resolve on the page's origin.
+- **Re-rooting.** Under `?snapshots=<dir>`, an entry URL starting with
+  `/snapshots/` is re-rooted to `/<dir>/`. The same applies to `?profiles=` and
+  `/profiles/`.
+- **The runtime manifest.** `/runtime/runtime-manifest.<buildId>.json`
+  (immutable, fetched first by a shell built for that buildId) and
+  `/runtime/runtime-manifest.json` (mutable).
+- **`dist/` layout.**
+  - `index.html`, `assets/*`, `workers/*`, `infoview/*`, and
+    `qed64-build.json`;
+  - `runtime/`, `profiles/` and `snapshots/` are served beside it, not built
+    into it.
+- **`dist/qed64-build.json`** `{schema: "qed64.build/v1", buildId,
+  leanVersion, sourceRevision, commit, dirty, shell, apiRevision}`.
+  - `shell` is `"shell-" + 16 hex` of the Vite bundle.
+  - Deploy and pin tools read it instead of scraping bundles.
+
+**Security (HARDENING #57).**
+- *Before.* These parameters were spliced into fetch URLs unchecked.
+  `?snapshots=/attacker.example/x` is protocol-relative, so it loaded an
+  environment from another origin, whose widget modules then ran in the
+  same-origin InfoView iframe.
+- *Now.* The parameters are validated before any fetch. The index loader,
+  `prefetchRaw`, the prefetch worker and the Lean worker's `loadSnapshot` all
+  refuse an off-origin URL (`SNAPSHOT_URL_REFUSED`). §11 covers what this
+  means for caches written before the fix.
 
 ---
 
-## 5. Deferred to v1.1 (named so nobody builds on a guess)
+## 5. Hosting facts, and what v1.1 adds
 
-* **postMessage transport** for iframe embedders: envelope `{qed64: 1, type,
-  id?}`, page→parent `hello`/`event`/`response`, parent→page
-  `init`/`subscribe`/method calls, `event.source === window.parent`, replies
-  to the exact origin never `"*"`. Same-origin parents can already script
-  the frame, so the transport only matters cross-origin, which needs:
-* **cross-origin allowlist** from deployment config (a worker env var served
-  as `/embed-config.json`), never from URL parameters (the framer controls
-  the URL); `Content-Security-Policy: frame-ancestors` and
-  `Cross-Origin-Resource-Policy: cross-origin` on the HTML shell only, when
-  configured. Cross-site frames get partitioned OPFS/cache/locks: a separate
-  ~600 MB first visit per embedding site. The recommended pattern stays the
-  showcase's: serve QED64's `dist/` on the embedder's own origin.
-* `layout=split|stack`, `#codez=`, an `offer` event for "Load exact imports",
-  a `memory` boot knob.
+These hold already:
+- **Cross-origin isolation.** QED64 needs `crossOriginIsolated`. The top
+  document must send COOP `same-origin` and COEP `require-corp`.
+  - A same-origin frame inherits `cross-origin-isolated`.
+  - A cross-origin frame (v1.1) needs `allow="cross-origin-isolated"`.
+  - Clipboard access needs `allow="clipboard-read; clipboard-write"`.
+- **One QED64 per top-level page** (HARDENING #55).
+- **Encoding and ranges.**
+  - No `Content-Encoding` on runtime chunks or `.snapz`. They are hashed and
+    sized as served, and `.snapz` is already gzip.
+  - `Range` support on `.snapz` is recommended, so an interrupted first visit
+    can resume.
+- **Missing artifacts 404.** A missing `index.json` or manifest must 404,
+  never fall back to HTML (an HTML answer is classified `missing`, §7.2).
 
-Hosting facts that hold already: QED64 needs `crossOriginIsolated`, so the top
-document must send COOP `same-origin` + COEP `require-corp`, and the frame
-needs `allow="cross-origin-isolated; clipboard-read; clipboard-write"`. One
-QED64 per top-level page (HARDENING #55: two runtimes in one renderer each
-reserve a cage).
+v1.1 adds:
+- a postMessage transport for cross-origin iframes. It needs a deployment
+  allowlist served as `/embed-config.json`, never URL parameters;
+  `frame-ancestors` and `Cross-Origin-Resource-Policy: cross-origin` on the
+  HTML shell only; and a statement that cross-site frames get partitioned
+  storage (a separate ~600 MB first visit);
+- `layout=split|stack|auto`, `#codez=`, and an embed `escape` key event.
 
 ---
 
 ## 6. The library: the `qed64` npm package
 
-lean4game depends on QED64 as an npm **git dependency**, lockfile-pinned:
+lean4game depends on QED64 as an npm **git dependency** pinned by a full SHA:
+`"qed64": "github:FawadHa1der/QED64#<40-hex>"`. npm then fetches the codeload
+tarball, with no git or SSH needed, and honours `files`.
 
-```json
-"dependencies": { "qed64": "github:FawadHa1der/QED64#<sha>" }
-```
+`package.json` (pinned by `tests/unit/package-contract.test.ts`):
+- `"license": "MIT"`, `"sideEffects": false`, zero runtime dependencies.
+- **No script npm treats as "prepare me".** pacote runs `npm install
+  --include=dev` in a temporary clone of a git dependency whose root
+  `package.json` has `workspaces`, or any of `build`, `prepare`, `prepack`,
+  `preinstall`, `install` or `postinstall`. QED64's build script is therefore
+  `build:all`, and CI uses `build:site`.
+- `exports`:
+  - `"./embed"` → `frontend/src/embed/index.ts`;
+  - `"./workers/*"`;
+  - `"./pipeline/*"`;
+  - `"./embedding/closure.json"`;
+  - `"./package.json"`.
+- `files`: exactly the closure below, plus the license, README and this
+  document. 41 files, about 136 kB packed.
 
-QED64's `package.json` gains (the site build and the showcase's
-submodule/dist use are unaffected — neither resolves `qed64` as a package):
+Notes for consumers:
+- The embed closure is TypeScript source with **relative imports only** (no
+  bare specifiers, no `node:`). A bundler transpiles it (Vite does; `tsc`
+  needs `moduleResolution: "bundler"`).
+- Node's own type stripping refuses `.ts` under `node_modules`, and the closure
+  uses parameter properties. A Node test runner needs a transpile hook.
+- The pipeline scripts imported through the package resolve a relative
+  `--work` or `--out` against the **package root**, which is inside
+  `node_modules`. Run them from a copy, or pass absolute paths.
+- The page-API setup (`globalThis.qed64.api`, the `qed64:*` events, `#code=`,
+  the buffer) lives only in site modules that are not in the package.
 
-```json
-{
-  "license": "MIT",
-  "exports": {
-    "./embed": { "types": "./frontend/src/embed/index.ts", "default": "./frontend/src/embed/index.ts" },
-    "./workers/*": "./public/workers/*",
-    "./pipeline/*": "./pipeline/*",
-    "./embedding/closure.json": "./embedding/closure.json",
-    "./package.json": "./package.json"
-  },
-  "files": [
-    "LICENSE", "README.md", "docs/EMBEDDING.md", "embedding/",
-    "frontend/src/embed/", "frontend/src/qed64-boot.ts", "frontend/src/resident-session.ts", "frontend/src/lsp-relay.ts",
-    "src/runtime/", "src/install/",
-    "public/workers/",
-    "pipeline/toolchain/", "pipeline/snapshot/", "pipeline/artifacts/", "pipeline/release/verify-release.mjs",
-    "tests/adversarial/kernel-probes/"
-  ]
-}
-```
-
-Rules QED64 keeps for the package (each pinned by a unit test):
-
-* **No install-time scripts** (`prepare`, `preinstall`, `install`,
-  `postinstall`): npm would install QED64's devDependencies and build.
-* **Zero runtime `dependencies`.**
-* **The embed closure imports nothing but relative paths** (no bare
-  specifiers, no `node:`), and resolves entirely inside `files`. TypeScript
-  source is shipped as is; the consumer's bundler transpiles it (Vite does;
-  `tsc` needs `moduleResolution: "bundler"`). No Vite-only globals unguarded
-  (`__QED64_BUILD_ID__` is read behind `typeof`).
-* **The pipeline closure** imports only relative paths and `node:` built-ins.
-* **Worker scripts are plain files** an embedder serves at `/workers/<name>`
-  (`lean.worker.js` `importScripts` `lsp-frames.js` and `lsp-front-door.js`
-  from its own directory, so the four always ship together).
-* `embedding/closure.json` lists exactly what an embedder needs, so a
-  consumer's staging script reads it instead of hard-coding paths:
-
-```json
-{
-  "schema": "qed64.closure/v1",
-  "embed":   ["frontend/src/embed/index.ts", "frontend/src/qed64-boot.ts", "…"],
-  "workers": [{ "path": "public/workers/lean.worker.js", "serveAs": "/workers/lean.worker.js" }, "…"],
-  "pipeline": ["pipeline/toolchain/chunk-runtime.mjs", "…"],
-  "pipelineData": ["tests/adversarial/kernel-probes/is-module.lean", "…"]
-}
-```
-
-Version identity: until the user tags releases, consumers pin pushed commit
-SHAs; `qed64/embed` exports `EMBED_API_REVISION` (semver of §7, same rules
-as `api.revision`). Tags (`v0.x`) are a push-time decision of the user.
+`embedding/closure.json` (schema `qed64.closure/v1`) lists:
+- `embed`: the TS closure of `qed64/embed`;
+- `workers`: `{path, serveAs}`. `lean.worker.js` `importScripts`
+  `lsp-frames.js` and `lsp-front-door.js` from its own directory, so all
+  four ship together;
+- `pipeline` and `pipelineData`;
+- `runtime.minKernelPatch`: `"0032"`, the oldest kernel patch level these
+  workers drive correctly. Compare it against your own KERNEL-PIN;
+- `workerProtocol`: §7.7.
 
 ---
 
 ## 7. The library API: `qed64/embed`
 
-### 7.0 What is exported
+`EMBED_API_REVISION` is the semver of this section (minor = additive).
 
-Everything lean4game imports today, re-exported from one module so the
-internal file layout can move without breaking anyone:
+### 7.0 Exports
 
-* runtime: `LeanSession`, `PROTOCOL`, `probeMemory64`, `memoryCandidates`
-  and the types (`RuntimeManifest`, `WorkerStatus`, `JsonRpcMessage`,
-  `LibraryPack`, `BootConfig`, `WorkerError`, `HeaderStatus`, …);
-* snapshots: `fetchSnapshotIndex`, `snapshotCacheKey`, `SnapshotEntry`,
-  `SnapshotIndex`;
-* profiles: `fetchProfileIndex`, `installProfile`, `storageEstimate`, and
-  their types;
-* boot: `installArtifacts`, `ensureProfile`, `loadSnapshotByName`,
-  `PREFETCH_SILENCE_MS`, `Qed64Artifacts`, `Qed64Session`, `StatusSink`,
-  `ProgressInfo`;
-* session: `ResidentSession`, `ResidentPolicy`, `ResidentHost`,
-  `EDITOR_POLICY`, `DEFAULT_MAXIMUM_BYTES`, the header helpers
-  (`importedModulesOf`, `snapshotsForHeader`, …);
-* relay: `LspRelay`, `RelaySession`, `RelayStatus`, `RestartOptions`,
-  `Death`;
-* new in v1: §7.1 – §7.6.
+- **runtime:** `LeanSession`, `PROTOCOL`, `probeMemory64`, `memoryCandidates`,
+  and the types.
+- **snapshots:**
+  - the index: `loadSnapshotIndex` (throws, naming the fault),
+    `fetchSnapshotIndex` (null on any fault) and `snapshotCacheKey`;
+  - the overlay helpers of §8.
+- **raw cache (§7.4):** `prefetchRaw`, `isRawCached`, `rawRegionName`,
+  `removeRawRegion`, `isCacheKeyOf`, `SNAPSHOT_CACHE_DIR` and
+  `PREFETCH_SILENCE_MS`.
+- **boot:** `installArtifacts`, `overridesOf`, `resolveRuntimeManifest`,
+  `fetchSnapshotIndexFor`, `ensureProfile` and `loadSnapshotByName`.
+- **parameters:** `parseBootParams(search, origin)`,
+  `validateBootOverrides`, `BootParamError` (`code:
+  "BOOT_PARAM_REFUSED"`, `param`) and `NO_OVERRIDES`.
+- **session:** `ResidentSession`, `ResidentPolicy`, `ResidentHost`,
+  `SessionFile`, `EDITOR_POLICY`, `makeEditorPolicy(index)` and the header
+  helpers.
+- **relay:** `LspRelay`, `RelaySession`, `RelayStatus`, `RestartOptions` and
+  `Death`.
+- **causes (§7.2):** `failureKindOf`, `failureCauseOf`, `deathCause`,
+  `httpStatusOf` and `WORKER_SCRIPT_LOAD_FAILED`.
+- **offline:** `runtimeUrls(manifest)` and `WORKER_URLS`.
 
-### 7.1 Structured progress (wishlist 1)
+### 7.1 Structured progress
 
-`ProgressInfo` gains fields; `StatusSink.busy` gains the optional second
-argument `progress` already has. Existing sinks keep compiling and keep
-receiving the same labels.
+`ProgressInfo` has these fields:
+- `stage`: a `BootStage`, one of `manifests | profile | runtime | memory |
+  snapshot | modules | warm | files | done | failed`;
+- `subject`: a profile id, snapshot name or runtime file;
+- `step`: `check | download | inflate | commit | verify | read | load | init
+  | write`;
+- `error`: a `FailureCause`;
+- the legacy `phase`, `loaded`, `total` and `unit`.
 
-```ts
-interface ProgressInfo {
-  phase?: string;            // unchanged (legacy, e.g. "core-download", "snapshot-init")
-  loaded?: number; total?: number; unit?: string;   // unchanged
-  stage?: BootStage;         // NEW: the step, from a closed set (§2.2)
-  subject?: string;          // NEW: profile id, snapshot name or runtime file ("core", "mathlib", "lean.wasm")
-  step?: "check" | "download" | "inflate" | "commit" | "verify" | "read" | "load" | "init" | "write"; // NEW
-  error?: FailureCause;      // NEW: set on the progress call that reports a failure
-}
-interface StatusSink {
-  busy(label: string, info?: ProgressInfo): void;   // `info` NEW, optional
-  progress(label: string, info?: ProgressInfo): void;
-  idle(label: string): void;
-  action?(label: string, run: () => void): void;
-  clearAction?(): void;
-}
-```
+`StatusSink.busy(label, info?)`. Every call QED64 makes carries `stage`.
 
-Every `busy`/`progress` call QED64 makes carries `stage` (and `subject`
-where there is one) — a unit test drives a session boot against fakes and
-asserts no call lacks it. The worker's own progress phases map as `runtime
-/ initialize / filesystem → runtime`, `memory → memory`, `snapshot-cache /
-snapshot → snapshot (read / download)`, `snapshot-load → snapshot (load)`,
-`snapshot-init / import → modules`.
+Units:
+- `loaded`/`total` cover **the whole stage**. The runtime reports one combined
+  total across `lean.js` and `lean.wasm`; `subject` names the current file.
+- For a snapshot, `loaded` is the bytes of the **inflated** region written so
+  far and `total` is the entry's raw size.
+- `step: "inflate"` means the source is a local compressed copy (no network).
 
-### 7.2 Failure causes (wishlist 2)
+### 7.2 Failure causes and deaths
 
 ```ts
-type FailureKind = "network" | "corrupt" | "unpaired" | "oom" | "storage" | "other";
-interface FailureCause { kind: FailureKind; stage: BootStage; subject?: string; code?: string; message: string }
+type FailureKind = "network" | "missing" | "corrupt" | "unpaired" | "oom" | "storage" | "other";
+interface FailureCause { kind: FailureKind; httpStatus?: number; stage?: BootStage; subject?: string; code?: string; message: string }
 ```
 
-* The **page** classifies, by the worker's error code and message
-  (`failureKindOf`, exported): `SNAPSHOT_UNPAIRED → unpaired`;
-  `MEMORY_FAILED`, a failed region allocation, "Cannot enlarge memory" →
-  `oom`; a chunk that fails its SHA-256 or length check, a gunzip error, a
-  region the Lean loader refuses → `corrupt`; an HTTP status, "Failed to
-  fetch", a cut stream → `network`; quota / OPFS errors → `storage`. The
-  worker's messages already carry these facts, so the table works the same
-  against every worker version, old or new, and the worker is unchanged.
-* `loadSnapshotByName` keeps returning `boolean`; it reports the cause
-  through `ui.progress(label, {stage: "snapshot", subject, error})` and in
-  `qs.lastFailure`. `ResidentSession.start()` throws `Error & {cause:
-  FailureCause}`, with the message text unchanged (`snapshot '<name>' failed
-  to load`, or the runtime boot's own message).
-* `Death` (relay) gains `cause?: FailureCause` for a **boot** failure (the
-  rejection's attached cause, passed through unread). A worker death while
-  serving carries none; classify it with `failureCauseOf` if you need one.
+| kind | meaning | e.g. |
+|------|---------|------|
+| `network` | the fetch was rejected, the stream was cut, or 5xx/429 (retrying can help) | `Failed to fetch`, `HTTP 503` |
+| `missing` | the server does not have it: a deploy problem, so retrying cannot help | `HTTP 404/410`, an HTML answer where JSON/binary belongs, `SNAPSHOT_NOT_IN_INDEX` |
+| `corrupt` | it arrived but is wrong | chunk length or SHA-256 mismatch, gzip error, bad magic, `SNAPSHOT_LOAD_RESULT` (the Lean loader refused the region) |
+| `unpaired` | a snapshot baked by another runtime build | `SNAPSHOT_UNPAIRED` |
+| `oom` | an allocation or reservation failed | `MEMORY_FAILED`, `could not allocate`, `Cannot enlarge memory` |
+| `storage` | OPFS or quota | `QuotaExceededError` |
+| `other` | the checker's own failure, with **one exception**: `code: "WORKER_SCRIPT_LOAD_FAILED"` means a worker script never ran, which looks the same offline as on a 404, so probe the link | `abort`, `wedged`, `SNAPSHOT_URL_REFUSED` |
 
-### 7.3 Session files and a pre-arm hook (wishlist 3)
+Classification is per throw, from the error code **and** message:
+`RUNTIME_FETCH_FAILED` covers a 404, a cut and a SHA mismatch alike. The page
+classifies, so the same table holds against every worker version.
+
+**Deaths.**
+- `cause` **null or absent = no evidence**. This happens only for a bare
+  worker error event (no message, after the worker said hello).
+- A worker that never said hello, or a `WORKER_DEP_MISSING`, is
+  `WORKER_SCRIPT_LOAD_FAILED`.
+- An unrecoverable error code (`RUNTIME_FETCH_FAILED`, `MEMORY_FAILED`,
+  `INIT_FAILED`, `CAPABILITY_MISSING`, `WRITE_FILES_FAILED`,
+  `WORKER_DEP_MISMATCH`, …) is classified by the table.
+- Every other death is `other`, or `oom` when its message says so.
+- A death while booting carries the boot `stage`.
+
+The cause travels through `LeanSession.onDied(code, reason, message, facts)`,
+then `ResidentSession` (which classifies), then
+`RelaySession.onDied(…, cause)`.
+
+`Death` (the relay's) is `{reason, message, seq, session, exitCode?,
+cause?}`:
+- `seq` is the relay's death count;
+- `exitCode` is set when the worker reported one;
+- the object is the **same object until the next death**, and is cleared
+  when a session reports phase `ready`. It outlives its own reboot: a
+  serving relay with no document never reaches `ready`, so use `seq` to
+  compare across copies.
+
+Errors the relay invents carry
+`error.data.qed64 = {kind: "orphaned" | "halted" | "restart", reason}`.
+The message prefix `QED64:` stays as a fallback. `LspRelay.rearm()` re-arms a
+halted relay without an edit; it returns false unless the relay is halted.
+
+### 7.3 Session files and the pre-arm hook
 
 ```ts
 interface ResidentHost {
-  artifacts: Qed64Artifacts; ui: StatusSink; policy?: ResidentPolicy; headerText: string; // unchanged
-  /** Written into the worker's filesystem on EVERY boot (first and reboots), after the
-   * snapshots and the exact-import warm, immediately before the relay arms the loop. */
+  artifacts; ui; policy?; headerText;                     // unchanged
   files?: SessionFile[] | (() => SessionFile[] | Promise<SessionFile[]>);
-  /** Last step of every boot, after `files`; a throw is a bootFailed death. */
   beforeArm?(session: LeanSession): Promise<void>;
 }
-type SessionFile = { path: string; text: string } | { path: string; bytes: Uint8Array }; // absolute paths
+type SessionFile = { path: string; text: string } | { path: string; bytes: Uint8Array };
 ```
 
-`LeanSession.writeFiles(files)` becomes public (the worker's `write-files`
-request, which exists today). This replaces subclassing `ResidentSession`
-and the cast to the private `request`.
+Both run on **every** boot (first and reboots), after the snapshots and the
+exact-import warm, immediately before the relay arms the loop. The front door
+queues every frame until `lsp-arm`, so Lean never sees the document before the
+files. `LeanSession.writeFiles(files)` is public. Bytes are copied, not
+transferred.
 
-### 7.4 Raw snapshot prefetch (wishlist 4)
+### 7.4 The raw snapshot cache
 
 ```ts
-function prefetchRaw(entry: SnapshotEntry, opts?: {
-  onProgress?(p: { loaded: number; total: number; step: "download" | "inflate" }): void;
-  signal?: AbortSignal;
-  silenceMs?: number;          // default PREFETCH_SILENCE_MS
-  workerUrl?: string;          // default "/workers/snapshot-prefetch.worker.js"
-}): Promise<{ status: "cached" | "done" | "unavailable" | "busy" | "silent" | "aborted" | "error"; bytes?: number; error?: FailureCause }>;
+function prefetchRaw(entry, opts?: { onProgress?; signal?; silenceMs?; workerUrl?; onBusy?: "wait" | "return"; busyWaitMs? }):
+  Promise<{ status: "cached" | "done" | "unavailable" | "busy" | "silent" | "aborted" | "error"; bytes?; error?: FailureCause }>;
 ```
 
-The page's own `loadSnapshotByName` uses it, so the worker protocol, the
-silence watchdog and termination exist once. It never throws.
-`"cached"` = the raw region was already complete in OPFS (no worker spawned).
+- **Single-flight in the page.** Callers of one cache key share one worker.
+  Each keeps its own `onProgress` and `signal`. An abort detaches only that
+  caller; the worker is terminated when every caller has aborted. An
+  already-aborted signal spawns nothing.
+- **Across tabs.** The writer holds the Web Lock `qed64-raw:<cacheKey>` for
+  its whole life. `onBusy: "return"` (the default) answers `busy` at once.
+  `"wait"` waits up to `busyWaitMs` (default `PREFETCH_SILENCE_MS`), then
+  re-probes `.raw`. `loadSnapshotByName` uses `"wait"`.
+- **Silence or abort.**
+  1. The worker is terminated.
+  2. `<key>.raw.partial` is removed (never `.raw`).
+  3. `.raw` is re-probed, so a commit that beat the bail reports `done`.
+- **After settling,** no message or timer has any effect.
+- **Load failure.** A worker that fails to load resolves `error` with
+  `WORKER_LOAD_FAILED` at once.
+- **Same origin only.** An off-origin `entry.url` is refused
+  (`SNAPSHOT_URL_REFUSED`) before any worker starts.
+- **It only ever produces `.raw`.** It never throws.
 
-### 7.5 Offline URL list (wishlist 6)
+Helpers: `isRawCached(entry)` (null when there is no OPFS),
+`rawRegionName(entry)`, `removeRawRegion(entry)`, `isCacheKeyOf(fileName,
+index)` (for sweeping stale bakes) and `SNAPSHOT_CACHE_DIR`.
+
+**Integrity.**
+- A region is trusted by its cache key, and the key comes from the index.
+- `digest` (SHA-256 of the served compressed bytes) is **not** verified while
+  streaming today; the workers check the magic and the size.
+- The same-origin rule is what keeps a foreign region out. Streaming digest
+  verification is planned for v1.1.
+
+### 7.5 Offline URL list
+
+`runtimeUrls(manifest)` returns `{manifests, chunks, workers}`:
+- `manifests`: the immutable manifest, then the mutable one;
+- `chunks`: every chunk URL of `lean.js` and `lean.wasm`, deduplicated, in
+  order;
+- `workers`: the four worker scripts.
+
+### 7.6 Installing artifacts
 
 ```ts
-function runtimeUrls(manifest: RuntimeManifest): { manifests: string[]; chunks: string[]; workers: string[] };
+installArtifacts(ui, opts?: {
+  overrides?: "url" | "none" | Partial<BootOverrides>;   // default "url": ?snapshots/profiles/runtime, validated (§4)
+  profiles?: "core" | "none" | string[];                 // default "core"; "none": no pack, a missing profile index is empty
+  runtime?: RuntimeManifest;                              // already resolved: used as is
+  snapshots?: SnapshotIndex | null;                       // already resolved: used as is
+});
+resolveRuntimeManifest(overrides, { pinnedBuildId? }): Promise<RuntimeManifest>;
+fetchSnapshotIndexFor(overrides): Promise<SnapshotIndex | null>;   // a requested overlay that fails is a named error
 ```
 
-`manifests` = the immutable `/runtime/runtime-manifest.<buildId>.json` plus
-the mutable `/runtime/runtime-manifest.json`; `chunks` = every chunk URL of
-`lean.js` and `lean.wasm` in order; `workers` = the four worker scripts.
-Snapshot and profile URLs stay with their indexes (`entry.url`,
-manifest parts).
+A game page wants `{overrides: "none", profiles: "none"}`, or its own
+overrides routed through `parseBootParams` / `validateBootOverrides`.
 
-### 7.6 Boot parameters for library embedders
+### 7.7 Workers: compatibility across deploys
 
-`installArtifacts(ui, opts?: { overrides?: "url" | "none" | BootOverrides })`:
-default `"url"` reads and **validates** `?snapshots/profiles/runtime` exactly
-as §4; `"none"` ignores the URL (a game page usually wants this); an object
-supplies them programmatically (validated the same way). `parseBootParams`
-is exported.
-
-### 7.7 Workers: cross-version compatibility
-
-lean4game runs old pages against new workers and new pages against old
-workers during a deploy. Rules:
-
-* `/workers/*.js` names are stable; a new worker is a new name.
-* Worker messages change additively only: new optional fields, new request
-  types. A page detects a new request type with the worker's existing
-  `capabilities` request before using it, and keeps the old path.
-* Removing a request type or field takes two releases: first unused by the
-  page, then removed from the worker.
+- `/workers/*.js` names are stable. A new worker is a new name.
+- **One revision for the three scripts.** `lean.worker.js`, `lsp-frames.js`
+  and `lsp-front-door.js` carry the same `REVISION`. `lean.worker.js`
+  refuses a sibling of another revision (`WORKER_DEP_MISMATCH`, a death the
+  page can turn into a reload prompt) instead of running mixed versions.
+  The front door loads lazily, so this check catches a deploy that lands
+  between the two loads.
+- **Feature flags.** `capabilities()` reports `protocolRevision` and
+  `requests`, the request types the worker answers. A page detects a request
+  with `requests?.includes(type)` and keeps its old path otherwise.
+- **An unknown request is recoverable** (`UNSUPPORTED_REQUEST`). The request
+  fails and the session lives. It used to be a death on every reboot, so an
+  old tab against a new worker halted.
+- **Messages change additively.** A removal is listed in
+  `closure.json` → `workerProtocol.deprecated` with the release it went
+  unused in, and leaves the worker one release later. Long-lived tabs are
+  covered by the recoverable refusal above and by the revision check.
 
 ---
 
-## 8. Overlay environments (modularity item 4; summary)
+## 8. Overlay environments
 
-An overlay snapshot index (`?snapshots=snapshots/<dir>`) may declare, per
-entry, the module **roots** it serves (`"roots": ["ProofWidgets", "Showcase"]`),
-a `label`, and an `initialBytes` hint. The page then boots and widens by
-itself for documents that import those roots, instead of the hard-coded
-umbrella roots (no more forced restart in the showcase). Absent fields keep
-today's behaviour: roots are derived from the entry's `imports`.
-`capabilities.snapshotRoots` signals it. Its own design note lands with the
-code.
+A snapshot index entry may declare, additively under
+`qed64.snapshot-index/v1`:
+- `roots: string[]`: module-name roots on a component boundary. `HasseView`
+  covers `HasseView.Foo` but never `HasseView2`;
+- `label`: e.g. "Mathlib + widgets";
+- `initialBytes`: the initial commit when the entry is loaded.
+
+An entry may have **any name**. The page then:
+- **Boots** the base (`init`) plus at most **one** other entry for a header:
+  1. the smallest entry whose roots cover every module the base does not;
+  2. failing that, the one covering the most (a mixed header still boots the
+     umbrella, and the kernel names the module it cannot cover);
+  3. if none covers any, the base alone.
+
+  The kernel serves a header from one environment, and every region is a
+  full-size heap allocation, so a second heavy region never helps.
+- **Sizes** the commit: the largest declared `initialBytes`; else 2 GiB with
+  any non-base entry; else 256 MiB. `?memory=` overrides it.
+- **Widens** a running session once, when the kernel refuses its header and
+  an entry not yet loaded covers **every** missing module. For example, a
+  Mathlib session gaining `import HasseView` widens to an overlay whose roots
+  include both.
+
+It is **opt-in.** Without `roots`, the entry named `mathlib` serves the
+umbrella roots (`Mathlib`, `Batteries`, `MIL`, `QED64`) and no other entry
+serves any. A legacy index therefore behaves exactly as before; the unit tests
+pin this parity on the stock index. The exact-imports restart keeps the
+session's own snapshot list. The roots are claims, not membership: the
+kernel's header verdict stays authoritative.
 
 ---
 
-## 9. Internal — not API
+## 9. Internal, and the test hatch
 
-May change in any commit; tests may read them, embedders must not:
+These are internal and may change in any commit:
+- every other member of `globalThis.qed64` (`relay`, `ui`, `artifacts`,
+  `editor`, `status()`);
+- the `qed64.buffer` key;
+- every DOM id/class and every label string;
+- `globalThis.__qed64InfoviewEditorApi`;
+- every path not in `exports` / `closure.json`.
 
-* every other member of `globalThis.qed64` (`relay`, `ui`, `artifacts`,
-  `editor`, `status()`) — the harness's oracle (docs/TESTING.md);
-* `RelayStatus`'s `ring`, `pool`, `dropped`, `liveness` (diagnostic counters);
-* the `qed64.buffer` storage key and format;
-* every DOM id/class (`#boot`, `#bootcard`, `#bar`, `#examples`, `#pill`,
-  `#action`, …) and every label string;
-* `globalThis.__qed64InfoviewEditorApi` (the HARDENING #56 hook);
-* every file path not listed in `exports` / `closure.json`.
+Embedders may add their own listeners to the framed window (e.g. a capture
+`keydown` for an F6 escape). The `__qed64*` namespace is reserved for QED64.
+
+**`globalThis.qed64.test`** is the harnesses' hatch. It is **explicitly
+unstable**, versioned only by `test.revision`, and must not be used by
+product code:
+- `stats()`, `rawStatus()` (with the ring/pool/liveness counters),
+  `telemetry()` and `session()`;
+- `lsp.on("in" | "out", fn)`;
+- `lsp.request(method, params)`, whose reply is swallowed and returned;
+- `lsp.notify(method, params)`.
+
+The worker's `self.__qed64TestExports` is its test hook, under the same
+terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
 
 ---
 
 ## 10. Migration notes
 
-**Widgets showcase** (page tier):
+**Widgets showcase (page tier):**
 
 | Today | v1 |
 |-------|----|
-| seed `localStorage["qed64.buffer"]` before load | `?embed=1#code=…`, or `setDocument` on `qed64:frame-api` |
-| poll `qed64.status().phase === "ready"` | `api.settled()` |
-| wrap `qed64.ui` / scrape `#boot` | `boot` event, `status().boot` |
-| tap `relay.toClient` for diagnostics / fileProgress | `diagnostics`, `fileProgress` events |
-| `qed64.relay.restart(…)` | `api.restart({snapshots})` |
-| inject CSS to hide `#examples` | `embed=1` |
-| InfoView edit bridge | stand down when `api.capabilities.editorRpc` |
-| forced restart after loading an overlay | `roots` in the overlay index (§8) |
+| seed `localStorage["qed64.buffer"]` | `?embed=1#code=…`, or `setDocument` on `qed64:frame-api` (keep the about:blank step between documents) |
+| poll `status().phase` / a `notSession` predicate | `api.settled({version, afterSession})` |
+| wrap `qed64.ui` / scrape `#boot` | `boot` events, `status().boot` (`overlay` for the card) |
+| tap `relay.toClient` | `diagnostics`, `fileProgress` events |
+| `relay.restart(relay.restartOpts)` | `api.restart()` (the relay's header rule included) |
+| liveness probe through `relay.fromClient` | `status().liveness`, the `liveness` event |
+| the `?mem` session wrap | `?memory=<GiB>`, `restart({initialBytes})`, `status().memory` |
+| button-text matching for "Load exact imports" | `status().offer`, `acceptOffer()` |
+| D1/D2 bridge | stand down completely on `capabilities.editorRpc` |
+| D3 bridge (getWidgetSource) | stand down on `capabilities.widgetSourceCache` |
+| scraping `wasm64-<hex>` from bundles | `dist/qed64-build.json` |
+| renaming the overlay region to `mathlib` | any name with `roots` (§8); update C6, which asserts the refusal of `import HasseView` |
+| `__qed64Bridge` expando | rename (`__qed64*` is reserved) |
 
-Note for the late-install heuristic: `!!window.qed64` now means "the module
-started", not "the relay exists"; check `typeof qed64.api?.status ===
-"function"` (or wait for `qed64:api`) instead.
-
-**lean4game** (library tier): delete the vendored copies and
-`sync-qed64.sh`; import from `qed64/embed`; stage workers from
-`embedding/closure.json`'s `workers`; replace `GameSession extends
-ResidentSession` with `files`; the label regexes with `stage`/`subject`/
-`error`; the D4 network-vs-crash inference with `Death.cause`;
-`prefetchRawSnapshot` with `prefetchRaw`; the offline-URL builder with
-`runtimeUrls`.
+**lean4game (library tier):**
+- Delete the vendored copies and `sync-qed64.sh`. Import from `qed64/embed`,
+  and stage the workers from `closure.json`.
+- Route URL overrides through `parseBootParams` and boot with
+  `installArtifacts(ui, {overrides, profiles: "none"})` or the exported
+  resolvers.
+- Replace `GameSession` with `files`.
+- Replace the label regexes with `stage`/`subject`/`error`.
+- Replace the D4 inference with `Death.cause` (null = no evidence;
+  `WORKER_SCRIPT_LOAD_FAILED` = probe), keyed on `Death.seq`.
+- Replace `prefetchRawSnapshot` and the claim/wait machinery with
+  `prefetchRaw({onBusy: "wait"})`.
+- Replace the raw-cache helpers and the offline-URL builder with the exports.
+- Use `rearm()` instead of a synthetic didChange, and `error.data.qed64`
+  instead of message matching.
 
 ---
 
-## 11. Review asks
+## 11. Security notes
 
-1. **Widgets**: is anything in your migration table missing a v1 equivalent?
-   Is `#code=` + `qed64:frame-api` enough for your seed path, or do you need
-   the v1.1 `init` message?
-2. **lean4game**: do the `BootStage` set and `FailureKind` set cover every
-   label your `game-boot.ts` regexes distinguish today? Is "after warm,
-   before arm" the right moment for `files`?
-3. **Both**: anything you read from `globalThis.qed64` or the DOM that §9
-   calls internal and §2 does not replace?
+- **HARDENING #57 (fixed in this branch).** Off-origin snapshot and profile
+  sources could be loaded through a crafted link. Every boot parameter, the
+  index loader, `prefetchRaw` and both workers now refuse them.
+- **Caches written before the fix.** A region fetched from another origin
+  before #57 was committed under the key the hostile index named. A copied
+  `name` and `digest` would persist under a genuine key, and later visits
+  would load it.
+  - The fix stops new poisoning but does not purge.
+  - Purging (re-keying the cache namespace) costs every visitor a one-time
+    re-download of about 430 MB.
+  - Whether to do it is **the user's decision** and is open.
+  - Streaming digest verification (v1.1) would make the key self-checking.
+
+---
+
+## 12. Changes since the draft (daf9b63)
+
+- **Widgets review:**
+  - liveness projection and event;
+  - restart inputs and result; `settled({afterSession})`; superseded
+    statuses dropped;
+  - cursor, focus, offer, memory (`?memory=`, `restart({initialBytes})`),
+    `boot.overlay`;
+  - fileProgress on a 100 ms timer;
+  - `#code=` read-once and on the plain page, with `setDocument` outranking
+    it;
+  - named overlay-index failures, the widget-source cache, the test hatch,
+    `dist/qed64-build.json`, page-tier facts, hosting facts, and the
+    late-install note fixed.
+- **lean4game review:**
+  - packaging: `build` → `build:all`, the pacote list, `sideEffects`, Node
+    and pipeline notes, `runtime.minKernelPatch`;
+  - causes:
+    - the `missing` kind and `httpStatus`;
+    - null meaning no evidence, and `WORKER_SCRIPT_LOAD_FAILED`;
+    - loader≠0 and not-in-index causes;
+    - causes on boot-time worker deaths;
+    - `exitCode`, `seq`/`session`, `error.data.qed64`, `rearm()`;
+  - the raw cache: single-flight, cross-tab lock, cleanup, units, helpers,
+    same-origin;
+  - installs: the `profiles` option, pre-resolved inputs, the exported
+    resolvers;
+  - workers: the revision stamp, the `requests` flags, recoverable unknown
+    requests, the protocol ledger, the definition of a release.
+- **Item 4:** overlay environments (§8).
