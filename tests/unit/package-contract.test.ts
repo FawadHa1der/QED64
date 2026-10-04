@@ -39,6 +39,12 @@ function resolveRel(from: string, spec: string): string | null {
 }
 
 describe("package.json", () => {
+  it("is MIT-licensed and ships the license text", () => {
+    expect(pkg.license).toBe("MIT");
+    expect(pkg.files).toContain("LICENSE");
+    expect(read("LICENSE")).toMatch(/^MIT License\n/);
+  });
+
   it("has no install-time scripts and no runtime dependencies", () => {
     for (const s of ["preinstall", "install", "postinstall", "prepare", "prepack", "postpack"]) expect(pkg.scripts?.[s], s).toBeUndefined();
     expect(Object.keys(pkg.dependencies ?? {})).toEqual([]);

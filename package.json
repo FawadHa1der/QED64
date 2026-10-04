@@ -2,6 +2,7 @@
   "name": "qed64",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "description": "QED64 \u2014 a Lean 4 web editor running the real compiler client-side on WebAssembly Memory64, with Mathlib profiles.",
   "exports": {
@@ -15,6 +16,7 @@
     "./package.json": "./package.json"
   },
   "files": [
+    "LICENSE",
     "README.md",
     "docs/EMBEDDING.md",
     "embedding/closure.json",
