@@ -1,0 +1,44 @@
+{
+  "schema": "qed64.closure/v1",
+  "doc": "docs/EMBEDDING.md §6: the files an embedder of the qed64 package needs. embed = the TypeScript closure of the `qed64/embed` entry (relative imports only); workers = plain scripts served at serveAs (lean.worker.js importScripts lsp-frames.js and lsp-front-door.js from its own directory); pipeline = the from-source lane scripts (relative and node: imports only); pipelineData = files the pipeline reads at run time, at the same relative paths.",
+  "entry": "frontend/src/embed/index.ts",
+  "embed": [
+    "frontend/src/embed/index.ts",
+    "frontend/src/embed/params.ts",
+    "frontend/src/qed64-boot.ts",
+    "frontend/src/resident-session.ts",
+    "frontend/src/lsp-relay.ts",
+    "src/install/profiles.ts",
+    "src/runtime/client.ts",
+    "src/runtime/snapshots.ts"
+  ],
+  "workers": [
+    { "path": "public/workers/lean.worker.js", "serveAs": "/workers/lean.worker.js" },
+    { "path": "public/workers/lsp-frames.js", "serveAs": "/workers/lsp-frames.js" },
+    { "path": "public/workers/lsp-front-door.js", "serveAs": "/workers/lsp-front-door.js" },
+    { "path": "public/workers/snapshot-prefetch.worker.js", "serveAs": "/workers/snapshot-prefetch.worker.js" }
+  ],
+  "pipeline": [
+    "pipeline/toolchain/artifact-paths.mjs",
+    "pipeline/toolchain/artifact-paths.d.mts",
+    "pipeline/toolchain/chunk-runtime.mjs",
+    "pipeline/toolchain/gate.mjs",
+    "pipeline/toolchain/gen-exports.py",
+    "pipeline/snapshot/bake-snapshot.mjs",
+    "pipeline/snapshot/node-runner.mjs",
+    "pipeline/snapshot/persistent-probe.mjs",
+    "pipeline/snapshot/snapshot-probe.mjs",
+    "pipeline/artifacts/inspect.mjs",
+    "pipeline/artifacts/olean-imports.mjs",
+    "pipeline/artifacts/olean-imports.d.mts",
+    "pipeline/artifacts/pack.mjs",
+    "pipeline/artifacts/unpack.mjs",
+    "pipeline/release/verify-release.mjs"
+  ],
+  "pipelineData": [
+    "tests/adversarial/kernel-probes/is-module.lean",
+    "tests/adversarial/kernel-probes/module-file.lean",
+    "tests/adversarial/kernel-probes/private-default.lean",
+    "tests/adversarial/kernel-probes/rpc-attr.lean"
+  ]
+}
