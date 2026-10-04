@@ -3,7 +3,12 @@
 // embedder uses it — through `qed64.api` and its events only, never the
 // internal `qed64.relay` / `qed64.status()` taps.
 //
-//   embed-code     ?embed=1#code=<doc>: boots with exactly that document,
+//   code-top-level ?embed=1#code=<doc> opened as a TOP-LEVEL page: the
+//                  document is ignored (a boot document in the URL is code;
+//                  only a same-origin parent frame may supply it) and the
+//                  page boots the empty document instead.
+//   embed-code     ?embed=1#code=<doc> in a same-origin frame (the dev/prod
+//                  server's /embed-host.html): boots with exactly that document,
 //                  `qed64:api` fired before boot, the examples menu is hidden,
 //                  localStorage["qed64.buffer"] is neither read (a seeded
 //                  sentinel does not appear) nor written (an edit leaves the
@@ -52,8 +57,10 @@ function record(name, ok, detail) {
 }
 
 const browser = await chromium.launch();
-/** A page with an embedder's recorder installed before any page script runs. */
-async function open(pageUrl, { seed = null, setDocOnApi = null } = {}) {
+/** A page with an embedder's recorder installed before any page script runs.
+ * `framed`: load it as the only iframe of the same-origin /embed-host.html and
+ * return that frame as `page` (evaluate/waitForFunction work the same). */
+async function open(pageUrl, { seed = null, setDocOnApi = null, framed = false } = {}) {
   const context = await browser.newContext();
   await context.addInitScript(([seedText, doc]) => {
     if (seedText !== null) { try { localStorage.setItem("qed64.buffer", seedText); } catch { /* storage off */ } }
@@ -67,11 +74,18 @@ async function open(pageUrl, { seed = null, setDocOnApi = null } = {}) {
       if (doc !== null) void api.setDocument(doc);
     });
   }, [seed, setDocOnApi]);
-  const page = await context.newPage();
+  const top = await context.newPage();
   const offOrigin = [];
-  page.on("request", (r) => { if (new URL(r.url()).origin !== new URL(url).origin) offOrigin.push(r.url()); });
-  await page.goto(pageUrl, { waitUntil: "domcontentloaded" });
-  return { page, context, offOrigin };
+  top.on("request", (r) => { if (new URL(r.url()).origin !== new URL(url).origin) offOrigin.push(r.url()); });
+  if (!framed) {
+    await top.goto(pageUrl, { waitUntil: "domcontentloaded" });
+    return { page: top, context, offOrigin };
+  }
+  const u = new URL(pageUrl);
+  await top.goto(`${u.origin}/embed-host.html?src=${encodeURIComponent(`${u.pathname}${u.search}${u.hash}`)}`, { waitUntil: "domcontentloaded" });
+  const frame = await (await top.waitForSelector("#qed64-frame")).contentFrame();
+  await frame.waitForFunction(() => !!globalThis.qed64?.api, null, { timeout: 60000 });
+  return { page: frame, context, offOrigin };
 }
 const settle = (page, opts = {}, ms = 300000) => page.evaluate(([o, t]) => Promise.race([
   globalThis.qed64.api.whenReady().then(() => globalThis.qed64.api.settled(o)),
@@ -80,8 +94,17 @@ const settle = (page, opts = {}, ms = 300000) => page.evaluate(([o, t]) => Promi
 const events = (page, t) => page.evaluate((type) => window.__rec.events.filter((e) => e.t === type).map((e) => e.p), t);
 
 try {
-  if (runs("embed-code")) {
+  if (runs("code-top-level")) {
     const { page, context } = await open(withQuery({ embed: "1" }, `#code=${encodeURIComponent(INIT_DOC)}`), { seed: SENTINEL });
+    const s = await settle(page);
+    const doc = await page.evaluate(() => globalThis.qed64.api.getDocument());
+    const ok = doc?.text === "" && s.phase !== "halted";
+    record("code-top-level", ok, `document ${JSON.stringify(doc?.text)} (the #code= document must be ignored at top level), phase ${s.phase}`);
+    await context.close();
+  }
+
+  if (runs("embed-code")) {
+    const { page, context } = await open(withQuery({ embed: "1" }, `#code=${encodeURIComponent(INIT_DOC)}`), { seed: SENTINEL, framed: true });
     const s = await settle(page);
     const doc = await page.evaluate(() => globalThis.qed64.api.getDocument());
     const hidden = await page.evaluate(() => getComputedStyle(document.getElementById("examples")).display === "none");
@@ -96,7 +119,7 @@ try {
   }
 
   if (runs("embed-setdoc")) {
-    const { page, context } = await open(withQuery({ embed: "1" }), { setDocOnApi: INIT_DOC });
+    const { page, context } = await open(withQuery({ embed: "1" }), { setDocOnApi: INIT_DOC, framed: true });
     const s = await settle(page);
     const doc = await page.evaluate(() => globalThis.qed64.api.getDocument());
     const ok = s.phase === "ready" && doc?.text === INIT_DOC && JSON.stringify(s.snapshots) === JSON.stringify(["init"]);

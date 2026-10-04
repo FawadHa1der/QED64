@@ -41,13 +41,17 @@ export interface FailureCause {
  * or length check is corrupt, though its code says RUNTIME_FETCH_FAILED. */
 export function failureKindOf(code: string | undefined, message: string): FailureKind {
   if (code === "SNAPSHOT_UNPAIRED" || /was baked for runtime/.test(message)) return "unpaired";
+  if (code === "SNAPSHOT_URL_REFUSED" || /SNAPSHOT_URL_REFUSED/.test(message)) return "other";
   if (code === "SNAPSHOT_NOT_IN_INDEX") return "missing";
   const status = httpStatusOf(message);
-  if (status === 404 || status === 410 || /Unexpected token '?<|<!doctype|text\/html/i.test(message)) return "missing";
+  // The server does not have it (or will not give it): 404/410 and every other
+  // 4xx but the retryable ones; an HTML page where a binary, script or JSON belongs.
+  if (status !== undefined && status >= 400 && status < 500 && status !== 408 && status !== 425 && status !== 429) return "missing";
+  if (/answered HTML|Unexpected token '?<|<!doctype|text\/html/i.test(message)) return "missing";
   if (code === "MEMORY_FAILED" || /could not allocate|out of memory|Cannot enlarge memory|Array buffer allocation failed|RangeError: .*memory/i.test(message)) return "oom";
-  if (/SHA-256 verification|sha256|digest mismatch|checksum|integrity|bad magic|magic|truncated|short (?:read|region)|unexpected end|incorrect header check|invalid (?:block|stored|distance|code|literal)|gzip|inflate|corrupt|expected \d+ bytes|bytes, expected/i.test(message)) return "corrupt";
+  if (/SHA-256 verification|sha256|digest mismatch|checksum|integrity|bad magic|magic|not a compacted-region|index declares|raw size mismatch|compressed data was not valid|Junk found|truncated|short (?:read|region)|unexpected end|incorrect header check|invalid (?:block|stored|distance|code|literal)|gzip|inflate|corrupt|expected \d+ bytes|bytes, expected|empty (?:body|snapshot source)/i.test(message)) return "corrupt";
   if (code === "RUNTIME_FETCH_FAILED" || /\bHTTP \d{3}\b|Failed to fetch|NetworkError|network error|fetch failed|net::ERR_|ERR_NETWORK|ERR_CONNECTION|connection (?:reset|closed|refused)|socket hang up|terminated|The operation was aborted|body stream/i.test(message)) return "network";
-  if (/QuotaExceeded|quota|NoModificationAllowed|NotReadableError|getDirectory|createWritable|OPFS|storage/i.test(message)) return "storage";
+  if (/QuotaExceeded|quota|NoModificationAllowed|NotReadableError|getDirectory|createWritable|createSyncAccessHandle|OPFS/i.test(message)) return "storage";
   return "other";
 }
 

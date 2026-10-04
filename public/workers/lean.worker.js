@@ -1037,9 +1037,11 @@ async function materialize(file, label, mime, requestId, running) {
 // ---------------------------------------------------------------------------
 
 function createSharedMemory64(initialBytes, maxCandidatesBytes) {
-  const initial = BigInt(Math.ceil(initialBytes / PAGE));
   for (const maxBytes of maxCandidatesBytes) {
     const maximum = BigInt(Math.floor(maxBytes / PAGE));
+    // A requested commit above this rung's reservation would make the rung
+    // throw (and a small device's whole ladder fail): commit at most the rung.
+    const initial = BigInt(Math.ceil(Math.min(initialBytes, maxBytes) / PAGE));
     try {
       const memory = new WebAssembly.Memory({
         initial,
@@ -1783,6 +1785,10 @@ async function loadSnapshot(msg) {
       // costs nothing in the heap.
       response = await fetch(url);
       if (!response.ok || !response.body) throw new Error(`snapshot fetch: HTTP ${response.status}`);
+      // The request was on this site; a redirect off it is refused too, and an
+      // HTML answer (a router's fallback page) is a deploy problem, not a region.
+      if (response.redirected && new URL(response.url).origin !== self.location.origin) throw new Error(`SNAPSHOT_URL_REFUSED: redirected to ${new URL(response.url).origin}, not this site`);
+      if (/text\/html/i.test(response.headers.get("content-type") || "")) throw new Error("snapshot fetch: the server answered HTML, not a snapshot");
     }
     heapPtr = asPtr(M._malloc(asPtr(total)));
     regionBytesTotal += total;
@@ -1818,6 +1824,7 @@ async function loadSnapshot(msg) {
       const rawReader = response.body.getReader();
       const head = await rawReader.read();
       if (head.done || !head.value) throw new Error("snapshot fetch: empty body");
+      if (head.value[0] === 0x3c) throw new Error("snapshot fetch: the server answered HTML, not a snapshot");
       const isGzip = head.value.length >= 2 && head.value[0] === 0x1f && head.value[1] === 0x8b;
       const replay = new ReadableStream({
         start(controller) {

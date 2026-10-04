@@ -34,8 +34,10 @@ describe("loadSnapshotIndex names what is wrong (docs/EMBEDDING.md §4: an overl
   const serve = (status: number, body: string) => vi.stubGlobal("fetch", vi.fn(async () => new Response(body, { status })));
   const good = { schema: "qed64.snapshot-index/v1", snapshots: [{ name: "init", url: "/snapshots/init.x.snapz", bytes: 1, imports: [] }] };
   it.each([
-    [404, "not found", /HTTP 404/, "network"],
-    [200, "<!doctype html>", /not JSON/, "corrupt"],
+    [404, "not found", /HTTP 404/, "missing"],
+    [503, "busy", /HTTP 503/, "network"],
+    [200, "<!doctype html>", /answered HTML/, "missing"],
+    [200, "{not json", /not JSON/, "corrupt"],
     [200, JSON.stringify({ schema: "other", snapshots: [] }), /not a qed64.snapshot-index\/v1 index/, "corrupt"],
     [200, JSON.stringify({ ...good, snapshots: [{ name: "x", url: 3, imports: [] }] }), /malformed entry "x"/, "corrupt"],
   ] as const)("HTTP %i %s", async (status, body, message, fault) => {

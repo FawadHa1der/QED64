@@ -5,7 +5,7 @@ import { LeanMonaco, LeanMonacoEditor, type LeanMonacoOptions } from "lean4monac
 import { installArtifacts, type ProgressInfo, type StatusSink } from "./qed64-boot";
 import { registerImportCompletion } from "./import-completion";
 import { LspRelay, type RelayStatus } from "./lsp-relay";
-import { ResidentSession, makeEditorPolicy, type ResidentPolicy } from "./resident-session";
+import { ResidentSession, importLinesOf, importedModulesOf, makeEditorPolicy, type ResidentPolicy } from "./resident-session";
 import { BASE_SNAPSHOTS, entryLabel, widenTarget, LEGACY_UMBRELLA_ROOTS, coversModule } from "../../src/runtime/snapshots";
 import { installInfoviewEditorApi, type EditsEditor } from "./editor/infoview-edits";
 import { codeFromHash, createPageApi, type EditorLike } from "./page-api";
@@ -31,6 +31,12 @@ qed64Global.api = pageApi.api;
 // Embed mode (docs/EMBEDDING.md §3): the embedder owns persistence and the
 // boot document; it gets up to 5 s from module start to call setDocument.
 const EMBED = new URLSearchParams(location.search).get("embed") === "1";
+// A boot document in the URL (`#code=`) is CODE: Lean source can define a
+// widget module whose JS runs in the same-origin InfoView iframe with no
+// click. So it is honoured only from a same-origin parent frame (which could
+// script this page anyway) — never from a top-level link, which anyone can
+// send (HARDENING #57). A cross-origin frame cannot boot (no isolation).
+const FRAMED_SAME_ORIGIN = (() => { try { return window.parent !== window && window.parent.location.origin === location.origin; } catch { return false; } })();
 const embedDeadline = new Promise<void>((r) => window.setTimeout(r, EMBED ? 5000 : 0));
 window.dispatchEvent(new CustomEvent("qed64:api", { detail: pageApi.api }));
 try {
@@ -313,7 +319,7 @@ function renderStatus(s: PageStatus) {
     // pill alone must carry the message, not a bare "halted — bootFailed".
     if (d && !everReady) {
       ui.idle(`could not start — ${d.message || d.reason}`);
-      bootFail(d.message || d.reason);
+      bootFail(d.message || d.reason, d.cause);
       return;
     }
     ui.idle(d ? `halted — ${d.reason}` : PHASE_LABEL.halted);
@@ -408,11 +414,13 @@ async function main() {
   // before this point wins; in embed mode (docs/EMBEDDING.md §3.1) the buffer
   // is neither read nor written: `#code=`, else `setDocument` (waited for up
   // to 5 s from module start), else the empty document.
-  // `#code=` (lean4web's spelling) is honoured on the plain page too, and read
-  // ONCE: it is dropped from the URL so a reload does not resurrect stale text.
+  // `#code=` (lean4web's spelling) is honoured only in a same-origin frame
+  // (FRAMED_SAME_ORIGIN above), and read ONCE: it is dropped from the URL so a
+  // reload does not resurrect stale text.
   let restored: string | null = null;
   let initialText: string;
-  const hashCode = codeFromHash(location.hash);
+  const hashCode = FRAMED_SAME_ORIGIN ? codeFromHash(location.hash) : null;
+  if (!FRAMED_SAME_ORIGIN && codeFromHash(location.hash) !== null) console.warn("[qed64] #code= ignored: a boot document in the URL is honoured only from a same-origin embedding frame");
   if (hashCode !== null) {
     try { history.replaceState(history.state, "", `${location.pathname}${location.search}`); } catch { /* sandboxed */ }
   }
@@ -429,7 +437,14 @@ async function main() {
   // Over the served snapshot index (docs/EMBEDDING.md §8): an overlay whose
   // entries declare `roots` is booted and widened to by itself.
   const indexPolicy = makeEditorPolicy(artifacts.snapshots);
-  const policy: ResidentPolicy = memoryBytes !== null ? { ...indexPolicy, initialBytesFor: () => memoryBytes } : indexPolicy;
+  // The commit: an api.restart({initialBytes}) sticks until the next explicit
+  // restart (across crash reboots and header changes alike), then ?memory=,
+  // then the index policy.
+  let sessionMemory: number | null = null;
+  const policy: ResidentPolicy = {
+    ...indexPolicy,
+    initialBytesFor: (header, snapshots) => sessionMemory ?? memoryBytes ?? indexPolicy.initialBytesFor!(header, snapshots),
+  };
   let relay: LspRelay; // assigned below; the closures here run only from the relay's status sink or a click
 
   // EXPLAIN AND OFFER, never reboot on the user's behalf (§3 row 8;
@@ -471,15 +486,20 @@ async function main() {
   // stays the same). A refusal no entry covers is final: no snapshot would
   // change the verdict.
   let widened: string | null = null;
+  // Entries already widened to for a header: never twice (a refusal the
+  // replacement could not fix must not bounce between environments).
+  const tried = new Map<string, Set<string>>();
   const widenForRoots = (s: RelayStatus) => {
     if (s.phase !== "headerRefused" || !s.header || s.header.mode !== "refused" || relay.state.kind !== "serving") return;
     const session = relay.session as ResidentSession;
     if (session.id !== s.session || widened === s.session) return;
     const missing = s.header.missing;
+    const header = importLinesOf(relay.lastText).join("\n");
     const target = artifacts.snapshots
-      ? widenTarget(artifacts.snapshots, missing, session.snapshots)
+      ? widenTarget(artifacts.snapshots, missing, session.snapshots, importedModulesOf(relay.lastText))
       : !session.snapshots.includes("mathlib") && missing.length > 0 && missing.every((m) => coversModule(LEGACY_UMBRELLA_ROOTS, m)) ? { name: "mathlib" } : null;
-    if (!target) return;
+    if (!target || tried.get(header)?.has(target.name)) return;
+    tried.set(header, new Set([...(tried.get(header) ?? []), target.name]));
     widened = s.session;
     widening = entryLabel(target);
     ui.busy(`loading ${widening}…`);
@@ -518,6 +538,7 @@ async function main() {
     relay,
     taps,
     memoryBytes: normalizeMemoryBytes,
+    setSessionMemory: (bytes) => { sessionMemory = bytes; },
     editor: () => (editor.editor ?? undefined) as unknown as EditorLike | undefined,
     build: { buildId: artifacts.runtime.buildId, leanVersion: artifacts.runtime.leanVersion, sourceRevision: artifacts.runtime.sourceRevision ?? null, shell: null },
     snapshotNames: artifacts.snapshots?.snapshots.map((e) => e.name) ?? [],

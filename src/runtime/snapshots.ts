@@ -67,9 +67,18 @@ export async function loadSnapshotIndex(url = "/snapshots/index.json", opts: Ind
   const foreign = (u: URL | null) => !opts.allowCrossOrigin && !!origin && (!u || u.origin !== new URL(origin).origin);
   if (foreign(indexUrl)) throw Object.assign(new Error(`${url}: not on this site`), { code: "SNAPSHOT_URL_REFUSED", indexFault: "refused" as const });
   const response = await fetch(url, { cache: "no-cache" });
-  if (!response.ok) throw Object.assign(new Error(`${url}: HTTP ${response.status}`), { indexFault: "network" as const });
+  if (foreign(response.redirected && response.url ? new URL(response.url) : indexUrl)) {
+    throw Object.assign(new Error(`${url}: redirected off this site`), { code: "SNAPSHOT_URL_REFUSED", indexFault: "refused" as const });
+  }
+  if (!response.ok) {
+    const st = response.status;
+    const gone = st >= 400 && st < 500 && st !== 408 && st !== 425 && st !== 429; // the server does not have it: a deploy problem
+    throw Object.assign(new Error(`${url}: HTTP ${st}`), { indexFault: gone ? "missing" as const : "network" as const });
+  }
+  const body = await response.text();
+  if (/^\s*</.test(body)) throw Object.assign(new Error(`${url}: the server answered HTML, not an index`), { indexFault: "missing" as const });
   let index: SnapshotIndex;
-  try { index = (await response.json()) as SnapshotIndex; } catch { throw Object.assign(new Error(`${url}: not JSON`), { indexFault: "corrupt" as const }); }
+  try { index = JSON.parse(body) as SnapshotIndex; } catch { throw Object.assign(new Error(`${url}: not JSON`), { indexFault: "corrupt" as const }); }
   if (index?.schema !== "qed64.snapshot-index/v1" || !Array.isArray(index.snapshots)) {
     throw Object.assign(new Error(`${url}: not a qed64.snapshot-index/v1 index`), { indexFault: "corrupt" as const });
   }
@@ -162,15 +171,20 @@ export function chooseSnapshots(index: SnapshotIndex, modules: readonly string[]
 
 /** The entry to widen a running session to when the kernel refused its header
  * for `missing` modules: the smallest entry not already loaded that covers
- * EVERY one of them, else null (a near-miss root never widens: no snapshot
- * would change the verdict). */
-export function widenTarget(index: SnapshotIndex, missing: readonly string[], loaded: readonly string[]): SnapshotEntry | null {
+ * EVERY one of them — and, given the header's modules, every one of those the
+ * base does not serve (the new session serves the whole header from ONE
+ * environment: an entry covering only what is missing NOW would be refused
+ * for what the old session covered, and widening back would loop) — else null
+ * (a near-miss root never widens: no snapshot would change the verdict). */
+export function widenTarget(index: SnapshotIndex, missing: readonly string[], loaded: readonly string[], headerModules: readonly string[] = [], base: readonly string[] = BASE_SNAPSHOTS): SnapshotEntry | null {
   if (missing.length === 0) return null;
+  const baseRoots = index.snapshots.filter((e) => base.includes(e.name)).flatMap((e) => [...entryRoots(e)]);
+  const required = [...new Set([...missing, ...headerModules])].filter((m) => !isInit(m) && !coversModule(baseRoots, m));
   let best: SnapshotEntry | null = null;
   for (const e of index.snapshots) {
     if (loaded.includes(e.name)) continue;
     const roots = entryRoots(e);
-    if (missing.every((m) => coversModule(roots, m)) && (!best || e.bytes < best.bytes)) best = e;
+    if (required.every((m) => coversModule(roots, m)) && (!best || e.bytes < best.bytes)) best = e;
   }
   return best;
 }
@@ -181,7 +195,8 @@ export function widenTarget(index: SnapshotIndex, missing: readonly string[], lo
  * a region streams is the path that crashed renderers); else 256 MiB. */
 export function initialBytesForEntries(index: SnapshotIndex | null, names: readonly string[], base: readonly string[] = BASE_SNAPSHOTS): number {
   const declared = (index?.snapshots ?? []).filter((e) => names.includes(e.name) && typeof e.initialBytes === "number").map((e) => e.initialBytes!);
-  if (declared.length > 0) return Math.max(...declared);
+  // An index is data: its hint is capped like ?memory= (the session's reservation ladder reconciles the rest).
+  if (declared.length > 0) return Math.min(6 * 1024 * MiB, Math.max(...declared));
   return names.some((n) => !base.includes(n)) ? 2048 * MiB : 256 * MiB;
 }
 

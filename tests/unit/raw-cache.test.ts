@@ -175,12 +175,50 @@ describe("across tabs (Web Locks)", () => {
   });
   it("the writer holds the lock while its worker runs", async () => {
     const r = prefetchRaw(entry);
-    await flush();
+    for (let i = 0; i < 20 && FakeWorker.all.length === 0; i++) await flush();
     expect(locks!.held.has(`qed64-raw:${snapshotCacheKey(entry)}`)).toBe(true);
     FakeWorker.all[0]!.emit({ status: "done", bytes: 1000 });
     await r;
     await flush();
     expect(locks!.held.size).toBe(0);
+  });
+});
+
+describe("review fixes", () => {
+  it("a 'wait' caller that joined a 'return' flight that came back busy waits on a flight of its own", async () => {
+    stub({ withLocks: true });
+    const name = `qed64-raw:${snapshotCacheKey(entry)}`;
+    let release!: () => void;
+    void locks!.request(name, {}, () => new Promise<void>((r) => { release = r; }));
+    await flush();
+    const ret = prefetchRaw(entry); // "return": busy at once
+    const waits: string[] = [];
+    const waiter = prefetchRaw(entry, { onBusy: "wait", onBusyWait: () => waits.push("waiting") });
+    await expect(ret).resolves.toEqual({ status: "busy" });
+    for (let i = 0; i < 5; i++) await flush();
+    opfs.files.set(RAW, 1000);
+    release();
+    await expect(waiter).resolves.toEqual({ status: "done", bytes: 1000 });
+    expect(waits).toEqual(["waiting"]);
+  });
+  it("a Worker constructor that throws is an error, never busy or a hang", async () => {
+    vi.stubGlobal("Worker", class { constructor() { throw new Error("SecurityError: bad worker URL"); } });
+    await expect(prefetchRaw(entry, { workerUrl: "//elsewhere/x.js" })).resolves.toMatchObject({ status: "error", error: { code: "WORKER_LOAD_FAILED" } });
+    stub({ withLocks: true });
+    vi.stubGlobal("Worker", class { constructor() { throw new Error("SecurityError"); } });
+    await expect(prefetchRaw(entry)).resolves.toMatchObject({ status: "error", error: { code: "WORKER_LOAD_FAILED" } });
+  });
+  it("a caller arriving while an aborted flight cleans up starts a fresh flight", async () => {
+    const ac = new AbortController();
+    const first = prefetchRaw(entry, { signal: ac.signal });
+    await flush();
+    ac.abort();
+    const second = prefetchRaw(entry);
+    await expect(first).resolves.toEqual({ status: "aborted" });
+    for (let i = 0; i < 10 && FakeWorker.all.length < 2; i++) await flush();
+    expect(FakeWorker.all).toHaveLength(2);
+    FakeWorker.all[1]!.emit({ status: "done", bytes: 1000 });
+    await expect(second).resolves.toEqual({ status: "done", bytes: 1000 });
   });
 });
 

@@ -110,7 +110,7 @@ export interface RelayLike {
 export interface EditorLike {
   getModel(): {
     uri: { toString(): string }; getValue(): string; getFullModelRange(): unknown; setValue(text: string): void;
-    getLineCount(): number; getLineMaxColumn(lineNumber: number): number;
+    getLineCount(): number; getLineMaxColumn(lineNumber: number): number; getEOL?(): string;
   } | null;
   executeEdits(source: string, edits: Array<{ range: unknown; text: string; forceMoveMarkers?: boolean }>): boolean;
   pushUndoStop(): boolean;
@@ -128,6 +128,8 @@ export interface PageApiBinding {
   snapshotNames: readonly string[];
   /** Normalizes a requested initial commit (restart({initialBytes})); throws on a refused value. */
   memoryBytes?: (bytes: number) => number;
+  /** The page's sticky commit for every later session (null: back to its default). */
+  setSessionMemory?: (bytes: number | null) => void;
 }
 
 const err = (code: string, message: string) => Object.assign(new Error(message), { code });
@@ -213,7 +215,9 @@ export function createPageApi(
   let bootDocument: string | null = null;
   let bootDocumentRead = false;
   const bootDocWaiters: Array<(t: string) => void> = [];
-  const readyWaiters: Array<() => void> = [];
+  /** Waiters for "bound and mounted"; a boot that fails before that rejects them (BOOT_FAILED). */
+  const readyWaiters: Array<{ ok(): void; fail(e: Error): void }> = [];
+  const onReady = (ok: () => void, fail: (e: Error) => void = () => {}) => readyWaiters.push({ ok, fail });
   const readySeen = new Set<string>();
   let lastDeath: RelayStatus["lastDeath"] = null;
   // liveness: per-session counters as last seen, when the answered count last rose, when the Lean side last sent a frame
@@ -276,7 +280,7 @@ export function createPageApi(
     capabilities: Object.freeze({ ...capabilities }),
     build: () => (binding ? { ...binding.build } : null),
     status: statusNow,
-    whenReady: () => (isBound() ? Promise.resolve(statusNow()) : new Promise<ApiStatus>((r) => readyWaiters.push(() => r(statusNow())))),
+    whenReady: () => (isBound() ? Promise.resolve(statusNow()) : new Promise<ApiStatus>((r, j) => onReady(() => r(statusNow()), j))),
     settled(opts: { version?: number; afterSession?: string; timeoutMs?: number } = {}) {
       return new Promise<ApiStatus>((resolve, reject) => {
         const want = opts.version ?? binding?.relay.doc?.version ?? null;
@@ -288,7 +292,8 @@ export function createPageApi(
           return false;
         };
         const unsubscribe = on("status", (s) => { check(s); });
-        const done = () => { unsubscribe(); if (timer !== undefined) timers.clearTimeout(timer); };
+        const unsubscribeBoot = on("boot", (b) => { if (b.failed && !binding) { done(); reject(err("BOOT_FAILED", b.message ?? "the page could not start")); } });
+        const done = () => { unsubscribe(); unsubscribeBoot(); if (timer !== undefined) timers.clearTimeout(timer); };
         if (opts.timeoutMs !== undefined) timer = timers.setTimeout(() => { done(); reject(err("TIMEOUT", `not settled within ${opts.timeoutMs} ms`)); }, opts.timeoutMs);
         if (binding) check(statusNow());
       });
@@ -306,15 +311,18 @@ export function createPageApi(
         bootDocument = text;
         for (const w of bootDocWaiters.splice(0)) w(text);
         // Resolves once boot has read it (the editor then opens with it).
-        return new Promise<SetDocumentResult>((resolve) => readyWaiters.push(() => {
+        return new Promise<SetDocumentResult>((resolve, reject) => onReady(() => {
           if (opts.cursor) api.setCursor(opts.cursor, { focus: opts.focus });
           resolve({ version: binding?.relay.doc?.version ?? null, unchanged: false });
-        }));
+        }, reject));
       }
       const editor = binding?.editor();
       const model = editor?.getModel();
-      if (!editor || !model) return new Promise<SetDocumentResult>((resolve, reject) => readyWaiters.push(() => { api.setDocument(text, opts).then(resolve, reject); }));
-      if (model.getValue() === text) {
+      if (!editor || !model) return new Promise<SetDocumentResult>((resolve, reject) => onReady(() => { api.setDocument(text, opts).then(resolve, reject); }, reject));
+      // Monaco stores the buffer in ONE line ending (an inserted CRLF or lone
+      // CR becomes the model's EOL), so compare and wait in its terms.
+      const eol = model.getEOL?.() ?? "\n";
+      if (model.getValue() === text.replace(/\r\n?|\n/g, eol)) {
         // Nothing is sent: an identical-text edit produces no change event, and a
         // caller waiting for a version that never comes would wedge.
         if (opts.cursor) api.setCursor(opts.cursor, { focus: opts.focus });
@@ -322,13 +330,17 @@ export function createPageApi(
         return Promise.resolve({ version: binding!.relay.doc?.version ?? null, unchanged: true });
       }
       return new Promise<SetDocumentResult>((resolve) => {
-        const unsubscribe = on("document", (d) => { if (d.text === text) { unsubscribe(); resolve({ version: d.version, unchanged: false }); } });
+        let expected: string | null = null; // the text as the model holds it after the edit
+        const unsubscribe = on("document", (d) => { if (expected !== null && d.text === expected) { unsubscribe(); resolve({ version: d.version, unchanged: false }); } });
         if (opts.undoable === false) model.setValue(text);
         else {
           editor.pushUndoStop();
           editor.executeEdits("qed64-api", [{ range: model.getFullModelRange(), text, forceMoveMarkers: true }]);
           editor.pushUndoStop();
         }
+        expected = model.getValue();
+        // The LSP client may already have forwarded it synchronously.
+        if (binding!.relay.lastText === expected && binding!.relay.doc) { unsubscribe(); resolve({ version: binding!.relay.doc.version, unchanged: false }); }
         if (opts.cursor) api.setCursor(opts.cursor, { focus: opts.focus });
         else if (opts.focus) editor.focus();
       });
@@ -364,6 +376,8 @@ export function createPageApi(
         if (!binding.memoryBytes) throw new TypeError("restart: initialBytes is not supported here");
         initialBytes = binding.memoryBytes(opts.initialBytes);
       }
+      // Sticky until the next explicit restart: crash reboots and header changes keep it.
+      binding.setSessionMemory?.(initialBytes ?? null);
       // No snapshots given: this session's boot inputs, under the relay's own
       // rule (the remembered exact-imports options while the header still
       // matches, else the snapshot list it loaded).
@@ -415,7 +429,7 @@ export function createPageApi(
       });
       // `diagnostics` / `fileProgress` / the liveness frame clock: what the relay sends the editor.
       b.taps.onOut((m) => {
-        if (!isSyntheticFrame(m)) lastFrameAt = timers.now();
+        if (!isSyntheticFrame(m) && !b.taps.fromPage(m)) lastFrameAt = timers.now(); // the page's own answers (the widget-source cache) prove nothing about Lean
         const params = m.params as { uri?: string; version?: number; diagnostics?: LspDiagnostic[]; textDocument?: { uri: string; version?: number }; processing?: Array<{ range: unknown; kind?: number }> } | undefined;
         if (m.method === "textDocument/publishDiagnostics" && params?.uri) {
           const diagnostics = params.diagnostics ?? [];
@@ -425,11 +439,11 @@ export function createPageApi(
           if (progressTimer === null) progressTimer = timers.setTimeout(flushProgress, FILE_PROGRESS_MS);
         }
       });
-      if (mounted) for (const w of readyWaiters.splice(0)) w();
+      if (mounted) for (const w of readyWaiters.splice(0)) w.ok();
     },
     editorReady() {
       mounted = true;
-      if (binding) for (const w of readyWaiters.splice(0)) w();
+      if (binding) for (const w of readyWaiters.splice(0)) w.ok();
     },
     relayStatus(s) {
       // A status the page's own handling superseded (a self-widen restarts the
@@ -440,7 +454,10 @@ export function createPageApi(
       flushProgress();
       const prev = last;
       last = s;
-      if (prev && prev.session !== s.session) emit("reboot", { reason: s.rebootReason, fromSession: prev.session, toSession: s.session });
+      if (prev && prev.session !== s.session) {
+        readySeen.clear(); // one session's (session, version) keys at a time
+        emit("reboot", { reason: s.rebootReason, fromSession: prev.session, toSession: s.session });
+      }
       if (s.lastDeath && s.lastDeath !== lastDeath) {
         const d = deathInfo(s.lastDeath)!;
         emit("death", { session: d.session, kind: d.kind, reason: d.reason, message: d.message, cause: d.cause, seq: d.seq, exitCode: d.exitCode, willReboot: s.relay === "rebooting", halted: s.phase === "halted" });
@@ -449,6 +466,9 @@ export function createPageApi(
       trackLiveness(s);
       const status = project(s);
       emit("status", status);
+      // A status listener may have restarted the session (an embedder's own
+      // widening): this verdict is then superseded too.
+      if (binding && s.session !== binding.relay.session.id) return;
       if (settledPhase(s.phase) && s.relay === "serving") {
         if (!boot.done && !boot.failed) emitBoot(boot.label, { stage: "done" }, true, false, null); // a reboot's boot ends here too
         const key = `${s.session}@${s.version}`;
@@ -468,6 +488,8 @@ export function createPageApi(
     bootFailed(message, cause) {
       if (boot.failed && boot.overlay && !cause) return; // the first report (with its cause) stands
       emitBoot(message, { stage: "failed", ...(cause ? { error: cause } : {}) }, false, true, message);
+      // A boot that failed before the page was up never will be: release its waiters.
+      if (!isBound()) for (const w of readyWaiters.splice(0)) w.fail(err("BOOT_FAILED", message));
     },
     memory(currentBytes, maximumBytes) { mem = { currentBytes, maximumBytes }; },
     setOffer(o, run) {

@@ -156,7 +156,11 @@ export class ResidentSession implements RelaySession {
     this.beforeArm = host.beforeArm;
     const policy = host.policy ?? {};
     this.snapshots = opts.snapshots ?? policy.snapshotsFor?.(host.headerText) ?? ["init", "mathlib"];
-    this.initialBytes = opts.initialBytes ?? policy.initialBytesFor?.(host.headerText, this.snapshots) ?? 2048 * MiB;
+    // The commit can never exceed the largest reservation this device will try
+    // (the worker clamps per rung too): ?memory=6 on a 4 GiB-ladder device commits 4.
+    const wanted = opts.initialBytes ?? policy.initialBytesFor?.(host.headerText, this.snapshots) ?? 2048 * MiB;
+    const rungs = memoryCandidates().filter((b) => b <= (policy.maximumBytes ?? DEFAULT_MAXIMUM_BYTES));
+    this.initialBytes = Math.min(wanted, rungs[0] ?? policy.maximumBytes ?? DEFAULT_MAXIMUM_BYTES);
     this.maximumBytes = policy.maximumBytes ?? DEFAULT_MAXIMUM_BYTES;
     this.id = this.lean.id;
     this.lean.onLog = (stream, text) => console.debug(`[lean:${stream}] ${text}`);

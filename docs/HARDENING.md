@@ -391,4 +391,8 @@ Fix (`frontend/src/embed/params.ts`): one parser validates all three before any 
 
 Gate: `tests/unit/boot-params.test.ts` covers the accepted spellings, protocol-relative, absolute, percent-encoded, backslash and traversal values, and asserts a refusal sends no request.
 
+Two follow-ups from the branch review:
+- **Packs and redirects.** The library-pack loaders (index, manifests, parts) are checked too, and so is a redirect off the origin (`response.url`), not only the request URL.
+- **A document in the URL is code.** `#code=` was added for embedders and briefly honoured on the plain page. That reopened the same class: Lean source can define a widget module whose JS runs in the InfoView with no click. A boot document in the URL is now honoured only when the page is framed by a same-origin parent.
+
 Rule: any URL parameter that reaches a `fetch`, `importScripts` or `Worker` URL is an origin decision. Validate it as a path segment against an allowlist pattern before use, and fail loudly rather than fall back.

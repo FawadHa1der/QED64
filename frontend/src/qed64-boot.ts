@@ -121,7 +121,7 @@ export async function fetchSnapshotIndexFor(overrides: BootOverrides): Promise<S
   }), (err: Error & { indexFault?: "missing" | "network" | "corrupt" | "refused" }) => {
     const cause = failureCauseOf(err, { stage: "manifests", subject: dir });
     throw Object.assign(new Error(`?snapshots=${dir}: ${err.message}`), {
-      cause: { ...cause, kind: err.indexFault === "corrupt" ? "corrupt" : err.indexFault === "refused" ? "other" : cause.kind } satisfies FailureCause,
+      cause: { ...cause, kind: err.indexFault === "refused" ? "other" : err.indexFault ?? cause.kind } satisfies FailureCause,
     });
   });
 }
@@ -198,6 +198,7 @@ async function ensureRawSnapshotCached(entry: SnapshotEntry, name: string, ui: S
   // here instead would put the ~4.6 GB-heavier path into this Lean worker.
   const r = await prefetchRaw(entry, {
     onBusy: "wait",
+    onBusyWait: () => ui.progress(`waiting for another tab to finish preparing the ${name} environment`, { phase: "snapshot", stage: "snapshot", subject: name, step: "download" }),
     onProgress: (p) => ui.progress(`preparing the ${name} environment (${gib} GiB — one-time)`,
       { phase: "snapshot", loaded: p.loaded, total: p.total, unit: "bytes", stage: "snapshot", subject: name, step: p.step }),
   });

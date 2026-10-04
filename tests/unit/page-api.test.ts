@@ -57,7 +57,7 @@ class FakeEditor implements EditorLike {
     const lines = () => this.text.split("\n");
     return {
       uri: { toString: () => URI }, getValue: () => this.text, getFullModelRange: () => "all", setValue: (t: string) => this.change(t),
-      getLineCount: () => lines().length, getLineMaxColumn: (n: number) => (lines()[n - 1] ?? "").length + 1,
+      getLineCount: () => lines().length, getLineMaxColumn: (n: number) => (lines()[n - 1] ?? "").length + 1, getEOL: () => "\n",
     };
   }
   executeEdits(_s: string, edits: Array<{ text: string }>) { this.edits += 1; this.change(edits[0]!.text); return true; }
@@ -67,6 +67,7 @@ class FakeEditor implements EditorLike {
   revealPositionInCenterIfOutsideViewport() {}
   focus() { this.focused += 1; }
   private change(t: string) {
+    t = t.replace(/\r\n?/g, "\n"); // Monaco keeps one EOL: inserted CRLF / CR become the model's
     if (t === this.text) return;
     this.text = t;
     this.version += 1;
@@ -236,6 +237,45 @@ describe("setDocument / settled", () => {
   });
 });
 
+describe("review fixes", () => {
+  it("setDocument with CRLF or lone-CR text resolves (the model normalizes line endings), and identical-modulo-EOL is unchanged", async () => {
+    const t = setup();
+    boot(t, "A\n");
+    await expect(t.api.setDocument("B\r\nC\rD\n")).resolves.toEqual({ version: 2, unchanged: false });
+    expect(t.editor.text).toBe("B\nC\nD\n");
+    await expect(t.api.setDocument("B\r\nC\nD\r\n")).resolves.toEqual({ version: 2, unchanged: true });
+  });
+  it("a status listener that restarts the session suppresses the superseded ready", () => {
+    const t = setup();
+    boot(t);
+    const readies: string[] = [];
+    t.api.on("ready", (r) => readies.push(r.session));
+    const off = t.api.on("status", () => { off(); t.relay.session = { ...t.relay.session, id: "s2" }; }); // an embedder's own widening
+    t.page.relayStatus(status({ phase: "headerRefused", session: "s1", version: 1 }));
+    expect(readies).toEqual([]);
+  });
+  it("a boot that fails before the page is up rejects whenReady, settled and a pre-boot setDocument", async () => {
+    const t = setup();
+    const ready = t.api.whenReady();
+    const settled = t.api.settled();
+    const doc = t.api.setDocument("x");
+    t.page.bootFailed("refused ?snapshots=/evil: …");
+    await expect(ready).rejects.toMatchObject({ code: "BOOT_FAILED" });
+    await expect(settled).rejects.toMatchObject({ code: "BOOT_FAILED" });
+    await expect(doc).rejects.toMatchObject({ code: "BOOT_FAILED" });
+  });
+  it("restart({initialBytes}) sets the sticky commit; a later explicit restart without it clears it", () => {
+    const t = setup();
+    const sticky: Array<number | null> = [];
+    t.page.takeBootDocument();
+    t.page.bind({ relay: t.relay, taps: t.taps, editor: () => t.editor, build: BUILD, snapshotNames: ["init", "mathlib"], memoryBytes: normalizeMemoryBytes, setSessionMemory: (b) => sticky.push(b) });
+    t.page.editorReady();
+    t.api.restart({ initialBytes: 3 * GiB });
+    t.api.restart();
+    expect(sticky).toEqual([3 * GiB, null]);
+  });
+});
+
 describe("events", () => {
   it("document carries what the relay forwarded", () => {
     const t = setup();
@@ -313,9 +353,11 @@ describe("liveness", () => {
     t.page.relayStatus(live({}));
     expect(t.api.status().liveness).toEqual({ stalled: false, lastAnswerAgoMs: null, lastFrameAgoMs: null, ...LIVENESS_TIMING });
     t.page.relayStatus(live({ probes: 1, answered: 1 }));
-    t.taps.toClient({ jsonrpc: "2.0", method: "$/lean/fileProgress", params: { textDocument: { uri: URI, version: 1 }, processing: [] } });
-    t.taps.toClient({ jsonrpc: "2.0", id: 3, error: { code: -32603, message: "QED64: the Lean checker died (crash)" } }); // synthetic: not proof of life
-    t.clock.advance(5000);
+    t.relay.toClient({ jsonrpc: "2.0", method: "$/lean/fileProgress", params: { textDocument: { uri: URI, version: 1 }, processing: [] } }); // the Lean side (through the relay)
+    t.clock.advance(1000);
+    t.relay.toClient({ jsonrpc: "2.0", id: 3, error: { code: -32603, message: "QED64: the Lean checker died (crash)" } }); // the relay's own: not proof of life
+    t.taps.toClient({ jsonrpc: "2.0", id: 4, result: { sourcetext: "x" } }); // the page's own (the widget-source cache): not proof of life either
+    t.clock.advance(4000);
     expect(t.api.status().liveness).toMatchObject({ stalled: false, lastAnswerAgoMs: 5000, lastFrameAgoMs: 5000 });
     t.page.relayStatus(live({ probes: 2, answered: 1, stalls: 1 }));
     expect(t.api.status().liveness?.stalled).toBe(true);

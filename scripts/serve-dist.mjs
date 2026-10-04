@@ -24,7 +24,9 @@ const MIME = {
 createServer(async (req, res) => {
   const pathname = decodeURIComponent(new URL(req.url, "http://x").pathname);
   const safe = normalize(pathname).replace(/^(\.\.[/\\])+/, "");
-  const fromPublic = ARTIFACT_PREFIXES.some((p) => safe.startsWith(p));
+  // The test-only embed host (public/embed-host.html: one same-origin iframe of
+  // the page) is served from public/ too, so embed lanes can run on a build.
+  const fromPublic = ARTIFACT_PREFIXES.some((p) => safe.startsWith(p)) || safe === "/embed-host.html";
   const base = fromPublic ? join(ROOT, "public") : join(ROOT, "dist");
   let file = join(base, safe === "/" ? "index.html" : safe);
   try {

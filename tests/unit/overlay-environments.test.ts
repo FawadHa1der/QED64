@@ -72,6 +72,20 @@ describe("an overlay that declares roots", () => {
     expect(widenTarget(OVERLAY, ["HasseView"], ["init", "widgets8"])).toBeNull();
     expect(widenTarget(OVERLAY, ["HasseView", "Unknown"], ["init"])).toBeNull();
   });
+  it("never widens to an entry that would be refused for what the old session covered (the review's ping-pong)", () => {
+    // `hasse` serves HasseView only; `mathlib` the umbrella. A header naming both is covered by neither.
+    const PAIR: SnapshotIndex = { schema: "qed64.snapshot-index/v1", snapshots: [entry("init", 1), entry("mathlib", 1000, { imports: ["QED64.Essential"] }), entry("hasse", 900, { roots: ["HasseView"] })] };
+    const header = ["Mathlib", "HasseView"];
+    expect(chooseSnapshots(PAIR, header)).toEqual(["init", "hasse"]); // covers the most, ties → smaller
+    expect(widenTarget(PAIR, ["Mathlib"], ["init", "hasse"], header)).toBeNull(); // mathlib would be refused for HasseView
+    expect(widenTarget(PAIR, ["HasseView"], ["init", "mathlib"], header)).toBeNull();
+    // Without the header (the old call shape) the bounce is possible — the page always passes it.
+    expect(widenTarget(PAIR, ["Mathlib"], ["init", "hasse"])?.name).toBe("mathlib");
+    // An overlay covering both is still found.
+    const BOTH: SnapshotIndex = { ...PAIR, snapshots: [...PAIR.snapshots, entry("widgets", 1400, { roots: ["Mathlib", "HasseView"] })] };
+    expect(widenTarget(BOTH, ["Mathlib"], ["init", "hasse"], header)?.name).toBe("widgets");
+  });
+
   it("labels and roots", () => {
     expect(entryLabel(OVERLAY.snapshots[2]!)).toBe("Mathlib + widgets");
     expect(entryLabel(STOCK.snapshots[1]!)).toBe("Mathlib");

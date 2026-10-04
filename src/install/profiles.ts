@@ -265,8 +265,24 @@ async function sha256(bytes: Uint8Array): Promise<string> {
   return hex(await crypto.subtle.digest("SHA-256", copy as unknown as BufferSource));
 }
 
+/** fetch() of a library-pack file, on this site only (HARDENING #57): the
+ * index, a manifest or a part on another origin — named directly or reached
+ * by a redirect — is refused. Packs are cached in OPFS under the id and digest
+ * the index names and mounted on every later visit. */
+async function siteFetch(url: string, init?: RequestInit): Promise<Response> {
+  const origin = (globalThis as { location?: { origin?: string } }).location?.origin;
+  if (origin && new URL(url, origin).origin !== new URL(origin).origin) {
+    throw Object.assign(new Error(`${url}: not on this site`), { code: "PROFILE_URL_REFUSED" });
+  }
+  const response = await fetch(url, init);
+  if (origin && response.redirected && response.url && new URL(response.url).origin !== new URL(origin).origin) {
+    throw Object.assign(new Error(`${url}: redirected to ${new URL(response.url).origin}, not this site`), { code: "PROFILE_URL_REFUSED" });
+  }
+  return response;
+}
+
 export async function fetchProfileIndex(url = "/profiles/index.json"): Promise<ProfileIndex> {
-  const response = await fetch(url, { cache: "no-cache" });
+  const response = await siteFetch(url, { cache: "no-cache" });
   if (!response.ok) throw new Error(`Profile index: HTTP ${response.status}`);
   const index = (await response.json()) as ProfileIndex;
   if (index.schema !== "qed64.profile-index/v1") {
@@ -323,7 +339,7 @@ export function validateManifest(manifest: ProfileManifest): void {
 }
 
 export async function fetchManifest(url: string): Promise<ProfileManifest> {
-  const response = await fetch(url, { cache: "no-cache" });
+  const response = await siteFetch(url, { cache: "no-cache" });
   if (!response.ok) throw new Error(`Manifest ${url}: HTTP ${response.status}`);
   const manifest = (await response.json()) as ProfileManifest;
   validateManifest(manifest);
@@ -431,7 +447,7 @@ export async function inflateTransport(
       if (sinkError) break;
       const part = transport.parts[i]!;
       const fetchPart = async (cacheMode: RequestCache): Promise<Uint8Array<ArrayBuffer>> => {
-        const response = await fetch(part.url, { cache: cacheMode });
+        const response = await siteFetch(part.url, { cache: cacheMode });
         if (!response.ok) throw new Error(`Part ${i}: HTTP ${response.status}`);
         const partBytes = await readPart(response, part.byteLength, i, (received) => {
           // In-part download progress every 500 ms (HARDENING #54): one

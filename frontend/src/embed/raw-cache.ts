@@ -82,6 +82,8 @@ export interface PrefetchRawOptions {
    * default PREFETCH_SILENCE_MS) and re-probe, or "return" busy at once. */
   onBusy?: "wait" | "return";
   busyWaitMs?: number;
+  /** Called once when this caller starts waiting for another tab's writer (onBusy "wait"). */
+  onBusyWait?(): void;
 }
 export interface PrefetchRawResult {
   /** cached: complete before the call (no worker spawned); done: complete now;
@@ -93,36 +95,55 @@ export interface PrefetchRawResult {
   error?: FailureCause;
 }
 
-interface Caller { onProgress?: PrefetchRawOptions["onProgress"]; resolve(r: PrefetchRawResult): void; done: boolean }
-interface Flight { callers: Set<Caller>; abortAll(): void }
+interface Caller { onProgress?: PrefetchRawOptions["onProgress"]; onBusyWait?: PrefetchRawOptions["onBusyWait"]; resolve(r: PrefetchRawResult): void; done: boolean }
+interface Flight { callers: Set<Caller>; abortAll(): void; closed: boolean; onBusy: "wait" | "return" }
 const flights = new Map<string, Flight>();
 
 const refused = (entry: SnapshotEntry, why: string): PrefetchRawResult =>
   ({ status: "error", error: { kind: "other", stage: "snapshot", subject: entry.name, code: "SNAPSHOT_URL_REFUSED", message: why } });
 
 export async function prefetchRaw(entry: SnapshotEntry, opts: PrefetchRawOptions = {}): Promise<PrefetchRawResult> {
+  const { result, joined } = await prefetchOnce(entry, opts);
+  // A flight is shared with the options of the caller that started it: a
+  // "wait" caller that joined a "return" flight waits on a flight of its own.
+  if (result.status === "busy" && opts.onBusy === "wait" && joined === "return" && !opts.signal?.aborted) return (await prefetchOnce(entry, opts)).result;
+  return result;
+}
+
+type Once = { result: PrefetchRawResult; joined: "wait" | "return" | null };
+
+async function prefetchOnce(entry: SnapshotEntry, opts: PrefetchRawOptions): Promise<Once> {
+  const alone = (result: PrefetchRawResult): Once => ({ result, joined: null });
   const key = snapshotCacheKey(entry);
-  if (!key) return { status: "unavailable" };
-  if (opts.signal?.aborted) return { status: "aborted" };
+  if (!key) return alone({ status: "unavailable" });
+  if (opts.signal?.aborted) return alone({ status: "aborted" });
   const origin = (globalThis as { location?: { origin?: string } }).location?.origin;
   if (origin) {
     let target: URL | null = null;
     try { target = new URL(entry.url, origin); } catch { /* not a URL */ }
-    if (!target || target.origin !== origin) return refused(entry, `${target?.origin ?? "an invalid URL"} is not this site`);
+    if (!target || target.origin !== origin) return alone(refused(entry, `${target?.origin ?? "an invalid URL"} is not this site`));
   }
   const cached = await isRawCached(entry);
-  if (cached === null) return { status: "unavailable" };
-  if (cached) return { status: "cached", bytes: entry.bytes };
-  if (opts.signal?.aborted) return { status: "aborted" };
+  if (cached === null) return alone({ status: "unavailable" });
+  if (cached) return alone({ status: "cached", bytes: entry.bytes });
+  if (opts.signal?.aborted) return alone({ status: "aborted" });
 
-  return new Promise<PrefetchRawResult>((resolve) => {
-    const caller: Caller = { onProgress: opts.onProgress, resolve: (r) => { if (!caller.done) { caller.done = true; resolve(r); } }, done: false };
+  return new Promise<Once>((resolve) => {
+    let joined: Once["joined"] = null;
+    const caller: Caller = {
+      onProgress: opts.onProgress,
+      onBusyWait: opts.onBusyWait,
+      resolve: (r) => { if (!caller.done) { caller.done = true; resolve({ result: r, joined }); } },
+      done: false,
+    };
     // Register the caller BEFORE the flight can start: a lock granted at once
     // must already see who is waiting.
     let flight = flights.get(key);
+    if (flight?.closed) flight = undefined; // shutting down: never join it
     const fresh = !flight;
-    if (!flight) {
-      flight = { callers: new Set(), abortAll: () => {} };
+    if (flight) joined = flight.onBusy;
+    else {
+      flight = { callers: new Set(), abortAll: () => {}, closed: false, onBusy: opts.onBusy ?? "return" };
       flights.set(key, flight);
     }
     const f = flight;
@@ -133,12 +154,19 @@ export async function prefetchRaw(entry: SnapshotEntry, opts: PrefetchRawOptions
       if (f.callers.size === 0) f.abortAll();
     }, { once: true });
     if (fresh) {
-      void runFlight(entry, key, f, opts).then((r) => {
-        if (flights.get(key) === f) flights.delete(key);
+      const settle = (r: PrefetchRawResult) => {
+        close(key, f);
         for (const c of f.callers) c.resolve(r);
-      });
+      };
+      runFlight(entry, key, f, opts).then(settle, (e: unknown) => settle({ status: "error", error: failureCauseOf(e, { stage: "snapshot", subject: entry.name }) }));
     }
   });
+}
+
+/** A flight that is settling or shutting down takes no new callers. */
+function close(key: string, f: Flight): void {
+  f.closed = true;
+  if (flights.get(key) === f) flights.delete(key);
 }
 
 async function runFlight(entry: SnapshotEntry, key: string, f: Flight, opts: PrefetchRawOptions): Promise<PrefetchRawResult> {
@@ -147,10 +175,16 @@ async function runFlight(entry: SnapshotEntry, key: string, f: Flight, opts: Pre
   const onBusy = opts.onBusy ?? "return";
   const wait = new AbortController();
   let waitTimer: ReturnType<typeof setTimeout> | undefined;
-  if (onBusy === "wait") waitTimer = setTimeout(() => wait.abort(), opts.busyWaitMs ?? PREFETCH_SILENCE_MS);
-  f.abortAll = () => wait.abort();
+  let granted = false;
+  if (onBusy === "wait") {
+    waitTimer = setTimeout(() => { close(key, f); wait.abort(); }, opts.busyWaitMs ?? PREFETCH_SILENCE_MS);
+    // Say so when the lock is not ours at once (another tab is writing this region).
+    void Promise.resolve().then(() => Promise.resolve()).then(() => { if (!granted && !f.closed) for (const c of f.callers) c.onBusyWait?.(); });
+  }
+  f.abortAll = () => { close(key, f); wait.abort(); };
   try {
     return await locks.request(`qed64-raw:${key}`, onBusy === "wait" ? { signal: wait.signal } : { ifAvailable: true }, async (lock) => {
+      granted = true;
       clearTimeout(waitTimer);
       if (!lock) return { status: "busy" } as PrefetchRawResult;
       if (f.callers.size === 0) return { status: "aborted" } as PrefetchRawResult;
@@ -168,7 +202,13 @@ function runWorker(entry: SnapshotEntry, key: string, f: Flight, opts: PrefetchR
   return new Promise<PrefetchRawResult>((resolve) => {
     let settled = false;
     let bail: ReturnType<typeof setTimeout> | undefined;
-    const w = new Worker(opts.workerUrl ?? "/workers/snapshot-prefetch.worker.js");
+    let w: Worker;
+    try {
+      w = new Worker(opts.workerUrl ?? "/workers/snapshot-prefetch.worker.js");
+    } catch (e) {
+      resolve({ status: "error", error: { kind: "other", stage: "snapshot", subject: entry.name, code: "WORKER_LOAD_FAILED", message: String((e as Error)?.message ?? e) } });
+      return;
+    }
     const finish = (r: PrefetchRawResult) => {
       if (settled) return;
       settled = true;
@@ -182,6 +222,7 @@ function runWorker(entry: SnapshotEntry, key: string, f: Flight, opts: PrefetchR
     const giveUp = (status: "silent" | "aborted") => {
       if (settled) return;
       settled = true;
+      close(key, f); // a caller arriving during the cleanup starts afresh
       clearTimeout(bail);
       w.onmessage = null;
       w.onerror = null;

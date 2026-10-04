@@ -502,7 +502,7 @@ describe("promote-staging.mjs", () => {
 describe("snapshot index schema", () => {
   test("accepts entries with and without `runtime`, rejects a non-string one", async () => {
     const mk = (entry: Record<string, unknown>) =>
-      ({ ok: true, json: async () => ({ schema: "qed64.snapshot-index/v1", snapshots: [entry] }) }) as unknown as Response;
+      new Response(JSON.stringify({ schema: "qed64.snapshot-index/v1", snapshots: [entry] }), { status: 200 }); // a real Response: the loader reads text (to tell HTML from JSON)
     const base = { name: "init", url: "/snapshots/init.snapz", bytes: 1, imports: [] };
     const fetchWith = async (entry: Record<string, unknown>) => {
       const saved = globalThis.fetch;

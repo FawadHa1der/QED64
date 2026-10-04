@@ -29,22 +29,32 @@ export interface RelayTaps {
   interceptIn(fn: (msg: LspMessage) => boolean): () => void;
   /** Consume a relay → client message: return true to drop it. */
   interceptOut(fn: (msg: LspMessage) => boolean): () => void;
-  /** Post to the client as the relay would (observers and interceptors run). */
+  /** Post to the client as the relay would (observers and interceptors run).
+   * The message is marked as the page's own (`fromPage`). */
   toClient(msg: LspMessage): void;
+  /** Did the page itself post this message (not the Lean side, not the relay)? */
+  fromPage(msg: LspMessage): boolean;
   /** Hand the relay a message as the client would (bypasses `interceptIn`). */
   toRelay(msg: LspMessage): void;
 }
 
 const tapped = new WeakMap<object, RelayTaps>();
 
-function hook<T extends unknown[]>(set: Set<(...a: T) => unknown>, name: string) {
+/** Interceptors: the first that returns true handles the message. */
+function intercepts<T extends unknown[]>(set: Set<(...a: T) => boolean>, name: string) {
   return (...a: T): boolean => {
-    let handled = false;
     for (const f of [...set]) {
-      try { if (f(...a) === true) handled = true; } catch (e) { console.error(`[qed64] relay tap (${name}) threw`, e); }
-      if (handled) break;
+      try { if (f(...a) === true) return true; } catch (e) { console.error(`[qed64] relay tap (${name}) threw`, e); }
     }
-    return handled;
+    return false;
+  };
+}
+/** Observers: every one runs, whatever it returns. */
+function observers<T extends unknown[]>(set: Set<(...a: T) => unknown>, name: string) {
+  return (...a: T): void => {
+    for (const f of [...set]) {
+      try { f(...a); } catch (e) { console.error(`[qed64] relay tap (${name}) threw`, e); }
+    }
   };
 }
 
@@ -55,10 +65,11 @@ export function tapRelay(relay: TappableRelay): RelayTaps {
   const outs = new Set<(m: LspMessage) => void>();
   const inIntercepts = new Set<(m: LspMessage) => boolean>();
   const outIntercepts = new Set<(m: LspMessage) => boolean>();
-  const runIns = hook(ins, "in");
-  const runOuts = hook(outs, "out");
-  const interceptedIn = hook(inIntercepts, "intercept in");
-  const interceptedOut = hook(outIntercepts, "intercept out");
+  const runIns = observers(ins, "in");
+  const runOuts = observers(outs, "out");
+  const interceptedIn = intercepts(inIntercepts, "intercept in");
+  const interceptedOut = intercepts(outIntercepts, "intercept out");
+  const pageMade = new WeakSet<object>();
   const forward = relay.fromClient.bind(relay);
   const post = relay.toClient.bind(relay);
   // Instance properties shadow the prototype methods: the relay's own port
@@ -78,7 +89,8 @@ export function tapRelay(relay: TappableRelay): RelayTaps {
     onOut: add(outs),
     interceptIn: add(inIntercepts),
     interceptOut: add(outIntercepts),
-    toClient: (msg) => relay.toClient(msg),
+    toClient: (msg) => { pageMade.add(msg); relay.toClient(msg); },
+    fromPage: (msg) => typeof msg === "object" && msg !== null && pageMade.has(msg),
     toRelay: (msg) => { forward(msg); runIns(msg); },
   };
   tapped.set(relay, taps);

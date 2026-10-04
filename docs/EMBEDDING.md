@@ -162,6 +162,11 @@ interface LivenessInfo {              // the worker's liveness machine (HARDENIN
     pushes one undo step; `false` uses `setValue`. It resolves once the relay
     has forwarded that exact text, with the text's document version.
   * Identical text resolves at once with `unchanged: true` and sends nothing.
+  * Line endings are compared in the model's terms: Monaco stores one EOL,
+    so CRLF or a lone CR in `text` is normalized.
+* **Before the page is up,** `whenReady`, `settled` and a pre-boot
+  `setDocument` reject with `{code: "BOOT_FAILED"}` when the boot fails
+  first (a refused parameter, a missing index).
 * **`settled({version, afterSession, timeoutMs})`**
   * Resolves with the status once the phase is `ready` or `headerRefused` at a
     document version `>= version`. The default `version` is the current
@@ -178,8 +183,11 @@ interface LivenessInfo {              // the worker's liveness machine (HARDENIN
     (warmHeader, packs) while the import lines still match, otherwise the
     snapshot list the session loaded.
   * `initialBytes` is normalized: rounded to 256 MiB and clamped to
-    [1, 6] GiB. It sticks for that session and its crash reboots until the
-    next explicit restart.
+    [1, 6] GiB. It sticks for every later session (crash reboots, widens,
+    header changes) until the next explicit `restart()`, which resets it to
+    the page default (`?memory=`, else the index policy).
+  * A commit is never larger than the largest reservation the device will
+    try: the page and the worker both clamp it to the reservation ladder.
   * On a halted relay, `restart()` with no arguments re-arms it on the
     default session, as an edit would.
   * It returns `{accepted: false}` while a boot is in flight.
@@ -238,9 +246,15 @@ In embed mode the page:
 The first match in this list wins:
 1. a `setDocument` call made before the boot document is read;
 2. `#code=<encodeURIComponent(text)>` in the fragment (lean4web's spelling,
-   at most 2 MiB). It is **read once**: the page drops the fragment with
-   `history.replaceState`, keeping the query, so a reload does not resurrect
-   stale text;
+   at most 2 MiB), **only when the page is framed by a same-origin parent**.
+   - A boot document is code. Lean source can define a widget module whose
+     JS runs in the same-origin InfoView iframe with no click.
+   - So a top-level link (anyone can send one) never supplies it; the page
+     logs that it ignored it.
+   - A cross-origin frame cannot boot at all (no isolation).
+   - It is **read once**: the page drops the fragment with
+     `history.replaceState`, keeping the query, so a reload does not
+     resurrect stale text;
 3. in embed mode, a `setDocument` that arrives at most 5 s after module start
    (the wait runs in parallel with the manifest fetches), else the empty
    document; on the plain page, the stored buffer, else the default example.
@@ -441,8 +455,8 @@ interface FailureCause { kind: FailureKind; httpStatus?: number; stage?: BootSta
 | kind | meaning | e.g. |
 |------|---------|------|
 | `network` | the fetch was rejected, the stream was cut, or 5xx/429 (retrying can help) | `Failed to fetch`, `HTTP 503` |
-| `missing` | the server does not have it: a deploy problem, so retrying cannot help | `HTTP 404/410`, an HTML answer where JSON/binary belongs, `SNAPSHOT_NOT_IN_INDEX` |
-| `corrupt` | it arrived but is wrong | chunk length or SHA-256 mismatch, gzip error, bad magic, `SNAPSHOT_LOAD_RESULT` (the Lean loader refused the region) |
+| `missing` | the server does not have it: a deploy problem, so retrying cannot help | every 4xx except 408/425/429; an HTML answer where JSON or binary belongs (the workers and the index loader sniff it); `SNAPSHOT_NOT_IN_INDEX` |
+| `corrupt` | it arrived but is wrong | chunk length or SHA-256 mismatch; a gzip/DecompressionStream error; "not a compacted-region file"; a size the index does not declare; "raw size mismatch"; `SNAPSHOT_LOAD_RESULT` (the Lean loader refused the region) |
 | `unpaired` | a snapshot baked by another runtime build | `SNAPSHOT_UNPAIRED` |
 | `oom` | an allocation or reservation failed | `MEMORY_FAILED`, `could not allocate`, `Cannot enlarge memory` |
 | `storage` | OPFS or quota | `QuotaExceededError` |
@@ -683,8 +697,15 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
 ## 11. Security notes
 
 - **HARDENING #57 (fixed in this branch).** Off-origin snapshot and profile
-  sources could be loaded through a crafted link. Every boot parameter, the
-  index loader, `prefetchRaw` and both workers now refuse them.
+  sources could be loaded through a crafted link. These are now refused,
+  including when the off-origin source is reached through a redirect:
+  - every boot parameter;
+  - the snapshot index loader;
+  - the profile loaders (index, manifests, parts);
+  - `prefetchRaw` and both workers.
+
+  A boot document in the URL (`#code=`) is honoured only inside a
+  same-origin frame (§3.1).
 - **Caches written before the fix.** A region fetched from another origin
   before #57 was committed under the key the hostile index named. A copied
   `name` and `digest` would persist under a genuine key, and later visits

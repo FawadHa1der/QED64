@@ -136,6 +136,8 @@ async function rawPrefetch(url, cacheKey, rawBytes, report) {
     if (!source) {
       const response = await fetch(url);
       if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
+      if (response.redirected && new URL(response.url).origin !== self.location.origin) throw new Error(`SNAPSHOT_URL_REFUSED: redirected to ${new URL(response.url).origin}, not this site`);
+      if (/text\/html/i.test(response.headers.get("content-type") || "")) throw new Error("the server answered HTML, not a snapshot");
       downloadedTotal = Number(response.headers.get("content-length")) || 0;
       source = response.body;
     }
@@ -143,6 +145,7 @@ async function rawPrefetch(url, cacheKey, rawBytes, report) {
     const reader = source.getReader();
     const head = await reader.read();
     if (head.done || !head.value) throw new Error("empty snapshot source");
+    if (head.value[0] === 0x3c) throw new Error("the server answered HTML, not a snapshot");
     const isGzip = head.value.length >= 2 && head.value[0] === 0x1f && head.value[1] === 0x8b;
     const replay = new ReadableStream({
       start(c) { c.enqueue(head.value); },
