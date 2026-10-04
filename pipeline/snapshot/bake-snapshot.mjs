@@ -31,21 +31,24 @@ import { buildIdOfArtifact, refuseInsidePublic, stagingDir } from "../toolchain/
 // flag prints the usage line and exits 2, an unknown flag is a WARNING on stderr, and
 // --flag=value is rewritten to the two-token form this script reads (docs/CLI-CONTRACT.md).
 {
-  const spec = {"tool":"bake-snapshot","usage":"bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>]","flags":{"name":1,"probe":1,"artifact":1,"lib":1,"reserve":1,"work":1,"out":1},"required":[],"passthrough":null,"passthroughRequired":false};
+  const spec = {"tool":"bake-snapshot","usage":"bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--roots <A,B,…>] [--label <text>] [--initial-bytes <bytes>]","flags":{"name":1,"probe":1,"artifact":1,"lib":1,"reserve":1,"work":1,"out":1,"roots":1,"label":1,"initial-bytes":1},"required":[],"passthrough":null,"passthroughRequired":false};
   spec.help = [
-    "usage: bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>]",
+    "usage: bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--roots <A,B,…>] [--label <text>] [--initial-bytes <bytes>]",
     "Bake an environment snapshot with the exact wasm64 runtime under Node (the runner is supervised and reaped), gzip it content-addressed into the staging dir and upsert its index entry.",
     "run as: node pipeline/snapshot/bake-snapshot.mjs (or npm run bake:snapshot -- …)",
     "",
     "flags:",
-    "  --name <name>          snapshot name: <work>/<name>.snap, <name>.<digest16>.snapz and the index entry (default: init)",
-    "  --probe <lean source>  the baked file; its import lines become the entry's imports (the env-cache key) (default: #check (2 + 2 : Nat))",
-    "  --artifact <dir>       stage1 dir whose bin/lean.wasm bakes and is stamped as `runtime`; always passed to the runner (default: $QED64_LEAN_ARTIFACT, else pipeline/toolchain/work/build/stage1)",
-    "  --lib <olean tree>     olean tree mounted at /lib/lean (default: the runner's <artifact>/lib/lean)",
-    "  --reserve <bytes>      compactor buffer reserved up front (LEAN_COMPACTOR_RESERVE for the runner) (default: 3758096384 (3.5 GiB))",
-    "  --work <dir>           raw .snap + probe.lean; <work>/<name>.snap is deleted when the bake starts (default: work/snapshot under the repo root: the PAIRED set the probes load)",
-    "  --out <dir>            staged .snapz + index.json; refused inside public/ (default: work/staging/<buildId>/snapshots under the repo root)",
-    "  -h, --help             print this help and exit 0, before any side effect",
+    "  --name <name>            snapshot name: <work>/<name>.snap, <name>.<digest16>.snapz and the index entry (default: init)",
+    "  --probe <lean source>    the baked file; its import lines become the entry's imports (the env-cache key) (default: #check (2 + 2 : Nat))",
+    "  --artifact <dir>         stage1 dir whose bin/lean.wasm bakes and is stamped as `runtime`; always passed to the runner (default: $QED64_LEAN_ARTIFACT, else pipeline/toolchain/work/build/stage1)",
+    "  --lib <olean tree>       olean tree mounted at /lib/lean (default: the runner's <artifact>/lib/lean)",
+    "  --reserve <bytes>        compactor buffer reserved up front (LEAN_COMPACTOR_RESERVE for the runner) (default: 3758096384 (3.5 GiB))",
+    "  --work <dir>             raw .snap + probe.lean; <work>/<name>.snap is deleted when the bake starts (default: work/snapshot under the repo root: the PAIRED set the probes load)",
+    "  --out <dir>              staged .snapz + index.json; refused inside public/ (default: work/staging/<buildId>/snapshots under the repo root)",
+    "  --roots <A,B,…>          module roots the entry serves (docs/EMBEDDING.md §8): the page boots and widens to it for a header naming one (default: none (the legacy rule: an entry named mathlib serves the umbrella roots))",
+    "  --label <text>           the entry's human name for the page's pill and boot card (default: none)",
+    "  --initial-bytes <bytes>  initial Memory64 commit when the entry is loaded (default: none (2 GiB with a non-base entry))",
+    "  -h, --help               print this help and exit 0, before any side effect",
     "",
     "environment:",
     "  QED64_LEAN_ARTIFACT       stage1 artifact dir (bin/lean.js, bin/lean.wasm, lib/lean) used when --artifact is absent",
@@ -57,7 +60,7 @@ import { buildIdOfArtifact, refuseInsidePublic, stagingDir } from "../toolchain/
     "exit codes:",
     "  0  baked and the index upserted (also when the wedged runner was reaped); NOT a verdict on the probe's Lean messages",
     "  1  the runner exited non-zero, or no .snap was produced",
-    "  2  refused before the runner: no lean.wasm under the artifact, --out inside public/, an index paired with another runtime or with none",
+    "  2  refused before the runner: no lean.wasm under the artifact, --out inside public/, an index paired with another runtime or with none, a malformed --roots or --initial-bytes",
     "",
     "tier 1 (downstream-stable). Contract: docs/CLI-CONTRACT.md",
   ].join("\n");
@@ -110,6 +113,22 @@ function arg(name, fallback) {
 }
 const name = arg("name", "init");
 const probe = arg("probe", "#check (2 + 2 : Nat)");
+// Overlay metadata (docs/EMBEDDING.md §8), written into the entry only when
+// given: the module roots the environment serves, a label, an initial commit.
+const ROOT = /^[A-Za-z_][\w']*(?:\.[A-Za-z_][\w']*)*$/;
+const rootsArg = arg("roots", null);
+const roots = rootsArg === null ? null : rootsArg.split(",").map((r) => r.trim()).filter(Boolean);
+if (roots !== null && (roots.length === 0 || !roots.every((r) => ROOT.test(r)))) {
+  console.error(`bake-snapshot: refusing --roots ${JSON.stringify(rootsArg)}: expected comma-separated module roots (e.g. Mathlib,ProofWidgets)`);
+  process.exit(2);
+}
+const label = arg("label", null);
+const initialBytesArg = arg("initial-bytes", null);
+const initialBytes = initialBytesArg === null ? null : Number(initialBytesArg);
+if (initialBytes !== null && !(Number.isSafeInteger(initialBytes) && initialBytes > 0)) {
+  console.error(`bake-snapshot: refusing --initial-bytes ${JSON.stringify(initialBytesArg)}: expected a positive whole number of bytes`);
+  process.exit(2);
+}
 const artifact = arg("artifact", null);
 // The runtime identity comes from the artifact that will do the baking (the
 // runner's own default when --artifact is absent), never from a manifest in
@@ -270,6 +289,9 @@ const entry = {
   transfer: transferBytes,
   imports: importsOf(probe),
   runtime: buildId,
+  ...(roots ? { roots } : {}),
+  ...(label ? { label } : {}),
+  ...(initialBytes ? { initialBytes } : {}),
 };
 // Re-read: a concurrent bake of a sibling name may have upserted meanwhile.
 try { index = JSON.parse(fs.readFileSync(indexPath, "utf8")); } catch {}

@@ -207,7 +207,7 @@ regexes are exactly the ones in SPECS (`--print-specs` prints them as strings).
 **Tier 1.** `node pipeline/snapshot/bake-snapshot.mjs …` or `npm run bake:snapshot -- …`
 
 ```
-usage: bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>]
+usage: bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--roots <A,B,…>] [--label <text>] [--initial-bytes <bytes>]
 ```
 
 | Flag | Default | Meaning |
@@ -219,6 +219,9 @@ usage: bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <di
 | `--reserve <bytes>` | `3758096384` (3.5 GiB) | `LEAN_COMPACTOR_RESERVE` for the runner. |
 | `--work <dir>` | `work/snapshot` under the repo root | Holds the raw `.snap` and `probe.lean`. **The default is the PAIRED set** the probes and the compiler battery load: a bake for any other runtime must pass `--work`. Resolves against the repo root. |
 | `--out <dir>` | `work/staging/<buildId>/snapshots` under the repo root | Holds the staged `.snapz` and `index.json`. Refused inside `public/`. Resolves against the repo root. |
+| `--roots <A,B,…>` | none | Module roots the entry serves (docs/EMBEDDING.md §8): the page boots and widens to it for a header naming one. Absent: the legacy rule (an entry named `mathlib` serves the umbrella roots). |
+| `--label <text>` | none | The entry's human name for the page's pill and boot card. |
+| `--initial-bytes <bytes>` | none | The initial Memory64 commit when the entry is loaded (else 2 GiB with any non-base entry). |
 
 - **Environment:** `QED64_LEAN_ARTIFACT`. `LEAN_COMPACTOR_RESERVE` is set for
   the runner. `QED64_ALLOW_LEGACY_IMPORTS` and `QED64_PROFILE_INIT` are
@@ -231,7 +234,8 @@ usage: bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <di
   - `<work>/probe.lean`.
   - `<out>/<name>.<digest16>.snapz`, gzip and content-addressed.
   - `<out>/index.json` with the entry `{name, url, digest, bytes, transfer,
-    imports, runtime}` upserted.
+    imports, runtime}` upserted, plus `roots`, `label` and `initialBytes`
+    when given.
 
 | Marker | Stream | Regex |
 |---|---|---|
@@ -251,7 +255,7 @@ The runner's output (node-runner and Lean) is interleaved on both streams.
 |---|---|
 | 0 | Baked and the index upserted. This includes the case where the wedged runner was reaped. **It is not a verdict on the probe's Lean messages:** the header snapshot is saved before Lean returns on errors. Judge the log, as the showcase's `judge-bake.mjs` does. |
 | 1 | The runner exited non-zero (an unhandled `runner exited N`), or no `.snap` was produced. |
-| 2 | Refused before the runner started: no `lean.wasm` under the artifact, `--out` inside `public/`, or an index paired with another runtime or with none. |
+| 2 | Refused before the runner started: no `lean.wasm` under the artifact, `--out` inside `public/`, an index paired with another runtime or with none, or a malformed `--roots` / `--initial-bytes`. |
 
 **Side effects, in order:**
 
@@ -742,6 +746,7 @@ usage: unpack.mjs --manifest <file> --out <dir>
 | 1 | 2026-10-04 | `bake-snapshot --help` no longer bakes. Before, it unlinked `<work>/<name>.snap` (by default the paired `work/snapshot/init.snap`) and started a ~20 min, 11 GB bake. `node-runner --help` no longer boots wasm and hangs; Lean's own help is now `node-runner -- --help`. | fix |
 | 1 | 2026-10-04 | A missing required flag now exits 2 with the usage line. Before, the check tested `path.resolve("")`, which is the cwd and never empty, so the documented usage refusal was dead code: chunk-runtime without `--bin` spawned git and crashed with exit 1; pack without `--lib` walked and packed the cwd; unpack without `--out` wrote the tree into the cwd, and without `--manifest` crashed with exit 1; snapshot-probe without `--snap` crashed with exit 1 and leaked a tmp dir. | fix |
 | 1 | 2026-10-04 | node-runner creates `--work` only after the artifact checks pass, so a class-2 refusal leaves the filesystem as it was. | fix |
+| 1 | 2026-10-04 | `bake-snapshot --roots/--label/--initial-bytes` write the overlay fields of docs/EMBEDDING.md §8 into the entry (only when given); a malformed value exits 2 before anything is written. | additive |
 
 ## Open decisions
 

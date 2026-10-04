@@ -107,7 +107,7 @@ export const SPECS = {
     tier: 1,
     binding: "inline",
     node: "node",
-    synopsis: "bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>]",
+    synopsis: "bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--roots <A,B,…>] [--label <text>] [--initial-bytes <bytes>]",
     summary: "Bake an environment snapshot with the exact wasm64 runtime under Node (the runner is supervised and reaped), gzip it content-addressed into the staging dir and upsert its index entry.",
     flags: [
       { name: "name", value: "<name>", default: "init", doc: "snapshot name: <work>/<name>.snap, <name>.<digest16>.snapz and the index entry" },
@@ -117,12 +117,15 @@ export const SPECS = {
       { name: "reserve", value: "<bytes>", default: "3758096384 (3.5 GiB)", doc: "compactor buffer reserved up front (LEAN_COMPACTOR_RESERVE for the runner)" },
       { name: "work", value: "<dir>", default: "work/snapshot under the repo root: the PAIRED set the probes load", doc: "raw .snap + probe.lean; <work>/<name>.snap is deleted when the bake starts" },
       { name: "out", value: "<dir>", default: "work/staging/<buildId>/snapshots under the repo root", doc: "staged .snapz + index.json; refused inside public/" },
+      { name: "roots", value: "<A,B,…>", default: "none (the legacy rule: an entry named mathlib serves the umbrella roots)", doc: "module roots the entry serves (docs/EMBEDDING.md §8): the page boots and widens to it for a header naming one" },
+      { name: "label", value: "<text>", default: "none", doc: "the entry's human name for the page's pill and boot card" },
+      { name: "initial-bytes", value: "<bytes>", default: "none (2 GiB with a non-base entry)", doc: "initial Memory64 commit when the entry is loaded" },
     ],
     env: ["QED64_LEAN_ARTIFACT", "LEAN_COMPACTOR_RESERVE", "QED64_ALLOW_LEGACY_IMPORTS", "QED64_PROFILE_INIT"],
     exits: {
       0: "baked and the index upserted (also when the wedged runner was reaped); NOT a verdict on the probe's Lean messages",
       1: "the runner exited non-zero, or no .snap was produced",
-      2: "refused before the runner: no lean.wasm under the artifact, --out inside public/, an index paired with another runtime or with none",
+      2: "refused before the runner: no lean.wasm under the artifact, --out inside public/, an index paired with another runtime or with none, a malformed --roots or --initial-bytes",
     },
     markers: [
       { id: "baking", stream: "stdout", template: ["baking ${name}.snap for runtime ${buildId} (probe: ${JSON.stringify(probe)}; compactor reserve ${(Number(reserve) / 1024 ** 3).toFixed(1)} GiB) → ${out}"],
