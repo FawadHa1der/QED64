@@ -17,6 +17,7 @@ import { ensureProfile, loadSnapshotByName, type Qed64Artifacts, type Qed64Sessi
 import type { RelaySession, RestartOptions } from "./lsp-relay";
 import { LeanSession, memoryCandidates, type JsonRpcMessage, type LibraryPack, type WorkerStatus } from "../../src/runtime/client";
 import { installProfile } from "../../src/install/profiles";
+import { failureCauseOf, stageOfWorkerPhase, stepOfInstallPhase } from "./embed/failure";
 
 const MiB = 1048576;
 const GiB = 1073741824;
@@ -46,7 +47,17 @@ export interface ResidentHost {
   policy?: ResidentPolicy;
   /** The document this session will serve (see the module note). */
   headerText: string;
+  /** Files written into the worker's filesystem on EVERY boot of this session
+   * (first and reboots alike: each reboot is a new session built from the same
+   * host), after the snapshots and the exact-import warm, immediately before
+   * the relay arms the loop (docs/EMBEDDING.md §7.3). Absolute paths. */
+  files?: SessionFile[] | (() => SessionFile[] | Promise<SessionFile[]>);
+  /** The last step of every boot, after `files`; a throw is a bootFailed death. */
+  beforeArm?(session: LeanSession): Promise<void>;
 }
+
+/** One file for the worker's filesystem (`LeanSession.writeFiles`). */
+export type SessionFile = { path: string; text: string } | { path: string; bytes: Uint8Array };
 
 /** Only the import lines of a header — the warm compile is built the same way
  * (the body must not be elaborated on the main thread; the FileWorker does
@@ -119,17 +130,21 @@ export class ResidentSession implements RelaySession {
   readonly maximumBytes: number;
   private readonly artifacts: Qed64Artifacts;
   private readonly ui: StatusSink;
+  private readonly files: ResidentHost["files"];
+  private readonly beforeArm: ResidentHost["beforeArm"];
 
   constructor(host: ResidentHost, private readonly opts: RestartOptions = {}) {
     this.artifacts = host.artifacts;
     this.ui = host.ui;
+    this.files = host.files;
+    this.beforeArm = host.beforeArm;
     const policy = host.policy ?? {};
     this.snapshots = opts.snapshots ?? policy.snapshotsFor?.(host.headerText) ?? ["init", "mathlib"];
     this.initialBytes = policy.initialBytesFor?.(host.headerText, this.snapshots) ?? 2048 * MiB;
     this.maximumBytes = policy.maximumBytes ?? DEFAULT_MAXIMUM_BYTES;
     this.id = this.lean.id;
     this.lean.onLog = (stream, text) => console.debug(`[lean:${stream}] ${text}`);
-    this.lean.onProgress = (p) => this.ui.progress(p.label ?? p.phase, { phase: p.phase, loaded: p.loaded, total: p.total, unit: p.unit });
+    this.lean.onProgress = (p) => this.ui.progress(p.label ?? p.phase, { phase: p.phase, loaded: p.loaded, total: p.total, unit: p.unit, ...this.workerStage(p.phase, p.label) });
   }
   get onLsp() { return this.lean.onLsp; }
   set onLsp(f: (msg: JsonRpcMessage) => void) { this.lean.onLsp = f; }
@@ -148,6 +163,15 @@ export class ResidentSession implements RelaySession {
    * `disposeForUnload`); `LeanSession.terminate()` kills the Worker NOW. */
   terminate(): void { this.lean.terminate(); }
 
+  /** The snapshot a worker progress event belongs to (set while one loads). */
+  private loading: string | null = null;
+  private workerStage(phase: string, label?: string) {
+    const st = stageOfWorkerPhase(phase);
+    const verifying = /^Verifying (\S+)/.exec(label ?? "")?.[1];
+    const subject = st.stage === "snapshot" || st.stage === "modules" ? this.loading ?? undefined : st.stage === "runtime" ? verifying : undefined;
+    return { ...st, ...(subject ? { subject } : {}) };
+  }
+
   async start(): Promise<void> {
     const a = this.artifacts;
     const ui = this.ui;
@@ -159,7 +183,7 @@ export class ResidentSession implements RelaySession {
     // death: the warm compile then fails its imports and the session serves
     // the header covered, with the offer back.
     if (this.opts.packs?.includes("essential") && !(await ensureProfile(a, "essential", ui))) {
-      ui.progress("the Mathlib library pack is unavailable — exact imports may fail");
+      ui.progress("the Mathlib library pack is unavailable — exact imports may fail", { stage: "profile", subject: "essential" });
     }
     // Memory-backed segments were TRANSFERRED to the worker that booted them
     // and are detached page-side; a reboot reinstalls them (an OPFS install
@@ -171,8 +195,8 @@ export class ResidentSession implements RelaySession {
       if (!profile.segments.some((seg) => seg.bytes && seg.bytes.buffer.byteLength === 0)) continue;
       const entry = a.index.profiles.find((p) => p.id === id);
       if (!entry) { a.installed.delete(id); console.warn(`[qed64] pack ${id} was consumed by the previous worker and is not in the index; dropped from LEAN_PATH`); continue; }
-      ui.busy(`re-preparing the ${id} library for the new session`);
-      a.installed.set(id, await installProfile(entry, (p) => ui.progress(`${p.phase} ${id}`, { phase: `pack-${p.phase}`, loaded: p.loaded, total: p.total ?? 0, unit: "bytes" })));
+      ui.busy(`re-preparing the ${id} library for the new session`, { stage: "profile", subject: id });
+      a.installed.set(id, await installProfile(entry, (p) => ui.progress(`${p.phase} ${id}`, { phase: `pack-${p.phase}`, loaded: p.loaded, total: p.total ?? 0, unit: "bytes", stage: "profile", subject: id, step: stepOfInstallPhase(p.phase) })));
     }
     const packs: LibraryPack[] = [...a.installed.values()].flatMap((p) =>
       p.segments.map((segment, i) => ({ id: `${p.id}#${i}`, ...(segment.blob ? { blob: segment.blob } : {}), ...(segment.bytes ? { bytes: segment.bytes } : {}), metadata: segment.metadata, mountPoint: `/lib/packs/${p.id}` })),
@@ -181,18 +205,40 @@ export class ResidentSession implements RelaySession {
     // rung becomes the sole candidate, so a small cap never yields an empty
     // ladder (which would make boot fail instead of reserving less).
     const under = memoryCandidates().filter((b) => b <= this.maximumBytes);
-    ui.busy("starting Lean");
-    await this.lean.boot({
-      runtime: a.runtime,
-      memory: { initialBytes: this.initialBytes, maximumCandidates: under.length ? under : [this.maximumBytes] },
-      leanPath: [...a.installed.keys()].map((id) => `/lib/packs/${id}`).join(":"),
-      packs,
-    });
+    ui.busy("starting Lean", { stage: "runtime" });
+    try {
+      await this.lean.boot({
+        runtime: a.runtime,
+        memory: { initialBytes: this.initialBytes, maximumCandidates: under.length ? under : [this.maximumBytes] },
+        leanPath: [...a.installed.keys()].map((id) => `/lib/packs/${id}`).join(":"),
+        packs,
+      });
+    } catch (err) {
+      // The message is unchanged; the cause (docs/EMBEDDING.md §7.2) rides along.
+      throw Object.assign(err instanceof Error ? err : new Error(String(err)), { cause: failureCauseOf(err, { stage: "runtime" }) });
+    }
     const qs: Qed64Session = { session: this.lean, loadedSnapshots: new Set() };
     for (const name of this.snapshots) {
-      if (!(await loadSnapshotByName(a, qs, name, ui))) throw new Error(`snapshot '${name}' failed to load`);
+      this.loading = name;
+      const ok = await loadSnapshotByName(a, qs, name, ui);
+      this.loading = null;
+      if (!ok) {
+        throw Object.assign(new Error(`snapshot '${name}' failed to load`), {
+          cause: qs.lastFailure ?? { kind: "other", stage: "snapshot", subject: name, message: `snapshot '${name}' failed to load` },
+        });
+      }
     }
     if (this.opts.warmHeader) await this.warm(this.opts.warmHeader);
+    const files = typeof this.files === "function" ? await this.files() : this.files;
+    if (files && files.length > 0) {
+      ui.progress(`preparing ${files.length} session file${files.length === 1 ? "" : "s"}`, { stage: "files", step: "write" });
+      try {
+        await this.lean.writeFiles(files);
+      } catch (err) {
+        throw Object.assign(err instanceof Error ? err : new Error(String(err)), { cause: failureCauseOf(err, { stage: "files" }) });
+      }
+    }
+    if (this.beforeArm) await this.beforeArm(this.lean);
     // Deliberately no arm() here: the relay arms after its replay (§2.3 BootOk).
   }
 
@@ -210,16 +256,16 @@ export class ResidentSession implements RelaySession {
     const imports = importLinesOf(header);
     if (imports.length === 0) return;
     const ui = this.ui;
-    ui.busy("importing exactly your header from the Mathlib library (about a minute; the checker starts afterwards)");
+    ui.busy("importing exactly your header from the Mathlib library (about a minute; the checker starts afterwards)", { stage: "warm" });
     try {
       const r = await this.lean.compile(`${imports.join("\n")}\n`, "/workspace/__warm.lean");
       if (r.success) return;
       const why = r.diagnostics.find((d) => d.severity === "error")?.message ?? `exit ${r.exitCode}`;
       console.warn(`[qed64] exact import failed (${why}); serving the header from the preloaded library`);
-      ui.progress(`exact import failed: ${why.slice(0, 120)} — using the preloaded library`);
+      ui.progress(`exact import failed: ${why.slice(0, 120)} — using the preloaded library`, { stage: "warm" });
     } catch (err) {
       console.warn(`[qed64] exact import failed: ${(err as Error).message}; serving the header from the preloaded library`);
-      ui.progress("exact import failed — using the preloaded library");
+      ui.progress("exact import failed — using the preloaded library", { stage: "warm" });
     }
   }
 }

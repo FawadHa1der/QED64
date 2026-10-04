@@ -405,6 +405,21 @@ describe("relay contract: lastDeath (gap 2 — the boot failure reason reaches t
     expect(relay.state).toEqual({ kind: "rebooting", reason: "bootFailed" });
     await bootCurrent();
   });
+  it("a start() rejection's attached FailureCause rides along on lastDeath, unread (docs/EMBEDDING.md §7.2)", async () => {
+    await settle();
+    const cause = { kind: "network" as const, stage: "snapshot" as const, subject: "mathlib", code: "SNAPSHOT_FAILED", message: "snapshot fetch: HTTP 503" };
+    current().bootFailed(Object.assign(new Error("snapshot 'mathlib' failed to load"), { cause }));
+    await settle();
+    expect(relay.status().lastDeath).toEqual({ reason: "bootFailed", message: "snapshot 'mathlib' failed to load", cause });
+    await bootCurrent();
+  });
+  it("an Error's standard `cause` that is not a FailureCause is not one", async () => {
+    await settle();
+    current().bootFailed(new Error("runtime manifest: HTTP 404", { cause: new TypeError("Failed to fetch") }));
+    await settle();
+    expect(relay.status().lastDeath).toEqual({ reason: "bootFailed", message: "runtime manifest: HTTP 404" });
+    await bootCurrent();
+  });
   it("an arm() the worker refuses is 'bootFailed' with the worker's own words", async () => {
     await settle();
     current().armFails = true;

@@ -1,9 +1,11 @@
 # Embedding QED64 — contract v1 (DRAFT for review)
 
 Status: **draft, 2026-10-04**, sent to the two downstream consumers (the
-widgets showcase, lean4game) before any code. Nothing below is implemented
-except §2.1's capability flag (`qed64.api = {version: 1, capabilities:
-{editorRpc: true}}`, shipped with HARDENING #56 at 47f50e8).
+widgets showcase, lean4game) for review. Implemented on
+`feature/embedding-api`: §2.1's capability flag (47f50e8, HARDENING #56),
+§4's parameter validation (HARDENING #57), §6's package and §7's library API
+(`EMBED_API_REVISION = "1.0.0-pre.2"` until the review settles). The page
+API (§2.1 – §3) is next.
 
 QED64 is consumed in two ways, and this document is the contract for both:
 
@@ -373,19 +375,22 @@ type FailureKind = "network" | "corrupt" | "unpaired" | "oom" | "storage" | "oth
 interface FailureCause { kind: FailureKind; stage: BootStage; subject?: string; code?: string; message: string }
 ```
 
-* The worker adds `details.cause` (one of the kinds) to the errors it can
-  classify — `SNAPSHOT_UNPAIRED → unpaired`, `MEMORY_FAILED` and a failed
-  region `malloc → oom`, a failed fetch / HTTP status / stream cut →
-  `network`, a short region / bad magic / a gunzip error / loader result ≠ 0
-  → `corrupt`, OPFS failures → `storage`. Additive: older pages ignore it.
-* `loadSnapshotByName` keeps returning `boolean` and additionally reports
-  the cause through `ui.progress(label, {stage: "snapshot", subject, error})`;
-  `ResidentSession.start()` throws `Error & {cause: FailureCause}` (the
-  message text is unchanged: `snapshot '<name>' failed to load`).
-* `Death` (relay) gains `cause?: FailureCause` — from the boot error's
-  `cause`, or for a worker death from its error code. A page running against
-  an **older worker** classifies by error code and message text instead
-  (the fallback is the same table, tested).
+* The **page** classifies, by the worker's error code and message
+  (`failureKindOf`, exported): `SNAPSHOT_UNPAIRED → unpaired`;
+  `MEMORY_FAILED`, a failed region allocation, "Cannot enlarge memory" →
+  `oom`; a chunk that fails its SHA-256 or length check, a gunzip error, a
+  region the Lean loader refuses → `corrupt`; an HTTP status, "Failed to
+  fetch", a cut stream → `network`; quota / OPFS errors → `storage`. The
+  worker's messages already carry these facts, so the table works the same
+  against every worker version, old or new, and the worker is unchanged.
+* `loadSnapshotByName` keeps returning `boolean`; it reports the cause
+  through `ui.progress(label, {stage: "snapshot", subject, error})` and in
+  `qs.lastFailure`. `ResidentSession.start()` throws `Error & {cause:
+  FailureCause}`, with the message text unchanged (`snapshot '<name>' failed
+  to load`, or the runtime boot's own message).
+* `Death` (relay) gains `cause?: FailureCause` for a **boot** failure (the
+  rejection's attached cause, passed through unread). A worker death while
+  serving carries none; classify it with `failureCauseOf` if you need one.
 
 ### 7.3 Session files and a pre-arm hook (wishlist 3)
 
@@ -416,8 +421,8 @@ function prefetchRaw(entry: SnapshotEntry, opts?: {
 }): Promise<{ status: "cached" | "done" | "unavailable" | "busy" | "silent" | "aborted" | "error"; bytes?: number; error?: FailureCause }>;
 ```
 
-The page's own `loadSnapshotByName` uses it, so the worker protocol,
-silence watchdog, termination and partial-file cleanup exist once.
+The page's own `loadSnapshotByName` uses it, so the worker protocol, the
+silence watchdog and termination exist once. It never throws.
 `"cached"` = the raw region was already complete in OPFS (no worker spawned).
 
 ### 7.5 Offline URL list (wishlist 6)

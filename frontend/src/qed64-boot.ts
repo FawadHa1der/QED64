@@ -6,8 +6,9 @@
 // prefetch + load) live here, and the boot itself in resident-session.ts.
 import type { LeanSession, RuntimeManifest } from "../../src/runtime/client";
 import { fetchProfileIndex, installProfile, type InstalledProfile, type ProfileIndex } from "../../src/install/profiles";
-import { fetchSnapshotIndex, snapshotCacheKey, type SnapshotIndex } from "../../src/runtime/snapshots";
+import { fetchSnapshotIndex, snapshotCacheKey, type SnapshotEntry, type SnapshotIndex } from "../../src/runtime/snapshots";
 import { NO_OVERRIDES, parseBootParams, validateBootOverrides, type BootOverrides } from "./embed/params";
+import { failureCauseOf, stepOfInstallPhase, type BootStage, type BootStep, type FailureCause } from "./embed/failure";
 
 export interface Qed64Artifacts {
   runtime: RuntimeManifest;
@@ -20,18 +21,31 @@ export interface Qed64Session {
   session: LeanSession;
   /** Snapshot names already resident in this session's runtime. */
   loadedSnapshots: Set<string>;
+  /** Why the last `loadSnapshotByName` returned false (docs/EMBEDDING.md §7.2). */
+  lastFailure?: FailureCause;
 }
 
+/** Structured progress beside the prose label (docs/EMBEDDING.md §7.1): every
+ * call QED64 makes carries `stage`, and `subject` where there is one; labels
+ * are for humans and are not API. */
 export interface ProgressInfo {
+  /** Legacy fine-grained phase ("core-download", "snapshot-init", …). */
   phase?: string;
   loaded?: number;
   total?: number;
   unit?: string;
+  stage?: BootStage;
+  /** Profile id, snapshot name or runtime file ("core", "mathlib", "lean.wasm"). */
+  subject?: string;
+  step?: BootStep;
+  /** Set on the call that reports a failure. */
+  error?: FailureCause;
 }
 
 export interface StatusSink {
-  /** A long-running stage began (spinner + elapsed ticker). */
-  busy(label: string): void;
+  /** A long-running stage began (spinner + elapsed ticker). `info` (optional,
+   * so existing sinks keep compiling) carries the structured stage. */
+  busy(label: string, info?: ProgressInfo): void;
   /** Update the busy label without restarting the clock; numeric progress
    * (bytes/modules) rides along when the producer has it. */
   progress(label: string, info?: ProgressInfo): void;
@@ -65,7 +79,7 @@ function overridesOf(opts: InstallOptions): BootOverrides {
 }
 
 export async function installArtifacts(ui: StatusSink, opts: InstallOptions = {}): Promise<Qed64Artifacts> {
-  ui.busy("fetching manifests");
+  ui.busy("fetching manifests", { stage: "manifests" });
   // Validated BEFORE any fetch: an override is spliced into artifact URLs.
   const overrides = overridesOf(opts);
   // Dev-only override (?profiles=<dir>): an unpromoted profile set served
@@ -103,12 +117,12 @@ export async function installArtifacts(ui: StatusSink, opts: InstallOptions = {}
   // The pack only installs on demand if a header must import from oleans.
   const core = index.profiles.find((p) => p.id === "core");
   if (!core) throw new Error("core profile not published");
-  ui.busy("installing the Lean core library");
+  ui.busy("installing the Lean core library", { stage: "profile", subject: "core" });
   installed.set(
     "core",
     await installProfile(core, (p) => {
       const verb = p.phase === "cached" ? "checking cached" : p.phase === "download" ? "downloading" : p.phase === "inflate" ? "unpacking" : "committing";
-      ui.progress(`${verb} the Lean core library`, { phase: `core-${p.phase}`, loaded: p.loaded, total: p.total ?? 0, unit: "bytes" });
+      ui.progress(`${verb} the Lean core library`, { phase: `core-${p.phase}`, loaded: p.loaded, total: p.total ?? 0, unit: "bytes", stage: "profile", subject: "core", step: stepOfInstallPhase(p.phase) });
     }, profileReroot),
   );
   // Dev-only override (?snapshots=<dir>): an unpromoted snapshot set served
@@ -134,11 +148,12 @@ export async function ensureProfile(
   if (artifacts.installed.has(id)) return true;
   const entry = artifacts.index.profiles.find((p) => p.id === id);
   if (!entry) return false;
-  ui.busy(`installing the ${id} library (needed to import this header)`);
+  ui.busy(`installing the ${id} library (needed to import this header)`, { stage: "profile", subject: id });
   artifacts.installed.set(
     id,
     await installProfile(entry, (p) => {
-      ui.progress(`${p.phase} ${id} — ${(p.loaded / 1048576) | 0} / ${((p.total ?? 0) / 1048576) | 0} MiB`);
+      ui.progress(`${p.phase} ${id} — ${(p.loaded / 1048576) | 0} / ${((p.total ?? 0) / 1048576) | 0} MiB`,
+        { phase: `pack-${p.phase}`, loaded: p.loaded, total: p.total ?? 0, unit: "bytes", stage: "profile", subject: id, step: stepOfInstallPhase(p.phase) });
     }, profileReroot),
   );
   return true;
@@ -148,64 +163,89 @@ export async function ensureProfile(
  * waiting for it (it reports every 500 ms while bytes arrive). */
 export const PREFETCH_SILENCE_MS = 3 * 60 * 1000;
 
-/** Load a named snapshot into the session's runtime (idempotent). */
-/** Make sure the RAW (inflated) region cache exists BEFORE the Lean worker
- * touches this snapshot. The download and gunzip run in a disposable
- * prefetch worker whose heap dies on completion — a Lean worker that
- * streams/inflates itself keeps ~4.6 GB of that era's allocations for its
- * whole life (measured 9.7 GB vs 5-7 GB steady resident). Failure is
- * non-fatal: the Lean worker's own streaming path still works. */
-async function ensureRawSnapshotCached(
-  entry: { url: string; bytes: number },
-  name: string,
-  ui: StatusSink,
-): Promise<void> {
-  const cacheKey = snapshotCacheKey(entry as Parameters<typeof snapshotCacheKey>[0]);
-  if (!cacheKey) return;
+export interface PrefetchRawOptions {
+  onProgress?(p: { loaded: number; total: number; step: "download" | "inflate" }): void;
+  signal?: AbortSignal;
+  /** Give up after this long without a message (default PREFETCH_SILENCE_MS). */
+  silenceMs?: number;
+  workerUrl?: string;
+}
+export interface PrefetchRawResult {
+  /** cached: the raw region was already complete (no worker spawned);
+   * done: written now; unavailable: no OPFS / no cache key / the worker could
+   * not use storage; busy: another tab holds the write; silent: no message for
+   * `silenceMs`; aborted: `signal`; error: the worker failed. */
+  status: "cached" | "done" | "unavailable" | "busy" | "silent" | "aborted" | "error";
+  bytes?: number;
+  error?: FailureCause;
+}
+
+/** Make sure the RAW (inflated) region cache of a snapshot exists in OPFS
+ * BEFORE a Lean worker touches it (docs/EMBEDDING.md §7.4). The download and
+ * gunzip run in a disposable prefetch worker whose heap dies on completion — a
+ * Lean worker that streams/inflates itself keeps ~4.6 GB of that era's
+ * allocations for its whole life (measured 9.7 GB vs 5-7 GB steady resident).
+ * Never throws: every outcome is a status, and a failure is non-fatal for a
+ * session (the Lean worker's own streaming path still works). */
+export async function prefetchRaw(entry: SnapshotEntry, opts: PrefetchRawOptions = {}): Promise<PrefetchRawResult> {
+  const cacheKey = snapshotCacheKey(entry);
+  if (!cacheKey) return { status: "unavailable" };
+  if (opts.signal?.aborted) return { status: "aborted" };
   try {
     const root = await navigator.storage.getDirectory();
     const dir = await root.getDirectoryHandle("qed64-snapshots", { create: true });
     try {
       const f = await (await dir.getFileHandle(`${cacheKey}.raw`)).getFile();
-      if (f.size === entry.bytes) return; // warm — nothing to do
+      if (f.size === entry.bytes) return { status: "cached", bytes: f.size }; // warm — nothing to do
     } catch { /* not cached */ }
-  } catch { return; } // no OPFS: the worker streams as before
-  const gib = (entry.bytes / 1073741824).toFixed(1);
-  await new Promise<void>((resolve) => {
-    const w = new Worker("/workers/snapshot-prefetch.worker.js");
+  } catch { return { status: "unavailable" }; } // no OPFS: the worker streams as before
+  const silenceMs = opts.silenceMs ?? PREFETCH_SILENCE_MS;
+  return new Promise<PrefetchRawResult>((resolve) => {
+    const w = new Worker(opts.workerUrl ?? "/workers/snapshot-prefetch.worker.js");
     // Give up on the prefetch only after a SILENCE (a wedged worker or a dead
     // connection), never after a fixed total: it reports every 500 ms
     // while bytes arrive, and a slow first visit legitimately
     // downloads for longer than any deadline — the old 15-minute one
     // abandoned the Mathlib download on links under ~3 Mbit/s, and the Lean
     // worker then fetched it again from the start (HARDENING #54).
-    let bail = 0;
-    const arm = () => {
-      window.clearTimeout(bail);
-      bail = window.setTimeout(() => {
-        console.warn(`[qed64] raw prefetch silent for ${PREFETCH_SILENCE_MS / 1000} s — the checker will stream it instead`);
-        w.terminate();
-        resolve();
-      }, PREFETCH_SILENCE_MS);
+    let bail: ReturnType<typeof setTimeout> | undefined;
+    const finish = (r: PrefetchRawResult) => {
+      clearTimeout(bail);
+      opts.signal?.removeEventListener("abort", onAbort);
+      w.terminate();
+      resolve(r);
     };
+    const onAbort = () => finish({ status: "aborted" });
+    const arm = () => {
+      clearTimeout(bail);
+      bail = setTimeout(() => finish({ status: "silent" }), silenceMs);
+    };
+    opts.signal?.addEventListener("abort", onAbort, { once: true });
     arm();
     w.postMessage({ url: entry.url, cacheKey, rawBytes: entry.bytes });
     w.onmessage = (e) => {
       const m = e.data as { status?: string; bytes?: number; total?: number; phase?: string; error?: string };
       if (m.status === "progress") {
         arm();
-        ui.progress(`preparing the ${name} environment (${gib} GiB — one-time)`,
-          { phase: "snapshot", loaded: m.bytes ?? 0, total: m.total ?? entry.bytes, unit: "bytes" });
+        opts.onProgress?.({ loaded: m.bytes ?? 0, total: m.total ?? entry.bytes, step: m.phase === "inflate" ? "inflate" : "download" });
         return;
       }
       if (m.status === "error" || m.status === "unavailable" || m.status === "busy") {
-        console.warn(`[qed64] raw prefetch ${m.status}: ${m.error ?? ""} — the checker will stream it instead`);
+        return finish({ status: m.status, error: failureCauseOf(new Error(m.error ?? m.status), { stage: "snapshot", subject: entry.name }) });
       }
-      window.clearTimeout(bail);
-      w.terminate();
-      resolve();
+      finish({ status: "done", bytes: m.bytes });
     };
   });
+}
+
+async function ensureRawSnapshotCached(entry: SnapshotEntry, name: string, ui: StatusSink): Promise<void> {
+  const gib = (entry.bytes / 1073741824).toFixed(1);
+  const r = await prefetchRaw(entry, {
+    onProgress: (p) => ui.progress(`preparing the ${name} environment (${gib} GiB — one-time)`,
+      { phase: "snapshot", loaded: p.loaded, total: p.total, unit: "bytes", stage: "snapshot", subject: name, step: p.step }),
+  });
+  if (r.status === "silent") console.warn(`[qed64] raw prefetch silent for ${PREFETCH_SILENCE_MS / 1000} s — the checker will stream it instead`);
+  else if (r.error) console.warn(`[qed64] raw prefetch ${r.status}: ${r.error.message} — the checker will stream it instead`);
 }
 
 export async function loadSnapshotByName(
@@ -216,19 +256,26 @@ export async function loadSnapshotByName(
 ): Promise<boolean> {
   if (qs.loadedSnapshots.has(name)) return true;
   const entry = artifacts.snapshots?.snapshots.find((s) => s.name === name);
-  if (!entry) return false;
+  if (!entry) {
+    qs.lastFailure = { kind: "other", stage: "snapshot", subject: name, message: `snapshot '${name}' is not in the snapshot index` };
+    return false;
+  }
   await ensureRawSnapshotCached(entry, name, ui);
   const gib = (entry.bytes / 1073741824).toFixed(1);
-  ui.busy(`loading the ${name === "mathlib" ? "Mathlib" : name} environment (${gib} GiB unpacked — cached in your browser after the first visit)`);
+  ui.busy(`loading the ${name === "mathlib" ? "Mathlib" : name} environment (${gib} GiB unpacked — cached in your browser after the first visit)`,
+    { stage: "snapshot", subject: name, step: "load" });
   try {
     // The index entry's `runtime` (buildId that baked it) rides along so the worker
     // can refuse an unpaired snapshot with SNAPSHOT_UNPAIRED instead of trapping
     // (snapshots are binary-paired to the runtime; artifact discipline, review C6).
     const r = await qs.session.loadSnapshot(entry.url, `${name}.snap`, entry.bytes, snapshotCacheKey(entry), entry.runtime);
     if (r.success) qs.loadedSnapshots.add(name);
+    else qs.lastFailure = { kind: "corrupt", stage: "snapshot", subject: name, message: `the Lean loader refused the ${name} snapshot region` };
     return r.success;
   } catch (err) {
-    ui.progress(`${name} snapshot failed: ${(err as Error).message}`);
+    const cause = failureCauseOf(err, { stage: "snapshot", subject: name });
+    qs.lastFailure = cause;
+    ui.progress(`${name} snapshot failed: ${(err as Error).message}`, { stage: "snapshot", subject: name, error: cause });
     return false;
   }
 }

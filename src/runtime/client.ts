@@ -376,6 +376,14 @@ export class LeanSession {
     return this.exclusive(() => this.request("loadSnapshot", { input: { url, name, expectedBytes, cacheKey, runtime} }));
   }
 
+  /** Write files into the worker's filesystem (absolute paths; parent
+   * directories are created). Takes a runtime turn, so it never interleaves
+   * with a snapshot load; bytes are copied, not transferred, so the caller can
+   * write the same files into the next session. */
+  writeFiles(files: ReadonlyArray<{ path: string; text: string } | { path: string; bytes: Uint8Array }>): Promise<{ written: number }> {
+    return this.exclusive(() => this.request<{ operation: string; written: number }>("write-files", { input: { files } })).then((r) => ({ written: r.written }));
+  }
+
   telemetry(): Promise<{ state: string; memory?: MemoryTelemetry }> {
     return this.request("telemetry");
   }

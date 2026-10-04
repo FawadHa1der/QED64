@@ -5,7 +5,9 @@
   "embed": [
     "frontend/src/embed/index.ts",
     "frontend/src/embed/params.ts",
+    "frontend/src/embed/failure.ts",
     "frontend/src/qed64-boot.ts",
+    "frontend/src/embed/urls.ts",
     "frontend/src/resident-session.ts",
     "frontend/src/lsp-relay.ts",
     "src/install/profiles.ts",
@@ -13,10 +15,22 @@
     "src/runtime/snapshots.ts"
   ],
   "workers": [
-    { "path": "public/workers/lean.worker.js", "serveAs": "/workers/lean.worker.js" },
-    { "path": "public/workers/lsp-frames.js", "serveAs": "/workers/lsp-frames.js" },
-    { "path": "public/workers/lsp-front-door.js", "serveAs": "/workers/lsp-front-door.js" },
-    { "path": "public/workers/snapshot-prefetch.worker.js", "serveAs": "/workers/snapshot-prefetch.worker.js" }
+    {
+      "path": "public/workers/lean.worker.js",
+      "serveAs": "/workers/lean.worker.js"
+    },
+    {
+      "path": "public/workers/lsp-frames.js",
+      "serveAs": "/workers/lsp-frames.js"
+    },
+    {
+      "path": "public/workers/lsp-front-door.js",
+      "serveAs": "/workers/lsp-front-door.js"
+    },
+    {
+      "path": "public/workers/snapshot-prefetch.worker.js",
+      "serveAs": "/workers/snapshot-prefetch.worker.js"
+    }
   ],
   "pipeline": [
     "pipeline/toolchain/artifact-paths.mjs",

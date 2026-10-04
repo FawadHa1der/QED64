@@ -26,8 +26,8 @@ export interface RelaySession {
 export interface RestartOptions { snapshots?: string[]; warmHeader?: string; packs?: string[] } // boot inputs for a replacement session (S4 "Load exact imports")
 type Reason = "boot" | "crash" | "heartbeat" | "wedged" | "user" | "bootFailed";
 export type RelayState = { kind: "serving" } | { kind: "rebooting"; reason: Reason } | { kind: "halted" };
-/** The last death as the page shows it (gap 2): LeanSession's (reason, message), or "bootFailed" + the boot rejection's message. */
-export type Death = { reason: string; message: string };
+/** The last death as the page shows it (gap 2): LeanSession's (reason, message), or "bootFailed" + the boot rejection's message and its attached FailureCause (EMBEDDING §7.2). */
+export type Death = { reason: string; message: string; cause?: import("./embed/failure").FailureCause };
 export type RelayStatus = Omit<WorkerStatus, "phase"> & { phase: WorkerStatus["phase"] | "halted"; relay: RelayState["kind"]; rebootReason: string | null; session: string; lastDeath: Death | null };
 const EMPTY: WorkerStatus = { phase: "booting", version: null, header: null, ring: { bytesQueued: 0, refused: 0 }, pool: { unused: -1, running: -1 }, dropped: 0 };
 const BREAKER_DEATHS = 3;
@@ -153,7 +153,7 @@ export class LspRelay {
       if (this.doc) s.lsp({ jsonrpc: "2.0", method: "textDocument/didOpen", params: { textDocument: { ...this.doc, text: this.lastText } } });
       await s.arm();
     } catch (err) { // a session its own death already disposed rejects here too: not a second death
-      if (s === this.session && this.state.kind !== "halted") this.onDied(s, "bootFailed", err instanceof Error ? err.message : String(err));
+      if (s === this.session && this.state.kind !== "halted") this.onDied(s, "bootFailed", err instanceof Error ? err.message : String(err), (err as { cause?: unknown } | null)?.cause);
       return;
     }
     if (s !== this.session) return;
@@ -162,10 +162,10 @@ export class LspRelay {
   }
 
   /** SessionDied / BootFailed (§2.3): once per session, current only; ≥ 3 in 120 s halts. */
-  private onDied(s: RelaySession, reason: string, message: string): void {
+  private onDied(s: RelaySession, reason: string, message: string, cause?: unknown): void {
     if (s !== this.session || this.state.kind === "halted") { this.stats.staleDeaths += 1; return; }
     this.stats.workerDeaths += 1;
-    this.lastDeath = { reason, message };
+    this.lastDeath = typeof (cause as Death["cause"])?.kind === "string" ? { reason, message, cause: cause as Death["cause"] } : { reason, message }; // passed through unread
     this.failInFlight(`the Lean checker died (${reason})`);
     s.dispose();
     const t = this.now();
