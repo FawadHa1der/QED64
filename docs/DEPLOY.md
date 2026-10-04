@@ -84,6 +84,15 @@ Promote checklist, in order:
 3. Push `main` — CI deploys the shell, which asks for the runtime it was
    built against and finds it already in R2. No window.
 
+Optional, after step 1: `node pipeline/release/release-manifest.mjs --commit
+HEAD --out release.json` writes the `qed64.release/v1` manifest of the
+release. The manifest names every served object by sha256 and gives the
+release three ids: `releaseId`, `artifactSetId` and `shellId`. The generator
+refuses when KERNEL-PIN, the runtime manifest, the snapshot index and the
+profiles disagree about the pairing. docs/RELEASE-BUNDLE.md covers the
+manifest, how a downstream verifies a bundle with it, and a proposed CI
+publishing step that has not been applied.
+
 ## Security model: who can write what
 
 R2 buckets are **private by default** and this deployment never changes
