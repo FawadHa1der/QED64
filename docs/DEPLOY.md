@@ -8,7 +8,9 @@ GitHub Pages (100 MB/file, no headers), Cloudflare Pages (25 MiB/file) and
 Netlify/Vercel free bandwidth caps all fail one of these.
 
 The setup that fits: **Cloudflare Workers static assets (app shell) + R2
-(artifacts), one origin, headers set in `infra/worker.js`.**
+(artifacts), one origin, headers set in `infra/worker.js`** (a thin
+wrapper over the reusable `infra/edge-worker.js`; see "Reusing the edge
+worker" below).
 
 The deployed shell is the lean4monaco editor in `frontend/` (Monaco + the
 real vscode-lean4 InfoView on the in-browser wasm64 LSP). `npm run
@@ -101,6 +103,86 @@ use two separate tokens as above rather than one broad one, never put
 tokens in the repo or wrangler.toml, and remember that anyone who can push
 to `main` can trigger the deploy workflow — protect the branch if the repo
 gains collaborators.
+
+## Reusing the edge worker
+
+`infra/worker.js` is three lines over **`infra/edge-worker.js`**, a
+self-contained ES module (no imports, no Node built-ins, only the Fetch
+API globals) that any project serving the wasm64 runtime vendors as **one
+file**. lean4game and the widgets showcase each began as a fork of this
+worker; the forks' improvements (ranges, metadata HEAD, an R2 key prefix,
+a root redirect) are switches here.
+
+```js
+// your infra/worker.js — vendor infra/edge-worker.js (and edge-worker.d.ts for TS) beside it
+import { createWorker } from "./edge-worker.js";
+export default createWorker({
+  r2Prefix: (env) => env.R2_PREFIX,              // shared bucket, e.g. "lean4game/"; unset → ""
+  rootRedirect: (env) => env.ROOT_REDIRECT ?? null,
+});
+```
+
+Required wrangler settings (same as QED64's `wrangler.toml`):
+
+```toml
+main = "infra/worker.js"
+[assets]
+directory = "dist"          # the shell, MINUS runtime/ profiles/ snapshots/ (25 MiB/file cap; they come from R2)
+binding = "ASSETS"
+run_worker_first = true     # REQUIRED: without it assets bypass the worker and ship without COOP/COEP
+[[r2_buckets]]
+binding = "ARTIFACTS"
+bucket_name = "your-artifacts"
+```
+
+Request order: `rootRedirect` (a bare `/` without a query) → `extraRoutes`
+in order → `artifactPrefixes` (R2) → static assets. Every response gets
+COOP/COEP/CORP and the cache rule (`isImmutable` → `public,
+max-age=31536000, immutable`, else `public, max-age=0, must-revalidate`).
+
+| Option | Default | Meaning |
+|---|---|---|
+| `assetsBinding` / `artifactsBinding` | `"ASSETS"` / `"ARTIFACTS"` | env binding name, or `(env) => binding` |
+| `artifactPrefixes` | `["/runtime/", "/profiles/", "/snapshots/"]` | paths served from R2 (`DEFAULT_ARTIFACT_PREFIXES`) |
+| `r2Prefix` | `""` | prepended to every R2 key; string or `(env) => string` (null/undefined → `""`). Must match `^([A-Za-z0-9._-]+/)+$` with no `.`/`..` segment, else artifact requests answer **500 no-store** |
+| `rootRedirect` | `null` | 302 target for a bare `/`; string or `(env) => string \| null` |
+| `extraRoutes` | `[]` | `{prefix?, match?(url, request, env), handle(request, env, ctx, kit), rawHeaders?}`; `handle` returning null/undefined falls through |
+| `isImmutable` | QED64's rule | the cache rule (lean4game adds vite-hashed `/assets/`) |
+| `isolation` | `{coop: "same-origin", coep: "require-corp", corp: "same-origin"}` | per header; `null` = the worker does not set it (an upstream value passes through) |
+| `decorate` | `null` | `(headers, {pathname, route, status})`, the last word on every non-raw response; route is `asset`, `artifact`, `redirect` or `extra` |
+
+`kit` gives an extra route the worker's own pieces, each returning a
+response that already carries the headers (returned unchanged, it is not
+re-wrapped): `serveArtifact(request?, pathname?)` (e.g. map
+`/game/<id>/snapshots/…` onto `/snapshots/…`), `serveAsset(request?)`,
+`withHeaders(response, pathname?)`, `notFound(pathname?)`, `isImmutable`.
+A route's own responses get the headers too unless it sets
+`rawHeaders: true`. The library also exports `isImmutable`,
+`artifactKey`, `parseRange`, `resolveRange` and `withIsolationHeaders`.
+
+### Legacy vs hardened
+
+The behaviour switches default to the hardened forks' behaviour;
+**`QED64_LEGACY`** (frozen) sets each one back, and QED64 deploys
+`createWorker(QED64_LEGACY)` — byte-identical to the pre-library worker
+(status, headers, body and every binding call, pinned by
+`tests/unit/edge-worker.test.ts` against the original source in
+`tests/fixtures/edge-worker/worker-47f50e8.js`).
+
+| Switch | Hardened (default) | `QED64_LEGACY` |
+|---|---|---|
+| `artifactHead` | `"metadata"`: HEAD answered from `head()` with `Content-Length` = size, no body opened | `"get"`: HEAD reads the object like a GET |
+| `ranges` | `true`: one `bytes=` range on GET → `head()` first, `If-Range` must strongly match the etag (else full 200), unsatisfiable → **416** `Content-Range: bytes */size` no-store, else ranged `get()` → **206** + `Content-Range`; multi-range/malformed → full 200; `Accept-Ranges: bytes` on artifact responses | `false`: Range ignored |
+| `artifactMethods` | `["GET", "HEAD"]`: others → **405** + `Allow`, R2 untouched | `null`: any method reads |
+| `rejectUnsafeKeys` | `true`: empty/`.`/`..` segments, `\`, control chars → 404 without R2 | `false` |
+| `fullGetLength` | `true`: explicit `Content-Length` on a full GET | `false` |
+| `errorCacheControl` | `"no-store"` for every status ≥ 400 | `null`: the path rule (a 404 on a digest-named path is cached for a year) |
+
+New consumers take the defaults. Adopt switches one at a time with
+`createWorker({ ...QED64_LEGACY, errorCacheControl: "no-store" })`. Under
+the hardened switches the worker's bucket operations are still reads only
+(`get` and `head`). Neither mode sets a `Content-Encoding` (the runtime
+worker refuses transformed chunks) or carries an upstream `statusText`.
 
 ## Alternative: one small VPS (~€4/month)
 

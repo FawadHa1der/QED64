@@ -170,6 +170,20 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
 - `public/snapshots/index.json` is tracked (`.gitignore`: `public/snapshots/*`
   + `!public/snapshots/index.json`); the snapshot files beside it are not.
 
+## Edge worker (infra/, tests/unit/edge-worker.test.ts)
+
+- Equivalence: a request matrix (GET/HEAD/POST/…, shell, assets, every
+  artifact prefix, missing keys, odd paths, Range headers) runs through the
+  ORIGINAL worker (`tests/fixtures/edge-worker/worker-47f50e8.js`,
+  sha256-pinned), `createWorker(QED64_LEGACY)` and the shipped
+  `infra/worker.js` against fake ASSETS/R2 bindings; status, statusText,
+  headers, body and every binding call must be identical. Flipping any
+  legacy switch fails it.
+- The hardened defaults (ranges/If-Range/416, metadata HEAD, 405 + Allow,
+  unsafe keys, r2Prefix validation, rootRedirect, extraRoutes + kit,
+  decorate, isolation overrides, no-store errors) are pinned against the
+  same fakes, whose ranged `get()` throws where R2 would be leaned on.
+
 ## Conventions
 
 - Unit tests execute the REAL worker source (vm sandbox) and the REAL
