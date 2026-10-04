@@ -4,8 +4,9 @@ Status: **draft, 2026-10-04**, sent to the two downstream consumers (the
 widgets showcase, lean4game) for review. Implemented on
 `feature/embedding-api`: §2.1's capability flag (47f50e8, HARDENING #56),
 §4's parameter validation (HARDENING #57), §6's package and §7's library API
-(`EMBED_API_REVISION = "1.0.0-pre.2"` until the review settles). The page
-API (§2.1 – §3) is next.
+(`EMBED_API_REVISION = "1.0.0-pre.2"` until the review settles), and the
+page API with embed mode (§2 – §3; `frontend/src/page-api.ts`, browser lane
+`tests/adversarial/page-api.mjs`).
 
 QED64 is consumed in two ways, and this document is the contract for both:
 
@@ -140,7 +141,7 @@ type BootStage = "manifests" | "profile" | "runtime" | "memory" | "snapshot" | "
     has forwarded that exact text, with its document version.
   * Identical text resolves at once with `unchanged: true` and sends nothing
     (an identical-text "reset" used to wedge an embedder waiting for a
-    version that never came). On a halted relay it also re-arms it.
+    version that never came). A halted relay re-arms on any *change*.
 * **`settled({version, timeoutMs})`** resolves with the status once the phase
   is `ready`/`headerRefused` at a document version `>= version` (default: the
   current document's version). It keeps waiting through reboots. It rejects
@@ -148,7 +149,9 @@ type BootStage = "manifests" | "profile" | "runtime" | "memory" | "snapshot" | "
   `{code: "TIMEOUT"}` after `timeoutMs` (default: none).
 * **`restart({snapshots})`** replaces the session (the "Load exact imports" /
   widen machinery); default = the current session's snapshot list. Returns
-  `false` while a boot is still in flight.
+  `false` unless the relay is serving (a boot in flight, or halted — an edit
+  re-arms a halted relay); throws `TypeError` for a name the served snapshot
+  index lacks.
 * **`setCursor`**, **`getDocument`**: as typed. `getDocument()` is `null`
   before the editor mounts.
 

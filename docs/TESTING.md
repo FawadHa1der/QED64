@@ -144,6 +144,17 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   `mk_rpc_widget%` panel, sendClientRequest with an abortSignal — then
   shift-click `c + b` and "Generate conv" must write a `conv => … enter …`
   block), `foreign-show` (showDocument for another file is a no-op).
+- **Page API** (`page-api.mjs --url <dev url> [--only <scenario>]`,
+  docs/EMBEDDING.md §2–§4): `qed64.api` used the way an embedder uses it,
+  never the internal taps. `embed-code` (`?embed=1#code=`: that document,
+  booted light, `qed64:api` before boot, examples hidden, the stored buffer
+  neither read nor written), `embed-setdoc` (setDocument from the
+  `qed64:api` listener becomes the boot document), `events` (boot stages
+  ending in done; setDocument → settled at its version with a `document`, an
+  error `diagnostics` and a `ready` event; identical text resolves
+  unchanged), `restart` (a `reboot` event to a new session, settled again),
+  `bad-param` (`?snapshots=/attacker.example/x` fails the boot naming the
+  parameter, with no off-origin request).
 
 ## Artifact discipline (pipeline/, tests/unit/artifact-discipline.test.ts)
 

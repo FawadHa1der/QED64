@@ -7,17 +7,29 @@ import { registerImportCompletion } from "./import-completion";
 import { LspRelay, type RelayStatus } from "./lsp-relay";
 import { EDITOR_POLICY, ResidentSession, isUmbrellaModule } from "./resident-session";
 import { installInfoviewEditorApi, type EditsEditor } from "./editor/infoview-edits";
+import { codeFromHash, createPageApi, type EditorLike } from "./page-api";
 
-// The embedder-facing surface (docs/EMBEDDING.md), published synchronously at
-// module start — before any of the page's own listeners matter — so an
-// embedder can feature-detect: `capabilities.editorRpc` = the InfoView's
-// editor RPC works natively here (HARDENING #56: abortSignal/cancellation,
-// applyEdit, insertText, showDocument), so an embedder's own bridge for them
-// must stand down. The rest of `globalThis.qed64` joins this same object
-// once the relay exists.
-const QED64_API = Object.freeze({ version: 1, capabilities: Object.freeze({ editorRpc: true }) });
+// The embedder-facing surface (docs/EMBEDDING.md §2), published synchronously
+// at module start — before any of the page's own listeners matter — so an
+// embedder can feature-detect and call it before boot: `capabilities.editorRpc`
+// = the InfoView's editor RPC works natively here (HARDENING #56), so an
+// embedder's own bridge for it must stand down. The rest of `globalThis.qed64`
+// (relay, ui, artifacts, editor, status()) joins this same object once the
+// relay exists; it is internal (docs/EMBEDDING.md §9).
+const pageApi = createPageApi({ editorRpc: true, documents: true, events: true, restart: true, embedMode: true, snapshotRoots: false, postMessage: false });
 const qed64Global = ((globalThis as unknown as { qed64?: Record<string, unknown> }).qed64 ??= {});
-qed64Global.api = QED64_API;
+qed64Global.api = pageApi.api;
+// Embed mode (docs/EMBEDDING.md §3): the embedder owns persistence and the
+// boot document; it gets up to 5 s from module start to call setDocument.
+const EMBED = new URLSearchParams(location.search).get("embed") === "1";
+const embedDeadline = new Promise<void>((r) => window.setTimeout(r, EMBED ? 5000 : 0));
+window.dispatchEvent(new CustomEvent("qed64:api", { detail: pageApi.api }));
+try {
+  const parent = window.parent as Window & typeof globalThis;
+  if (parent !== window && parent.location.origin === location.origin) {
+    parent.dispatchEvent(new parent.CustomEvent("qed64:frame-api", { detail: { api: pageApi.api, frame: window } }));
+  }
+} catch { /* a cross-origin parent: v1.1 (docs/EMBEDDING.md §5) */ }
 
 const editorEl = document.getElementById("editor")! as HTMLElement;
 const infoviewEl = document.getElementById("infoview")! as HTMLElement;
@@ -42,6 +54,7 @@ function renderAction(label: string | null, run?: () => void): void {
 }
 const ptime = document.getElementById("ptime")!;
 const examplesEl = document.getElementById("examples")! as HTMLSelectElement;
+if (EMBED) examplesEl.style.display = "none";
 
 // ---- Boot overlay: staged first-visit progress with speed and ETA ---------
 // The heavy startup (a ~600 MB first-visit download, then the environment
@@ -149,6 +162,7 @@ function armCheckFallback() {
 function bootFinish() {
   if (bootDone) return;
   bootDone = true;
+  pageApi.bootFinished();
   window.clearTimeout(checkFallback);
   bootStage = STAGES.length;
   renderStages();
@@ -158,6 +172,7 @@ function bootFinish() {
 
 function bootFail(message: string) {
   if (bootDone) return;
+  pageApi.bootFailed(message);
   bootCard.classList.add("failed");
   bootCard.querySelector("h1")!.textContent = "QED64 could not start";
   bootLabel.textContent = message;
@@ -179,20 +194,22 @@ function renderTime() {
   ptime.textContent = s >= 3 ? (s < 60 ? `· ${s}s` : `· ${(s / 60) | 0}m ${s % 60}s`) : "";
 }
 const ui: StatusSink = {
-  busy(label) {
+  busy(label, info) {
     if (busySince === null) busySince = performance.now();
     pill.classList.add("busy");
     ptext.textContent = label;
     ptext.title = label;
     if (ticker === undefined) ticker = window.setInterval(renderTime, 1000);
     renderTime();
-    bootProgress(label);
+    bootProgress(label, info);
+    if (info?.stage) pageApi.bootStep(label, info);
     console.log(`[qed64] ${label}`);
   },
   progress(label, info) {
     ptext.textContent = label;
     ptext.title = label;
     bootProgress(label, info);
+    if (info?.stage) pageApi.bootStep(label, info);
   },
   idle(label) {
     busySince = null;
@@ -374,10 +391,21 @@ async function main() {
   // tab (runaway elaboration can still take the renderer down) costs a
   // reload, not the user's proof. Read BEFORE the relay exists: the initial
   // text is a boot input (§6 amendment 15) — an Init-only document boots
-  // light, a Mathlib one boots the umbrella.
+  // light, a Mathlib one boots the umbrella. An embedder's `setDocument`
+  // before this point wins; in embed mode (docs/EMBEDDING.md §3.1) the buffer
+  // is neither read nor written: `#code=`, else `setDocument` (waited for up
+  // to 5 s from module start), else the empty document.
   let restored: string | null = null;
-  try { restored = window.localStorage.getItem("qed64.buffer"); } catch { /* storage unavailable */ }
-  const initialText = restored ?? EXAMPLES.mathlib;
+  let initialText: string;
+  const hashCode = EMBED ? codeFromHash(location.hash) : null;
+  if (hashCode !== null) initialText = hashCode;
+  else if (EMBED) initialText = (await pageApi.waitBootDocument(embedDeadline)) ?? "";
+  else {
+    try { restored = window.localStorage.getItem("qed64.buffer"); } catch { /* storage unavailable */ }
+    initialText = restored ?? EXAMPLES.mathlib;
+  }
+  const given = pageApi.takeBootDocument();
+  if (given !== null && hashCode === null) { initialText = given; restored = null; }
   // The editor's boot policy (resident-session.ts); an embedder passes its own.
   const policy = EDITOR_POLICY;
   let relay: LspRelay; // assigned below; the closures here run only from the relay's status sink or a click
@@ -432,7 +460,7 @@ async function main() {
   // a header change between sessions changes the boot inputs with it.
   relay = new LspRelay(
     (opts) => new ResidentSession({ artifacts, ui, policy, headerText: relay?.lastText || initialText }, opts ?? {}),
-    { status: (s) => { renderStatus(s); offerExactImports(s); widenForMathlib(s); } },
+    { status: (s) => { renderStatus(s); offerExactImports(s); widenForMathlib(s); pageApi.relayStatus(s); } },
     () => new Promise((r) => window.setTimeout(r, 1500)),
   );
   const clientPort: MessagePort = relay.clientPort;
@@ -446,6 +474,12 @@ async function main() {
     status: () => relay.status(),
   });
   Object.defineProperty(qed64Global, "editor", { get: () => editor.editor, configurable: true, enumerable: true });
+  pageApi.bind({
+    relay,
+    editor: () => (editor.editor ?? undefined) as unknown as EditorLike | undefined,
+    build: { buildId: artifacts.runtime.buildId, leanVersion: artifacts.runtime.leanVersion, sourceRevision: artifacts.runtime.sourceRevision ?? null, shell: null },
+    snapshotNames: artifacts.snapshots?.snapshots.map((e) => e.name) ?? [],
+  });
   // `request` is LeanSession-private; the meter is a trusted internal peer.
   startMemoryMeter(() => (relay.session as ResidentSession).lean as unknown as Tel);
   window.setInterval(tickSearchHint, 1000);
@@ -483,9 +517,10 @@ async function main() {
   examplesEl.value = "mathlib";
   await editor.start(editorEl, "/project/Probe.lean", initialText);
   docText = () => editor.editor?.getModel()?.getValue() ?? relay.lastText;
+  pageApi.editorReady();
   if (restored) ui.progress("restored your last buffer");
   let saveTimer: number | undefined;
-  editor.editor?.getModel()?.onDidChangeContent(() => {
+  if (!EMBED) editor.editor?.getModel()?.onDidChangeContent(() => {
     window.clearTimeout(saveTimer);
     saveTimer = window.setTimeout(() => {
       try {
