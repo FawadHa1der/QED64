@@ -6,6 +6,18 @@ import { installArtifacts, type ProgressInfo, type StatusSink } from "./qed64-bo
 import { registerImportCompletion } from "./import-completion";
 import { LspRelay, type RelayStatus } from "./lsp-relay";
 import { EDITOR_POLICY, ResidentSession, isUmbrellaModule } from "./resident-session";
+import { installInfoviewEditorApi, type EditsEditor } from "./editor/infoview-edits";
+
+// The embedder-facing surface (docs/EMBEDDING.md), published synchronously at
+// module start — before any of the page's own listeners matter — so an
+// embedder can feature-detect: `capabilities.editorRpc` = the InfoView's
+// editor RPC works natively here (HARDENING #56: abortSignal/cancellation,
+// applyEdit, insertText, showDocument), so an embedder's own bridge for them
+// must stand down. The rest of `globalThis.qed64` joins this same object
+// once the relay exists.
+const QED64_API = Object.freeze({ version: 1, capabilities: Object.freeze({ editorRpc: true }) });
+const qed64Global = ((globalThis as unknown as { qed64?: Record<string, unknown> }).qed64 ??= {});
+qed64Global.api = QED64_API;
 
 const editorEl = document.getElementById("editor")! as HTMLElement;
 const infoviewEl = document.getElementById("infoview")! as HTMLElement;
@@ -427,13 +439,13 @@ async function main() {
   window.addEventListener("pagehide", () => relay.unload());
   // `qed64.status()` is the harness's one oracle (C7): the relay's own datum.
   // `relay.session.lean` is the LeanSession (telemetry: `relay.session.lean.request('telemetry')`).
-  (globalThis as unknown as Record<string, unknown>).qed64 = {
+  Object.assign(qed64Global, {
     artifacts,
     relay,
     ui,
     status: () => relay.status(),
-    get editor() { return editor.editor; },
-  };
+  });
+  Object.defineProperty(qed64Global, "editor", { get: () => editor.editor, configurable: true, enumerable: true });
   // `request` is LeanSession-private; the meter is a trusted internal peer.
   startMemoryMeter(() => (relay.session as ResidentSession).lean as unknown as Tel);
   window.setInterval(tickSearchHint, 1000);
@@ -445,6 +457,9 @@ async function main() {
   // The pill turns idle and "ready" only from the relay's status.
   const leanMonaco = new LeanMonaco();
   const editor = new LeanMonacoEditor();
+  // The InfoView's applyEdit / insertText / showDocument act on this editor's
+  // model (HARDENING #56); installed before the InfoView registers its API.
+  installInfoviewEditorApi(() => (editor.editor ?? undefined) as unknown as EditsEditor | undefined);
   leanMonaco.setInfoviewElement(infoviewEl);
 
   const options: LeanMonacoOptions = {

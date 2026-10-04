@@ -3,6 +3,8 @@ import { viteStaticCopy } from "vite-plugin-static-copy";
 import { nodePolyfills } from "vite-plugin-node-polyfills";
 import importMetaUrlPlugin from "@codingame/esbuild-import-meta-url-plugin";
 import { readFileSync } from "node:fs";
+// lean4monaco 1.1.x InfoView wiring fixes (HARDENING #56): page half (transform + dev pre-bundle) and iframe half (copy transform).
+import { lean4monacoFixesEsbuild, lean4monacoFixesVite, webviewCopyTransform } from "./build/lean4monaco-fixes.mjs";
 
 // The runtime this shell is PAIRED with (see docs/DEPLOY.md, "Atomic
 // promotes"): the shell first asks for the immutable, digest-named manifest
@@ -42,16 +44,18 @@ export default defineConfig(({ command }) => ({
     watch: { ignored: ["**/public/profiles/**", "**/public/runtime/**", "**/public/snapshots/**"] },
   },
   optimizeDeps: {
-    esbuildOptions: { plugins: [importMetaUrlPlugin] },
+    // One composed loader: the import.meta.url rewrite, then the page-half patch (see lean4monaco-fixes.mjs).
+    esbuildOptions: { plugins: [lean4monacoFixesEsbuild(importMetaUrlPlugin)] },
   },
   plugins: [
+    lean4monacoFixesVite(),
     nodePolyfills({ overrides: { fs: "memfs" } }),
     viteStaticCopy({
       targets: [
         // The InfoView iframe loads /infoview/index.css + /infoview/webview.js
         // from the server root (see lean4monaco's infowebview.ts).
         { src: "node_modules/@leanprover/infoview/dist/*", dest: "infoview" },
-        { src: "node_modules/lean4monaco/dist/webview/webview.js", dest: "infoview" },
+        { src: "node_modules/lean4monaco/dist/webview/webview.js", dest: "infoview", transform: webviewCopyTransform },
         { src: "node_modules/@leanprover/infoview/dist/codicon.ttf", dest: "assets" },
         // The Lean session worker (and its snapshot prefetch helper) load from
         // /workers/* — served by publicDir in dev, so copy them only for the

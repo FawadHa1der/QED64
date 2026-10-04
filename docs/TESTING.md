@@ -135,6 +135,15 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   run up against its samples. V2 is rare on the stock page: gate embedded
   AND stock, headed AND headless, with a release control arm in the same
   window.
+- **InfoView actions** (`infoview-actions.mjs --url <dev url> [--only <scenario>]`,
+  HARDENING #56): the InfoView's editor RPC on the real page. `capability-flag`
+  (`qed64.api` = `{version: 1, capabilities.editorRpc}` at DOMContentLoaded),
+  `try-this-apply` (init only: click the core "Try this" of `simp?`, the line
+  must read `by simp only [Nat.add_zero]` and elaborate without errors),
+  `conv-generate` (Mathlib: the `conv?` ProofWidgets panel renders — an
+  `mk_rpc_widget%` panel, sendClientRequest with an abortSignal — then
+  shift-click `c + b` and "Generate conv" must write a `conv => … enter …`
+  block), `foreign-show` (showDocument for another file is a no-op).
 
 ## Artifact discipline (pipeline/, tests/unit/artifact-discipline.test.ts)
 

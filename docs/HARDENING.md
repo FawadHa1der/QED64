@@ -360,3 +360,21 @@ Follow-ups, not part of this fix:
 - **Kernel.** The ~129 MiB per isolate scales with the ~106k exports and the `MAIN_MODULE` glue. Exporting only what JS calls, or resolving Lean's native symbols from a table inside the module, would shrink all 25 isolates. That would also give room in the cage to cases this fix does not serialize: two QED64 frames on one page, both wanted.
 - **Worker.** Yield to the event loop between the 64 MiB slices of the warm snapshot read, so that a runtime reloaded mid-read can shut down within one slice (the synchronous `_lean_wasm_load_snapshot_mem`, ~0.8 s for Mathlib, stays).
 - **Relay.** The relay's fixed 1.5 s settle before a reboot is a timer standing in for this signal.
+
+### 56. Two halves of one RPC must be swapped together, and a stub that throws is not an implementation
+
+Reported by the widgets showcase (`qed64-showcase/docs/UPSTREAM-REPORT-QED64.md`, D1 and D2), which repaired both from outside with a postMessage bridge. Neither was QED64-specific; every lean4monaco 1.1.16 page had them:
+- **D1, RPC widget panels.** Every ProofWidgets `mk_rpc_widget%` panel (Mathlib's `conv?`, the SelectionPanel family, user widgets) failed with `r.abortSignal.addEventListener is not a function`. vscode-lean4 wraps the remote `EditorRpcApi` (start/await/cancelClientRequest) into the InfoView's `EditorApi` INSIDE the webview, so an AbortSignal stays local and only request ids cross. lean4monaco does the opposite: the webview hands the raw RPC proxy to `renderInfoview` and the page wraps its local API with `editorApiOfRpc`. The messages are JSON-stringified, so the signal arrives on the page as `{}`, the request has already gone out, and its answer is lost to the TypeError.
+- **D2, edits from the InfoView.** Clicking core "Try this" [apply], a ProofWidgets MakeEditLink or `conv?`'s "Generate conv" changed nothing. `applyEdit`, `insertText` and `showDocument` go through `window.showTextDocument`, and lean4monaco registers no editor-service override, so monaco-vscode-api's default `openEditor` stub throws "unsupported".
+
+Fix (`frontend/build/lean4monaco-fixes.mjs`, `frontend/src/editor/infoview-edits.ts`), applied at build time with no fork:
+- The iframe script, copied to `/infoview/webview.js` by a static-copy transform, wraps the proxy with `editorApiOfRpc`. The function is extracted from the installed lean4monaco's own `rpc.js`, so it always matches the host half.
+- The page module registers the raw API instead of wrapping it. It goes through a Vite transform for builds and through an esbuild loader for dev pre-bundling. That loader is composed with `@codingame/esbuild-import-meta-url-plugin`'s catch-all `.js` loader; in esbuild the first loader that returns contents wins, so a separate plugin listed after it silently never ran.
+- On the way, the page replaces the three editor actions with implementations on the one Monaco model, keeping vscode-lean4's semantics: one document only, edits applied as one undoable step, "above" insertion indented like its line, and showDocument for another file ignored.
+- Every patch asserts its anchor occurs exactly once, so a lean4monaco upgrade fails the build rather than shipping unpatched.
+- `globalThis.qed64.api = {version: 1, capabilities: {editorRpc: true}}` is published at module start, so an embedder's own bridge stands down.
+
+Gates: `tests/unit/lean4monaco-fixes.test.ts` runs against the installed files, including the composed dev loader with the real import.meta.url plugin. `tests/unit/infoview-edits.test.ts` covers the three actions. `tests/adversarial/infoview-actions.mjs` checks the core Try this click, the `conv?` panel and Generate conv in Chromium.
+
+Rules: when a library splits one protocol across two contexts, fix both halves in one change and test the round trip, not either half alone. And a dev-only loader chain needs a test that runs the real chain: unit tests of the patch function passed while the dev server served the unpatched module.
+
