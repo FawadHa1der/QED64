@@ -125,7 +125,8 @@ try {
     }
     if (runs("restart")) {
       const before = await page.evaluate(() => globalThis.qed64.api.status().session);
-      const accepted = await page.evaluate(() => globalThis.qed64.api.restart());
+      const r = await page.evaluate(() => globalThis.qed64.api.restart());
+      const accepted = r?.accepted === true && r.fromSession === before;
       await page.waitForFunction((b) => window.__rec.events.some((e) => e.t === "reboot" && e.p.fromSession === b), before, { timeout: 60000 }).catch(() => {});
       const s2 = await settle(page);
       const reboots = (await events(page, "reboot")).filter((x) => x.fromSession === before);
