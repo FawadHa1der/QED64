@@ -18,10 +18,13 @@
 //
 // Usage: node tests/adversarial/preflight.mjs --url <page url> [--no-boot]
 //        [--boot-budget-ms 180000] [--run-dir <dir>]
+// (--help; the argument grammar is the shared CLI contract's,
+// pipeline/snapshot/cli.mjs and docs/CLI-CONTRACT.md)
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { arg, fetchJson, has, resolveTarget } from "./harness.mjs";
+import { parseCli } from "../../pipeline/snapshot/cli.mjs";
+import { fetchJson, resolveTarget } from "./harness.mjs";
 
 const isHtml = (r, text = "") => /text\/html/i.test(r.headers.get("content-type") ?? "") || /^\s*<!doctype html/i.test(text);
 
@@ -143,9 +146,12 @@ export async function bootSmoke(url, budgetMs) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  // Before any fetch: --help exits 0, unknown flags are WARNINGs on stderr.
+  const cli = parseCli("preflight");
+  const arg = (name, fallback) => cli.values[name] ?? fallback;
   const target = resolveTarget(arg("url", "http://localhost:5187/"));
   console.log(`preflight: ${target.url} (${target.mode}; manifest ${target.manifestUrl}; snapshots /${target.snapshotsDir}/)`);
-  const result = await runPreflight(target, { boot: !has("--no-boot"), bootBudgetMs: Number(arg("boot-budget-ms", "180000")) });
+  const result = await runPreflight(target, { boot: !cli.values["no-boot"], bootBudgetMs: Number(arg("boot-budget-ms", "180000")) });
   const dir = arg("run-dir", "");
   if (dir) { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(path.join(dir, "preflight.json"), JSON.stringify({ target, ...result }, null, 2)); }
   if (!result.ok) { console.log(`PREFLIGHT REFUSED: ${result.reason}`); process.exit(3); }

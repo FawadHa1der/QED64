@@ -71,7 +71,7 @@ survives is `docs/HARDENING.md`.
 | `pipeline/release` | `sync-artifacts` (provenance-checked copy), `verify-release` (out-of-band digest audit) |
 | `pipeline/artifacts` | deterministic packer + deep inspector for profile packs |
 | `public/snapshots` | baked environment snapshots + `index.json` (baked per runtime, never committed) |
-| `pipeline/snapshot` | Node runner for the wasm64 binary + `--incr-header-save` snapshot baking (`--lib` mounts an unpacked olean tree; upserts the snapshot index) |
+| `pipeline/snapshot` | Node runner for the wasm64 binary + `--incr-header-save` snapshot baking (`--lib` mounts an unpacked olean tree; upserts the snapshot index); `cli.mjs` is the pipeline CLI contract (every tool's `--help`, flags, exit codes, stable output: docs/CLI-CONTRACT.md) |
 | `pipeline/toolchain` | pinned toolchain build recipe and the wasm64 patch contract |
 | `tests/` | unit suite (pure logic + real-manifest invariants) and integration suite (the real runtime under Node) |
 
@@ -103,8 +103,9 @@ npm run bake:snapshot   # the init (no-import) snapshot
 
 The mathlib umbrella: reconstruct the olean tree from the verified profile
 parts, generate + compile the umbrella module, then bake its environment.
-The probe body doubles as validation — the bake fails loudly if the
-examples stop compiling against the umbrella.
+The probe body doubles as validation, but read the bake log for it: the
+bake exits 0 even when the examples stop compiling against the umbrella
+(the header snapshot is saved first; docs/CLI-CONTRACT.md, bake-snapshot).
 
 ```sh
 node pipeline/artifacts/unpack.mjs --manifest public/profiles/lean-core.manifest.json --out work/lib-tree

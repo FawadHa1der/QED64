@@ -156,6 +156,24 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   `bad-param` (`?snapshots=/attacker.example/x` fails the boot naming the
   parameter, with no off-origin request).
 
+## Pipeline CLI contract (docs/CLI-CONTRACT.md, tests/unit/cli-contract.test.ts)
+
+- Every Tier 1/2 tool runs as a child process with a SIGKILL timeout, with
+  `QED64_LEAN_ARTIFACT` and `--artifact` naming a missing path (no runtime
+  can boot) and every path flag inside a temp tree. `--help`/`-h` must exit
+  0 and print the help generated from SPECS, with its synopsis first, and
+  leave the tree byte-for-byte unchanged. That tree includes the raw `.snap`
+  a bake would unlink first.
+- A missing required flag must exit 2 with `usage: <synopsis>` after the
+  unknown-flag WARNINGs, again without touching the tree.
+- Every stable marker's template is grepped verbatim from the script source,
+  and its regex must match a line that template prints. The doc must name
+  every flag, exit code and marker regex.
+- `node pipeline/snapshot/cli.mjs --check-preludes` must pass: the inline
+  preludes are the current rendering of SPECS.
+- The files lean4game and the showcase vendor one by one must import only
+  files they vendor.
+
 ## Artifact discipline (pipeline/, tests/unit/artifact-discipline.test.ts)
 
 - `chunk-runtime.mjs` and `bake-snapshot.mjs` default `--out` to
