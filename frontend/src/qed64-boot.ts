@@ -7,6 +7,7 @@
 import type { LeanSession, RuntimeManifest } from "../../src/runtime/client";
 import { fetchProfileIndex, installProfile, type InstalledProfile, type ProfileIndex } from "../../src/install/profiles";
 import { fetchSnapshotIndex, snapshotCacheKey, type SnapshotIndex } from "../../src/runtime/snapshots";
+import { NO_OVERRIDES, parseBootParams, validateBootOverrides, type BootOverrides } from "./embed/params";
 
 export interface Qed64Artifacts {
   runtime: RuntimeManifest;
@@ -48,14 +49,31 @@ declare const __QED64_BUILD_ID__: string;
 /** Set once by installArtifacts from `?profiles=`; identity in production. */
 let profileReroot: (url: string) => string = (url) => url;
 
-export async function installArtifacts(ui: StatusSink): Promise<Qed64Artifacts> {
+export interface InstallOptions {
+  /** Where the dev/embedding overrides come from (docs/EMBEDDING.md §4, §7.6):
+   * "url" (default) parses `?snapshots=` / `?profiles=` / `?runtime=` from the
+   * page URL, "none" ignores the URL, an object supplies them. Every source is
+   * validated — a refused value throws a BootParamError naming the parameter. */
+  overrides?: "url" | "none" | Partial<Record<keyof BootOverrides, string | null>>;
+}
+
+function overridesOf(opts: InstallOptions): BootOverrides {
+  const o = opts.overrides ?? "url";
+  if (o === "none") return NO_OVERRIDES;
+  if (o === "url") return parseBootParams(location.search, location.origin);
+  return validateBootOverrides(o, location.origin);
+}
+
+export async function installArtifacts(ui: StatusSink, opts: InstallOptions = {}): Promise<Qed64Artifacts> {
   ui.busy("fetching manifests");
+  // Validated BEFORE any fetch: an override is spliced into artifact URLs.
+  const overrides = overridesOf(opts);
   // Dev-only override (?profiles=<dir>): an unpromoted profile set served
   // from public/<dir> (a symlink to work/staging/<buildId>/profiles). A staged
   // runtime of another Lean version must never mount the SERVED packs — the
   // olean githash gate is compiled off, so foreign oleans would be misread,
   // not refused. Index, manifests and parts are all re-rooted by basename.
-  const devProfiles = new URLSearchParams(location.search).get("profiles");
+  const devProfiles = overrides.profiles;
   profileReroot = devProfiles ? (url: string) => url.replace(/^\/profiles\//, `/${devProfiles}/`) : (url: string) => url;
   const index = await fetchProfileIndex(profileReroot("/profiles/index.json"));
   if (!index) throw new Error(`profile index missing (${profileReroot("/profiles/index.json")})`);
@@ -71,7 +89,7 @@ export async function installArtifacts(ui: StatusSink): Promise<Qed64Artifacts> 
   // Dev-only override (?runtime=<hash>): boot a runtime that is chunked into
   // public/runtime but not promoted — the resident-worker campaign tests the
   // patch-0031 build this way without touching the served manifest.
-  const devRuntime = new URLSearchParams(location.search).get("runtime");
+  const devRuntime = overrides.runtime;
   if (devRuntime) manifestResponse = await fetch(`/runtime/runtime-manifest.${devRuntime}.json`, { cache: "no-cache" });
   if (!manifestResponse) manifestResponse = await fetch("/runtime/runtime-manifest.json", { cache: "no-cache" });
   if (!manifestResponse.ok) throw new Error(`runtime manifest: HTTP ${manifestResponse.status}`);
@@ -97,7 +115,7 @@ export async function installArtifacts(ui: StatusSink): Promise<Qed64Artifacts> 
   // from public/<dir> (a symlink to a staging bake); the index's urls name
   // the promoted dir, so they are re-rooted here. Cache keys are content-
   // addressed, so unpromoted bakes never collide with served ones.
-  const devSnapshots = new URLSearchParams(location.search).get("snapshots");
+  const devSnapshots = overrides.snapshots;
   const snapshots = devSnapshots
     ? await fetchSnapshotIndex(`/${devSnapshots}/index.json`).then((idx) => idx && {
         ...idx,

