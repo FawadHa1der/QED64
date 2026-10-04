@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { snapshotCacheKey } from "../../src/runtime/snapshots";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { fetchSnapshotIndex, loadSnapshotIndex, snapshotCacheKey } from "../../src/runtime/snapshots";
 
 describe("snapshotCacheKey", () => {
   const digest = "sha256:61a520c98f37eda0aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -26,5 +26,26 @@ describe("snapshotCacheKey", () => {
     const a = snapshotCacheKey({ name: "init", url: "x", bytes: 342124365, transfer: 107411334, imports: [] });
     const b = snapshotCacheKey({ name: "init", url: "x", bytes: 342124366, transfer: 107411334, imports: [] });
     expect(a).not.toBe(b);
+  });
+});
+
+describe("loadSnapshotIndex names what is wrong (docs/EMBEDDING.md §4: an overlay is never a silent null)", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const serve = (status: number, body: string) => vi.stubGlobal("fetch", vi.fn(async () => new Response(body, { status })));
+  const good = { schema: "qed64.snapshot-index/v1", snapshots: [{ name: "init", url: "/snapshots/init.x.snapz", bytes: 1, imports: [] }] };
+  it.each([
+    [404, "not found", /HTTP 404/, "network"],
+    [200, "<!doctype html>", /not JSON/, "corrupt"],
+    [200, JSON.stringify({ schema: "other", snapshots: [] }), /not a qed64.snapshot-index\/v1 index/, "corrupt"],
+    [200, JSON.stringify({ ...good, snapshots: [{ name: "x", url: 3, imports: [] }] }), /malformed entry "x"/, "corrupt"],
+  ] as const)("HTTP %i %s", async (status, body, message, fault) => {
+    serve(status, body);
+    await expect(loadSnapshotIndex("/snapshots-x/index.json")).rejects.toMatchObject({ message: expect.stringMatching(message), indexFault: fault });
+    serve(status, body);
+    await expect(fetchSnapshotIndex("/snapshots-x/index.json")).resolves.toBeNull(); // the lenient form keeps its contract
+  });
+  it("a good index loads", async () => {
+    serve(200, JSON.stringify(good));
+    await expect(loadSnapshotIndex()).resolves.toEqual(good);
   });
 });

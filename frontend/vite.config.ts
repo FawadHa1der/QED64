@@ -5,6 +5,8 @@ import importMetaUrlPlugin from "@codingame/esbuild-import-meta-url-plugin";
 import { readFileSync } from "node:fs";
 // lean4monaco 1.1.x InfoView wiring fixes (HARDENING #56): page half (transform + dev pre-bundle) and iframe half (copy transform).
 import { lean4monacoFixesEsbuild, lean4monacoFixesVite, webviewCopyTransform } from "./build/lean4monaco-fixes.mjs";
+// dist/qed64-build.json: the shell's identity (docs/EMBEDDING.md §6.1).
+import { buildInfoPlugin } from "./build/build-info.mjs";
 
 // The runtime this shell is PAIRED with (see docs/DEPLOY.md, "Atomic
 // promotes"): the shell first asks for the immutable, digest-named manifest
@@ -49,6 +51,11 @@ export default defineConfig(({ command }) => ({
   },
   plugins: [
     lean4monacoFixesVite(),
+    buildInfoPlugin({
+      manifestUrl: new URL("../public/runtime/runtime-manifest.json", import.meta.url),
+      pageApiUrl: new URL("./src/page-api.ts", import.meta.url),
+      repoDir: new URL("..", import.meta.url).pathname,
+    }),
     nodePolyfills({ overrides: { fs: "memfs" } }),
     viteStaticCopy({
       targets: [

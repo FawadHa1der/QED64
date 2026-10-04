@@ -23,7 +23,7 @@ export interface BootOverrides {
 
 export class BootParamError extends Error {
   readonly code = "BOOT_PARAM_REFUSED";
-  constructor(readonly param: keyof BootOverrides, readonly value: string, why: string) {
+  constructor(readonly param: keyof BootOverrides | "memory", readonly value: string, why: string) {
     super(`refused ?${param}=${JSON.stringify(value).slice(1, -1).slice(0, 80)}: ${why}`);
     this.name = "BootParamError";
   }
@@ -68,3 +68,26 @@ export function parseBootParams(search: string, origin: string): BootOverrides {
 }
 
 export const NO_OVERRIDES: BootOverrides = Object.freeze({ snapshots: null, profiles: null, runtime: null });
+
+const MiB = 1048576;
+const GiB = 1073741824;
+/** The initial Memory64 commit range an embedder may ask for. */
+export const MEMORY_MIN_BYTES = 1 * GiB;
+export const MEMORY_MAX_BYTES = 6 * GiB;
+
+/** A requested initial commit, normalized: rounded to 256 MiB and clamped to
+ * [1, 6] GiB. A non-finite or non-positive request is refused. */
+export function normalizeMemoryBytes(bytes: number): number {
+  if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes <= 0) throw new BootParamError("memory", String(bytes), "expected a positive number of bytes");
+  const rounded = Math.round(bytes / (256 * MiB)) * 256 * MiB;
+  return Math.min(MEMORY_MAX_BYTES, Math.max(MEMORY_MIN_BYTES, rounded));
+}
+
+/** `?memory=<GiB>` (docs/EMBEDDING.md §4): the initial commit for every
+ * session of the page, or null when unset. */
+export function parseMemoryParam(search: string): number | null {
+  const v = new URLSearchParams(search).get("memory");
+  if (!v) return null;
+  if (!/^(?:[1-9]\d*|0)(?:\.\d{1,3})?$/.test(v)) throw new BootParamError("memory", v, "expected a number of GiB, e.g. 3 or 2.5");
+  return normalizeMemoryBytes(Number(v) * GiB);
+}

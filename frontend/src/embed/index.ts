@@ -21,7 +21,7 @@ export type {
 } from "../../../src/runtime/client";
 
 // snapshots
-export { fetchSnapshotIndex, snapshotCacheKey } from "../../../src/runtime/snapshots";
+export { fetchSnapshotIndex, loadSnapshotIndex, snapshotCacheKey } from "../../../src/runtime/snapshots";
 export type { SnapshotEntry, SnapshotIndex } from "../../../src/runtime/snapshots";
 
 // profiles (library packs)

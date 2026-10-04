@@ -28,6 +28,17 @@ export interface SnapshotEntry {
    * absent only in indexes that predate the field, which the preflight
    * reports as "no pairing fact" rather than as a match. */
   runtime?: string;
+  /** Module-name roots this entry's environment serves, matched on a
+   * component boundary (`HasseView` covers `HasseView.Foo`, never
+   * `HasseView2`): the page boots, or widens a running session, to the entry
+   * for a header naming one (docs/EMBEDDING.md §8). Advisory — the kernel's
+   * header verdict stays authoritative. Absent: the legacy rule (the entry
+   * named `mathlib` serves the umbrella roots; any other serves none). */
+  roots?: string[];
+  /** Human name for the pill and boot card ("Mathlib + widgets"). */
+  label?: string;
+  /** Initial Memory64 commit (bytes) when this entry is among a session's loads. */
+  initialBytes?: number;
 }
 
 export interface SnapshotIndex {
@@ -35,23 +46,39 @@ export interface SnapshotIndex {
   snapshots: SnapshotEntry[];
 }
 
+/** A module-name root: dotted identifier components, no wildcard. */
+const ROOT = /^[A-Za-z_][\w']*(?:\.[A-Za-z_][\w']*)*$/;
+
+/** The index, or a thrown Error naming what is wrong with it (an HTTP status,
+ * a body that is not JSON, a schema or entry that does not validate). */
+export async function loadSnapshotIndex(url = "/snapshots/index.json"): Promise<SnapshotIndex> {
+  const response = await fetch(url, { cache: "no-cache" });
+  if (!response.ok) throw Object.assign(new Error(`${url}: HTTP ${response.status}`), { indexFault: "network" as const });
+  let index: SnapshotIndex;
+  try { index = (await response.json()) as SnapshotIndex; } catch { throw Object.assign(new Error(`${url}: not JSON`), { indexFault: "corrupt" as const }); }
+  if (index?.schema !== "qed64.snapshot-index/v1" || !Array.isArray(index.snapshots)) {
+    throw Object.assign(new Error(`${url}: not a qed64.snapshot-index/v1 index`), { indexFault: "corrupt" as const });
+  }
+  for (const entry of index.snapshots) {
+    if (
+      typeof entry.name !== "string" ||
+      typeof entry.url !== "string" ||
+      !Array.isArray(entry.imports) ||
+      (entry.runtime !== undefined && typeof entry.runtime !== "string") ||
+      (entry.roots !== undefined && (!Array.isArray(entry.roots) || !entry.roots.every((r) => typeof r === "string" && ROOT.test(r)))) ||
+      (entry.label !== undefined && typeof entry.label !== "string") ||
+      (entry.initialBytes !== undefined && !(typeof entry.initialBytes === "number" && Number.isFinite(entry.initialBytes) && entry.initialBytes > 0))
+    ) {
+      throw Object.assign(new Error(`${url}: malformed entry ${JSON.stringify(entry?.name ?? null)}`), { indexFault: "corrupt" as const });
+    }
+  }
+  return index;
+}
+
+/** The index, or null when it is missing or malformed. */
 export async function fetchSnapshotIndex(url = "/snapshots/index.json"): Promise<SnapshotIndex | null> {
   try {
-    const response = await fetch(url, { cache: "no-cache" });
-    if (!response.ok) return null;
-    const index = (await response.json()) as SnapshotIndex;
-    if (index.schema !== "qed64.snapshot-index/v1" || !Array.isArray(index.snapshots)) return null;
-    for (const entry of index.snapshots) {
-      if (
-        typeof entry.name !== "string" ||
-        typeof entry.url !== "string" ||
-        !Array.isArray(entry.imports) ||
-        (entry.runtime !== undefined && typeof entry.runtime !== "string")
-      ) {
-        return null;
-      }
-    }
-    return index;
+    return await loadSnapshotIndex(url);
   } catch {
     return null;
   }
@@ -69,3 +96,75 @@ export function snapshotCacheKey(entry: SnapshotEntry): string {
   if (d) return `${safe}.${d[1]!.slice(0, 16)}.snapz`;
   return `${safe}.${entry.bytes}.${entry.transfer ?? 0}.snapz`;
 }
+
+// ---------------------------------------------------------------------------
+// Overlay environments (docs/EMBEDDING.md §8): which entries a header needs.
+// Pure functions of the index; the page's boot policy and its self-widen use
+// them, so an overlay index that declares `roots` is booted and widened to by
+// itself, and an index without them behaves exactly as before.
+
+/** The roots the umbrella snapshot serves (patch 0032 K1: `QED64.Essential`
+ * covers every Mathlib/Batteries module in the essential profile, and the
+ * tutorial aliases Mathlib, Mathlib.Tactic, Batteries, MIL.Common). */
+export const LEGACY_UMBRELLA_ROOTS: readonly string[] = Object.freeze(["Mathlib", "Batteries", "MIL", "QED64"]);
+/** The entries every session loads first. */
+export const BASE_SNAPSHOTS: readonly string[] = Object.freeze(["init"]);
+
+const MiB = 1048576;
+
+export function entryRoots(e: SnapshotEntry): readonly string[] {
+  return e.roots ?? (e.name === "mathlib" ? LEGACY_UMBRELLA_ROOTS : []);
+}
+export const coversModule = (roots: readonly string[], module: string): boolean =>
+  roots.some((r) => module === r || module.startsWith(`${r}.`));
+const isInit = (m: string) => m === "Init" || m.startsWith("Init.");
+
+/** The snapshot list for a header's modules: the base, plus at most ONE
+ * other entry — the kernel serves a header from one environment that covers
+ * the whole key, and every region is a full-size allocation in the heap, so a
+ * second heavy region never helps. The smallest entry covering every module
+ * the base does not; failing that, the one covering the most (ties: smaller)
+ * — a mixed header still boots the umbrella and the kernel names the module
+ * it cannot cover; none covering any: the base alone. */
+export function chooseSnapshots(index: SnapshotIndex, modules: readonly string[], base: readonly string[] = BASE_SNAPSHOTS): string[] {
+  const baseRoots = index.snapshots.filter((e) => base.includes(e.name)).flatMap((e) => [...entryRoots(e)]);
+  const required = [...new Set(modules)].filter((m) => !isInit(m) && !coversModule(baseRoots, m));
+  if (required.length === 0) return [...base];
+  let best: { e: SnapshotEntry; covered: number } | null = null;
+  for (const e of index.snapshots) {
+    if (base.includes(e.name)) continue;
+    const roots = entryRoots(e);
+    const covered = required.filter((m) => coversModule(roots, m)).length;
+    if (covered === 0) continue;
+    if (!best || covered > best.covered || (covered === best.covered && e.bytes < best.e.bytes)) best = { e, covered };
+  }
+  return best ? [...base, best.e.name] : [...base];
+}
+
+/** The entry to widen a running session to when the kernel refused its header
+ * for `missing` modules: the smallest entry not already loaded that covers
+ * EVERY one of them, else null (a near-miss root never widens: no snapshot
+ * would change the verdict). */
+export function widenTarget(index: SnapshotIndex, missing: readonly string[], loaded: readonly string[]): SnapshotEntry | null {
+  if (missing.length === 0) return null;
+  let best: SnapshotEntry | null = null;
+  for (const e of index.snapshots) {
+    if (loaded.includes(e.name)) continue;
+    const roots = entryRoots(e);
+    if (missing.every((m) => coversModule(roots, m)) && (!best || e.bytes < best.bytes)) best = e;
+  }
+  return best;
+}
+
+/** The initial commit for a session loading `names`: the largest
+ * `initialBytes` an entry among them declares; else 2 GiB when any non-base
+ * entry is loaded (growing a shared Memory64 by gigabytes in many steps while
+ * a region streams is the path that crashed renderers); else 256 MiB. */
+export function initialBytesForEntries(index: SnapshotIndex | null, names: readonly string[], base: readonly string[] = BASE_SNAPSHOTS): number {
+  const declared = (index?.snapshots ?? []).filter((e) => names.includes(e.name) && typeof e.initialBytes === "number").map((e) => e.initialBytes!);
+  if (declared.length > 0) return Math.max(...declared);
+  return names.some((n) => !base.includes(n)) ? 2048 * MiB : 256 * MiB;
+}
+
+/** The pill/card name of an entry. */
+export const entryLabel = (e: Pick<SnapshotEntry, "name" | "label">): string => e.label ?? (e.name === "mathlib" ? "Mathlib" : e.name);

@@ -18,6 +18,7 @@ import type { RelaySession, RestartOptions } from "./lsp-relay";
 import { LeanSession, memoryCandidates, type JsonRpcMessage, type LibraryPack, type WorkerStatus } from "../../src/runtime/client";
 import { installProfile } from "../../src/install/profiles";
 import { failureCauseOf, stageOfWorkerPhase, stepOfInstallPhase } from "./embed/failure";
+import { chooseSnapshots, initialBytesForEntries, type SnapshotIndex } from "../../src/runtime/snapshots";
 
 const MiB = 1048576;
 const GiB = 1073741824;
@@ -120,6 +121,21 @@ export const EDITOR_POLICY: ResidentPolicy = {
   maximumBytes: DEFAULT_MAXIMUM_BYTES,
 };
 
+/** The editor's policy over a served snapshot index (docs/EMBEDDING.md §8):
+ * the snapshot list is the base plus the one entry whose `roots` cover the
+ * header (`chooseSnapshots`), the commit the largest `initialBytes` an entry
+ * declares (else 2 GiB with any non-base entry, 256 MiB without). On an
+ * index without `roots` this is exactly EDITOR_POLICY (the entry named
+ * `mathlib` serves the umbrella roots); without an index, it IS EDITOR_POLICY. */
+export function makeEditorPolicy(index: SnapshotIndex | null): ResidentPolicy {
+  if (!index) return EDITOR_POLICY;
+  return {
+    snapshotsFor: (headerText) => chooseSnapshots(index, importedModulesOf(headerText)),
+    initialBytesFor: (_header, snapshots) => initialBytesForEntries(index, snapshots),
+    maximumBytes: DEFAULT_MAXIMUM_BYTES,
+  };
+}
+
 export class ResidentSession implements RelaySession {
   readonly lean = new LeanSession();
   readonly id: string;
@@ -140,7 +156,7 @@ export class ResidentSession implements RelaySession {
     this.beforeArm = host.beforeArm;
     const policy = host.policy ?? {};
     this.snapshots = opts.snapshots ?? policy.snapshotsFor?.(host.headerText) ?? ["init", "mathlib"];
-    this.initialBytes = policy.initialBytesFor?.(host.headerText, this.snapshots) ?? 2048 * MiB;
+    this.initialBytes = opts.initialBytes ?? policy.initialBytesFor?.(host.headerText, this.snapshots) ?? 2048 * MiB;
     this.maximumBytes = policy.maximumBytes ?? DEFAULT_MAXIMUM_BYTES;
     this.id = this.lean.id;
     this.lean.onLog = (stream, text) => console.debug(`[lean:${stream}] ${text}`);

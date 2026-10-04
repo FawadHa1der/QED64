@@ -23,7 +23,7 @@ export interface RelaySession {
    * predates it: integration makes this `terminate(): void` so the compiler holds resident-session.ts to it. */
   terminate(): void;
 }
-export interface RestartOptions { snapshots?: string[]; warmHeader?: string; packs?: string[] } // boot inputs for a replacement session (S4 "Load exact imports")
+export interface RestartOptions { snapshots?: string[]; warmHeader?: string; packs?: string[]; initialBytes?: number } // boot inputs for a replacement session (S4 "Load exact imports")
 type Reason = "boot" | "crash" | "heartbeat" | "wedged" | "user" | "bootFailed";
 export type RelayState = { kind: "serving" } | { kind: "rebooting"; reason: Reason } | { kind: "halted" };
 /** The last death as the page shows it (gap 2): LeanSession's (reason, message), or "bootFailed" + the boot rejection's message and its attached FailureCause (EMBEDDING §7.2). */
@@ -201,7 +201,7 @@ export class LspRelay {
   }
 
   /** The remembered restart options, iff the import lines still read as they did at that restart; otherwise forgotten. */
-  private reusableOpts(): RestartOptions | undefined {
+  reusableOpts(): RestartOptions | undefined {
     if (this.restartOpts && headerOf(this.lastText) !== this.restartHeader) this.restartOpts = null;
     return this.restartOpts ?? undefined;
   }
@@ -215,5 +215,5 @@ export class LspRelay {
     this.pending.clear();
   }
 
-  private toClient(msg: JsonRpc): void { this.serverSide.postMessage(msg); }
+  toClient(msg: JsonRpc): void { this.serverSide.postMessage(msg); }
 }

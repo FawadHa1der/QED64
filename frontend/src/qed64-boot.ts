@@ -6,7 +6,7 @@
 // prefetch + load) live here, and the boot itself in resident-session.ts.
 import type { LeanSession, RuntimeManifest } from "../../src/runtime/client";
 import { fetchProfileIndex, installProfile, type InstalledProfile, type ProfileIndex } from "../../src/install/profiles";
-import { fetchSnapshotIndex, snapshotCacheKey, type SnapshotEntry, type SnapshotIndex } from "../../src/runtime/snapshots";
+import { entryLabel, fetchSnapshotIndex, loadSnapshotIndex, snapshotCacheKey, type SnapshotEntry, type SnapshotIndex } from "../../src/runtime/snapshots";
 import { NO_OVERRIDES, parseBootParams, validateBootOverrides, type BootOverrides } from "./embed/params";
 import { failureCauseOf, stepOfInstallPhase, type BootStage, type BootStep, type FailureCause } from "./embed/failure";
 
@@ -130,10 +130,17 @@ export async function installArtifacts(ui: StatusSink, opts: InstallOptions = {}
   // the promoted dir, so they are re-rooted here. Cache keys are content-
   // addressed, so unpromoted bakes never collide with served ones.
   const devSnapshots = overrides.snapshots;
+  // An overlay that was asked for and is missing or malformed is a named boot
+  // failure (docs/EMBEDDING.md §4), never a silent "no snapshots" that surfaces
+  // later as "snapshot 'init' failed to load".
   const snapshots = devSnapshots
-    ? await fetchSnapshotIndex(`/${devSnapshots}/index.json`).then((idx) => idx && {
+    ? await loadSnapshotIndex(`/${devSnapshots}/index.json`).then((idx) => ({
         ...idx,
         snapshots: idx.snapshots.map((e) => ({ ...e, url: e.url.replace(/^\/snapshots\//, `/${devSnapshots}/`) })),
+      }), (err: Error & { indexFault?: "network" | "corrupt" }) => {
+        throw Object.assign(new Error(`?snapshots=${devSnapshots}: ${err.message}`), {
+          cause: { kind: err.indexFault ?? failureCauseOf(err).kind, stage: "manifests", subject: devSnapshots, message: err.message } satisfies FailureCause,
+        });
       })
     : await fetchSnapshotIndex();
   return { runtime, index, installed, snapshots };
@@ -262,7 +269,7 @@ export async function loadSnapshotByName(
   }
   await ensureRawSnapshotCached(entry, name, ui);
   const gib = (entry.bytes / 1073741824).toFixed(1);
-  ui.busy(`loading the ${name === "mathlib" ? "Mathlib" : name} environment (${gib} GiB unpacked — cached in your browser after the first visit)`,
+  ui.busy(`loading the ${entryLabel(entry)} environment (${gib} GiB unpacked — cached in your browser after the first visit)`,
     { stage: "snapshot", subject: name, step: "load" });
   try {
     // The index entry's `runtime` (buildId that baked it) rides along so the worker

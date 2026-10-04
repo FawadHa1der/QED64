@@ -4,29 +4,45 @@
 // `createPageApi()` runs at module start and returns the frozen `api` at once —
 // its methods work before the relay or the editor exist (they wait or say so).
 // main() then feeds it: `bind()` when the relay exists, `editorReady()` once
-// the editor is mounted, `bootStep()` / `bootFinished()` / `bootFailed()` from
-// its status sink. Everything the API reports is a projection of what the page
-// already has — the relay's status, the LSP traffic on the relay's two ports —
-// so the relay itself is unchanged (it is budget-capped, tests/unit/relay.test.ts).
+// the editor is mounted, `relayStatus()` from the relay's status sink,
+// `bootStep()` / `bootFinished()` / `bootFailed()` from its StatusSink, and
+// `memory()` / `setOffer()` from its meter and its exact-imports offer.
+// Everything the API reports is a projection of what the page already has —
+// the relay's status and the LSP traffic on the relay's taps
+// (frontend/src/relay-taps.ts) — so the relay itself is unchanged (it is
+// budget-capped, tests/unit/relay.test.ts).
 //
-// Pure of the DOM except `requestAnimationFrame` (optional) and the caller's
-// objects: unit-tested under node over a fake relay and editor.
+// Pure of the DOM: unit-tested under node over a fake relay and editor.
 import type { BootStage, FailureCause } from "./embed/failure";
 import type { ProgressInfo } from "./qed64-boot";
 import type { RelayStatus, RestartOptions } from "./lsp-relay";
+import type { LspMessage, RelayTaps } from "./relay-taps";
 
 export const API_REVISION = "1.0.0";
 
 export type Cursor = { lineNumber: number; column: number };
 export type SetDocumentResult = { version: number | null; unchanged: boolean };
 export interface Capabilities {
-  editorRpc: boolean; documents: boolean; events: boolean; restart: boolean;
-  embedMode: boolean; snapshotRoots: boolean; postMessage: boolean;
+  editorRpc: boolean; documents: boolean; events: boolean; restart: boolean; embedMode: boolean;
+  snapshotRoots: boolean; postMessage: boolean; liveness: boolean; memory: boolean; widgetSourceCache: boolean; offers: boolean;
 }
 export interface BuildInfo { buildId: string; leanVersion: string; sourceRevision: string | null; shell: string | null }
 export type DeathKind = "crash" | "exit" | "abort" | "wedged" | "heartbeat" | "bootFailed" | "other";
 export interface DeathInfo { kind: DeathKind; reason: string; message: string; cause: FailureCause | null }
-export interface BootInfo { stage: BootStage; label: string; done: boolean; failed: boolean; message: string | null }
+export interface BootInfo { stage: BootStage; label: string; done: boolean; failed: boolean; message: string | null; overlay: boolean }
+/** The worker's liveness machine (lean.worker.js LIVENESS; HARDENING #52) as an
+ * embedder needs it: is the Lean side stalled right now, and how long since
+ * it last proved itself alive. The timings are the worker's constants. */
+export interface LivenessInfo {
+  stalled: boolean;
+  lastAnswerAgoMs: number | null;
+  lastFrameAgoMs: number | null;
+  probeAfterMs: number;
+  wedgeAfterMs: number;
+  graceMs: number;
+}
+export interface MemoryInfo { initialBytes: number | null; currentBytes: number | null; maximumBytes: number | null }
+export interface OfferInfo { kind: "exactImports"; label: string }
 export interface ApiStatus {
   phase: RelayStatus["phase"];
   relay: RelayStatus["relay"];
@@ -38,19 +54,25 @@ export interface ApiStatus {
   lastDeath: DeathInfo | null;
   boot: BootInfo;
   snapshots: string[] | null;
+  liveness: LivenessInfo | null;
+  memory: MemoryInfo | null;
+  offer: OfferInfo | null;
 }
 type LspDiagnostic = { range: unknown; severity?: number; message: string; source?: string };
 export interface Events {
   status: ApiStatus;
-  boot: { stage: BootStage; phase: string | null; subject: string | null; label: string; loaded: number | null; total: number | null; unit: string | null; done: boolean; failed: boolean; message: string | null };
+  boot: { stage: BootStage; phase: string | null; subject: string | null; label: string; loaded: number | null; total: number | null; unit: string | null; done: boolean; failed: boolean; message: string | null; error: FailureCause | null };
   ready: { session: string; version: number | null; refused: boolean; header: ApiStatus["header"] };
   document: { uri: string; version: number; length: number; text: string };
   diagnostics: { uri: string; version: number | null; diagnostics: LspDiagnostic[]; origin: "lean" | "qed64" };
   fileProgress: { uri: string; version: number | null; processing: Array<{ range: unknown; kind?: number }> };
   death: { session: string; kind: DeathKind; reason: string; message: string; cause: FailureCause | null; willReboot: boolean; halted: boolean };
   reboot: { reason: string | null; fromSession: string; toSession: string };
+  liveness: { session: string; kind: "answered" | "stall" | "resumed" | "rescue" };
+  offer: OfferInfo | null;
 }
 export type EventName = keyof Events;
+export interface RestartResult { accepted: boolean; fromSession: string | null }
 
 export interface Qed64ApiV1 {
   readonly version: 1;
@@ -59,53 +81,78 @@ export interface Qed64ApiV1 {
   build(): BuildInfo | null;
   status(): ApiStatus;
   whenReady(): Promise<ApiStatus>;
-  settled(opts?: { version?: number; timeoutMs?: number }): Promise<ApiStatus>;
+  settled(opts?: { version?: number; afterSession?: string; timeoutMs?: number }): Promise<ApiStatus>;
   on<E extends EventName>(type: E, fn: (payload: Events[E]) => void): () => void;
   off<E extends EventName>(type: E, fn: (payload: Events[E]) => void): void;
   getDocument(): { uri: string; version: number | null; text: string } | null;
   setDocument(text: string, opts?: { cursor?: Cursor; focus?: boolean; undoable?: boolean }): Promise<SetDocumentResult>;
+  getCursor(): Cursor | null;
   setCursor(cursor: Cursor, opts?: { focus?: boolean; reveal?: boolean }): boolean;
-  restart(opts?: { snapshots?: string[] }): boolean;
+  focus(): boolean;
+  restart(opts?: { snapshots?: string[]; initialBytes?: number }): RestartResult;
+  acceptOffer(kind?: OfferInfo["kind"]): boolean;
 }
 
 /** The slice of LspRelay the API reads (the real relay satisfies it). */
 export interface RelayLike {
   status(): RelayStatus;
-  fromClient(msg: { method?: string; params?: unknown }): void;
-  readonly clientPort: MessagePort;
   readonly state: { kind: string };
   readonly doc: { uri: string; version: number } | null;
   readonly lastText: string;
-  readonly session: { id: string; snapshots?: readonly string[] };
+  readonly session: { id: string; snapshots?: readonly string[]; initialBytes?: number };
   restart(opts: RestartOptions): void;
+  reusableOpts(): RestartOptions | undefined;
 }
 /** The slice of Monaco's editor the API drives. */
 export interface EditorLike {
-  getModel(): { uri: { toString(): string }; getValue(): string; getFullModelRange(): unknown; setValue(text: string): void } | null;
+  getModel(): {
+    uri: { toString(): string }; getValue(): string; getFullModelRange(): unknown; setValue(text: string): void;
+    getLineCount(): number; getLineMaxColumn(lineNumber: number): number;
+  } | null;
   executeEdits(source: string, edits: Array<{ range: unknown; text: string; forceMoveMarkers?: boolean }>): boolean;
   pushUndoStop(): boolean;
+  getPosition(): Cursor | null;
   setPosition(p: Cursor): void;
   revealPositionInCenterIfOutsideViewport(p: Cursor): void;
   focus(): void;
 }
 export interface PageApiBinding {
   relay: RelayLike;
+  taps: RelayTaps;
   editor: () => EditorLike | undefined;
   build: BuildInfo;
   /** Snapshot names the served index has (restart() refuses others). */
   snapshotNames: readonly string[];
+  /** Normalizes a requested initial commit (restart({initialBytes})); throws on a refused value. */
+  memoryBytes?: (bytes: number) => number;
 }
 
 const err = (code: string, message: string) => Object.assign(new Error(message), { code });
 const DEATH_KINDS: ReadonlySet<string> = new Set(["crash", "exit", "abort", "wedged", "heartbeat", "bootFailed"]);
+/** lean.worker.js LIVENESS (probeAfterMs, wedgeAfterMs, graceMs). */
+export const LIVENESS_TIMING = Object.freeze({ probeAfterMs: 6000, wedgeAfterMs: 12000, graceMs: 4000 });
+/** Coalescing window for fileProgress: a timer, not requestAnimationFrame
+ * (which a hidden or background frame never runs). */
+export const FILE_PROGRESS_MS = 100;
 
 export function deathInfo(d: RelayStatus["lastDeath"]): DeathInfo | null {
   if (!d) return null;
   return { kind: (DEATH_KINDS.has(d.reason) ? d.reason : "other") as DeathKind, reason: d.reason, message: d.message, cause: d.cause ?? null };
 }
 
+/** The relay's own frames (the halted note, orphaned-request errors) say so;
+ * everything else came from the Lean side. */
+export function isSyntheticFrame(m: LspMessage): boolean {
+  const e = m.error as { message?: unknown } | undefined;
+  if (typeof e?.message === "string" && e.message.startsWith("QED64:")) return true;
+  const d = (m.params as { diagnostics?: LspDiagnostic[] } | undefined)?.diagnostics;
+  return m.method === "textDocument/publishDiagnostics" && Array.isArray(d) && d.length > 0 && d.every((x) => x.source === "QED64");
+}
+
+interface Extras { liveness: LivenessInfo | null; memory: MemoryInfo | null; offer: OfferInfo | null }
+
 /** The stable projection of the relay's status (the counters stay internal). */
-export function toApiStatus(s: RelayStatus | null, boot: BootInfo, snapshots: readonly string[] | null): ApiStatus {
+export function toApiStatus(s: RelayStatus | null, boot: BootInfo, snapshots: readonly string[] | null, extras: Extras = { liveness: null, memory: null, offer: null }): ApiStatus {
   return {
     phase: s?.phase ?? "booting",
     relay: s?.relay ?? "rebooting",
@@ -117,6 +164,9 @@ export function toApiStatus(s: RelayStatus | null, boot: BootInfo, snapshots: re
     lastDeath: deathInfo(s?.lastDeath ?? null),
     boot: { ...boot },
     snapshots: snapshots ? [...snapshots] : null,
+    liveness: extras.liveness ? { ...extras.liveness } : null,
+    memory: extras.memory ? { ...extras.memory } : null,
+    offer: extras.offer ? { ...extras.offer } : null,
   };
 }
 
@@ -128,15 +178,25 @@ export interface PageApi {
   relayStatus(s: RelayStatus): void;
   /** Feed every structured boot step (a busy/progress call with `info.stage`). */
   bootStep(label: string, info: ProgressInfo): void;
+  /** The page's boot card is gone (the first boot is over). */
   bootFinished(): void;
-  bootFailed(message: string): void;
+  bootFailed(message: string, cause?: FailureCause): void;
+  /** The memory meter's reading (the wasm heap now and its cap). */
+  memory(currentBytes: number, maximumBytes: number): void;
+  /** The page's one explicit action ("Load exact imports"), or null when withdrawn. */
+  setOffer(offer: OfferInfo | null, run?: () => void): void;
   /** The text `setDocument` set before boot read its document, if any. */
   takeBootDocument(): string | null;
   /** Resolves with that text as soon as `setDocument` is called (or null at `deadline`). */
   waitBootDocument(deadline: Promise<void>): Promise<string | null>;
 }
 
-export function createPageApi(capabilities: Capabilities, schedule: (f: () => void) => void = defaultSchedule): PageApi {
+export function createPageApi(
+  capabilities: Capabilities,
+  timers: { now(): number; setTimeout(f: () => void, ms: number): unknown; clearTimeout(t: unknown): void } = {
+    now: () => Date.now(), setTimeout: (f, ms) => setTimeout(f, ms), clearTimeout: (t) => clearTimeout(t as ReturnType<typeof setTimeout>),
+  },
+): PageApi {
   const listeners = new Map<EventName, Set<(p: never) => void>>();
   const emit = <E extends EventName>(type: E, payload: Events[E]) => {
     for (const fn of [...(listeners.get(type) ?? [])]) {
@@ -146,18 +206,56 @@ export function createPageApi(capabilities: Capabilities, schedule: (f: () => vo
   let binding: PageApiBinding | null = null;
   let mounted = false;
   let last: RelayStatus | null = null;
-  let boot: BootInfo = { stage: "manifests", label: "", done: false, failed: false, message: null };
+  let boot: BootInfo = { stage: "manifests", label: "", done: false, failed: false, message: null, overlay: true };
   let bootDocument: string | null = null;
   let bootDocumentRead = false;
   const bootDocWaiters: Array<(t: string) => void> = [];
   const readyWaiters: Array<() => void> = [];
   const readySeen = new Set<string>();
   let lastDeath: RelayStatus["lastDeath"] = null;
+  // liveness: per-session counters as last seen, when the answered count last rose, when the Lean side last sent a frame
+  let liveSession = "";
+  let liveCounters: NonNullable<RelayStatus["liveness"]> | null = null;
+  let lastAnswerAt: number | null = null;
+  let lastFrameAt: number | null = null;
+  let mem: { currentBytes: number; maximumBytes: number } | null = null;
+  let offer: { info: OfferInfo; run: () => void } | null = null;
+  // fileProgress coalescing
+  let pendingProgress: Events["fileProgress"] | null = null;
+  let progressTimer: unknown = null;
+  const flushProgress = () => {
+    if (progressTimer !== null) { timers.clearTimeout(progressTimer); progressTimer = null; }
+    const p = pendingProgress;
+    pendingProgress = null;
+    if (p) emit("fileProgress", p);
+  };
 
   const snapshotsNow = () => (binding?.relay.session.snapshots ? [...binding.relay.session.snapshots] : null);
-  const statusNow = (): ApiStatus => toApiStatus(binding ? binding.relay.status() : last, boot, snapshotsNow());
+  const livenessNow = (): LivenessInfo | null => {
+    if (!liveCounters) return null;
+    const now = timers.now();
+    return {
+      stalled: liveCounters.stalls > liveCounters.resumed,
+      lastAnswerAgoMs: lastAnswerAt === null ? null : now - lastAnswerAt,
+      lastFrameAgoMs: lastFrameAt === null ? null : now - lastFrameAt,
+      ...LIVENESS_TIMING,
+    };
+  };
+  const memoryNow = (): MemoryInfo | null => {
+    const initialBytes = binding?.relay.session.initialBytes ?? null;
+    if (initialBytes === null && !mem) return null;
+    return { initialBytes, currentBytes: mem?.currentBytes ?? null, maximumBytes: mem?.maximumBytes ?? null };
+  };
+  const project = (s: RelayStatus | null) => toApiStatus(s, boot, snapshotsNow(), { liveness: livenessNow(), memory: memoryNow(), offer: offer?.info ?? null });
+  const statusNow = (): ApiStatus => project(binding ? binding.relay.status() : last);
   const isBound = () => binding !== null && mounted;
   const settledPhase = (p: string) => p === "ready" || p === "headerRefused";
+  const clampCursor = (editor: EditorLike, c: Cursor): Cursor | null => {
+    const model = editor.getModel();
+    if (!model || !Number.isFinite(c?.lineNumber) || !Number.isFinite(c?.column)) return null;
+    const lineNumber = Math.min(Math.max(1, Math.trunc(c.lineNumber)), model.getLineCount());
+    return { lineNumber, column: Math.min(Math.max(1, Math.trunc(c.column)), model.getLineMaxColumn(lineNumber)) };
+  };
 
   function on<E extends EventName>(type: E, fn: (p: Events[E]) => void): () => void {
     let set = listeners.get(type);
@@ -176,18 +274,19 @@ export function createPageApi(capabilities: Capabilities, schedule: (f: () => vo
     build: () => (binding ? { ...binding.build } : null),
     status: statusNow,
     whenReady: () => (isBound() ? Promise.resolve(statusNow()) : new Promise<ApiStatus>((r) => readyWaiters.push(() => r(statusNow())))),
-    settled(opts: { version?: number; timeoutMs?: number } = {}) {
+    settled(opts: { version?: number; afterSession?: string; timeoutMs?: number } = {}) {
       return new Promise<ApiStatus>((resolve, reject) => {
         const want = opts.version ?? binding?.relay.doc?.version ?? null;
-        let timer: ReturnType<typeof setTimeout> | undefined;
+        let timer: unknown;
         const check = (s: ApiStatus): boolean => {
           if (s.phase === "halted") { done(); reject(err("HALTED", "the checker halted after repeated crashes; edit the document to restart it")); return true; }
+          if (opts.afterSession !== undefined && (s.session === null || s.session === opts.afterSession)) return false;
           if (settledPhase(s.phase) && s.relay === "serving" && (want === null || (s.version ?? -1) >= want)) { done(); resolve(s); return true; }
           return false;
         };
         const unsubscribe = on("status", (s) => { check(s); });
-        const done = () => { unsubscribe(); clearTimeout(timer); };
-        if (opts.timeoutMs !== undefined) timer = setTimeout(() => { done(); reject(err("TIMEOUT", `not settled within ${opts.timeoutMs} ms`)); }, opts.timeoutMs);
+        const done = () => { unsubscribe(); if (timer !== undefined) timers.clearTimeout(timer); };
+        if (opts.timeoutMs !== undefined) timer = timers.setTimeout(() => { done(); reject(err("TIMEOUT", `not settled within ${opts.timeoutMs} ms`)); }, opts.timeoutMs);
         if (binding) check(statusNow());
       });
     },
@@ -204,7 +303,10 @@ export function createPageApi(capabilities: Capabilities, schedule: (f: () => vo
         bootDocument = text;
         for (const w of bootDocWaiters.splice(0)) w(text);
         // Resolves once boot has read it (the editor then opens with it).
-        return new Promise<SetDocumentResult>((resolve) => readyWaiters.push(() => resolve({ version: binding?.relay.doc?.version ?? null, unchanged: false })));
+        return new Promise<SetDocumentResult>((resolve) => readyWaiters.push(() => {
+          if (opts.cursor) api.setCursor(opts.cursor, { focus: opts.focus });
+          resolve({ version: binding?.relay.doc?.version ?? null, unchanged: false });
+        }));
       }
       const editor = binding?.editor();
       const model = editor?.getModel();
@@ -213,6 +315,7 @@ export function createPageApi(capabilities: Capabilities, schedule: (f: () => vo
         // Nothing is sent: an identical-text edit produces no change event, and a
         // caller waiting for a version that never comes would wedge.
         if (opts.cursor) api.setCursor(opts.cursor, { focus: opts.focus });
+        else if (opts.focus) editor.focus();
         return Promise.resolve({ version: binding!.relay.doc?.version ?? null, unchanged: true });
       }
       return new Promise<SetDocumentResult>((resolve) => {
@@ -227,30 +330,71 @@ export function createPageApi(capabilities: Capabilities, schedule: (f: () => vo
         else if (opts.focus) editor.focus();
       });
     },
+    getCursor() {
+      const p = binding?.editor()?.getPosition();
+      return p ? { lineNumber: p.lineNumber, column: p.column } : null;
+    },
     setCursor(cursor: Cursor, opts: { focus?: boolean; reveal?: boolean } = {}) {
       const editor = binding?.editor();
-      if (!editor || !Number.isInteger(cursor?.lineNumber) || !Number.isInteger(cursor?.column) || cursor.lineNumber < 1 || cursor.column < 1) return false;
-      editor.setPosition({ lineNumber: cursor.lineNumber, column: cursor.column });
-      if (opts.reveal !== false) editor.revealPositionInCenterIfOutsideViewport({ lineNumber: cursor.lineNumber, column: cursor.column });
+      const c = editor ? clampCursor(editor, cursor) : null;
+      if (!editor || !c) return false;
+      editor.setPosition(c);
+      if (opts.reveal !== false) editor.revealPositionInCenterIfOutsideViewport(c);
       if (opts.focus !== false) editor.focus();
       return true;
     },
-    restart(opts: { snapshots?: string[] } = {}) {
-      if (!binding || binding.relay.state.kind !== "serving") return false;
-      const snapshots = opts.snapshots ?? snapshotsNow() ?? undefined;
-      const unknown = (snapshots ?? []).filter((n) => !binding!.snapshotNames.includes(n));
+    focus() {
+      const editor = binding?.editor();
+      if (!editor) return false;
+      editor.focus();
+      return true;
+    },
+    restart(opts: { snapshots?: string[]; initialBytes?: number } = {}): RestartResult {
+      const fromSession = binding ? binding.relay.session.id : null;
+      if (!binding || binding.relay.state.kind !== "serving") return { accepted: false, fromSession };
+      const unknown = (opts.snapshots ?? []).filter((n) => !binding!.snapshotNames.includes(n));
       if (unknown.length > 0) throw new TypeError(`restart: unknown snapshot(s) ${unknown.join(", ")} (served: ${binding.snapshotNames.join(", ")})`);
-      binding.relay.restart(snapshots ? { snapshots: [...snapshots] } : {});
+      let initialBytes: number | undefined;
+      if (opts.initialBytes !== undefined) {
+        if (!binding.memoryBytes) throw new TypeError("restart: initialBytes is not supported here");
+        initialBytes = binding.memoryBytes(opts.initialBytes);
+      }
+      // No snapshots given: this session's boot inputs, under the relay's own
+      // rule (the remembered exact-imports options while the header still
+      // matches, else the snapshot list it loaded).
+      const base: RestartOptions = opts.snapshots ? { snapshots: [...opts.snapshots] } : binding.relay.reusableOpts() ?? (snapshotsNow() ? { snapshots: snapshotsNow()! } : {});
+      binding.relay.restart(initialBytes !== undefined ? { ...base, initialBytes } : { ...base });
+      return { accepted: true, fromSession };
+    },
+    acceptOffer(kind?: OfferInfo["kind"]) {
+      if (!offer || (kind !== undefined && kind !== offer.info.kind)) return false;
+      const run = offer.run;
+      run();
       return true;
     },
   });
 
   function emitBoot(label: string, info: ProgressInfo | null, done: boolean, failed: boolean, message: string | null) {
-    boot = { stage: info?.stage ?? (failed ? "failed" : done ? "done" : boot.stage), label, done, failed, message };
+    boot = { stage: info?.stage ?? (failed ? "failed" : done ? "done" : boot.stage), label, done, failed, message, overlay: boot.overlay };
     emit("boot", {
       stage: boot.stage, phase: info?.phase ?? null, subject: info?.subject ?? null, label,
-      loaded: info?.loaded ?? null, total: info?.total ?? null, unit: info?.unit ?? null, done, failed, message,
+      loaded: info?.loaded ?? null, total: info?.total ?? null, unit: info?.unit ?? null, done, failed, message, error: info?.error ?? null,
     });
+  }
+
+  function trackLiveness(s: RelayStatus) {
+    const c = s.liveness;
+    if (s.session !== liveSession) { liveSession = s.session; liveCounters = null; lastAnswerAt = null; }
+    if (!c) return;
+    const prev = liveCounters ?? { probes: 0, answered: 0, stalls: 0, resumed: 0, rescues: 0 };
+    liveCounters = { ...c };
+    const kinds: Array<[keyof typeof c, Events["liveness"]["kind"]]> = [["answered", "answered"], ["stalls", "stall"], ["resumed", "resumed"], ["rescues", "rescue"]];
+    for (const [k, kind] of kinds) {
+      if (c[k] > prev[k]) {
+        if (kind === "answered") lastAnswerAt = timers.now();
+        emit("liveness", { session: s.session, kind });
+      }
+    }
   }
 
   return {
@@ -258,26 +402,22 @@ export function createPageApi(capabilities: Capabilities, schedule: (f: () => vo
     bind(b) {
       binding = b;
       const relay = b.relay;
-      // `document`: what the relay forwards (it records didOpen/didChange first, then forwards).
-      const forward = relay.fromClient.bind(relay);
-      (relay as { fromClient: RelayLike["fromClient"] }).fromClient = (msg) => {
-        forward(msg);
+      // `document`: what the relay forwarded (it recorded didOpen/didChange first).
+      b.taps.onIn((msg) => {
         if ((msg.method === "textDocument/didOpen" || msg.method === "textDocument/didChange") && relay.doc) {
           emit("document", { uri: relay.doc.uri, version: relay.doc.version, length: relay.lastText.length, text: relay.lastText });
         }
-      };
-      // `diagnostics` / `fileProgress`: what the editor receives from the relay.
-      let pendingProgress: Events["fileProgress"] | null = null;
-      relay.clientPort.addEventListener("message", (e: MessageEvent) => {
-        const m = e.data as { method?: string; params?: { uri?: string; version?: number; diagnostics?: LspDiagnostic[]; textDocument?: { uri: string; version?: number }; processing?: Array<{ range: unknown; kind?: number }> } };
-        if (m?.method === "textDocument/publishDiagnostics" && m.params?.uri) {
-          const diagnostics = m.params.diagnostics ?? [];
-          const origin = diagnostics.length > 0 && diagnostics.every((d) => d.source === "QED64") ? "qed64" : "lean";
-          emit("diagnostics", { uri: m.params.uri, version: m.params.version ?? null, diagnostics, origin });
-        } else if (m?.method === "$/lean/fileProgress" && m.params?.textDocument) {
-          const first = pendingProgress === null;
-          pendingProgress = { uri: m.params.textDocument.uri, version: m.params.textDocument.version ?? null, processing: m.params.processing ?? [] };
-          if (first) schedule(() => { const p = pendingProgress; pendingProgress = null; if (p) emit("fileProgress", p); });
+      });
+      // `diagnostics` / `fileProgress` / the liveness frame clock: what the relay sends the editor.
+      b.taps.onOut((m) => {
+        if (!isSyntheticFrame(m)) lastFrameAt = timers.now();
+        const params = m.params as { uri?: string; version?: number; diagnostics?: LspDiagnostic[]; textDocument?: { uri: string; version?: number }; processing?: Array<{ range: unknown; kind?: number }> } | undefined;
+        if (m.method === "textDocument/publishDiagnostics" && params?.uri) {
+          const diagnostics = params.diagnostics ?? [];
+          emit("diagnostics", { uri: params.uri, version: params.version ?? null, diagnostics, origin: isSyntheticFrame(m) ? "qed64" : "lean" });
+        } else if (m.method === "$/lean/fileProgress" && params?.textDocument) {
+          pendingProgress = { uri: params.textDocument.uri, version: params.textDocument.version ?? null, processing: params.processing ?? [] };
+          if (progressTimer === null) progressTimer = timers.setTimeout(flushProgress, FILE_PROGRESS_MS);
         }
       });
       if (mounted) for (const w of readyWaiters.splice(0)) w();
@@ -287,6 +427,12 @@ export function createPageApi(capabilities: Capabilities, schedule: (f: () => vo
       if (binding) for (const w of readyWaiters.splice(0)) w();
     },
     relayStatus(s) {
+      // A status the page's own handling superseded (a self-widen restarts the
+      // session inside the sink, so the replacement's status arrives first and
+      // this stale one after it) is not reported: a headerRefused the page is
+      // already widening is never a verdict.
+      if (binding && s.session !== binding.relay.session.id) return;
+      flushProgress();
       const prev = last;
       last = s;
       if (prev && prev.session !== s.session) emit("reboot", { reason: s.rebootReason, fromSession: prev.session, toSession: s.session });
@@ -295,7 +441,8 @@ export function createPageApi(capabilities: Capabilities, schedule: (f: () => vo
         emit("death", { session: prev?.session ?? s.session, kind: d.kind, reason: d.reason, message: d.message, cause: d.cause, willReboot: s.relay === "rebooting", halted: s.phase === "halted" });
       }
       lastDeath = s.lastDeath;
-      const status = toApiStatus(s, boot, snapshotsNow());
+      trackLiveness(s);
+      const status = project(s);
       emit("status", status);
       if (settledPhase(s.phase) && s.relay === "serving") {
         if (!boot.done && !boot.failed) emitBoot(boot.label, { stage: "done" }, true, false, null); // a reboot's boot ends here too
@@ -307,8 +454,22 @@ export function createPageApi(capabilities: Capabilities, schedule: (f: () => vo
       }
     },
     bootStep(label, info) { emitBoot(label, info, false, false, null); },
-    bootFinished() { if (!boot.done) emitBoot(boot.label, { stage: "done" }, true, false, null); },
-    bootFailed(message) { emitBoot(message, { stage: "failed" }, false, true, message); },
+    bootFinished() {
+      const wasOverlay = boot.overlay;
+      boot = { ...boot, overlay: false };
+      if (!boot.done) emitBoot(boot.label, { stage: "done" }, true, false, null);
+      else if (wasOverlay) emit("status", statusNow());
+    },
+    bootFailed(message, cause) {
+      if (boot.failed && boot.overlay && !cause) return; // the first report (with its cause) stands
+      emitBoot(message, { stage: "failed", ...(cause ? { error: cause } : {}) }, false, true, message);
+    },
+    memory(currentBytes, maximumBytes) { mem = { currentBytes, maximumBytes }; },
+    setOffer(o, run) {
+      const before = offer?.info ?? null;
+      offer = o && run ? { info: { ...o }, run } : null;
+      if (JSON.stringify(before) !== JSON.stringify(offer?.info ?? null)) emit("offer", offer ? { ...offer.info } : null);
+    },
     takeBootDocument() {
       bootDocumentRead = true;
       return bootDocument;
@@ -320,13 +481,8 @@ export function createPageApi(capabilities: Capabilities, schedule: (f: () => vo
   };
 }
 
-function defaultSchedule(f: () => void): void {
-  const raf = (globalThis as { requestAnimationFrame?: (cb: () => void) => number }).requestAnimationFrame;
-  if (typeof raf === "function") raf(f);
-  else setTimeout(f, 16);
-}
-
-/** The boot document in embed mode (docs/EMBEDDING.md §3.1): `#code=` wins. */
+/** The boot document from a URL fragment (docs/EMBEDDING.md §3.1): `#code=`
+ * (lean4web's spelling), at most 2 MiB of text. */
 export function codeFromHash(hash: string): string | null {
   const m = /^#(?:.*&)?code=([^&]*)/.exec(hash);
   if (!m) return null;

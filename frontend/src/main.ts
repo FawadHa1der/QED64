@@ -5,9 +5,15 @@ import { LeanMonaco, LeanMonacoEditor, type LeanMonacoOptions } from "lean4monac
 import { installArtifacts, type ProgressInfo, type StatusSink } from "./qed64-boot";
 import { registerImportCompletion } from "./import-completion";
 import { LspRelay, type RelayStatus } from "./lsp-relay";
-import { EDITOR_POLICY, ResidentSession, isUmbrellaModule } from "./resident-session";
+import { ResidentSession, makeEditorPolicy, type ResidentPolicy } from "./resident-session";
+import { BASE_SNAPSHOTS, entryLabel, widenTarget, LEGACY_UMBRELLA_ROOTS, coversModule } from "../../src/runtime/snapshots";
 import { installInfoviewEditorApi, type EditsEditor } from "./editor/infoview-edits";
 import { codeFromHash, createPageApi, type EditorLike } from "./page-api";
+import { normalizeMemoryBytes, parseMemoryParam } from "./embed/params";
+import { failureCauseOf, type FailureCause } from "./embed/failure";
+import { tapRelay } from "./relay-taps";
+import { installWidgetSourceCache } from "./widget-source-cache";
+import { createTestHatch } from "./test-hatch";
 
 // The embedder-facing surface (docs/EMBEDDING.md §2), published synchronously
 // at module start — before any of the page's own listeners matter — so an
@@ -16,7 +22,10 @@ import { codeFromHash, createPageApi, type EditorLike } from "./page-api";
 // embedder's own bridge for it must stand down. The rest of `globalThis.qed64`
 // (relay, ui, artifacts, editor, status()) joins this same object once the
 // relay exists; it is internal (docs/EMBEDDING.md §9).
-const pageApi = createPageApi({ editorRpc: true, documents: true, events: true, restart: true, embedMode: true, snapshotRoots: false, postMessage: false });
+const pageApi = createPageApi({
+  editorRpc: true, documents: true, events: true, restart: true, embedMode: true, snapshotRoots: true, postMessage: false,
+  liveness: true, memory: true, widgetSourceCache: true, offers: true,
+});
 const qed64Global = ((globalThis as unknown as { qed64?: Record<string, unknown> }).qed64 ??= {});
 qed64Global.api = pageApi.api;
 // Embed mode (docs/EMBEDDING.md §3): the embedder owns persistence and the
@@ -170,9 +179,9 @@ function bootFinish() {
   window.setTimeout(() => bootEl.remove(), 600);
 }
 
-function bootFail(message: string) {
+function bootFail(message: string, cause?: FailureCause) {
   if (bootDone) return;
-  pageApi.bootFailed(message);
+  pageApi.bootFailed(message, cause);
   bootCard.classList.add("failed");
   bootCard.querySelector("h1")!.textContent = "QED64 could not start";
   bootLabel.textContent = message;
@@ -290,8 +299,9 @@ function tickSearchHint(): void {
 
 // GAP 3: a session that booted light (init only) and whose header now names
 // Mathlib is refused by the kernel; the page widens it once (a user restart
-// with the umbrella) and says "loading Mathlib…" while the replacement boots.
-let widening = false;
+// with the umbrella, or the overlay entry whose roots cover the header) and
+// says "loading <label>…" while the replacement boots.
+let widening: string | null = null;
 
 function renderStatus(s: PageStatus) {
   if (s.phase === "ready") everReady = true;
@@ -309,13 +319,13 @@ function renderStatus(s: PageStatus) {
     ui.idle(d ? `halted — ${d.reason}` : PHASE_LABEL.halted);
     return;
   }
-  if (s.phase !== "booting" && s.phase !== "starting") widening = false;
+  if (s.phase !== "booting" && s.phase !== "starting") widening = null;
   // A liveness death (HARDENING #52: the Lean side stopped answering) is not
   // a crash; say what happened while the relay reboots for it (keyed on why
   // THIS reboot happens, not on the sticky lastDeath a later user restart
   // would inherit).
   const wedged = s.relay === "rebooting" && s.rebootReason === "wedged";
-  const label = widening ? "loading Mathlib…" : wedged ? WEDGED_LABEL : s.phase === "elaborating" && hintShown ? SEARCH_HINT : PHASE_LABEL[s.phase];
+  const label = widening ? `loading ${widening}…` : wedged ? WEDGED_LABEL : s.phase === "elaborating" && hintShown ? SEARCH_HINT : PHASE_LABEL[s.phase];
   if (s.phase === "booting" || s.phase === "starting" || s.phase === "elaborating" || s.phase === "dead") ui.busy(label);
   else ui.idle(label);
   if (s.phase === "ready" || s.phase === "headerRefused") bootFinish();
@@ -375,6 +385,9 @@ theorem Tree.mirror_size (t : Tree α) : t.mirror.size = t.size := by
 };
 
 async function main() {
+  // ?memory=<GiB> (docs/EMBEDDING.md §4): the initial commit of every session;
+  // validated before anything is fetched, a refused value fails the boot.
+  const memoryBytes = parseMemoryParam(location.search);
   const artifacts = await installArtifacts(ui);
   // Identify the exact compiler in the product bar: Lean version + fork
   // commit visible, full provenance (incl. runtime id) in the tooltip.
@@ -395,19 +408,28 @@ async function main() {
   // before this point wins; in embed mode (docs/EMBEDDING.md §3.1) the buffer
   // is neither read nor written: `#code=`, else `setDocument` (waited for up
   // to 5 s from module start), else the empty document.
+  // `#code=` (lean4web's spelling) is honoured on the plain page too, and read
+  // ONCE: it is dropped from the URL so a reload does not resurrect stale text.
   let restored: string | null = null;
   let initialText: string;
-  const hashCode = EMBED ? codeFromHash(location.hash) : null;
+  const hashCode = codeFromHash(location.hash);
+  if (hashCode !== null) {
+    try { history.replaceState(history.state, "", `${location.pathname}${location.search}`); } catch { /* sandboxed */ }
+  }
   if (hashCode !== null) initialText = hashCode;
   else if (EMBED) initialText = (await pageApi.waitBootDocument(embedDeadline)) ?? "";
   else {
     try { restored = window.localStorage.getItem("qed64.buffer"); } catch { /* storage unavailable */ }
     initialText = restored ?? EXAMPLES.mathlib;
   }
+  // An embedder's setDocument before this point outranks everything.
   const given = pageApi.takeBootDocument();
-  if (given !== null && hashCode === null) { initialText = given; restored = null; }
+  if (given !== null) { initialText = given; restored = null; }
   // The editor's boot policy (resident-session.ts); an embedder passes its own.
-  const policy = EDITOR_POLICY;
+  // Over the served snapshot index (docs/EMBEDDING.md §8): an overlay whose
+  // entries declare `roots` is booted and widened to by itself.
+  const indexPolicy = makeEditorPolicy(artifacts.snapshots);
+  const policy: ResidentPolicy = memoryBytes !== null ? { ...indexPolicy, initialBytesFor: () => memoryBytes } : indexPolicy;
   let relay: LspRelay; // assigned below; the closures here run only from the relay's status sink or a click
 
   // EXPLAIN AND OFFER, never reboot on the user's behalf (§3 row 8;
@@ -423,33 +445,45 @@ async function main() {
     const c = collisionOf(s);
     if (c && !offered) {
       offered = true;
-      ui.action?.("Load exact imports (about 1 min; first time downloads 1 GB)", () => {
-        relay.restart({ snapshots: ["init", "mathlib"], warmHeader: relay.lastText, packs: ["essential"] });
-      });
+      const label = "Load exact imports (about 1 min; first time downloads 1 GB)";
+      const run = () => {
+        ui.clearAction?.();
+        // The collision happens under a covered header, so this session holds the
+        // environment that covers it: keep its snapshot list (an overlay entry
+        // need not be named "mathlib").
+        relay.restart({ snapshots: [...(relay.session as ResidentSession).snapshots], warmHeader: relay.lastText, packs: ["essential"] });
+      };
+      ui.action?.(label, run);
+      pageApi.setOffer({ kind: "exactImports", label }, run);
     } else if (!c && offered) {
       offered = false;
       ui.clearAction?.();
+      pageApi.setOffer(null);
     }
   };
   // GAP 3, the other half of the light boot: the kernel refuses a header a
-  // light session cannot cover (K1: nothing loaded contains the modules) and
-  // reports which modules are missing. When every one of them is under a
-  // root the umbrella serves, the fix is the umbrella itself — restart ONCE
-  // with it (a user restart, never a death; the relay remembers these
-  // options across a crash reboot while the header stays the same). A
-  // session that already has the umbrella is never widened again: whatever
-  // it refuses, no snapshot would change the verdict.
+  // session cannot cover (K1: nothing loaded contains the modules) and
+  // reports which modules are missing. When one entry of the snapshot index
+  // not yet loaded covers every one of them by its roots (the umbrella for
+  // Mathlib, an overlay for its own roots — snapshots.ts `widenTarget`), the
+  // fix is that entry — restart ONCE with it (a user restart, never a death;
+  // the relay remembers these options across a crash reboot while the header
+  // stays the same). A refusal no entry covers is final: no snapshot would
+  // change the verdict.
   let widened: string | null = null;
-  const widenForMathlib = (s: RelayStatus) => {
+  const widenForRoots = (s: RelayStatus) => {
     if (s.phase !== "headerRefused" || !s.header || s.header.mode !== "refused" || relay.state.kind !== "serving") return;
     const session = relay.session as ResidentSession;
-    if (session.id !== s.session || session.snapshots.includes("mathlib") || widened === s.session) return;
+    if (session.id !== s.session || widened === s.session) return;
     const missing = s.header.missing;
-    if (missing.length === 0 || !missing.every(isUmbrellaModule)) return;
+    const target = artifacts.snapshots
+      ? widenTarget(artifacts.snapshots, missing, session.snapshots)
+      : !session.snapshots.includes("mathlib") && missing.length > 0 && missing.every((m) => coversModule(LEGACY_UMBRELLA_ROOTS, m)) ? { name: "mathlib" } : null;
+    if (!target) return;
     widened = s.session;
-    widening = true;
-    ui.busy("loading Mathlib…");
-    relay.restart({ snapshots: ["init", "mathlib"] });
+    widening = entryLabel(target);
+    ui.busy(`loading ${widening}…`);
+    relay.restart({ snapshots: [...BASE_SNAPSHOTS, target.name] });
   };
   // The session adapter reads the document it will serve: the initial text
   // at first boot (the relay constructs its first session before `relay` is
@@ -460,7 +494,7 @@ async function main() {
   // a header change between sessions changes the boot inputs with it.
   relay = new LspRelay(
     (opts) => new ResidentSession({ artifacts, ui, policy, headerText: relay?.lastText || initialText }, opts ?? {}),
-    { status: (s) => { renderStatus(s); offerExactImports(s); widenForMathlib(s); pageApi.relayStatus(s); } },
+    { status: (s) => { renderStatus(s); offerExactImports(s); widenForRoots(s); pageApi.relayStatus(s); } },
     () => new Promise((r) => window.setTimeout(r, 1500)),
   );
   const clientPort: MessagePort = relay.clientPort;
@@ -474,8 +508,16 @@ async function main() {
     status: () => relay.status(),
   });
   Object.defineProperty(qed64Global, "editor", { get: () => editor.editor, configurable: true, enumerable: true });
+  // The page's taps on the relay (relay-taps.ts): the page API's events, the
+  // getWidgetSource cache and the test hatch observe and answer LSP traffic
+  // around the relay, never inside it.
+  const taps = tapRelay(relay);
+  installWidgetSourceCache(taps, () => relay.session.id);
+  qed64Global.test = createTestHatch(relay, taps);
   pageApi.bind({
     relay,
+    taps,
+    memoryBytes: normalizeMemoryBytes,
     editor: () => (editor.editor ?? undefined) as unknown as EditorLike | undefined,
     build: { buildId: artifacts.runtime.buildId, leanVersion: artifacts.runtime.leanVersion, sourceRevision: artifacts.runtime.sourceRevision ?? null, shell: null },
     snapshotNames: artifacts.snapshots?.snapshots.map((e) => e.name) ?? [],
@@ -571,6 +613,7 @@ function startMemoryMeter(getSession: () => Tel | null) {
     ]).then((t) => {
       const mem = (t as { memory?: { currentBytes?: number; maximumBytes?: number; regionBytes?: number; memfsPackBytes?: number } } | null)?.memory;
       if (!mem?.currentBytes || !mem.maximumBytes) return;
+      pageApi.memory(mem.currentBytes, mem.maximumBytes);
       const frac = mem.currentBytes / mem.maximumBytes;
       el.textContent = `${base} · heap ${gib(mem.currentBytes)}/${gib(mem.maximumBytes)} GiB`;
       el.style.color = frac >= 0.95 ? "#e06c75" : frac >= 0.85 ? "#e2a63d" : "";
@@ -591,7 +634,7 @@ function startMemoryMeter(getSession: () => Tel | null) {
 }
 
 void main().catch((err) => {
+  bootFail(`${(err as Error)?.message ?? err}`, failureCauseOf(err, { stage: "failed" }));
   ui.idle(`FAILED: ${(err as Error)?.message ?? err}`);
-  bootFail(`${(err as Error)?.message ?? err}`);
   console.error(err);
 });
