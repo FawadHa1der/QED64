@@ -90,11 +90,14 @@ Conventions:
   this command prints:
 
   ```sh
-  (cd dist && find . -type f | sed 's|^\./||' | LC_ALL=C sort | xargs shasum -a 256) | shasum -a 256
+  (cd dist && find . -type f ! -name qed64-build.json | sed 's|^\./||' | LC_ALL=C sort | xargs shasum -a 256) | shasum -a 256
   ```
 
   The listing in the manifest's `shell.files` lets you find which file
   differs.
+  `dist/qed64-build.json` (written by the build, docs/EMBEDDING.md §4) names
+  the same id, so it is left out of the listing. A build file that names
+  another shell, or another runtime, is refused.
 
 ## What it refuses
 

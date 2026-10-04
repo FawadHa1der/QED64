@@ -394,6 +394,22 @@ describe.skipIf(!hasGit)("--dist: the shell section", () => {
     expect(noDist.stderr).toMatch(/pass --dist <dir>/);
   });
 
+  test("dist/qed64-build.json names the shell: excluded from the listing, refused when it disagrees (frontend/build/build-info.mjs)", async () => {
+    const { shellIdOf } = await import("../../frontend/build/build-info.mjs" as string) as { shellIdOf(dir: string): string };
+    const d = makeDist(buildId);
+    const before = withDist(d)();
+    const info = (shell: string, id = buildId) => fs.writeFileSync(path.join(d, "qed64-build.json"), JSON.stringify({ schema: "qed64.build/v1", buildId: id, shell }));
+    expect(shellIdOf(d)).toBe(before.shell!.shellId); // the build plugin and the manifest compute one id
+    info(before.shell!.shellId);
+    const m = withDist(d)();
+    expect(m.shell!.shellId).toBe(before.shell!.shellId);
+    expect(m.shell!.files.some((f) => f.path === "qed64-build.json")).toBe(false);
+    info("shell-0000000000000000");
+    expect(refusal(withDist(d))).toMatch(/qed64-build\.json names shell-0000000000000000, the tree is shell-/);
+    info(before.shell!.shellId, OTHER_ID);
+    expect(refusal(withDist(d))).toMatch(new RegExp(`qed64-build\\.json pairs runtime ${OTHER_ID}`));
+  });
+
   test("a worker that is not the commit's public/workers/*", () => {
     const d = makeDist(buildId);
     const worker = fs.readdirSync(path.join(d, "workers")).sort()[0]!;

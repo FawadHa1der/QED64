@@ -289,7 +289,12 @@ Page-tier facts (stable, for preflights and deploy tools):
     into it.
 - **`dist/qed64-build.json`** `{schema: "qed64.build/v1", buildId,
   leanVersion, sourceRevision, commit, dirty, shell, apiRevision}`.
-  - `shell` is `"shell-" + 16 hex` of the Vite bundle.
+  - `shell` is `"shell-" + 16 hex` of the sha256 of the dist listing. The
+    listing is one `<sha256>  <path>` line per file, byte-sorted, covering
+    every file except `qed64-build.json` itself.
+  - That is exactly the release manifest's `shell.shellId`
+    (docs/RELEASE-BUNDLE.md), which refuses a dist whose build file
+    disagrees.
   - Deploy and pin tools read it instead of scraping bundles.
 
 **Security (HARDENING #57).**

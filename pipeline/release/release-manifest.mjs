@@ -409,6 +409,9 @@ export function buildReleaseManifest(source, { dist = null } = {}) {
  * source's public/workers, whose bundle pins anything but `buildId`, or that
  * carries an artifact directory.
  */
+/** The shell's own identity file (frontend/build/build-info.mjs). */
+export const BUILD_INFO_FILE = "qed64-build.json";
+
 export function shellSection(distDir, { source, buildId }) {
   let isDir = false;
   try { isDir = fs.statSync(distDir).isDirectory(); } catch { /* absent */ }
@@ -418,8 +421,18 @@ export function shellSection(distDir, { source, buildId }) {
     if (rels.some((r) => r.startsWith(`${dir}/`))) refuse(`--dist ${distDir} contains ${dir}/ — artifacts are served from R2, never bundled (scripts/deploy-app.sh prunes them)`);
   }
   const bytesOf = new Map(rels.map((r) => [r, fs.readFileSync(path.join(distDir, r))]));
-  const files = rels.map((r) => ({ path: r, sha256: sha256Hex(bytesOf.get(r)), bytes: bytesOf.get(r).length }));
+  // dist/qed64-build.json names the shell (frontend/build/build-info.mjs), so it
+  // is not part of what it names: the listing covers every other file, and a
+  // build-info file that disagrees with this tree is refused.
+  const files = rels.filter((r) => r !== BUILD_INFO_FILE).map((r) => ({ path: r, sha256: sha256Hex(bytesOf.get(r)), bytes: bytesOf.get(r).length }));
   const listingSha256 = sha256Hex(listingOf(files));
+  if (bytesOf.has(BUILD_INFO_FILE)) {
+    let info = null;
+    try { info = JSON.parse(bytesOf.get(BUILD_INFO_FILE).toString("utf8")); } catch { /* refused below */ }
+    if (!info || info.schema !== "qed64.build/v1") refuse(`--dist: ${BUILD_INFO_FILE} is not a qed64.build/v1 file`);
+    if (info.shell !== `shell-${listingSha256.slice(0, 16)}`) refuse(`--dist: ${BUILD_INFO_FILE} names ${info.shell}, the tree is shell-${listingSha256.slice(0, 16)} — files changed after the build`);
+    if (info.buildId !== buildId) refuse(`--dist: ${BUILD_INFO_FILE} pairs runtime ${info.buildId}, the release runtime is ${buildId}`);
+  }
 
   // The workers are copied verbatim from public/workers by the vite build;
   // anything else means the shell was built from another tree than the one
@@ -467,8 +480,8 @@ export function shellSection(distDir, { source, buildId }) {
 }
 
 /** The listing whose sha256 is shell.listingSha256: one `<sha256>  <path>\n`
- * line per file, byte-ordered by path — what
- * `(cd dist && find . -type f | sed 's|^\./||' | LC_ALL=C sort | xargs shasum -a 256)` prints. */
+ * line per file except qed64-build.json, byte-ordered by path — what
+ * `(cd dist && find . -type f ! -name qed64-build.json | sed 's|^\./||' | LC_ALL=C sort | xargs shasum -a 256)` prints. */
 export function listingOf(files) {
   return [...files].sort((a, b) => byteOrder(a.path, b.path)).map((f) => `${f.sha256}  ${f.path}\n`).join("");
 }
