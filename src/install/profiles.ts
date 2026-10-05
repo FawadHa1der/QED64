@@ -640,53 +640,6 @@ export async function installProfile(
   }
 }
 
-/** Compute the transitive import closure of `roots` over installed modules. */
-export function importClosure(
-  roots: string[],
-  modules: Record<string, { imports: string[] }>,
-): { closure: string[]; missing: string[] } {
-  const seen = new Set<string>();
-  const missing = new Set<string>();
-  const stack = [...roots];
-  while (stack.length > 0) {
-    const name = stack.pop()!;
-    if (seen.has(name)) continue;
-    const entry = modules[name];
-    if (!entry) {
-      missing.add(name);
-      continue;
-    }
-    seen.add(name);
-    for (const dep of entry.imports) if (!seen.has(dep)) stack.push(dep);
-  }
-  return { closure: [...seen].sort(), missing: [...missing].sort() };
-}
-
-/** Parse `import` / `public import` / `meta import` headers from source. */
-export function parseImports(source: string): string[] {
-  const imports: string[] = [];
-  for (const line of source.split("\n")) {
-    const t = line.trim();
-    if (t.startsWith("--")) continue;
-    const m = /^(?:public\s+|private\s+)?(?:meta\s+)?import\s+([A-Za-z_][\w.«»]*)/.exec(t);
-    if (m && m[1]) imports.push(m[1]);
-  }
-  return imports;
-}
-
-/** 1-based line number of the import line naming `module`, for anchoring
- * diagnostics; 1 when not found. */
-export function importLineOf(source: string, module: string): number {
-  const lines = source.split("\n");
-  for (let i = 0; i < lines.length; i += 1) {
-    const t = lines[i]!.trim();
-    if (t.startsWith("--")) continue;
-    const m = /^(?:public\s+|private\s+)?(?:meta\s+)?import\s+([A-Za-z_][\w.«»]*)/.exec(t);
-    if (m && m[1] === module) return i + 1;
-  }
-  return 1;
-}
-
 export async function storageEstimate(): Promise<{ usage: number; quota: number } | null> {
   try {
     const estimate = await navigator.storage.estimate();

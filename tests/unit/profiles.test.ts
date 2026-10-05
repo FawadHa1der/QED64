@@ -1,17 +1,30 @@
 import { describe, expect, test } from "vitest";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import {
-  importClosure,
-  parseImports,
-  validateManifest,
-  type ProfileManifest,
-} from "../../src/install/profiles";
+import { validateManifest, type ProfileManifest } from "../../src/install/profiles";
 
 const realManifestPath = path.resolve(__dirname, "../../public/profiles/lean-core.manifest.json");
 
 function loadRealManifest(): ProfileManifest {
   return JSON.parse(readFileSync(realManifestPath, "utf8")) as ProfileManifest;
+}
+
+/** Transitive import closure of `roots` over the manifest's module table, and
+ * the names it reaches that the table lacks. Test-local: the product never
+ * walks the graph (the worker resolves imports from the WORKERFS mount). */
+function importClosure(roots: string[], modules: Record<string, { imports: string[] }>) {
+  const closure = new Set<string>();
+  const missing = new Set<string>();
+  const stack = [...roots];
+  while (stack.length > 0) {
+    const name = stack.pop()!;
+    if (closure.has(name)) continue;
+    const entry = modules[name];
+    if (!entry) { missing.add(name); continue; }
+    closure.add(name);
+    stack.push(...entry.imports);
+  }
+  return { closure: [...closure].sort(), missing: [...missing].sort() };
 }
 
 describe("validateManifest", () => {
@@ -86,51 +99,5 @@ describe("real manifest invariants", () => {
     for (let i = 1; i < files.length; i += 1) {
       expect(files[i]!.start).toBeGreaterThanOrEqual(files[i - 1]!.end);
     }
-  });
-});
-
-describe("parseImports", () => {
-  test("plain, public, meta, and prelude forms", () => {
-    const source = [
-      "-- import NotThis",
-      "import Mathlib.Algebra.Group.Basic",
-      "public import Init.Data.List",
-      "meta import Lean.Elab",
-      "public meta import Std.Data.HashMap",
-      "def x := 1",
-      "import TooLate -- still counted; Lean rejects it, we only resolve",
-    ].join("\n");
-    expect(parseImports(source)).toEqual([
-      "Mathlib.Algebra.Group.Basic",
-      "Init.Data.List",
-      "Lean.Elab",
-      "Std.Data.HashMap",
-      "TooLate",
-    ]);
-  });
-
-  test("no imports", () => {
-    expect(parseImports("theorem t : True := trivial")).toEqual([]);
-  });
-});
-
-describe("importClosure", () => {
-  const modules = {
-    A: { imports: ["B", "C"] },
-    B: { imports: ["C"] },
-    C: { imports: [] },
-    D: { imports: ["Ghost"] },
-  };
-  test("computes transitive closures", () => {
-    expect(importClosure(["A"], modules).closure).toEqual(["A", "B", "C"]);
-  });
-  test("reports missing modules without looping", () => {
-    const { closure, missing } = importClosure(["D"], modules);
-    expect(closure).toEqual(["D"]);
-    expect(missing).toEqual(["Ghost"]);
-  });
-  test("tolerates cycles", () => {
-    const cyclic = { X: { imports: ["Y"] }, Y: { imports: ["X"] } };
-    expect(importClosure(["X"], cyclic).closure).toEqual(["X", "Y"]);
   });
 });
