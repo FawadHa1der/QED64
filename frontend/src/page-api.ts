@@ -248,7 +248,7 @@ export function createPageApi(
   let liveCounters: NonNullable<RelayStatus["liveness"]> | null = null;
   let lastAnswerAt: number | null = null;
   let lastFrameAt: number | null = null;
-  let mem: { currentBytes: number; maximumBytes: number } | null = null;
+  let mem: { currentBytes: number; maximumBytes: number; session: string | null } | null = null;
   let offer: { info: OfferInfo; run: () => void } | null = null;
   // fileProgress coalescing
   let pendingProgress: Events["fileProgress"] | null = null;
@@ -273,8 +273,9 @@ export function createPageApi(
   };
   const memoryNow = (): MemoryInfo | null => {
     const initialBytes = binding?.relay.session.initialBytes ?? null;
-    if (initialBytes === null && !mem) return null;
-    return { initialBytes, currentBytes: mem?.currentBytes ?? null, maximumBytes: mem?.maximumBytes ?? null };
+    const reading = mem && mem.session === (binding?.relay.session.id ?? null) ? mem : null; // this session's meter only
+    if (initialBytes === null && !reading) return null;
+    return { initialBytes, currentBytes: reading?.currentBytes ?? null, maximumBytes: reading?.maximumBytes ?? null };
   };
   const project = (s: RelayStatus | null) => toApiStatus(s, boot, snapshotsNow(), { liveness: livenessNow(), memory: memoryNow(), offer: offer?.info ?? null });
   const statusNow = (): ApiStatus => project(binding ? binding.relay.status() : last);
@@ -538,7 +539,9 @@ export function createPageApi(
       emitBoot(message, { stage: "failed", ...(cause ? { error: cause } : {}) }, false, true, message);
       if (!isBound()) for (const w of readyWaiters.splice(0)) w.fail(bootFailure());
     },
-    memory(currentBytes, maximumBytes) { mem = { currentBytes, maximumBytes }; },
+    // Tagged with its session: a reading is never paired with another session's commit,
+    // even inside the sink pass of the status that changes the session.
+    memory(currentBytes, maximumBytes) { mem = { currentBytes, maximumBytes, session: binding?.relay.session.id ?? null }; },
     setOffer(o, run) {
       const before = offer?.info ?? null;
       offer = o && run ? { info: { ...o }, run } : null;

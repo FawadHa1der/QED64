@@ -5,19 +5,22 @@
 // the first serving status of a session that is still checking arms a timer
 // that finishes the boot after `ms`.
 //
-// The timer belongs to the session that armed it: when the relay leaves
-// `serving` (a crash reboot, a user restart, the page's self-widen from a light
-// session to an umbrella or overlay environment) it is disarmed, and the
-// replacement's own first serving status arms it again. A timer armed by a
-// replaced light session would otherwise finish the boot while the widened
-// session is still downloading or loading its environment.
+// It is page-wide on purpose: a crash reboot or a halt does NOT disarm it. A
+// restored buffer that kills the checker shortly after every serve must still
+// surface the editor 30 s after the first serve (the user edits the offending
+// line; the relay's halted note says so), never stay behind the card or turn
+// into a "could not start" card a reload only repeats. The one exception is
+// the page's self-widen from a light session to an umbrella or overlay
+// environment: that replacement still has to download and load its
+// environment, so the widen calls `cancel()` and the replacement's own first
+// serving status arms the timer again.
 //
 // Pure (injected timers): unit-tested under node.
 
 export interface CheckFallback {
-  /** Feed every relay status the page renders. */
+  /** Feed every relay status the page renders: a serving one arms the timer if none is armed. */
   observe(s: { relay: string; phase: string }): void;
-  /** The boot finished some other way (a final verdict, a failure). */
+  /** The boot finished some other way (a final verdict), or the page's self-widen replaced the session. */
   cancel(): void;
 }
 
@@ -36,8 +39,7 @@ export function createCheckFallback(
   };
   return {
     observe(s) {
-      if (s.relay !== "serving") return cancel();
-      if (timer !== undefined || s.phase === "ready" || s.phase === "headerRefused") return;
+      if (s.relay !== "serving" || timer !== undefined || s.phase === "ready" || s.phase === "headerRefused") return;
       timer = timers.setTimeout(() => { timer = undefined; fire(); }, ms);
     },
     cancel,

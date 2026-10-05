@@ -526,9 +526,10 @@ describe("over the real relay", () => {
       fallback = createCheckFallback(() => { finished.push(`fallback ${relay.session.id} ${relay.status().phase}`); page.bootFinished(); }, 30000, clock);
       return pageStatusSink(
         () => relay.session.id,
-        (s) => {
+        (s) => { // main.ts selfWiden + its callback: the replacement still boots, so the light session's fallback is cancelled
           if (widened || s.phase !== "headerRefused" || s.header?.mode !== "refused") return;
           widened = true;
+          fallback.cancel();
           relay.restart({ snapshots: ["init", "mathlib"] });
         },
         (s) => { if (s.phase === "ready" || s.phase === "headerRefused") { fallback.cancel(); page.bootFinished(); } else fallback.observe(s); }, // main.ts renderStatus
@@ -557,6 +558,39 @@ describe("over the real relay", () => {
   });
 });
 
+describe("the check fallback over the real relay's crash loop", () => {
+  const relays: LspRelay[] = [];
+  afterEach(() => { for (const r of relays.splice(0)) { r.clientPort.close(); r.unload(); } });
+  it("a restored buffer that kills the checker after every serve still surfaces the editor 30 s after the first serve: crash reboots and the halt leave the fallback armed", async () => {
+    const clock = new Clock();
+    const events: string[] = [];
+    let bootDone = false;
+    const page = createPageApi(CAPS, new Clock());
+    const sessions: Session[] = [];
+    const fallback = createCheckFallback(() => { if (!bootDone) { bootDone = true; events.push("fallback: editor shown"); page.bootFinished(); } }, 30000, clock);
+    const relay: LspRelay = new LspRelay(() => { const x = new Session(`s${sessions.length + 1}`, {}, null); sessions.push(x); return x; }, {
+      status: pageStatusSink(() => relay.session.id, () => {}, (s) => { // main.ts renderStatus: bootFail on a halt before any ready, never a cancel
+        if (s.phase === "halted") { if (!bootDone) events.push("failure card"); return; }
+        if (s.phase === "ready" || s.phase === "headerRefused") { bootDone = true; fallback.cancel(); return; }
+        if (!bootDone) fallback.observe(s);
+      }, (s) => page.relayStatus(s)),
+    }, () => Promise.resolve());
+    relays.push(relay);
+    await flush(); // s1 serves: the fallback arms
+    expect(clock.timers).toHaveLength(1);
+    for (let i = 0; i < 3; i += 1) {
+      sessions.at(-1)!.report({ phase: "elaborating" });
+      clock.advance(5000);
+      sessions.at(-1)!.die(); // the buffer kills the checker; the relay reboots (a crash reboot keeps the timer)
+      await flush();
+    }
+    expect(relay.state.kind).toBe("halted"); // the breaker: three deaths inside 120 s
+    expect(events).toEqual(["failure card"]);
+    clock.advance(15000); // 30 s after the FIRST serve
+    expect(events).toEqual(["failure card", "fallback: editor shown"]); // the editor appears; the halted pill and note say "edit the file"
+  });
+});
+
 describe("integration-review fixes", () => {
   it("status().memory forgets the previous session's meter reading when the session changes", () => {
     const t = setup();
@@ -566,6 +600,14 @@ describe("integration-review fixes", () => {
     expect(t.api.status().memory).toMatchObject({ currentBytes: 4 * GiB, maximumBytes: 4 * GiB });
     t.relay.session = { ...t.relay.session, id: "s2", initialBytes: 6 * GiB };
     report(t, { session: "s2", phase: "booting", relay: "rebooting", rebootReason: "user", version: null });
+    expect(t.api.status().memory).toEqual({ initialBytes: 6 * GiB, currentBytes: null, maximumBytes: null });
+  });
+  it("status().memory never pairs a reading with another session's commit, even inside the sink pass that changes the session", () => {
+    const t = setup();
+    boot(t);
+    report(t, { session: "s1" });
+    t.page.memory(4 * GiB, 4 * GiB);
+    t.relay.session = { ...t.relay.session, id: "s2", initialBytes: 6 * GiB }; // the relay already holds s2; the API has not seen its status yet
     expect(t.api.status().memory).toEqual({ initialBytes: 6 * GiB, currentBytes: null, maximumBytes: null });
   });
   it("settled() called BEFORE a restarting status listener is registered is not resolved by the superseded verdict", async () => {

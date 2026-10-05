@@ -165,10 +165,11 @@ function bootProgress(label: string, info?: ProgressInfo) {
 // The check fallback (check-fallback.ts): once the relay SERVES, what is left
 // is Lean checking the document, and the editor must not stay hidden behind
 // the card while it does; the pill keeps the phase and its elapsed time.
-// Armed by a session's first serving status, never earlier (before it the
-// boot is still downloading or loading, which is what the card is for), and
-// disarmed when the relay leaves serving: a self-widen's replacement is
-// still booting.
+// Armed by the first serving status, never earlier (before it the boot is
+// still downloading or loading, which is what the card is for). Crash reboots
+// and a halt leave it armed (a crash-looping restored buffer must surface the
+// editor); only the self-widen disarms it, since its replacement is still
+// booting, and that replacement's first serving status re-arms it.
 const CHECK_FALLBACK_MS = 30000;
 const checkFallback = createCheckFallback(() => bootFinish(), CHECK_FALLBACK_MS);
 
@@ -311,7 +312,6 @@ function renderStatus(s: PageStatus) {
   if (s.phase === "ready") everReady = true;
   trackSearch(s);
   if (s.phase === "halted") {
-    checkFallback.cancel(); // a halt is never "the checker is still checking": the failure card or the pill stays
     const d = s.lastDeath ?? null;
     // Not gated on the overlay: once it is gone (the check fallback, or a
     // first boot that settled in headerRefused) `bootFail` is a no-op and the
@@ -482,8 +482,10 @@ async function main() {
   const widenForRoots = selfWiden(() => relay, artifacts.snapshots, (target) => {
     widening = entryLabel(target);
     ui.busy(`loading ${widening}…`);
-    // The card's checklist follows the replacement's boot (runtime, then its environment).
-    if (!bootDone) { bootStage = Math.min(bootStage, STAGES.indexOf("runtime")); renderStages(); }
+    // The replacement still has to boot its environment: the light session's
+    // check fallback must not finish the boot meanwhile, and the card's
+    // checklist follows the replacement (runtime, then its environment).
+    if (!bootDone) { checkFallback.cancel(); bootStage = Math.min(bootStage, STAGES.indexOf("runtime")); renderStages(); }
   });
   // The session adapter reads the document it will serve: the initial text
   // at first boot (the relay constructs its first session before `relay` is
