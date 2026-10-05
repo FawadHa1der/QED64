@@ -3,12 +3,15 @@
 // for R2), with the cross-origin-isolation headers the app cannot live
 // without. Use it to verify a production build end-to-end BEFORE pushing:
 //   npm run build:site && npm run preview:prod   → http://localhost:5185
+// DIST=<dir> serves a saved build instead of dist/ (an A/B against the
+// current build on a second PORT).
 import { createServer } from "node:http";
 import { readFile, stat } from "node:fs/promises";
-import { join, normalize, extname } from "node:path";
+import { join, normalize, extname, resolve } from "node:path";
 
 const ROOT = new URL("..", import.meta.url).pathname;
 const PORT = Number(process.env.PORT) || 5185;
+const DIST = process.env.DIST ? resolve(process.env.DIST) : join(ROOT, "dist");
 const ARTIFACT_PREFIXES = ["/runtime/", "/profiles/", "/snapshots/"];
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -27,7 +30,7 @@ createServer(async (req, res) => {
   // The test-only embed host (public/embed-host.html: one same-origin iframe of
   // the page) is served from public/ too, so embed lanes can run on a build.
   const fromPublic = ARTIFACT_PREFIXES.some((p) => safe.startsWith(p)) || safe === "/embed-host.html";
-  const base = fromPublic ? join(ROOT, "public") : join(ROOT, "dist");
+  const base = fromPublic ? join(ROOT, "public") : DIST;
   let file = join(base, safe === "/" ? "index.html" : safe);
   try {
     if ((await stat(file)).isDirectory()) file = join(file, "index.html");
@@ -43,4 +46,4 @@ createServer(async (req, res) => {
   } catch {
     res.writeHead(404, { "Content-Type": "text/plain" }).end(`not found: ${safe}`);
   }
-}).listen(PORT, () => console.log(`prod preview: http://localhost:${PORT} (dist/ + public artifacts)`));
+}).listen(PORT, () => console.log(`prod preview: http://localhost:${PORT} (${DIST} + public artifacts)`));

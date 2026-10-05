@@ -654,6 +654,31 @@ overrides routed through `parseBootParams` / `validateBootOverrides`.
   unused in, and leaves the worker one release later. Long-lived tabs are
   covered by the recoverable refusal above and by the revision check.
 
+### 7.8 Edit coalescing
+
+`ResidentSession` forwards a full-text `didChange` to the worker at most once
+per window (`ResidentHost.editCoalesceMs`, default 300 ms; 0 forwards every
+change at once). Embedders do not need their own throttle.
+- The first change of a burst goes at once and opens the window. Later
+  changes inside it are held, the newest replacing the held one. When the
+  window ends, the held change goes and opens the next window. Each change
+  carries the whole text, so Lean always sees the newest version.
+- Any other frame (a request, another notification, a ranged change, a
+  replay) first forwards the held change, then itself. Lean never answers a
+  request about text it has not been sent.
+- `dispose()` drops a held change; the relay replays its last full text into
+  the replacement session.
+- Why: each full-text change starts a new elaboration, and Lean abandons the
+  previous one only at its next cancellation check. Work that never checks
+  (`IO.sleep`, a long kernel check, a blocking `#eval`) keeps its pthread, so
+  a change per keystroke grows the runtime's pool past its preallocated
+  Workers until V8 runs out of memory (docs/HARDENING.md #59). The page's own
+  client already coalesces (vscode-languageclient, 250 ms); the window
+  changes nothing there except inside a burst.
+- What it does not cover: a client that sends a request after every change
+  defeats it, because each request flushes the held change. Lean4 InfoViews
+  ask at the cursor; see #59 for what was measured.
+
 ---
 
 ## 8. Overlay environments
@@ -841,3 +866,11 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
     installs the frontend before the unit step; release-manifest's
     `--worktree --dist` dirty flag counts the workers; node-runner keeps the
     first value of a repeated flag, as documented.
+- **After the branch review (fd6c2ae and later):**
+  - the boot card's checklist follows every deliberate replacement
+    (`frontend/src/boot-checklist.ts`), and only a serving status arms the
+    check fallback (a pre-serve failure keeps its card);
+  - `ResidentSession` coalesces full-text didChanges (§7.8,
+    `editCoalesceMs`), after lean4game's editor crash: an edit per keystroke
+    over work that ignores cancellation grew the pthread pool until V8 ran
+    out of memory (HARDENING #59).

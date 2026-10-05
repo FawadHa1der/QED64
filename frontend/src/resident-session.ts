@@ -19,6 +19,7 @@ import { LeanSession, memoryCandidates, type JsonRpcMessage, type LibraryPack, t
 import { installProfile } from "../../src/install/profiles";
 import { deathCause, failureCauseOf, stageOfWorkerPhase, stepOfInstallPhase, type BootStage } from "./embed/failure";
 import { chooseSnapshots, initialBytesForEntries, type SnapshotIndex } from "../../src/runtime/snapshots";
+import { createEditCoalescer, DEFAULT_EDIT_COALESCE_MS, type EditCoalescer } from "./embed/edit-coalescer";
 
 const MiB = 1048576;
 const GiB = 1073741824;
@@ -55,6 +56,10 @@ export interface ResidentHost {
   files?: SessionFile[] | (() => SessionFile[] | Promise<SessionFile[]>);
   /** The last step of every boot, after `files`; a throw is a bootFailed death. */
   beforeArm?(session: LeanSession): Promise<void>;
+  /** Full-text didChanges reach the worker at most once per this many ms, the
+   * newest last; any other frame flushes a held change first (embed/edit-coalescer.ts,
+   * docs/EMBEDDING.md §7.8). Default 300; 0 forwards every change at once. */
+  editCoalesceMs?: number;
 }
 
 /** One file for the worker's filesystem (`LeanSession.writeFiles`). */
@@ -155,6 +160,7 @@ export class ResidentSession implements RelaySession {
   // GameSession declares `files`, which made the base write them a second time).
   readonly #files: ResidentHost["files"];
   readonly #beforeArm: ResidentHost["beforeArm"];
+  readonly #edits: EditCoalescer<JsonRpcMessage>;
   /** The initial commit: requested (clamped to the ladder) until boot, then
    * the one the worker made — its per-rung clamp can commit less. */
   #initialBytes: number;
@@ -165,6 +171,7 @@ export class ResidentSession implements RelaySession {
     this.ui = host.ui;
     this.#files = host.files;
     this.#beforeArm = host.beforeArm;
+    this.#edits = createEditCoalescer<JsonRpcMessage>((m, replay) => this.lean.lsp(m, replay), host.editCoalesceMs ?? DEFAULT_EDIT_COALESCE_MS);
     const policy = host.policy ?? {};
     this.snapshots = opts.snapshots ?? policy.snapshotsFor?.(host.headerText) ?? ["init", "mathlib"];
     // The commit can never exceed the largest reservation this device will try
@@ -193,18 +200,19 @@ export class ResidentSession implements RelaySession {
   /** The boot step in progress, null once armed: the relay's boot ends with
    * the arm, so a death or a refusal between start() and the arm is a boot's. */
   #bootStage: BootStage | null = "runtime";
-  lsp(msg: JsonRpcMessage, replay?: boolean) { this.lean.lsp(msg, replay); }
+  /** To the worker through the edit coalescer (a burst of full-text changes reaches Lean as its newest). */
+  lsp(msg: JsonRpcMessage, replay?: boolean) { this.#edits.send(msg, replay); }
   arm() {
     return this.lean.arm().then(() => { this.#bootStage = null; }, (err: unknown) => { throw failedAt(err, { stage: this.#bootStage ?? "files" }); });
   }
-  dispose() { this.lean.dispose(); }
+  dispose() { this.#edits.dispose(); this.lean.dispose(); }
   /** The synchronous kill (Unload only): the relay's `unload()` calls
    * `dispose()` then `terminate()` inside the pagehide handler's own turn.
    * `LeanSession.dispose()` alone hard-terminates 250 ms later behind a timer
    * a closing document never runs — reload storms stacked dead multi-GiB
    * heaps until the OS jetsammed the renderer (the pump shim's
    * `disposeForUnload`); `LeanSession.terminate()` kills the Worker NOW. */
-  terminate(): void { this.lean.terminate(); }
+  terminate(): void { this.#edits.dispose(); this.lean.terminate(); }
 
   /** The snapshot a worker progress event belongs to (set while one loads). */
   #loading: string | null = null;

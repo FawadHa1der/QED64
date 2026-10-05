@@ -59,11 +59,14 @@ describe("createBootChecklist", () => {
     expect(step(c)).toBe("check");
   });
 
-  it("a replacement before the runtime step changes nothing; a finished checklist never moves", () => {
+  it("a replacement before the runtime step changes nothing (but is remembered); a finished checklist never moves", () => {
     const c = createBootChecklist();
     c.progress("Starting the Lean runtime");
     expect(c.observe(userReboot("s2"))).toBe(false);
     expect(step(c)).toBe("runtime");
+    c.progress("x", { phase: "snapshot" }); // s2's own progress: a later s2 status must not rewind it
+    expect(c.observe(userReboot("s2"))).toBe(false);
+    expect(step(c)).toBe("env");
     c.finish();
     expect(step(c)).toBe("done");
     expect(c.progress("x", { phase: "snapshot" })).toEqual({ moved: false, fresh: false });

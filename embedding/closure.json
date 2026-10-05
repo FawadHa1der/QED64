@@ -10,6 +10,7 @@
     "frontend/src/embed/raw-cache.ts",
     "frontend/src/embed/urls.ts",
     "frontend/src/resident-session.ts",
+    "frontend/src/embed/edit-coalescer.ts",
     "frontend/src/lsp-relay.ts",
     "src/install/profiles.ts",
     "src/runtime/client.ts",

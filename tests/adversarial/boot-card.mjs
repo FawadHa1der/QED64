@@ -343,8 +343,10 @@ try {
     const facts = { restartedAt, answer, replacementServingAt, goneAt, readyAt, crashed, stagesSeen, phaseAtGone: atGone?.phase ?? null, fallbackMs: FALLBACK_MS };
     console.log(`restart-during-boot facts: ${JSON.stringify(facts)}`);
     if (restartedAt === null || replacementServingAt === null) {
-      infra = crashed === null && restartedAt === null;
-      verdict("restart-during-boot", false, restartedAt === null ? `the card never showed "Check" while serving (crashed=${crashed})` : `the replacement never served (crashed=${crashed})`, facts);
+      // Infrastructure only when nothing ever served (as check-fallback); a page that served but whose card
+      // never showed "Check" (or was gone at the serve) is the boot card failing, the thing under test.
+      infra = crashed === null && !samples.some((s) => s.relay === "serving");
+      verdict("restart-during-boot", false, restartedAt === null ? `the card never showed "Check" while serving (crashed=${crashed}${samples.some((s) => s.relay === "serving") ? "; the relay did serve" : ""})` : `the replacement never served (crashed=${crashed})`, facts);
     } else {
       const problems = [];
       if (answer?.accepted !== true) problems.push(`restart answered ${JSON.stringify(answer)}`);

@@ -204,6 +204,32 @@ describe("ResidentSession.start(): stages, files, beforeArm, causes", () => {
     return { s, order, loadSnapshot, writeFiles };
   }
 
+  it("lsp(): a burst of full-text didChanges reaches the worker at most once per 300 ms, the newest last; editCoalesceMs 0 forwards each (HARDENING #59)", () => {
+    vi.useFakeTimers();
+    try {
+      const ch = (v: number) => ({ jsonrpc: "2.0", method: "textDocument/didChange", params: { textDocument: { uri: "file:///a.lean", version: v }, contentChanges: [{ text: `t${v}` }] } }) as never;
+      const versions = (spy: { mock: { calls: unknown[][] } }) => spy.mock.calls.map((c) => (c[0] as { params?: { textDocument?: { version?: number } } }).params?.textDocument?.version ?? (c[0] as { method: string }).method);
+      const { s } = session();
+      const lsp = vi.spyOn(s.lean, "lsp").mockImplementation(() => {});
+      for (let v = 2; v <= 10; v += 1) { s.lsp(ch(v)); vi.advanceTimersByTime(25); } // lean4game's trigger: 9 changes in ~230 ms
+      expect(versions(lsp)).toEqual([2]);
+      vi.advanceTimersByTime(300);
+      expect(versions(lsp)).toEqual([2, 10]);
+      s.lsp(ch(11)); // v10's forward reopened the window: held
+      s.lsp(ch(12)); // replaces v11
+      s.lsp({ jsonrpc: "2.0", id: 1, method: "textDocument/hover", params: {} } as never); // flushes v12 first
+      expect(versions(lsp)).toEqual([2, 10, 12, "textDocument/hover"]);
+      s.lsp(ch(13));
+      s.dispose(); // a held change dies with the session (the relay replays its last text)
+      vi.advanceTimersByTime(1000);
+      expect(versions(lsp)).toEqual([2, 10, 12, "textDocument/hover"]);
+      const { s: raw } = session({ editCoalesceMs: 0 });
+      const rawLsp = vi.spyOn(raw.lean, "lsp").mockImplementation(() => {});
+      for (let v = 2; v <= 5; v += 1) raw.lsp(ch(v));
+      expect(versions(rawLsp)).toEqual([2, 3, 4, 5]);
+    } finally { vi.useRealTimers(); }
+  });
+
   it("every busy/progress call carries a stage; snapshot and module progress name the snapshot", async () => {
     const { s } = session();
     await s.start();
