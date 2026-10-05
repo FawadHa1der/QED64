@@ -10,8 +10,11 @@
 //                   dist/ except this one: exactly pipeline/release/release-manifest.mjs's
 //                   shell.shellId, which refuses a dist whose qed64-build.json disagrees
 //   apiRevision     globalThis.qed64.api.revision of this shell
-// Written in closeBundle, after every plugin (the static copies included) has
-// written its files.
+// Written in writeBundle (post, sequential), after every plugin (the static
+// copies included) has written its files, and ONLY for a build that wrote
+// them: closeBundle also runs for a failed build (Rollup passes the build
+// error; Vite's `finally` calls bundle.close() after a failed write with
+// none), where it stamped a stale dist/ or threw ENOENT over the real error.
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -41,13 +44,14 @@ export function shellIdOf(distDir) {
   return `shell-${sha256(listing).slice(0, 16)}`;
 }
 
+/** repoDir: the checkout as a path or a file: URL (never a URL's percent-encoded pathname). */
 export function buildInfoPlugin({ manifestUrl, pageApiUrl, repoDir }) {
   let outDir = null;
   return {
     name: "qed64-build-info",
     apply: "build",
     configResolved(config) { outDir = path.resolve(config.root, config.build.outDir); },
-    closeBundle: {
+    writeBundle: {
       order: "post",
       sequential: true,
       handler() {

@@ -3,21 +3,36 @@
 // patch finds its anchor exactly once, the patched iframe script still
 // compiles, and the extracted editorApiOfRpc keeps an AbortSignal on the
 // iframe side — only request ids and serialisable options cross the RPC.
+//
+// The files come from frontend/node_modules, which `npm ci` at the root does
+// not install. A fresh clone's `npm test` skips these suites with a notice
+// (as pretest skips typecheck:site); under CI they never skip, and CI must
+// install the frontend before its unit step (pinned below).
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
 // @ts-expect-error — a plain .mjs build module without type declarations
 import { LEAN4MONACO_DIR, extractEditorApiOfRpc, lean4monacoFixesEsbuild, patchInfowebviewJs, patchWebviewJs } from "../../frontend/build/lean4monaco-fixes.mjs";
 
+const root = path.resolve(__dirname, "../..");
 const read = (rel: string) => readFileSync(path.join(LEAN4MONACO_DIR as string, rel), "utf8");
-const infowebview = read("infowebview.js");
-const webview = read("webview/webview.js");
-const rpcJs = read("vscode-lean4/vscode-lean4/src/rpc.js");
+const RPC_JS = "vscode-lean4/vscode-lean4/src/rpc.js";
+const skip = !existsSync(LEAN4MONACO_DIR as string) && !process.env.CI;
+if (skip) console.warn("lean4monaco-fixes.test.ts: frontend/node_modules absent — skipping the installed-file checks (run: npm --prefix frontend ci)");
 
-describe("page half (lean4monaco/dist/infowebview.js)", () => {
+describe("CI runs these checks against installed files", () => {
+  it("installs frontend/node_modules before the unit step (.github/workflows/ci.yml)", () => {
+    const steps = [...readFileSync(path.join(root, ".github/workflows/ci.yml"), "utf8").matchAll(/^\s*- run: (.+)$/gm)].map((m) => m[1]!);
+    const install = steps.findIndex((s) => s.includes("npm ci --prefix frontend"));
+    expect(install).toBeGreaterThanOrEqual(0);
+    expect(steps.findIndex((s) => s.includes("vitest run tests/unit"))).toBeGreaterThan(install);
+  });
+});
+
+describe.skipIf(skip)("page half (lean4monaco/dist/infowebview.js)", () => {
   it("registers the raw EditorRpcApi through the page hook, once", () => {
-    const out = patchInfowebviewJs(infowebview) as string;
+    const out = patchInfowebviewJs(read("infowebview.js")) as string;
     expect(out).not.toContain("rpc.register(editorApiOfRpc(editorRpcApi));");
     expect(out.match(/__qed64InfoviewEditorApi/g)?.length).toBe(2); // the typeof guard and the call
     expect(() => patchInfowebviewJs(out)).toThrow(/anchor not found/); // never applied twice silently
@@ -27,9 +42,9 @@ describe("page half (lean4monaco/dist/infowebview.js)", () => {
   });
 });
 
-describe("iframe half (lean4monaco/dist/webview/webview.js)", () => {
+describe.skipIf(skip)("iframe half (lean4monaco/dist/webview/webview.js)", () => {
   it("wraps the RPC proxy with lean4monaco's own editorApiOfRpc, and still compiles", () => {
-    const out = patchWebviewJs(webview, rpcJs) as string;
+    const out = patchWebviewJs(read("webview/webview.js"), read(RPC_JS)) as string;
     expect(out).toContain("const a=__qed64EditorApiOfRpc(s.getApi()),");
     expect(out).toMatch(/^\/\*[^\n]*\*\/\nfunction __qed64EditorApiOfRpc\(api\) \{/);
     expect(() => new vm.Script(out)).not.toThrow();
@@ -47,7 +62,7 @@ describe("iframe half (lean4monaco/dist/webview/webview.js)", () => {
         return Promise.resolve(undefined);
       },
     });
-    const editorApiOfRpc = vm.runInNewContext(`(${extractEditorApiOfRpc(rpcJs, "f")})`);
+    const editorApiOfRpc = vm.runInNewContext(`(${extractEditorApiOfRpc(read(RPC_JS), "f")})`);
     const api = editorApiOfRpc(proxy);
     const ac = new AbortController();
     const result = api.sendClientRequest("file:///project/Probe.lean", "$/lean/rpc/call", { x: 1 }, { abortSignal: ac.signal, autoCancel: true });
@@ -64,7 +79,7 @@ describe("iframe half (lean4monaco/dist/webview/webview.js)", () => {
   });
 });
 
-describe("dev pre-bundling: the page half composed with the import.meta.url loader", () => {
+describe.skipIf(skip)("dev pre-bundling: the page half composed with the import.meta.url loader", () => {
   // The real @codingame plugin: a catch-all `.js` onLoad that always returns
   // contents — first loader wins in esbuild, so the patch must run INSIDE it.
   const pluginPath = path.join(LEAN4MONACO_DIR as string, "../../@codingame/esbuild-import-meta-url-plugin/dist/esbuildImportMetaUrlPlugin.js");

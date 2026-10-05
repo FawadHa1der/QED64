@@ -6,13 +6,15 @@
 //   * embedding/closure.json lists tracked files only, and each closure is
 //     self-contained: the embed TypeScript imports relative paths only, the
 //     pipeline relative paths and node: built-ins only, every import resolves
-//     inside its own list; lean.worker.js's importScripts targets ship beside it;
+//     inside its own list; lean.worker.js's importScripts targets and the
+//     workers the page spawns ship beside it, and WORKER_URLS is that list;
 //   * `exports` targets exist, and `npm pack` ships the closure and nothing
 //     beyond the `files` allowlist (plus npm's own README/LICENSE/package.json).
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { WORKER_URLS } from "../../frontend/src/embed/urls";
 
 const root = path.resolve(__dirname, "../..");
 const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
@@ -125,15 +127,22 @@ describe("embedding/closure.json", () => {
     for (const m of gate.matchAll(/"(pipeline\/[\w/.-]+\.mjs)"/g)) expect(listed.has(m[1]!), m[1]).toBe(true);
   });
 
-  it("every script a shipped worker importScripts by name ships beside it", () => {
+  it("every script a shipped worker importScripts by name, or the page spawns, ships beside it", () => {
     const names = new Set(closure.workers.map((w) => path.posix.basename(w.path)));
     for (const w of closure.workers) {
       for (const m of read(w.path).matchAll(/importScripts\(\s*"([^"]+)"\s*\)/g)) expect(names.has(m[1]!), `${w.path} importScripts ${m[1]}`).toBe(true);
     }
-    const prefetch = read("frontend/src/qed64-boot.ts").match(/new Worker\("\/workers\/([^"]+)"\)/g) ?? [];
-    for (const m of prefetch) expect(names.has(m.match(/workers\/([^"]+)/)![1]!), m).toBe(true);
-    const lean = read("src/runtime/client.ts").match(/workerUrl = "\/workers\/([^"]+)"/);
-    expect(lean && names.has(lean[1]!), "LeanSession's default worker URL").toBe(true);
+    // The embed closure's spawn sites, all of them: one that moves or is added
+    // fails here instead of leaving a pattern that matches nothing.
+    const served = closure.workers.map((w) => w.serveAs);
+    const sites = closure.embed.flatMap((f) => (read(f).match(/new Worker\(/g) ?? []).map(() => f));
+    expect(sites.sort()).toEqual(["frontend/src/embed/raw-cache.ts", "src/runtime/client.ts"]);
+    const prefetch = read("frontend/src/embed/raw-cache.ts").match(/new Worker\(opts\.workerUrl \?\? "(\/workers\/[^"]+)"\)/);
+    expect(prefetch && served.includes(prefetch[1]!), "prefetchRaw's default worker URL").toBe(true);
+    const lean = read("src/runtime/client.ts").match(/workerUrl = "(\/workers\/[^"]+)"/);
+    expect(lean && served.includes(lean[1]!), "LeanSession's default worker URL").toBe(true);
+    // What an offline cache warms (embed/urls.ts, docs/EMBEDDING.md §7.5) is exactly what ships.
+    expect([...WORKER_URLS].sort()).toEqual([...served].sort());
   });
 });
 

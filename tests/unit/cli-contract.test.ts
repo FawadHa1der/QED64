@@ -276,6 +276,9 @@ describe("the argument grammar (cliContract, the one implementation)", () => {
       "pack: WARNING — unexpected argument stray ignored",
     ]);
     expect(r.result!.values).toEqual({ lib: "/l", id: "a" });
+    // The later value leaves the normalized argv too: a script's own parser may keep the last.
+    expect(r.result!.args).toEqual(["--lib", "/l", "--libb", "/m", "--id", "a", "--no-imports=1", "stray"]);
+    expect(captured("node-runner", ["--artifact=/A", "--artifact", "/B", "--", "x.lean"]).result!.args).toEqual(["--artifact", "/A", "--", "x.lean"]);
   });
 
   test("a missing required flag (or an empty one) prints the usage line and exits 2, after the warnings", () => {
@@ -393,6 +396,20 @@ describe("the real scripts", () => {
     const r = run(SPECS["node-runner"]!.script, [`--artifact=${missing}`, "--work", path.join(d, "fresh-work"), "--bogus"], d);
     expect(r.status).toBe(2);
     expect(r.stderr).toBe(`error: ${path.join(missing, "bin/lean.js")} not found — pass --artifact or set QED64_LEAN_ARTIFACT\n`);
+    expect(tree(d)).toEqual(before);
+  });
+
+  test("node-runner: a repeated flag uses the first value, as the WARNING says (its own parser keeps the last)", () => {
+    const d = sandbox("runner-repeated");
+    const before = tree(d);
+    const [first, second] = [path.join(missing, "first"), path.join(missing, "second")];
+    const r = run(SPECS["node-runner"]!.script, ["--artifact", first, `--artifact=${second}`, "--work", path.join(d, "fresh-work"), "--", "x.lean"], d);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toBe([
+      "node-runner: WARNING — flag --artifact repeated; the first value wins",
+      `error: ${path.join(first, "bin/lean.js")} not found — pass --artifact or set QED64_LEAN_ARTIFACT`,
+      "",
+    ].join("\n"));
     expect(tree(d)).toEqual(before);
   });
 

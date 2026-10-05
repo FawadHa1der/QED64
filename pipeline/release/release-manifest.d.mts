@@ -21,7 +21,8 @@ export interface ReleaseSource {
   read(repoPath: string): Buffer | null;
   /** Files under a repo-relative directory, relative to it, byte-ordered. */
   list(repoDir: string): string[];
-  describe(inputs: Map<string, Buffer>): { commit: string; committedAt: string; dirty: boolean };
+  /** `inputs`: every repo path read as an input, with its bytes; `listed`: the directories read as a whole. */
+  describe(inputs: Map<string, Buffer>, listed?: ReadonlySet<string>): { commit: string; committedAt: string; dirty: boolean };
 }
 
 export interface TrackedFile { path: string; sha256: string; gitBlob: string }
@@ -68,7 +69,7 @@ export function gitBlobId(bytes: Uint8Array): string;
 export function commitSource(rev: string, options?: { repo?: string }): ReleaseSource;
 export function treeSource(options?: { publicDir?: string; kernelPin?: string; repo?: string }): ReleaseSource;
 export function buildReleaseManifest(source: ReleaseSource, options?: { dist?: string | null }): ReleaseManifest;
-export function shellSection(distDir: string, options: { source: ReleaseSource; buildId: string }): NonNullable<ReleaseManifest["shell"]>;
+export function shellSection(distDir: string, options: { source: ReleaseSource; buildId: string; inputs?: Map<string, Buffer>; listed?: Set<string> }): NonNullable<ReleaseManifest["shell"]>;
 export function listingOf(files: { path: string; sha256: string }[]): string;
 export function manifestDigest(manifest: object): string;
 export function artifactSetIdOf(manifest: Pick<ReleaseManifest, "runtime" | "snapshots" | "profiles">): string;
