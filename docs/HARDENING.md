@@ -427,21 +427,21 @@ Results on fd6c2ae (no coalescing), Mathlib document, prod build, headless, kern
 | same above a cancellable `decide` | 3 | 13-15 | ok |
 | same above `#eval (IO.sleep 3000 : IO Unit)` | 3 | 65-69 | crash ~15 s in |
 | sleep, plus a goal request after every change | 2 | 69-70 | crash ~17 s in |
-| typing into the page's Monaco above the sleep | 2 | 9-12 | ok |
+| typing into the page's Monaco (see below: typed BELOW the sleep, so it measured nothing) | 2 | 9-12 | ok |
 
 Fix (`frontend/src/embed/edit-coalescer.ts`, used by `ResidentSession.lsp`; docs/EMBEDDING.md §7.8): lean4game's measured throttle rule, in the library, for every embedder.
 - A full-text change goes at once and opens a 300 ms window. Changes inside the window are held, newest wins. The window's end forwards the held one and opens the next.
 - While a change is held, every other frame waits behind it in order. The first version (c33f7a8) flushed the held change before any other frame, as vscode-languageclient does. Against lean4monaco's change-then-requests stream it forwarded every change: 9 of 9 in a 230 ms burst, identical to no coalescing (a verifier simulated it, and lean4game confirmed their client's stream).
-- A request queued behind a change that a newer change replaces is answered `ContentModified` at once. A verifier of the queue rule showed why answering it against the newer text is wrong: Monaco's document semantic tokens rebase a reply by every edit made since the request, so a reply computed on the newer text gets the edit applied twice and the highlighting lands one line off until the next fetch. `ContentModified` is what Lean answers when a change lands under a request, and every client handles it (vscode-languageclient cancels and refetches semantic tokens, lean4-infoview retries, the rest return their default).
-- didOpen, didClose, ranged changes, replays and another document's change flush first, and every forwarded change opens the window again. Dispose drops both, and the relay replays its text and answers its in-flight requests.
+- A request queued behind a change that a newer change replaces is answered against the newer text, except document semantic tokens. A verifier of the queue rule showed why those are different: Monaco rebases a semantic-tokens reply by every edit made since the request, so a reply computed on the newer text gets the edit applied twice and the highlighting lands one line off until the next fetch. Those requests (exactly vscode-languageclient's RequestsToCancelOnContentModified) are answered `ContentModified` the moment their change is replaced, which is what Lean answers when a change lands under a request, and what makes the client refetch. The first version of this rule (e575160) answered every queued request on the document that way; a verifier round showed two costs with no benefit: lean4monaco's message strategy logs every error reply to the console (its own TODO, which already applies to the relay's death and restart errors), so typing printed several lines per keystroke, and a superseded `Lean.Widget.getWidgetSource` call showed a transient error in the InfoView through the widget-source cache. Position-bound requests and the InfoView's calls are cancelled or re-issued by their clients on every content change, so an answer against the newer text is what they expect.
+- didOpen, didClose, ranged changes, replays and another document's change flush first (a held change can then go inside the window its predecessor opened: barriers never wait), and every forwarded change opens the window again, so the change after such a flush waits in full. Dispose drops both, and the relay replays its text and answers its in-flight requests. The replacement runs every state change before any callback: a page observer that reacts to a `ContentModified` reply by sending frames back in (the relay's taps run before the reply is posted) sees the new held change and the pruned queue, so the newest change is never overwritten by an older one.
 
 Results on 65d918b, 2 runs each, every one ready at the last version typed with 0 deaths (the probe's status sampling; the lane that replaced it also fails on a death, a reboot, a typing error, and a pool total grown by more than 4):
 
 | Scenario | Peak running pthreads | Ready after the first keystroke |
 |---|---|---|
 | sleep | 13-15 | 6.2 s |
-| sleep plus a request per change | 23-24 (pool not grown) | 6.3 s |
-| page Monaco above the sleep | 9 | 1.7 s |
+| sleep plus a request per change | 23-24 (pool 24 → 26: grown by 2, within the lane's tolerance of 4) | 6.3 s |
+| page Monaco (see below: this run typed BELOW the sleep, so it measured nothing) | 9 | 1.7 s |
 | cheap body, 10 ms/char | 11 | 1.0 s (0.8 s without coalescing) |
 | 150 ms/char (8.9 s of typing) | 10-12 | 8.9 s |
 | cancellable `decide` below | 11-13 | 1.0 s |

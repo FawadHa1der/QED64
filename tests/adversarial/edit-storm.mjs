@@ -18,7 +18,9 @@
 //   sleepreq  sleep, plus a $/lean/plainGoal request after every change
 //             (lean4monaco's change-then-requests stream)
 //   pagesleep the page's own editor (Monaco + vscode-languageclient +
-//             InfoView), keyboard typing at 10 ms/char above the sleep
+//             InfoView), keyboard typing at 10 ms/char on the empty line
+//             ABOVE the sleep (checked after typing: below it, Lean reuses
+//             the unchanged prefix and nothing is measured)
 // Verdict per run: the typing happened, no renderer crash, no death or
 // reboot, ready at the last version typed, and the pool (unused + running,
 // the exact total: a finished thread's Worker goes back to the pool) not
@@ -76,10 +78,17 @@ async function run(browser, sc, rep) {
   // The typing runs inside the page (a 10 ms cadence a CDP round trip per key would distort).
   const typed = sc === "pagesleep" ? (async () => {
     await page.click(".monaco-editor .view-lines");
-    await page.evaluate(() => globalThis.qed64.api.setCursor(2, 1));
+    // Line 2 is the empty line between the header and the sleep: the typed example lands ABOVE `#eval IO.sleep`,
+    // so every change re-elaborates the sleep (below it, Lean would reuse the unchanged prefix and the scenario measures nothing).
+    const placed = await page.evaluate(() => globalThis.qed64.api.setCursor({ lineNumber: 2, column: 1 }));
+    if (placed !== true) throw new Error(`setCursor refused: ${JSON.stringify(placed)}`);
     await page.keyboard.type(BODY, { delay: 10 });
+    const endedAt = Date.now();
     await sleep(800); // the client's 250 ms delayer, then the forward
-    return page.evaluate(() => globalThis.qed64.api.getDocument().version);
+    const doc = await page.evaluate(() => globalThis.qed64.api.getDocument());
+    const lines = doc.text.split("\n");
+    if (!(lines[1] ?? "").startsWith("example") || !lines.some((l, i) => i > 1 && l.startsWith("#eval"))) throw new Error(`the example did not land above the sleep: ${JSON.stringify(doc.text.slice(0, 160))}`);
+    return { v: doc.version, endedAt };
   })().catch((e) => ({ error: String(e).slice(0, 200) })) : page.evaluate(async ({ uri, base, header, body, suffix, ms, req }) => {
     const line = header.split("\n").length - 1;
     const send = (version, text) => {
@@ -89,20 +98,20 @@ async function run(browser, sc, rep) {
     let v = base;
     send(++v, header + suffix); // select-all + Backspace under the fixed header
     for (let i = 1; i <= body.length; i += 1) { await new Promise((r) => setTimeout(r, ms)); send(++v, header + body.slice(0, i) + suffix); }
-    return v;
+    return { v, endedAt: Date.now() };
   }, { uri: doc.uri, base: doc.version ?? 1, header, body: BODY, suffix: SUFFIX[sc], ms: sc === "slow" ? 150 : 10, req: sc === "sleepreq" }).catch((e) => ({ error: String(e).slice(0, 200) }));
   const samples = [];
   let lastVersion = null; // the version the typing ended at (null until it does; stays null when it failed)
   let typedError = null;
-  let typedAt = null; // when the typing ended
+  let typingEndedAt = null; // the last keystroke's wall-clock time (before the page path's settle sleep)
   const tType = Date.now();
   for (;;) {
     if (crashedAt !== null) break;
     const s = await Promise.race([page.evaluate(() => { const r = globalThis.qed64.test.rawStatus(); return { pool: r.pool, phase: r.phase, relay: r.relay, version: r.version, session: r.session }; }).catch(() => null), sleep(2000).then(() => null)]);
-    if (s) { s.t = Date.now() - tType; samples.push(s); }
+    if (s) { s.at = Date.now(); s.t = s.at - tType; samples.push(s); }
     if (lastVersion === null && typedError === null) {
-      const v = await Promise.race([typed, sleep(0).then(() => undefined)]);
-      if (typeof v === "number") { lastVersion = v; typedAt = Date.now(); } else if (v && v.error) { typedError = v.error; break; }
+      const r = await Promise.race([typed, sleep(0).then(() => undefined)]);
+      if (r && typeof r.v === "number") { lastVersion = r.v; typingEndedAt = r.endedAt; } else if (r && r.error) { typedError = r.error; break; }
     }
     if (lastVersion !== null && s && s.phase === "ready" && s.version === lastVersion && s.relay === "serving") break;
     if (Date.now() - tType > 180000) break;
@@ -110,17 +119,21 @@ async function run(browser, sc, rep) {
   }
   const after = crashedAt !== null ? null : await page.evaluate(() => ({ stats: globalThis.qed64.test.stats(), status: globalThis.qed64.api.status() })).catch(() => null);
   const total = (p) => (p ? p.unused + p.running : -1);
+  // The first sample that saw the checker ready AT the last typed version (it can predate the typing promise, which
+  // on the page path includes a settle sleep); coalescing may skip the versions before the last, never the last.
+  const readySample = lastVersion === null ? null : samples.find((s) => s.phase === "ready" && s.relay === "serving" && s.version === lastVersion) ?? null;
   const row = {
     sc, rep, crashedAt, lastVersion, typedError,
-    // ready AT the version the typing ended at (coalescing may skip the ones before it, never the last)
-    settled: !!(after && lastVersion !== null && after.status.phase === "ready" && after.status.relay === "serving" && after.status.version === lastVersion),
+    settled: !!(after && readySample && after.status.phase === "ready" && after.status.relay === "serving" && after.status.version === lastVersion),
     poolBefore: before.pool, peakRunning: Math.max(-1, ...samples.map((s) => s.pool?.running ?? -1)),
     peakPool: Math.max(-1, ...samples.map((s) => total(s.pool))), finalPool: samples.at(-1)?.pool ?? null,
     peakParked: Math.max(-1, ...samples.map((s) => s.pool?.parked ?? -1)),
     deaths: after?.stats?.workerDeaths ?? null, reboots: after?.stats?.reboots ?? null, sessions: [...new Set(samples.map((s) => s.session))],
-    readyAfterFirstKeyMs: samples.at(-1)?.t ?? null, readyAfterTypingMs: typedAt === null ? null : Date.now() - typedAt, lastDeath: after?.status?.lastDeath ?? null,
+    readyAfterFirstKeyMs: readySample ? readySample.t : null,
+    readyAfterTypingMs: readySample && typingEndedAt !== null ? Math.max(0, readySample.at - typingEndedAt) : null,
+    lastDeath: after?.status?.lastDeath ?? null,
   };
-  fs.writeFileSync(OUT.replace(/\.json$/, `-${sc}-${rep}-samples.json`), JSON.stringify(samples));
+  fs.writeFileSync(OUT.replace(/\.json$/, `-${sc}-${rep}-samples.json`), JSON.stringify(samples.map(({ at, ...s }) => s)));
   await context.close().catch(() => {});
   return row;
 }

@@ -22,29 +22,40 @@
 //   * while a change is held, every other frame (requests, their
 //     cancellations, other notifications) is queued behind it in arrival
 //     order; when the window ends the held change goes, then the queue, then
-//     the next window opens. Every forwarded change opens a window, so a
-//     stream of changes reaches Lean at most once per `ms`, the newest last,
-//     and nothing is reordered relative to the text. The cost: a frame sent
-//     during a burst waits up to `ms`;
-//   * a request queued behind a change that a NEWER change then replaces was
-//     made against text Lean will never see. Answering it against the newer
-//     text is wrong for a client that rebases the reply by its own later
-//     edits (Monaco's document semantic tokens shift every token by the edit
-//     a second time). So the moment a held change is replaced, every queued
-//     request on that document is answered `ContentModified` (-32801): what
-//     Lean itself answers when the document changes under a request, and
-//     what every client already handles (vscode-languageclient cancels and
-//     refetches semantic tokens, the InfoView retries, the rest return their
-//     default). Notifications and requests that name no document stay queued;
+//     the next window opens. Every forwarded change opens a window, so under
+//     a stream of changes Lean sees at most one per `ms` and the newest last,
+//     and nothing is reordered relative to the text. A request queued behind
+//     a change that a newer change replaces is answered against the newer
+//     text, which is the client's view by then: editors cancel or re-issue
+//     their position-bound requests on every content change, and the
+//     InfoView re-asks at the cursor. The cost: a frame sent during a burst
+//     waits up to `ms`;
+//   * one family of requests is the exception: document semantic tokens
+//     (`textDocument/semanticTokens/full`, `/full/delta`, `/range`). Monaco
+//     rebases their reply by every edit made since the request, so a reply
+//     computed on the newer text gets the edit applied twice and the
+//     highlighting lands one line off. These are exactly the requests
+//     vscode-languageclient itself cancels on `ContentModified`
+//     (RequestsToCancelOnContentModified), so a queued one whose change a
+//     newer change replaces is answered `ContentModified` (-32801) the moment
+//     that happens: what Lean answers when the document changes under a
+//     request, and what makes the client refetch;
 //   * didOpen, didClose, a ranged (or multi-part) didChange, a replay, and a
 //     full-text change of another document first forward the held change and
 //     the queue, then go (or are held) themselves: a held change never
-//     crosses a document or a non-full-text edit;
+//     crosses a document or a non-full-text edit. Such a flush can forward a
+//     held change inside the window its predecessor opened (barriers never
+//     wait); the window it opens makes the change after it wait in full;
 //   * with nothing held, every frame goes at once;
 //   * dispose drops the held change and the queue: the relay replays its last
 //     full text into the replacement session and answers every request it
 //     forwarded that the dead session did not (failInFlight).
 //
+// Re-entrancy: `reject` reaches the page synchronously (the relay's taps run
+// before the reply is posted), and a page observer may send frames back in;
+// `forward` posts to a Worker and never calls back. So the replacement path
+// finishes every state change (the new held change, the pruned queue) before
+// it answers a single request.
 // Pure (injected timers): unit-tested under node.
 
 /** The shape of a JSON-RPC frame this module reads (the session's own type is wider). */
@@ -85,12 +96,14 @@ export function isFullTextChange(msg: CoalescibleMessage): boolean {
 }
 
 const uriOf = (msg: CoalescibleMessage): unknown => (msg.params as { textDocument?: { uri?: unknown } } | undefined)?.textDocument?.uri;
-const isRequest = (msg: CoalescibleMessage): boolean => msg.id !== undefined && msg.method !== undefined;
 /** Frames that must not wait behind a held full-text change: they change the document set or edit it partially. */
 const isBarrier = (msg: CoalescibleMessage): boolean =>
   msg.method === "textDocument/didOpen" || msg.method === "textDocument/didClose" || (msg.method === "textDocument/didChange" && !isFullTextChange(msg));
 
-/** The answer to a request whose text a newer change replaced before it reached the checker (Lean's own code for it). */
+/** The requests whose reply the client rebases by its later edits (vscode-languageclient's RequestsToCancelOnContentModified). */
+export const SUPERSEDED_METHODS: ReadonlySet<string> = new Set(["textDocument/semanticTokens/full", "textDocument/semanticTokens/full/delta", "textDocument/semanticTokens/range"]);
+
+/** The answer to such a request whose text a newer change replaced before it reached the checker (Lean's own code for it). */
 export const SUPERSEDED: JsonRpcError = Object.freeze({
   code: -32801,
   message: "QED64: the document changed before this request reached the checker",
@@ -107,13 +120,13 @@ export function createEditCoalescer<M extends CoalescibleMessage>({ forward, rej
   let disposed = false;
   /** Every forwarded full-text change opens (or restarts) the window. */
   const sendChange = (m: M) => {
-    forward(m);
     if (timer !== undefined) timers.clearTimeout(timer);
     timer = timers.setTimeout(tick, ms);
+    forward(m);
   };
   const flush = () => {
     if (held) { const m = held; held = null; sendChange(m); }
-    for (const q of queue.splice(0)) forward(q.msg, q.replay);
+    for (const x of queue.splice(0)) forward(x.msg, x.replay);
   };
   function tick() {
     timer = undefined;
@@ -125,14 +138,16 @@ export function createEditCoalescer<M extends CoalescibleMessage>({ forward, rej
       if (ms > 0 && !replay && isFullTextChange(msg)) {
         if (held && uriOf(held) !== uriOf(msg)) flush(); // another document: never merge across documents
         if (timer === undefined) return sendChange(msg);
-        if (held) { // newest wins; the requests queued against the replaced text are answered, the rest stay behind
-          const uri = uriOf(held);
-          for (let i = 0; i < queue.length;) {
-            const q = queue[i]!;
-            if (isRequest(q.msg) && uriOf(q.msg) === uri) { queue.splice(i, 1); reject(q.msg, SUPERSEDED); } else i += 1;
-          }
+        const replaced = held;
+        held = msg; // newest wins; the queue stays behind it
+        if (!replaced) return;
+        const uri = uriOf(replaced);
+        const superseded: Array<{ msg: M }> = [];
+        for (let i = 0; i < queue.length;) {
+          const q = queue[i]!;
+          if (q.msg.id !== undefined && q.msg.method !== undefined && SUPERSEDED_METHODS.has(q.msg.method) && uriOf(q.msg) === uri) { queue.splice(i, 1); superseded.push(q); } else i += 1;
         }
-        held = msg;
+        for (const q of superseded) reject(q.msg, SUPERSEDED);
         return;
       }
       if (held && !replay && !isBarrier(msg)) { queue.push({ msg, replay }); return; }

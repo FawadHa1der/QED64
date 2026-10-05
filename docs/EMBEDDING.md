@@ -670,17 +670,27 @@ frame at once). Embedders do not need their own throttle.
   other notifications) waits behind it in arrival order and goes right after
   it. Nothing is reordered relative to the text. The cost: a frame sent
   during a burst waits up to the window.
-- A request queued behind a change that a newer change then replaces was made
-  against text the checker will never see. The moment the replacement
-  arrives, every queued request on that document is answered
-  `ContentModified` (-32801, `error.data.qed64.kind: "superseded"`), which is
-  what Lean answers when the document changes under a request, and what
-  clients already handle: vscode-languageclient cancels and refetches
-  semantic tokens, the InfoView retries, the rest return their default.
-  Notifications and requests that name no `textDocument` (`$/lean/rpc/connect`)
-  stay queued.
-- Every forwarded change opens the window again (a barrier's flush included),
-  so two full-text changes never reach the checker inside one window.
+- A request queued behind a change that a newer change then replaces is
+  answered against the newer text, which is the client's view by then:
+  editors cancel or re-issue their position-bound requests on every content
+  change, and the InfoView re-asks at the cursor. One family is the
+  exception: document semantic tokens (`textDocument/semanticTokens/full`,
+  `/full/delta`, `/range`), whose reply Monaco rebases by every edit made
+  since the request, so a reply computed on the newer text would get the
+  edit applied twice. A queued one of those whose change a newer change
+  replaces is answered `ContentModified` (-32801,
+  `error.data.qed64.kind: "superseded"`) the moment that happens: what Lean
+  answers when the document changes under a request, and the requests
+  vscode-languageclient itself cancels and refetches on that code. lean4monaco
+  logs every error reply it receives to the console (its own TODO; the
+  relay's death and restart errors already go there), so a typing burst with
+  semantic highlighting on can print one such line per superseding change.
+- Every forwarded change opens the window again. A barrier (didOpen,
+  didClose, a ranged change) or another document's change forwards a held
+  change at once, inside the window its predecessor opened: barriers never
+  wait. The change after that waits a full window. So the rate limit holds
+  for a stream of changes to one document, not for a client that alternates
+  documents or interleaves ranged edits.
 - `didOpen`, `didClose`, a ranged or multi-part `didChange`, a replay, and a
   full-text change of another document first send the held change and its
   queue, then go (or are held) themselves.
