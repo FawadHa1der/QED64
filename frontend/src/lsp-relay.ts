@@ -119,9 +119,8 @@ export class LspRelay {
   restart(opts: RestartOptions): void {
     if (this.state.kind !== "serving") return;
     this.stats.userRestarts += 1;
-    this.restartOpts = opts;
-    this.restartHeader = headerOf(this.lastText);
-    this.failInFlight("restarting with exact imports", "restart");
+    this.restartOpts = opts; this.restartHeader = headerOf(this.lastText);
+    this.failInFlight("restarting with exact imports", "restart", "user");
     this.session.dispose();
     this.reboot("user", true, opts, false);
   }
@@ -163,11 +162,12 @@ export class LspRelay {
     if (s !== this.session || this.state.kind === "halted") { this.stats.staleDeaths += 1; return; }
     this.stats.workerDeaths += 1;
     this.lastDeath = { reason, message, seq: this.stats.workerDeaths, session: s.id, ...(typeof code === "number" ? { exitCode: code } : {}), ...(typeof (cause as Death["cause"])?.kind === "string" ? { cause: cause as Death["cause"] } : {}) };
-    this.failInFlight(`the Lean checker died (${reason})`, "orphaned");
+    const next: Reason = reason === "bootFailed" || reason === "heartbeat" || reason === "wedged" ? reason : "crash";
+    this.failInFlight(`the Lean checker died (${reason})`, "orphaned", next); // out of "serving" first; the breaker below may still halt
     s.dispose();
     const t = this.now();
     this.deaths = [...this.deaths.filter((d) => t - d < BREAKER_WINDOW_MS), t];
-    if (this.deaths.length < BREAKER_DEATHS) return this.reboot(reason === "bootFailed" || reason === "heartbeat" || reason === "wedged" ? reason : "crash", true);
+    if (this.deaths.length < BREAKER_DEATHS) return this.reboot(next, true);
     // Crash-loop breaker: the content kills the checker on every replay; keep the editor alive, an edit re-arms — on
     // the default (umbrella) session: the remembered exact mode may be the very thing that dies (it serves the header, with the offer back).
     this.stats.breakerTrips += 1;
@@ -207,12 +207,12 @@ export class LspRelay {
   }
 
   /** §3 row 11: answer every orphaned request in the same turn — rpc calls get RpcNeedsReconnect (-32900) so the InfoView reconnects; the rest -32603. */
-  private failInFlight(why: string, kind: "orphaned" | "restart"): void {
+  private failInFlight(why: string, kind: "orphaned" | "restart", next: Reason): void {
+    this.state = { kind: "rebooting", reason: next }; // first: these replies reach the out-taps synchronously (the hatch's lsp.on), and a restart() from one must find no serving relay
     for (const [id, method] of this.pending) {
+      this.pending.delete(id); this.stats.failedInFlight += 1; // out before its reply: a nested pass skips it, and a request a tap sends meanwhile is still visited (its session is going)
       this.toClient({ jsonrpc: "2.0", id, error: { code: method.startsWith("$/lean/rpc/") ? -32900 : -32603, message: `QED64: ${why}`, data: { qed64: { kind, reason: why } } } });
-      this.stats.failedInFlight += 1;
     }
-    this.pending.clear();
   }
 
   toClient(msg: JsonRpc): void { this.serverSide.postMessage(msg); }
