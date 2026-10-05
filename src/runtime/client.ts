@@ -77,6 +77,20 @@ export interface RuntimeManifest {
   >;
 }
 
+/** The build id a runtime manifest must carry (runtime/v1 invariant): "wasm64-" + sha256(lean.wasm)[:16].
+ * The toolchain writes it from the bytes; readers compare strings only (the worker verifies the bytes). */
+export function runtimeIdOf(manifest: Pick<RuntimeManifest, "files">): string | null {
+  const sha = manifest.files?.["lean.wasm"]?.sha256;
+  return typeof sha === "string" && /^[0-9a-f]{64}$/.test(sha) ? `wasm64-${sha.slice(0, 16)}` : null;
+}
+
+/** null when the manifest's buildId is the id of its own lean.wasm, else why not (RUNTIME_MANIFEST_MISMATCH). */
+export function runtimeManifestIdFault(manifest: RuntimeManifest): string | null {
+  const own = runtimeIdOf(manifest);
+  if (own && manifest.buildId === own) return null;
+  return `runtime manifest buildId '${manifest.buildId}' is not the id of its own lean.wasm (${own ?? "no valid sha256"})`;
+}
+
 export interface LibraryPack {
   id: string;
   /** Blob-backed pack (OPFS File): mounted read-only via WORKERFS. */

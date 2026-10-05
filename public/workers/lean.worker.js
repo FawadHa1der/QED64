@@ -1362,6 +1362,19 @@ async function boot(msg) {
     state = "dead";
     return;
   }
+  // Pairing (phase 0; runtime/v1 invariant, docs/EMBEDDING.md §7.2): a
+  // manifest's buildId IS "wasm64-" + sha256(lean.wasm)[:16]. materialize()
+  // verifies the bytes against files["lean.wasm"].sha256, so this string
+  // check ties the id snapshots are paired by (SNAPSHOT_UNPAIRED) to the
+  // verified hash with no extra hashing. A manifest that fails it was edited
+  // or mis-generated: refuse it before anything is fetched.
+  const wasmSha = cfg.runtime.files["lean.wasm"].sha256;
+  const ownId = typeof wasmSha === "string" && /^[0-9a-f]{64}$/.test(wasmSha) ? `wasm64-${wasmSha.slice(0, 16)}` : null;
+  if (!ownId || cfg.runtime.buildId !== ownId) {
+    fail(msg.requestId, new Error(`runtime manifest buildId '${cfg.runtime.buildId}' is not the id of its own lean.wasm (${ownId ?? "no valid sha256"})`), "RUNTIME_MANIFEST_MISMATCH", false);
+    state = "dead";
+    return;
+  }
   state = "booting";
   const caps = capabilities();
   if (!caps.ok) {

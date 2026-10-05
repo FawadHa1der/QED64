@@ -492,7 +492,7 @@ interface FailureCause { kind: FailureKind; httpStatus?: number; stage?: BootSta
 |------|---------|------|
 | `network` | the fetch was rejected, the stream was cut, or 5xx/429 (retrying can help) | `Failed to fetch`, `HTTP 503` |
 | `missing` | the server does not have it: a deploy problem, so retrying cannot help | every 4xx except 408/425/429; an HTML answer where JSON or binary belongs (the workers and the index loader sniff it); `SNAPSHOT_NOT_IN_INDEX` |
-| `corrupt` | it arrived but is wrong | chunk length or SHA-256 mismatch; a gzip/DecompressionStream error; "not a compacted-region file"; a size the index does not declare; "raw size mismatch"; `SNAPSHOT_LOAD_RESULT` (the Lean loader refused the region) |
+| `corrupt` | it arrived but is wrong | chunk length or SHA-256 mismatch; a gzip/DecompressionStream error; "not a compacted-region file"; a size the index does not declare; "raw size mismatch"; `SNAPSHOT_LOAD_RESULT` (the Lean loader refused the region); `RUNTIME_MANIFEST_MISMATCH` (a runtime manifest whose `buildId` is not `wasm64-` + the first 16 hex digits of its own `files["lean.wasm"].sha256`: the runtime/v1 invariant every reader may check; the page refuses it before fetching, the worker before booting) |
 | `unpaired` | a snapshot baked by another runtime build | `SNAPSHOT_UNPAIRED` |
 | `oom` | an allocation or reservation failed | `MEMORY_FAILED`, `could not allocate`, `Cannot enlarge memory` |
 | `storage` | OPFS or quota | `QuotaExceededError` |

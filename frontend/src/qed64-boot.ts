@@ -4,7 +4,7 @@
 // restart ("Load exact imports", widening a light session) boots a fresh
 // one — so the pieces a session boot needs (pack install on demand, snapshot
 // prefetch + load) live here, and the boot itself in resident-session.ts.
-import type { LeanSession, RuntimeManifest } from "../../src/runtime/client";
+import { runtimeManifestIdFault, type LeanSession, type RuntimeManifest } from "../../src/runtime/client";
 import { fetchProfileIndex, installProfile, type InstalledProfile, type ProfileIndex } from "../../src/install/profiles";
 import { entryLabel, fetchSnapshotIndex, loadSnapshotIndex, snapshotCacheKey, type SnapshotEntry, type SnapshotIndex } from "../../src/runtime/snapshots";
 import { NO_OVERRIDES, parseBootParams, validateBootOverrides, type BootOverrides } from "./embed/params";
@@ -102,7 +102,12 @@ export async function resolveRuntimeManifest(overrides: BootOverrides, opts: { p
   if (overrides.runtime) manifestResponse = await fetch(`/runtime/runtime-manifest.${overrides.runtime}.json`, { cache: "no-cache" });
   if (!manifestResponse) manifestResponse = await fetch("/runtime/runtime-manifest.json", { cache: "no-cache" });
   if (!manifestResponse.ok) throw new Error(`runtime manifest: HTTP ${manifestResponse.status}`);
-  return (await manifestResponse.json()) as RuntimeManifest;
+  const manifest = (await manifestResponse.json()) as RuntimeManifest;
+  // runtime/v1 invariant (§7.2): buildId is "wasm64-" + sha256(lean.wasm)[:16]. The worker refuses it too
+  // (RUNTIME_MANIFEST_MISMATCH); checking here fails the boot before any chunk is fetched, with a cause.
+  const fault = runtimeManifestIdFault(manifest);
+  if (fault) throw Object.assign(new Error(`runtime manifest: ${fault}`), { code: "RUNTIME_MANIFEST_MISMATCH" }); // failureCauseOf reads the code: kind "corrupt"
+  return manifest;
 }
 
 /** The snapshot index a boot uses: `?snapshots=<dir>` (an unpromoted set

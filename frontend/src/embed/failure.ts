@@ -43,6 +43,7 @@ export function failureKindOf(code: string | undefined, message: string): Failur
   if (code === "SNAPSHOT_UNPAIRED" || /was baked for runtime/.test(message)) return "unpaired";
   if (code === "SNAPSHOT_URL_REFUSED" || /SNAPSHOT_URL_REFUSED/.test(message)) return "other";
   if (code === "SNAPSHOT_NOT_IN_INDEX") return "missing";
+  if (code === "RUNTIME_MANIFEST_MISMATCH") return "corrupt"; // a manifest whose buildId is not the id of its own lean.wasm
   const status = httpStatusOf(message);
   // The server does not have it (or will not give it): 404/410 and every other
   // 4xx but the retryable ones; an HTML page where a binary, script or JSON belongs.
