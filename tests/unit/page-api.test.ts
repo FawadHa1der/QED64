@@ -1,17 +1,21 @@
 // The page API (frontend/src/page-api.ts; docs/EMBEDDING.md §2–§3) over a fake
 // relay and editor: the frozen object and its pre-boot behaviour, the boot
-// document hand-off, setDocument / settled semantics (identical text resolves
-// at once; halted, timeout and afterSession), the events derived from the
+// document hand-off, setDocument / settled semantics (identical text sends
+// nothing; halted, timeout and afterSession), the events derived from the
 // relay's status and its taps, restart's inputs and guards, the cursor,
-// liveness, memory and the offer.
-import { describe, expect, it, vi } from "vitest";
+// liveness, memory and the offer. The fakes behave like what they stand for:
+// the editor's edits reach the relay as the LSP client sends them (coalesced,
+// never synchronously), the relay remembers its restart options and posts a
+// copy; where a sequence of sessions matters, the real LspRelay runs.
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  codeFromHash, createPageApi, isSyntheticFrame, toApiStatus, FILE_PROGRESS_MS, LIVENESS_TIMING,
-  type ApiStatus, type Capabilities, type EditorLike, type RelayLike,
+  codeFromHash, createPageApi, isSyntheticFrame, pageStatusSink, toApiStatus, FILE_PROGRESS_MS, LIVENESS_TIMING,
+  type ApiStatus, type Capabilities, type EditorLike, type PageApi, type RelayLike,
 } from "../../frontend/src/page-api";
 import { normalizeMemoryBytes, parseMemoryParam } from "../../frontend/src/embed/params";
-import type { RelayStatus, RestartOptions } from "../../frontend/src/lsp-relay";
+import { LspRelay, type RelaySession, type RelayStatus, type RestartOptions } from "../../frontend/src/lsp-relay";
 import { tapRelay, type LspMessage } from "../../frontend/src/relay-taps";
+import type { JsonRpcMessage, WorkerStatus } from "../../src/runtime/client";
 
 const CAPS: Capabilities = {
   editorRpc: true, documents: true, events: true, restart: true, embedMode: true, snapshotRoots: false, postMessage: false,
@@ -35,29 +39,37 @@ class FakeRelay implements RelayLike {
   remembered: RestartOptions | undefined = undefined;
   posted: LspMessage[] = [];
   status() { return this.current; }
-  restart(opts: RestartOptions) { this.restarts.push(opts); }
+  restart(opts: RestartOptions) { this.restarts.push(opts); this.remembered = opts; } // LspRelay keeps them as restartOpts
   reusableOpts() { return this.remembered; }
   fromClient(msg: LspMessage) {
     const p = msg.params as { textDocument: { uri: string; version: number; text?: string }; contentChanges?: { text: string }[] };
     if (msg.method === "textDocument/didOpen") { this.doc = { uri: p.textDocument.uri, version: p.textDocument.version }; this.lastText = p.textDocument.text ?? ""; }
     if (msg.method === "textDocument/didChange" && this.doc) { this.doc.version = p.textDocument.version; this.lastText = p.contentChanges![0]!.text; }
   }
-  toClient(msg: LspMessage) { this.posted.push(msg); }
+  toClient(msg: LspMessage) { this.posted.push(structuredClone(msg)); } // postMessage: a copy, taken at post time
 }
 
-/** A one-document editor whose edits go to the relay the way the LSP client's would. */
+/** vscode-languageclient 9.0.1 sends queued full-text changes 250 ms after the last edit (client.js `new Delayer(250)`). */
+const CLIENT_FLUSH_MS = 250;
+
+/** A one-document editor whose edits reach the relay the way the LSP client sends them: full text (the
+ * front door's change = 1) and coalesced — an edit only queues the document, and the trailing delayer,
+ * restarted by every edit, sends ONE didChange with the text and version id at flush time
+ * (textSynchronization.js `_pendingTextDocumentChanges`). Never synchronously. */
 class FakeEditor implements EditorLike {
   text = "";
   version = 1;
   edits = 0;
   position = { lineNumber: 1, column: 1 };
   focused = 0;
-  constructor(private readonly relay: FakeRelay) {}
+  private flushTimer: unknown = null;
+  constructor(private readonly relay: FakeRelay, private readonly clock: Clock) {}
   getModel() {
     const lines = () => this.text.split("\n");
     return {
       uri: { toString: () => URI }, getValue: () => this.text, getFullModelRange: () => "all", setValue: (t: string) => this.change(t),
       getLineCount: () => lines().length, getLineMaxColumn: (n: number) => (lines()[n - 1] ?? "").length + 1, getEOL: () => "\n",
+      getVersionId: () => this.version,
     };
   }
   executeEdits(_s: string, edits: Array<{ text: string }>) { this.edits += 1; this.change(edits[0]!.text); return true; }
@@ -66,12 +78,18 @@ class FakeEditor implements EditorLike {
   setPosition(p: { lineNumber: number; column: number }) { this.position = p; }
   revealPositionInCenterIfOutsideViewport() {}
   focus() { this.focused += 1; }
+  /** A keystroke or an InfoView edit: a change the API did not make. */
+  type(t: string) { this.change(t); }
   private change(t: string) {
     t = t.replace(/\r\n?/g, "\n"); // Monaco keeps one EOL: inserted CRLF / CR become the model's
     if (t === this.text) return;
     this.text = t;
     this.version += 1;
-    this.relay.fromClient({ method: "textDocument/didChange", params: { textDocument: { uri: URI, version: this.version }, contentChanges: [{ text: t }] } });
+    if (this.flushTimer !== null) this.clock.clearTimeout(this.flushTimer);
+    this.flushTimer = this.clock.setTimeout(() => {
+      this.flushTimer = null;
+      this.relay.fromClient({ method: "textDocument/didChange", params: { textDocument: { uri: URI, version: this.version }, contentChanges: [{ text: this.text }] } });
+    }, CLIENT_FLUSH_MS);
   }
 }
 
@@ -92,7 +110,7 @@ function setup() {
   const clock = new Clock();
   const page = createPageApi(CAPS, clock);
   const relay = new FakeRelay();
-  const editor = new FakeEditor(relay);
+  const editor = new FakeEditor(relay, clock);
   const taps = tapRelay(relay);
   return { page, relay, editor, taps, clock, api: page.api };
 }
@@ -105,6 +123,13 @@ function boot(t: T, text = "example : True := trivial\n") {
   t.page.editorReady();
 }
 const flush = () => new Promise((r) => setTimeout(r, 0));
+/** What a promise has come to once pending work ran: its value, its rejection, or "pending". */
+async function outcome(p: Promise<unknown>): Promise<unknown> {
+  let got: unknown = "pending";
+  p.then((v) => { got = v; }, (e: unknown) => { got = e; });
+  await flush();
+  return got;
+}
 
 describe("the object", () => {
   it("is frozen, versioned and answers status() before anything is bound", () => {
@@ -158,8 +183,9 @@ describe("the boot document", () => {
     const t = setup();
     await expect(t.page.waitBootDocument(Promise.resolve())).resolves.toBeNull();
     boot(t);
-    const r = await t.api.setDocument("theorem t : 1 = 1 := rfl\n");
-    expect(r).toEqual({ version: 2, unchanged: false });
+    const r = t.api.setDocument("theorem t : 1 = 1 := rfl\n");
+    t.clock.advance(CLIENT_FLUSH_MS);
+    await expect(r).resolves.toEqual({ version: 2, unchanged: false });
     expect(t.editor.edits).toBe(1);
   });
   it("#code= decodes (lean4web's spelling); anything else is not a boot document", () => {
@@ -181,7 +207,9 @@ describe("setDocument / settled", () => {
   it("undoable: false uses setValue; the cursor is set (clamped) when given", async () => {
     const t = setup();
     boot(t, "A\n");
-    await expect(t.api.setDocument("BC\nD\n", { undoable: false, cursor: { lineNumber: 1, column: 99 } })).resolves.toEqual({ version: 2, unchanged: false });
+    const r = t.api.setDocument("BC\nD\n", { undoable: false, cursor: { lineNumber: 1, column: 99 } });
+    t.clock.advance(CLIENT_FLUSH_MS);
+    await expect(r).resolves.toEqual({ version: 2, unchanged: false });
     expect(t.editor.edits).toBe(0);
     expect(t.api.getCursor()).toEqual({ lineNumber: 1, column: 3 });
   });
@@ -241,7 +269,9 @@ describe("review fixes", () => {
   it("setDocument with CRLF or lone-CR text resolves (the model normalizes line endings), and identical-modulo-EOL is unchanged", async () => {
     const t = setup();
     boot(t, "A\n");
-    await expect(t.api.setDocument("B\r\nC\rD\n")).resolves.toEqual({ version: 2, unchanged: false });
+    const r = t.api.setDocument("B\r\nC\rD\n");
+    t.clock.advance(CLIENT_FLUSH_MS);
+    await expect(r).resolves.toEqual({ version: 2, unchanged: false });
     expect(t.editor.text).toBe("B\nC\nD\n");
     await expect(t.api.setDocument("B\r\nC\nD\r\n")).resolves.toEqual({ version: 2, unchanged: true });
   });
@@ -273,6 +303,177 @@ describe("review fixes", () => {
     t.api.restart({ initialBytes: 3 * GiB });
     t.api.restart();
     expect(sticky).toEqual([3 * GiB, null]);
+    expect(t.relay.restarts).toEqual([{ snapshots: ["init", "mathlib"], initialBytes: 3 * GiB }, { snapshots: ["init", "mathlib"] }]); // not the remembered commit
+  });
+  it("a boot failure is kept: whenReady, settled and a pre-boot setDocument called AFTER it reject too", async () => {
+    // The iframe's load event comes after a refused parameter already failed the boot (main().catch runs first).
+    const t = setup();
+    let fromListener: Promise<unknown> = Promise.resolve("no boot event");
+    t.api.on("boot", (b) => { if (b.failed) fromListener = t.api.settled(); }); // registered while the failure is being reported
+    t.page.bootFailed("refused ?snapshots=/evil: …");
+    expect(await outcome(fromListener)).toMatchObject({ code: "BOOT_FAILED" });
+    expect(await outcome(t.api.whenReady())).toMatchObject({ code: "BOOT_FAILED", message: "refused ?snapshots=/evil: …" });
+    expect(await outcome(t.api.settled())).toMatchObject({ code: "BOOT_FAILED" });
+    expect(await outcome(t.api.setDocument("x"))).toMatchObject({ code: "BOOT_FAILED" });
+  });
+  it("back-to-back setDocument calls settle on the ONE didChange the LSP client coalesces them into; a repeat waits for it", async () => {
+    const t = setup();
+    boot(t, "A\n");
+    const forwarded: number[] = [];
+    t.api.on("document", (d) => forwarded.push(d.version));
+    const first = t.api.setDocument("L1\n");
+    const second = t.api.setDocument("L2\n");
+    const repeat = t.api.setDocument("L2\n"); // the model holds it already; the relay does not
+    expect(await outcome(repeat)).toBe("pending"); // not the previous text's version
+    t.clock.advance(CLIENT_FLUSH_MS);
+    expect(forwarded).toEqual([3]);
+    expect(await outcome(first)).toEqual({ version: 3, unchanged: false }); // superseded in the window: the text that replaced it
+    expect(await outcome(second)).toEqual({ version: 3, unchanged: false });
+    expect(await outcome(repeat)).toEqual({ version: 3, unchanged: true });
+  });
+  it("a keystroke inside the client's window still settles setDocument, with the version that carried both", async () => {
+    const t = setup();
+    boot(t, "A\n");
+    const r = t.api.setDocument("B\n");
+    t.clock.advance(100);
+    t.editor.type("B\nx");
+    t.clock.advance(CLIENT_FLUSH_MS);
+    expect(await outcome(r)).toEqual({ version: 3, unchanged: false });
+  });
+  it("a new session's liveness reports no frame until it sends one, not the dead session's silence", () => {
+    const t = setup();
+    boot(t);
+    const zero = { probes: 0, answered: 0, stalls: 0, resumed: 0, rescues: 0 };
+    t.page.relayStatus(status({ phase: "elaborating", liveness: zero }));
+    t.relay.toClient({ jsonrpc: "2.0", method: "$/lean/fileProgress", params: { textDocument: { uri: URI, version: 1 }, processing: [] } });
+    t.clock.advance(18000); // wedged
+    t.relay.session = { ...t.relay.session, id: "s2" };
+    t.page.relayStatus(status({ phase: "booting", relay: "rebooting", rebootReason: "wedged", session: "s2", version: null }));
+    t.clock.advance(30000); // the replacement loads its snapshots, then opens its loop
+    t.page.relayStatus(status({ phase: "elaborating", session: "s2", liveness: zero }));
+    expect(t.api.status().liveness).toMatchObject({ lastAnswerAgoMs: null, lastFrameAgoMs: null });
+  });
+  it("payloads are copies: a listener editing one in place changes neither what the editor receives nor the page's state", () => {
+    const t = setup();
+    boot(t);
+    t.api.on("diagnostics", (d) => { d.diagnostics.length = 0; });
+    t.api.on("fileProgress", (p) => { p.processing.length = 0; });
+    t.api.on("death", (d) => { d.cause!.message = "edited"; });
+    t.api.on("boot", (b) => { if (b.error) b.error.message = "edited"; });
+    t.api.on("status", (s) => { s.header?.missing.splice(0); });
+    const readies: unknown[] = [];
+    t.api.on("ready", (r) => readies.push(r.header?.missing));
+    const publish = { jsonrpc: "2.0", method: "textDocument/publishDiagnostics", params: { uri: URI, version: 1, diagnostics: [{ range: {}, message: "x", source: "Lean 4" }] } };
+    t.taps.toClient(publish);
+    expect((t.relay.posted[0]!.params as { diagnostics: unknown[] }).diagnostics).toHaveLength(1); // the editor's markers
+    const processing = [{ range: {} }];
+    t.taps.toClient({ jsonrpc: "2.0", method: "$/lean/fileProgress", params: { textDocument: { uri: URI, version: 1 }, processing } });
+    t.clock.advance(FILE_PROGRESS_MS);
+    expect(processing).toHaveLength(1);
+    const cause = { kind: "network" as const, message: "HTTP 503" };
+    t.relay.current = status({ phase: "headerRefused", header: { version: 1, mode: "refused", key: [], moduleCount: 0, missing: ["Mathlib"], ms: 0 }, lastDeath: { reason: "bootFailed", message: "m", seq: 1, session: "s1", cause } });
+    t.page.relayStatus(t.relay.current);
+    t.page.bootFailed("m", cause);
+    expect(cause.message).toBe("HTTP 503");
+    expect(t.api.status().lastDeath?.cause?.message).toBe("HTTP 503");
+    expect(readies).toEqual([["Mathlib"]]);
+  });
+});
+
+/** A RelaySession that boots at once, its commit sized the way ResidentSession sizes it: the restart's
+ * `initialBytes`, else the page's policy (main.ts: the sticky api commit, else the default). */
+class Session implements RelaySession {
+  onLsp: (msg: JsonRpcMessage) => void = () => {};
+  onStatus: (status: WorkerStatus) => void = () => {};
+  onDied: (code: number | null, reason: string, message: string, cause?: unknown) => void = () => {};
+  readonly snapshots: readonly string[];
+  readonly initialBytes: number;
+  constructor(readonly id: string, opts: RestartOptions, sticky: number | null) {
+    this.snapshots = opts.snapshots ?? ["init", "mathlib"];
+    this.initialBytes = opts.initialBytes ?? sticky ?? 2 * GiB;
+  }
+  start() { return Promise.resolve(); }
+  arm() { return Promise.resolve(); }
+  lsp() {}
+  dispose() {}
+  terminate() {}
+  die() { this.onDied(134, "abort", "out of memory"); }
+  report(over: Partial<WorkerStatus>) { this.onStatus({ phase: "ready", version: 1, header: null, ring: { bytesQueued: 0, refused: 0 }, pool: { unused: 1, running: 0 }, dropped: 0, collision: null, ...over }); }
+}
+
+describe("over the real relay", () => {
+  const relays: LspRelay[] = [];
+  afterEach(() => { for (const r of relays.splice(0)) { r.clientPort.close(); r.unload(); } });
+  /** The real LspRelay (its remembered restart options, its breaker, its status order) under the page API;
+   * `sinkOf` builds the relay's status sink (default: the API alone). */
+  function overRelay(sinkOf?: (relay: LspRelay, page: PageApi) => (s: RelayStatus) => void) {
+    const page = createPageApi(CAPS, new Clock());
+    const sessions: Session[] = [];
+    let sticky: number | null = null;
+    let sink = (s: RelayStatus) => page.relayStatus(s);
+    const relay = new LspRelay((opts) => {
+      const s = new Session(`s${sessions.length + 1}`, opts ?? {}, sticky);
+      sessions.push(s);
+      return s;
+    }, { status: (s) => sink(s) }, () => Promise.resolve());
+    relays.push(relay);
+    if (sinkOf) sink = sinkOf(relay, page);
+    page.takeBootDocument();
+    page.bind({ relay, taps: tapRelay(relay), editor: () => undefined, build: BUILD, snapshotNames: ["init", "mathlib"], memoryBytes: normalizeMemoryBytes, setSessionMemory: (b) => { sticky = b; } });
+    page.editorReady();
+    return { relay, page, api: page.api, current: () => sessions[sessions.length - 1]! };
+  }
+
+  it("restart() without initialBytes goes back to the page default: the relay's remembered options carry no commit", async () => {
+    const h = overRelay();
+    await flush();
+    h.api.restart({ initialBytes: 3 * GiB });
+    await flush();
+    expect(h.current().initialBytes).toBe(3 * GiB);
+    h.api.restart();
+    await flush();
+    expect(h.current().initialBytes).toBe(2 * GiB);
+    expect(h.api.status().memory?.initialBytes).toBe(2 * GiB);
+    h.current().die(); // a crash reboot reuses that restart's options
+    expect(h.current().initialBytes).toBe(2 * GiB);
+  });
+  it("restart() on a halted relay re-arms on the page's default commit, not the sticky one", async () => {
+    const h = overRelay();
+    await flush();
+    h.api.restart({ initialBytes: 6 * GiB });
+    await flush();
+    for (let i = 0; i < 3; i++) h.current().die(); // the crash-loop breaker
+    expect(h.relay.state.kind).toBe("halted");
+    expect(h.api.restart({ initialBytes: 2 * GiB })).toMatchObject({ accepted: false });
+    expect(h.api.restart()).toEqual({ accepted: true, fromSession: "s4" });
+    expect(h.current().initialBytes).toBe(2 * GiB);
+  });
+  it("a verdict the page's self-widen supersedes finishes no boot: boot done, status() and settled() come with the replacement", async () => {
+    let widened = false;
+    const h = overRelay((relay, page) => pageStatusSink(
+      () => relay.session.id,
+      (s) => { // main.ts widenForRoots: restart once with the environment that covers the refused header
+        if (widened || s.phase !== "headerRefused" || s.header?.mode !== "refused") return;
+        widened = true;
+        relay.restart({ snapshots: ["init", "mathlib"] });
+      },
+      (s) => { if (s.phase === "ready" || s.phase === "headerRefused") page.bootFinished(); }, // main.ts renderStatus → bootFinish
+      (s) => page.relayStatus(s),
+    ));
+    const seen: string[] = [];
+    h.api.on("boot", (b) => {
+      if (!b.done) return;
+      const s = h.api.status();
+      seen.push(`done ${s.session} ${s.phase}`);
+      void h.api.settled().then((v) => seen.push(`settled ${v.session} ${v.phase}`));
+    });
+    await flush(); // the light session serves; the document's Mathlib header is refused
+    h.current().report({ phase: "headerRefused", header: { version: 1, mode: "refused", key: [], moduleCount: 0, missing: ["Mathlib"], ms: 0 } });
+    await flush();
+    expect(h.relay.session.id).toBe("s2");
+    h.current().report({ phase: "ready" });
+    await flush();
+    expect(seen).toEqual(["done s2 ready", "settled s2 ready"]);
   });
 });
 

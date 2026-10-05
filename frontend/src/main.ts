@@ -8,7 +8,7 @@ import { LspRelay, type RelayStatus } from "./lsp-relay";
 import { ResidentSession, importLinesOf, importedModulesOf, makeEditorPolicy, type ResidentPolicy } from "./resident-session";
 import { BASE_SNAPSHOTS, entryLabel, widenTarget, LEGACY_UMBRELLA_ROOTS, coversModule } from "../../src/runtime/snapshots";
 import { installInfoviewEditorApi, type EditsEditor } from "./editor/infoview-edits";
-import { codeFromHash, createPageApi, type EditorLike } from "./page-api";
+import { codeFromHash, createPageApi, pageStatusSink, type EditorLike } from "./page-api";
 import { normalizeMemoryBytes, parseMemoryParam } from "./embed/params";
 import { failureCauseOf, type FailureCause } from "./embed/failure";
 import { tapRelay } from "./relay-taps";
@@ -514,7 +514,7 @@ async function main() {
   // a header change between sessions changes the boot inputs with it.
   relay = new LspRelay(
     (opts) => new ResidentSession({ artifacts, ui, policy, headerText: relay?.lastText || initialText }, opts ?? {}),
-    { status: (s) => { renderStatus(s); offerExactImports(s); widenForRoots(s); pageApi.relayStatus(s); } },
+    { status: pageStatusSink(() => relay.session.id, widenForRoots, renderStatus, offerExactImports, (s) => pageApi.relayStatus(s)) },
     () => new Promise((r) => window.setTimeout(r, 1500)),
   );
   const clientPort: MessagePort = relay.clientPort;

@@ -6,7 +6,8 @@
 // main() then feeds it: `bind()` when the relay exists, `editorReady()` once
 // the editor is mounted, `relayStatus()` from the relay's status sink,
 // `bootStep()` / `bootFinished()` / `bootFailed()` from its StatusSink, and
-// `memory()` / `setOffer()` from its meter and its exact-imports offer.
+// `memory()` / `setOffer()` from its meter and its exact-imports offer;
+// `pageStatusSink()` orders the relay's sink so a self-widen comes first.
 // Everything the API reports is a projection of what the page already has —
 // the relay's status and the LSP traffic on the relay's taps
 // (frontend/src/relay-taps.ts) — so the relay itself is unchanged (it is
@@ -111,6 +112,8 @@ export interface EditorLike {
   getModel(): {
     uri: { toString(): string }; getValue(): string; getFullModelRange(): unknown; setValue(text: string): void;
     getLineCount(): number; getLineMaxColumn(lineNumber: number): number; getEOL?(): string;
+    /** Monaco's version id: the LSP client sends it as the document version. */
+    getVersionId(): number;
   } | null;
   executeEdits(source: string, edits: Array<{ range: unknown; text: string; forceMoveMarkers?: boolean }>): boolean;
   pushUndoStop(): boolean;
@@ -142,7 +145,7 @@ export const FILE_PROGRESS_MS = 100;
 
 export function deathInfo(d: RelayStatus["lastDeath"]): DeathInfo | null {
   if (!d) return null;
-  return { kind: (DEATH_KINDS.has(d.reason) ? d.reason : "other") as DeathKind, reason: d.reason, message: d.message, cause: d.cause ?? null, seq: d.seq, session: d.session, exitCode: d.exitCode ?? null };
+  return { kind: (DEATH_KINDS.has(d.reason) ? d.reason : "other") as DeathKind, reason: d.reason, message: d.message, cause: d.cause ? { ...d.cause } : null, seq: d.seq, session: d.session, exitCode: d.exitCode ?? null };
 }
 
 /** The relay's own frames (the halted note, orphaned-request errors) say so;
@@ -155,6 +158,7 @@ export function isSyntheticFrame(m: LspMessage): boolean {
 }
 
 interface Extras { liveness: LivenessInfo | null; memory: MemoryInfo | null; offer: OfferInfo | null }
+const headerOf = (h: RelayStatus["header"] | undefined): ApiStatus["header"] => (h ? { mode: h.mode, missing: [...h.missing], moduleCount: h.moduleCount } : null);
 
 /** The stable projection of the relay's status (the counters stay internal). */
 export function toApiStatus(s: RelayStatus | null, boot: BootInfo, snapshots: readonly string[] | null, extras: Extras = { liveness: null, memory: null, offer: null }): ApiStatus {
@@ -164,7 +168,7 @@ export function toApiStatus(s: RelayStatus | null, boot: BootInfo, snapshots: re
     rebootReason: s ? s.rebootReason : "boot",
     session: s?.session ?? null,
     version: s?.version ?? null,
-    header: s?.header ? { mode: s.header.mode, missing: [...s.header.missing], moduleCount: s.header.moduleCount } : null,
+    header: headerOf(s?.header),
     collision: s?.collision ? { names: [...s.collision.names], version: s.collision.version } : null,
     lastDeath: deathInfo(s?.lastDeath ?? null),
     boot: { ...boot },
@@ -172,6 +176,18 @@ export function toApiStatus(s: RelayStatus | null, boot: BootInfo, snapshots: re
     liveness: extras.liveness ? { ...extras.liveness } : null,
     memory: extras.memory ? { ...extras.memory } : null,
     offer: extras.offer ? { ...extras.offer } : null,
+  };
+}
+
+/** The relay's status sink (main.ts): the page's self-widen (§8) runs FIRST.
+ * It may restart the session inside this call, and the status it superseded
+ * then reaches none of the rest — the page's own handling would finish the
+ * boot on a verdict about to be replaced (and the API emit `boot` done for
+ * it), and §2.2 never reports a superseded status. */
+export function pageStatusSink(session: () => string, widen: (s: RelayStatus) => void, ...rest: Array<(s: RelayStatus) => void>): (s: RelayStatus) => void {
+  return (s) => {
+    widen(s);
+    if (s.session === session()) for (const f of rest) f(s);
   };
 }
 
@@ -215,9 +231,16 @@ export function createPageApi(
   let bootDocument: string | null = null;
   let bootDocumentRead = false;
   const bootDocWaiters: Array<(t: string) => void> = [];
-  /** Waiters for "bound and mounted"; a boot that fails before that rejects them (BOOT_FAILED). */
+  /** Waiters for "bound and mounted"; a boot that fails before that rejects them (BOOT_FAILED), and
+   * every later one at once: the failure is kept, so a caller that comes after it (an iframe's load
+   * handler runs after a refused parameter failed the boot) is not left waiting for nothing. */
   const readyWaiters: Array<{ ok(): void; fail(e: Error): void }> = [];
-  const onReady = (ok: () => void, fail: (e: Error) => void = () => {}) => readyWaiters.push({ ok, fail });
+  let failedBeforeUp: string | null = null;
+  const bootFailure = () => err("BOOT_FAILED", failedBeforeUp ?? "the page could not start");
+  const onReady = (ok: () => void, fail: (e: Error) => void = () => {}) => {
+    if (failedBeforeUp !== null) fail(bootFailure());
+    else readyWaiters.push({ ok, fail });
+  };
   const readySeen = new Set<string>();
   let lastDeath: RelayStatus["lastDeath"] = null;
   // liveness: per-session counters as last seen, when the answered count last rose, when the Lean side last sent a frame
@@ -257,6 +280,18 @@ export function createPageApi(
   const statusNow = (): ApiStatus => project(binding ? binding.relay.status() : last);
   const isBound = () => binding !== null && mounted;
   const settledPhase = (p: string) => p === "ready" || p === "headerRefused";
+  /** Resolves once the relay has forwarded the model's text as of `version`
+   * (its version id) or a later text. The LSP client syncs full text and
+   * coalesces: an edit only queues the document, and ONE didChange carries its
+   * text and version at flush time, 250 ms after the last edit or before the
+   * next request (vscode-languageclient 9) — so a text superseded inside that
+   * window (another setDocument, a keystroke, an InfoView edit) is never
+   * forwarded on its own, and waiting for that exact text would wedge. */
+  const whenForwarded = (version: number, unchanged: boolean) => new Promise<SetDocumentResult>((resolve) => {
+    const doc = binding!.relay.doc;
+    if (doc && doc.version >= version) return resolve({ version: doc.version, unchanged });
+    const unsubscribe = on("document", (d) => { if (d.version >= version) { unsubscribe(); resolve({ version: d.version, unchanged }); } });
+  });
   const clampCursor = (editor: EditorLike, c: Cursor): Cursor | null => {
     const model = editor.getModel();
     if (!model || !Number.isFinite(c?.lineNumber) || !Number.isFinite(c?.column)) return null;
@@ -283,6 +318,7 @@ export function createPageApi(
     whenReady: () => (isBound() ? Promise.resolve(statusNow()) : new Promise<ApiStatus>((r, j) => onReady(() => r(statusNow()), j))),
     settled(opts: { version?: number; afterSession?: string; timeoutMs?: number } = {}) {
       return new Promise<ApiStatus>((resolve, reject) => {
+        if (!binding && failedBeforeUp !== null) return reject(bootFailure());
         const want = opts.version ?? binding?.relay.doc?.version ?? null;
         let timer: unknown;
         const check = (s: ApiStatus): boolean => {
@@ -320,30 +356,21 @@ export function createPageApi(
       const model = editor?.getModel();
       if (!editor || !model) return new Promise<SetDocumentResult>((resolve, reject) => onReady(() => { api.setDocument(text, opts).then(resolve, reject); }, reject));
       // Monaco stores the buffer in ONE line ending (an inserted CRLF or lone
-      // CR becomes the model's EOL), so compare and wait in its terms.
+      // CR becomes the model's EOL), so compare in its terms. Identical text
+      // sends nothing (no change event): it waits only for an earlier edit's
+      // forward still pending, never for a version that never comes.
       const eol = model.getEOL?.() ?? "\n";
-      if (model.getValue() === text.replace(/\r\n?|\n/g, eol)) {
-        // Nothing is sent: an identical-text edit produces no change event, and a
-        // caller waiting for a version that never comes would wedge.
-        if (opts.cursor) api.setCursor(opts.cursor, { focus: opts.focus });
-        else if (opts.focus) editor.focus();
-        return Promise.resolve({ version: binding!.relay.doc?.version ?? null, unchanged: true });
+      const unchanged = model.getValue() === text.replace(/\r\n?|\n/g, eol);
+      if (!unchanged && opts.undoable === false) model.setValue(text);
+      else if (!unchanged) {
+        editor.pushUndoStop();
+        editor.executeEdits("qed64-api", [{ range: model.getFullModelRange(), text, forceMoveMarkers: true }]);
+        editor.pushUndoStop();
       }
-      return new Promise<SetDocumentResult>((resolve) => {
-        let expected: string | null = null; // the text as the model holds it after the edit
-        const unsubscribe = on("document", (d) => { if (expected !== null && d.text === expected) { unsubscribe(); resolve({ version: d.version, unchanged: false }); } });
-        if (opts.undoable === false) model.setValue(text);
-        else {
-          editor.pushUndoStop();
-          editor.executeEdits("qed64-api", [{ range: model.getFullModelRange(), text, forceMoveMarkers: true }]);
-          editor.pushUndoStop();
-        }
-        expected = model.getValue();
-        // The LSP client may already have forwarded it synchronously.
-        if (binding!.relay.lastText === expected && binding!.relay.doc) { unsubscribe(); resolve({ version: binding!.relay.doc.version, unchanged: false }); }
-        if (opts.cursor) api.setCursor(opts.cursor, { focus: opts.focus });
-        else if (opts.focus) editor.focus();
-      });
+      const forwarded = whenForwarded(model.getVersionId(), unchanged);
+      if (opts.cursor) api.setCursor(opts.cursor, { focus: opts.focus });
+      else if (opts.focus) editor.focus();
+      return forwarded;
     },
     getCursor() {
       const p = binding?.editor()?.getPosition();
@@ -366,8 +393,13 @@ export function createPageApi(
     },
     restart(opts: { snapshots?: string[]; initialBytes?: number } = {}): RestartResult {
       const fromSession = binding ? binding.relay.session.id : null;
-      // Halted (the crash-loop breaker): re-arm on the default session, as an edit would.
-      if (binding?.relay.state.kind === "halted" && opts.snapshots === undefined && opts.initialBytes === undefined) return { accepted: binding.relay.rearm?.() === true, fromSession };
+      // Halted (the crash-loop breaker): re-arm on the default session, as an
+      // edit would — and, an explicit restart, on the page's default commit (a
+      // sticky one too large for the device may be what crash-looped).
+      if (binding?.relay.state.kind === "halted" && opts.snapshots === undefined && opts.initialBytes === undefined) {
+        if (binding.relay.rearm) binding.setSessionMemory?.(null);
+        return { accepted: binding.relay.rearm?.() === true, fromSession };
+      }
       if (!binding || binding.relay.state.kind !== "serving") return { accepted: false, fromSession };
       const unknown = (opts.snapshots ?? []).filter((n) => !binding!.snapshotNames.includes(n));
       if (unknown.length > 0) throw new TypeError(`restart: unknown snapshot(s) ${unknown.join(", ")} (served: ${binding.snapshotNames.join(", ")})`);
@@ -380,9 +412,11 @@ export function createPageApi(
       binding.setSessionMemory?.(initialBytes ?? null);
       // No snapshots given: this session's boot inputs, under the relay's own
       // rule (the remembered exact-imports options while the header still
-      // matches, else the snapshot list it loaded).
-      const base: RestartOptions = opts.snapshots ? { snapshots: [...opts.snapshots] } : binding.relay.reusableOpts() ?? (snapshotsNow() ? { snapshots: snapshotsNow()! } : {});
-      binding.relay.restart(initialBytes !== undefined ? { ...base, initialBytes } : { ...base });
+      // matches, else the snapshot list it loaded) — never their commit: the
+      // relay remembers the last restart's initialBytes too, and only this
+      // call's (else the page default) may size the next session.
+      const { initialBytes: _remembered, ...base }: RestartOptions = opts.snapshots ? { snapshots: [...opts.snapshots] } : binding.relay.reusableOpts() ?? (snapshotsNow() ? { snapshots: snapshotsNow()! } : {});
+      binding.relay.restart(initialBytes !== undefined ? { ...base, initialBytes } : base);
       return { accepted: true, fromSession };
     },
     acceptOffer(kind?: OfferInfo["kind"]) {
@@ -397,13 +431,13 @@ export function createPageApi(
     boot = { stage: info?.stage ?? (failed ? "failed" : done ? "done" : boot.stage), label, done, failed, message, overlay: boot.overlay };
     emit("boot", {
       stage: boot.stage, phase: info?.phase ?? null, subject: info?.subject ?? null, label,
-      loaded: info?.loaded ?? null, total: info?.total ?? null, unit: info?.unit ?? null, done, failed, message, error: info?.error ?? null,
+      loaded: info?.loaded ?? null, total: info?.total ?? null, unit: info?.unit ?? null, done, failed, message, error: info?.error ? { ...info.error } : null,
     });
   }
 
   function trackLiveness(s: RelayStatus) {
     const c = s.liveness;
-    if (s.session !== liveSession) { liveSession = s.session; liveCounters = null; lastAnswerAt = null; }
+    if (s.session !== liveSession) { liveSession = s.session; liveCounters = null; lastAnswerAt = null; lastFrameAt = null; } // a new session has proved nothing yet
     if (!c) return;
     const prev = liveCounters ?? { probes: 0, answered: 0, stalls: 0, resumed: 0, rescues: 0 };
     liveCounters = { ...c };
@@ -428,14 +462,16 @@ export function createPageApi(
         }
       });
       // `diagnostics` / `fileProgress` / the liveness frame clock: what the relay sends the editor.
+      // Observers run before the relay posts (and postMessage clones only then): a payload is a
+      // copy, or a listener editing it in place would edit what the editor receives.
       b.taps.onOut((m) => {
         if (!isSyntheticFrame(m) && !b.taps.fromPage(m)) lastFrameAt = timers.now(); // the page's own answers (the widget-source cache) prove nothing about Lean
         const params = m.params as { uri?: string; version?: number; diagnostics?: LspDiagnostic[]; textDocument?: { uri: string; version?: number }; processing?: Array<{ range: unknown; kind?: number }> } | undefined;
         if (m.method === "textDocument/publishDiagnostics" && params?.uri) {
-          const diagnostics = params.diagnostics ?? [];
+          const diagnostics = structuredClone(params.diagnostics ?? []);
           emit("diagnostics", { uri: params.uri, version: params.version ?? null, diagnostics, origin: isSyntheticFrame(m) ? "qed64" : "lean" });
         } else if (m.method === "$/lean/fileProgress" && params?.textDocument) {
-          pendingProgress = { uri: params.textDocument.uri, version: params.textDocument.version ?? null, processing: params.processing ?? [] };
+          pendingProgress = { uri: params.textDocument.uri, version: params.textDocument.version ?? null, processing: structuredClone(params.processing ?? []) };
           if (progressTimer === null) progressTimer = timers.setTimeout(flushProgress, FILE_PROGRESS_MS);
         }
       });
@@ -464,8 +500,7 @@ export function createPageApi(
       }
       lastDeath = s.lastDeath;
       trackLiveness(s);
-      const status = project(s);
-      emit("status", status);
+      emit("status", project(s));
       // A status listener may have restarted the session (an embedder's own
       // widening): this verdict is then superseded too.
       if (binding && s.session !== binding.relay.session.id) return;
@@ -474,7 +509,7 @@ export function createPageApi(
         const key = `${s.session}@${s.version}`;
         if (!readySeen.has(key)) {
           readySeen.add(key);
-          emit("ready", { session: s.session, version: s.version, refused: s.phase === "headerRefused", header: status.header });
+          emit("ready", { session: s.session, version: s.version, refused: s.phase === "headerRefused", header: headerOf(s.header) });
         }
       }
     },
@@ -487,9 +522,11 @@ export function createPageApi(
     },
     bootFailed(message, cause) {
       if (boot.failed && boot.overlay && !cause) return; // the first report (with its cause) stands
+      // A boot that failed before the page was up never will be: keep that for
+      // every later caller (a `boot` listener's own included), release the waiters.
+      if (!isBound()) failedBeforeUp = message;
       emitBoot(message, { stage: "failed", ...(cause ? { error: cause } : {}) }, false, true, message);
-      // A boot that failed before the page was up never will be: release its waiters.
-      if (!isBound()) for (const w of readyWaiters.splice(0)) w.fail(err("BOOT_FAILED", message));
+      if (!isBound()) for (const w of readyWaiters.splice(0)) w.fail(bootFailure());
     },
     memory(currentBytes, maximumBytes) { mem = { currentBytes, maximumBytes }; },
     setOffer(o, run) {
