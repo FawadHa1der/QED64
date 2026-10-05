@@ -721,10 +721,10 @@ frame at once). Embedders do not need their own throttle.
   ms/char. Queuing those requests behind the held change, instead of
   letting them flush it, is what keeps the coalescing effective.
 - It caps bursts, not a sustained pace, and it limits the rate, not the
-  number of threads. Two keystrokes 150 ms apart never share a window, so at
-  that pace every change is forwarded (delayed, not merged), each one a new
-  elaboration, and each keystroke's requests that wait on a snapshot hold
-  threads too. Measured on the stock page: typing at 150 ms/char above an
+  number of threads. Keystrokes 150 ms apart rarely share a window, so at
+  that pace nearly every change is forwarded (delayed more than merged),
+  each one a new elaboration, and each keystroke's requests that wait on a
+  snapshot hold threads too. Measured on the stock page: typing at 150 ms/char above an
   `#eval IO.sleep 3000` with the InfoView open crashes the tab on every
   build so far (docs/HARDENING.md #59, open). The fixes are back-pressure
   keyed on the worker's pool, or a cap on live dedicated threads in the

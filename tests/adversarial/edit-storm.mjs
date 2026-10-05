@@ -127,7 +127,7 @@ async function run(browser, sc, rep) {
   const tType = Date.now();
   for (;;) {
     if (crashedAt !== null) break;
-    const s = await Promise.race([page.evaluate(() => { const r = globalThis.qed64.test.rawStatus(); return { pool: r.pool, phase: r.phase, relay: r.relay, version: r.version, session: r.session }; }).catch(() => null), sleep(2000).then(() => null)]);
+    const s = await Promise.race([page.evaluate(() => { const r = globalThis.qed64.test.rawStatus(); const c = globalThis.__editStorm ?? {}; return { pool: r.pool, phase: r.phase, relay: r.relay, version: r.version, session: r.session, changes: c.changes ?? null, requests: c.requests ?? null }; }).catch(() => null), sleep(2000).then(() => null)]);
     if (s) { s.at = Date.now(); s.t = s.at - tType; samples.push(s); }
     if (lastVersion === null && typedError === null) {
       const r = await Promise.race([typed, sleep(0).then(() => undefined)]);
@@ -144,7 +144,8 @@ async function run(browser, sc, rep) {
   const readySample = lastVersion === null ? null : samples.find((s) => s.phase === "ready" && s.relay === "serving" && s.version === lastVersion) ?? null;
   const row = {
     sc, rep, crashedAt, lastVersion, typedError,
-    changesSeen: after?.seen?.changes ?? null, requestsSeen: after?.seen?.requests ?? null,
+    // From the final read, else the last sample before a crash (a crashed renderer answers nothing afterwards).
+    changesSeen: after?.seen?.changes ?? samples.at(-1)?.changes ?? null, requestsSeen: after?.seen?.requests ?? samples.at(-1)?.requests ?? null,
     settled: !!(after && readySample && after.status.phase === "ready" && after.status.relay === "serving" && after.status.version === lastVersion),
     poolBefore: before.pool, peakRunning: Math.max(-1, ...samples.map((s) => s.pool?.running ?? -1)),
     peakPool: Math.max(-1, ...samples.map((s) => total(s.pool))), finalPool: samples.at(-1)?.pool ?? null,
@@ -175,7 +176,7 @@ try {
 }
 const grownBy = (r) => (r.poolBefore ? r.peakPool - (r.poolBefore.unused + r.poolBefore.running) : null);
 const failed = (r) => !!r.infra || r.typedError !== null || r.lastVersion === null || r.crashedAt !== null || !r.settled || (r.deaths ?? 1) > 0 || (r.reboots ?? 1) > 0 || (grownBy(r) ?? 0) > GROW;
-const why = (r) => r.typedError !== null ? `the typing failed: ${r.typedError}` : r.lastVersion === null ? "the typing never ended" : r.crashedAt !== null ? `renderer crashed at ${(r.crashedAt / 1000).toFixed(1)} s` : !r.settled ? `never ready at the last version (${r.lastVersion})` : (r.deaths ?? 1) > 0 || (r.reboots ?? 1) > 0 ? `${r.deaths} death(s), ${r.reboots} reboot(s)` : `ready at the last version, ${r.deaths} deaths`;
+const why = (r) => r.crashedAt !== null ? `renderer crashed at ${(r.crashedAt / 1000).toFixed(1)} s` : r.typedError !== null ? `the typing failed: ${r.typedError}` : r.lastVersion === null ? "the typing never ended" : !r.settled ? `never ready at the last version (${r.lastVersion})` : (r.deaths ?? 1) > 0 || (r.reboots ?? 1) > 0 ? `${r.deaths} death(s), ${r.reboots} reboot(s)` : `ready at the last version, ${r.deaths} deaths`;
 for (const r of results) if (!r.infra) console.log(`${failed(r) ? "FAIL" : "PASS"} ${r.sc}#${r.rep}: ${why(r)}; ${r.changesSeen ?? "?"} changes and ${r.requestsSeen ?? "?"} requests reached the relay; pool ${r.poolBefore.unused + r.poolBefore.running} → peak ${r.peakPool} (grown by ${Math.max(0, grownBy(r))}, running peak ${r.peakRunning}); ready ${r.readyAfterTypingMs ?? "-"} ms after the typing ended (${r.readyAfterFirstKeyMs} ms after its first key)`);
 const bad = results.filter(failed).length;
 console.log(`edit-storm: ${results.length - bad}/${results.length} pass; report ${path.relative(root, OUT)}`);
