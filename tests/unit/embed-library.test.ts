@@ -215,8 +215,12 @@ describe("ResidentSession.start(): stages, files, beforeArm, causes", () => {
       expect(versions(lsp)).toEqual([2]);
       vi.advanceTimersByTime(300);
       expect(versions(lsp)).toEqual([2, 10]);
+      const replies: unknown[] = [];
+      s.onLsp = (m) => replies.push(m); // the relay's hook: a superseded request's answer takes the worker's path
       s.lsp(ch(11)); // v10's forward reopened the window: held
-      s.lsp(ch(12)); // replaces v11
+      s.lsp({ jsonrpc: "2.0", id: 9, method: "textDocument/semanticTokens/full", params: { textDocument: { uri: "file:///a.lean" } } } as never); // made against v11
+      s.lsp(ch(12)); // replaces v11: the request is answered ContentModified now, never forwarded
+      expect(replies).toEqual([{ jsonrpc: "2.0", id: 9, error: expect.objectContaining({ code: -32801 }) }]);
       s.lsp({ jsonrpc: "2.0", id: 1, method: "textDocument/hover", params: {} } as never); // waits behind v12
       expect(versions(lsp)).toEqual([2, 10]);
       vi.advanceTimersByTime(300);

@@ -410,3 +410,45 @@ From a 119-agent review of the embedding branch (36 confirmed findings, all fixe
 
 Rules: model an async API's timing in its fake, or the test certifies the bug. Make a loop-prevention rule loop-free by construction instead of remembering past actions. Write build outputs only from hooks that run after a successful write.
 
+### 59. An edit per keystroke is an elaboration per keystroke, and abandoned ones keep their threads
+
+Reported 2026-10-05 by lean4game: in editor mode, select-all + Backspace and then typing a line at 10 ms/char crashed the tab with `V8 javascript OOM (young object promotion failed)` ~0.7 s after the last key. One runtime, one session, no reboot, header unchanged. Their client (lean4monaco's language client under a translation layer) sent 9 full-text didChanges in 230 ms. Each started a fresh elaboration while the abandoned ones' threads were still alive, and the pthread pool grew 24 → 38 Workers (`getNewWorker()` on an empty pool) while the existing 26 isolates already held 2.6 GB of the 4 GiB cage. At 150 ms/char the pool stopped at 30. This is the open half of #55: one runtime outgrowing the cage.
+
+QED64's page never showed it, and an earlier probe that typed into the page's editor passed 15/15. The difference is the client path. vscode-languageclient holds a full-text change for 250 ms but flushes it before every request and notification. lean4game's client sends semantic-token, inlay-hint and code-action requests and the InfoView's goal calls after each keystroke, so every keystroke reached Lean.
+
+Mechanism, measured with a raw-edit probe (`tests/adversarial/edit-storm.mjs`). It sends full-text didChanges through the test hatch, which is the library path, past the page's own client, and samples the worker's pool `{unused, running}` every 100 ms. Lean abandons an elaboration only at its next cancellation check. Work that never checks keeps its pthread: `IO.sleep`, a blocking `#eval`, a long kernel check. So the rate of changes times the length of that work is the number of live threads.
+
+Results on fd6c2ae (no coalescing), Mathlib document, prod build, headless, kernel 0035 (parked-thread reuse does not help):
+
+| Scenario | Runs | Peak running pthreads | Outcome |
+|---|---|---|---|
+| 59 changes in 600 ms, cheap body | 3 | 14-19 | ok (pool stays 24) |
+| same at 150 ms/char | 3 | 10-12 | ok |
+| same above a cancellable `decide` | 3 | 13-15 | ok |
+| same above `#eval (IO.sleep 3000 : IO Unit)` | 3 | 65-69 | crash ~15 s in |
+| sleep, plus a goal request after every change | 2 | 69-70 | crash ~17 s in |
+| typing into the page's Monaco above the sleep | 2 | 9-12 | ok |
+
+Fix (`frontend/src/embed/edit-coalescer.ts`, used by `ResidentSession.lsp`; docs/EMBEDDING.md §7.8): lean4game's measured throttle rule, in the library, for every embedder.
+- A full-text change goes at once and opens a 300 ms window. Changes inside the window are held, newest wins. The window's end forwards the held one and opens the next.
+- While a change is held, every other frame waits behind it in order. The first version (c33f7a8) flushed the held change before any other frame, as vscode-languageclient does. Against lean4monaco's change-then-requests stream it forwarded every change: 9 of 9 in a 230 ms burst, identical to no coalescing (a verifier simulated it, and lean4game confirmed their client's stream).
+- A request queued behind a change that a newer change replaces is answered `ContentModified` at once. A verifier of the queue rule showed why answering it against the newer text is wrong: Monaco's document semantic tokens rebase a reply by every edit made since the request, so a reply computed on the newer text gets the edit applied twice and the highlighting lands one line off until the next fetch. `ContentModified` is what Lean answers when a change lands under a request, and every client handles it (vscode-languageclient cancels and refetches semantic tokens, lean4-infoview retries, the rest return their default).
+- didOpen, didClose, ranged changes, replays and another document's change flush first, and every forwarded change opens the window again. Dispose drops both, and the relay replays its text and answers its in-flight requests.
+
+Results on 65d918b, 2 runs each, every one ready at the last version typed with 0 deaths (the probe's status sampling; the lane that replaced it also fails on a death, a reboot, a typing error, and a pool total grown by more than 4):
+
+| Scenario | Peak running pthreads | Ready after the first keystroke |
+|---|---|---|
+| sleep | 13-15 | 6.2 s |
+| sleep plus a request per change | 23-24 (pool not grown) | 6.3 s |
+| page Monaco above the sleep | 9 | 1.7 s |
+| cheap body, 10 ms/char | 11 | 1.0 s (0.8 s without coalescing) |
+| 150 ms/char (8.9 s of typing) | 10-12 | 8.9 s |
+| cancellable `decide` below | 11-13 | 1.0 s |
+
+The page lanes on 65d918b: page-api 6/6, infoview-actions 4/4, liveness drills 6/6, reload storms 0/5 stock and 0/5 embedded, edit-crash probe 3/3.
+
+What it does not fix: the coalescer limits the rate, it does not cap the threads. Under sustained typing about 3.3 elaborations start per second. Non-cancellable work of D seconds then keeps about D/0.3 threads alive: ~10 for 3 s. With a ready runtime's ~10 busy pthreads, that fills the 24-Worker pool at D ≈ 4 s and passes the ~30-isolate ceiling at D ≈ 6 s. The root fix is the one #55 named: a cap on concurrently live dedicated threads in the task manager (the kernel's), or smaller isolates. That is outside this repository's frontend.
+
+Rules: a client's own coalescing is not a property of the server path. Measure the library with raw frames, not through the page's editor. A coalescer that lets other frames flush it does nothing against a client that sends requests after every change.
+

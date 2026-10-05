@@ -193,6 +193,9 @@ interface LivenessInfo {              // the worker's liveness machine (HARDENIN
   * It resolves with its own `ApiStatus` (what `status()` returns at that
     moment), never the `status` event's payload; a status a `status`
     listener superseded by restarting the session does not settle it.
+  * The version it resolves with may never reach the checker: the session
+    coalesces full-text changes (§7.8) and forwards the newest. Wait for a
+    verdict with `settled({version})`, which accepts any later version.
   * Called while the relay is halted, it rejects `HALTED` at once.
   * Each check runs a microtask after the status that triggered it (and
     after the call), so a restart made by any listener of that status, or
@@ -236,7 +239,7 @@ editing one in place changes neither what the editor receives nor
 | `status` | `ApiStatus` | every relay status change (superseded ones excepted) |
 | `boot` | `{stage, phase, subject, label, loaded, total, unit, done, failed, message, error}` | every boot step: the first boot, every reboot, widen and restart, the snapshot prefetch and the exact-import pack download included (§7.1) |
 | `ready` | `{session, version, refused, header}` | once per (session, version), at a final verdict |
-| `document` | `{uri, version, length, text}` | every didOpen/didChange the relay forwards: the text the checker will see. This is the persistence hook in embed mode. |
+| `document` | `{uri, version, length, text}` | every didOpen/didChange the relay forwards. This is the persistence hook in embed mode. The checker sees the newest of these; a text replaced inside the session's coalescing window (§7.8) never reaches it, so wait per version with `settled({version})` (which accepts a later one), never for a verdict at that exact version. |
 | `diagnostics` | `{uri, version, diagnostics, origin: "lean" \| "qed64"}` | every `publishDiagnostics` the editor receives. `qed64` = the page's own notes. |
 | `fileProgress` | `{uri, version, processing}` | `$/lean/fileProgress`, coalesced to at most one per 100 ms on a timer (rAF does not run in hidden frames), and flushed before the next `status` |
 | `death` | `{session, kind, reason, message, cause, seq, exitCode, willReboot, halted}` | a session died (once per session) |
@@ -665,10 +668,19 @@ frame at once). Embedders do not need their own throttle.
   carries the whole text, so Lean always sees the newest version.
 - While a change is held, every other frame (requests, `$/cancelRequest`,
   other notifications) waits behind it in arrival order and goes right after
-  it. Nothing is reordered relative to the text. A request queued behind a
-  change that a newer one replaced is answered against the newer text, which
-  is the client's view by then. The cost: a frame sent during a burst waits
-  up to the window.
+  it. Nothing is reordered relative to the text. The cost: a frame sent
+  during a burst waits up to the window.
+- A request queued behind a change that a newer change then replaces was made
+  against text the checker will never see. The moment the replacement
+  arrives, every queued request on that document is answered
+  `ContentModified` (-32801, `error.data.qed64.kind: "superseded"`), which is
+  what Lean answers when the document changes under a request, and what
+  clients already handle: vscode-languageclient cancels and refetches
+  semantic tokens, the InfoView retries, the rest return their default.
+  Notifications and requests that name no `textDocument` (`$/lean/rpc/connect`)
+  stay queued.
+- Every forwarded change opens the window again (a barrier's flush included),
+  so two full-text changes never reach the checker inside one window.
 - `didOpen`, `didClose`, a ranged or multi-part `didChange`, a replay, and a
   full-text change of another document first send the held change and its
   queue, then go (or are held) themselves.
@@ -686,6 +698,10 @@ frame at once). Embedders do not need their own throttle.
   goal calls) after each keystroke, and flushes its pending change before
   each one. Queuing those requests behind the held change, instead of letting
   them flush it, is what keeps the coalescing effective.
+- It limits the rate, not the number of threads. Under sustained typing
+  about 3.3 elaborations start per second, so non-cancellable work longer
+  than a few seconds can still fill the pool. The root fix is a cap on live
+  dedicated threads in the runtime (docs/HARDENING.md #59, #55).
 
 ---
 

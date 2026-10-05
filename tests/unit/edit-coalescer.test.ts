@@ -3,9 +3,10 @@
 // most once per window, the newest last; while a change is held every other
 // frame waits behind it in order (a client's per-keystroke requests must not
 // defeat the coalescing), except the frames that change the document set or
-// edit it partially, which flush it first.
+// edit it partially, which flush it first; a request queued behind a change
+// that a newer change replaces is answered ContentModified, as Lean would.
 import { describe, expect, it } from "vitest";
-import { createEditCoalescer, isFullTextChange } from "../../frontend/src/embed/edit-coalescer";
+import { SUPERSEDED, createEditCoalescer, isFullTextChange } from "../../frontend/src/embed/edit-coalescer";
 
 type Msg = { jsonrpc: "2.0"; id?: number; method?: string; params?: unknown };
 class Clock {
@@ -30,9 +31,15 @@ const change = (version: number, text: string, uri = "file:///a.lean"): Msg => (
 const setup = (ms = 300) => {
   const clock = new Clock();
   const out: Array<{ m: Msg; replay?: boolean; t: number }> = [];
-  const c = createEditCoalescer<Msg>((m, replay) => out.push({ m, ...(replay ? { replay } : {}), t: clock.t }), ms, clock);
+  const rejected: Array<{ id: number | string | undefined; method: string | undefined; code: number; t: number }> = [];
+  const c = createEditCoalescer<Msg>({
+    forward: (m, replay) => out.push({ m, ...(replay ? { replay } : {}), t: clock.t }),
+    reject: (m, e) => rejected.push({ id: m.id, method: m.method, code: e.code, t: clock.t }),
+    ms,
+    timers: clock,
+  });
   const sent = () => out.map((o) => (o.m.method === "textDocument/didChange" ? `v${(o.m.params as { textDocument: { version: number } }).textDocument.version}@${o.t}` : `${o.m.method}@${o.t}`));
-  return { clock, out, c, sent };
+  return { clock, out, c, sent, rejected };
 };
 
 describe("isFullTextChange", () => {
@@ -68,7 +75,7 @@ describe("createEditCoalescer", () => {
     expect((out.at(-1)!.m.params as { textDocument: { version: number } }).textDocument.version).toBe(301); // the newest arrives
   });
 
-  const req = (id: number, method = "$/lean/plainGoal"): Msg => ({ jsonrpc: "2.0", id, method, params: {} });
+  const req = (id: number, method = "$/lean/plainGoal", params: unknown = { textDocument: { uri: "file:///a.lean" }, position: { line: 0, character: 0 } }): Msg => ({ jsonrpc: "2.0", id, method, params });
   const note = (method: string, params: unknown = {}): Msg => ({ jsonrpc: "2.0", method, params });
 
   it("with nothing held, every frame goes at once", () => {
@@ -79,27 +86,81 @@ describe("createEditCoalescer", () => {
     expect(sent()).toEqual(["textDocument/hover@0", "v2@0", "textDocument/semanticTokens/full@0"]);
   });
 
-  it("while a change is held, requests and notifications wait behind it in order (lean4monaco's change + requests per keystroke)", () => {
-    const { clock, c, sent } = setup();
+  it("while a change is held, requests and notifications wait behind it in order (lean4monaco's change + requests per keystroke); the ones a newer change supersedes are answered ContentModified", () => {
+    const { clock, c, sent, rejected } = setup();
     c.send(change(2, "a"));
     clock.advance(10);
     for (let v = 3; v <= 6; v += 1) {
       c.send(change(v, "a".repeat(v)));
       c.send(req(v, "textDocument/semanticTokens/full"));
       c.send(req(100 + v, "$/lean/rpc/call"));
+      c.send(req(200 + v, "$/lean/rpc/connect", { uri: "file:///a.lean" })); // version-free: waits, never answered here
       clock.advance(10);
     }
     c.send(note("$/cancelRequest", { id: 103 }));
     expect(sent()).toEqual(["v2@0"]); // everything since waits for the window
+    // Each keystroke's change replaced the held one, so the requests made against the replaced text were answered at that moment.
+    expect(rejected.map((r) => `${r.id}@${r.t}`)).toEqual(["3@20", "103@20", "4@30", "104@30", "5@40", "105@40"]);
     clock.advance(300);
     expect(sent()).toEqual([
-      "v2@0", "v6@300", // the newest change first: the queued requests are answered against it
-      "textDocument/semanticTokens/full@300", "$/lean/rpc/call@300", "textDocument/semanticTokens/full@300", "$/lean/rpc/call@300",
-      "textDocument/semanticTokens/full@300", "$/lean/rpc/call@300", "textDocument/semanticTokens/full@300", "$/lean/rpc/call@300",
+      "v2@0", "v6@300", // the newest change, then the queue: the last keystroke's requests, made against v6, and the version-free ones
+      "$/lean/rpc/connect@300", "$/lean/rpc/connect@300", "$/lean/rpc/connect@300",
+      "textDocument/semanticTokens/full@300", "$/lean/rpc/call@300", "$/lean/rpc/connect@300",
       "$/cancelRequest@300",
     ]);
     clock.advance(1000);
-    expect(sent()).toHaveLength(11); // the window closed with nothing held
+    expect(sent()).toHaveLength(9); // the window closed with nothing held
+    expect(rejected).toHaveLength(6);
+  });
+
+  it("a request queued behind a change that a newer change replaces is answered ContentModified at once; notifications and document-less requests stay queued", () => {
+    const { clock, c, sent, rejected } = setup();
+    c.send(change(10, "a")); // the window
+    clock.advance(80);
+    c.send(change(11, "ab")); // held
+    c.send(req(1, "$/lean/plainGoal")); // queued, made against v11
+    c.send({ jsonrpc: "2.0", id: 2, method: "$/lean/rpc/connect", params: { uri: "file:///a.lean" } }); // names no textDocument: version-free
+    c.send(note("$/lean/rpc/keepAlive", { uri: "file:///a.lean", sessionId: "s" }));
+    c.send(note("textDocument/didSave", { textDocument: { uri: "file:///a.lean" } })); // names the document, but a notification has no answer: it waits
+    clock.advance(170);
+    c.send(req(3, "textDocument/semanticTokens/full")); // Monaco's document tokens, made against v11
+    expect(rejected).toEqual([]);
+    clock.advance(30);
+    c.send(change(12, "ab\n")); // v12 replaces v11: Lean will never see the text requests 1 and 3 were made against
+    expect(rejected).toEqual([{ id: 1, method: "$/lean/plainGoal", code: -32801, t: 280 }, { id: 3, method: "textDocument/semanticTokens/full", code: -32801, t: 280 }]);
+    expect(SUPERSEDED.code).toBe(-32801);
+    expect(sent()).toEqual(["v10@0"]);
+    clock.advance(20);
+    expect(sent()).toEqual(["v10@0", "v12@300", "$/lean/rpc/connect@300", "$/lean/rpc/keepAlive@300", "textDocument/didSave@300"]);
+    c.send(req(4)); // the window is open again, nothing held: at once, against v12
+    expect(sent().at(-1)).toBe("$/lean/plainGoal@300");
+    expect(rejected).toHaveLength(2);
+  });
+
+  it("a request queued behind a change that is NOT replaced is forwarded, never answered here", () => {
+    const { clock, c, sent, rejected } = setup();
+    c.send(change(10, "a"));
+    c.send(change(11, "ab"));
+    c.send(req(1, "textDocument/semanticTokens/full"));
+    clock.advance(300);
+    expect(sent()).toEqual(["v10@0", "v11@300", "textDocument/semanticTokens/full@300"]);
+    expect(rejected).toEqual([]);
+  });
+
+  it("every forwarded change opens a window, a barrier's flush included: two changes never reach the worker inside one window", () => {
+    const { clock, c, sent } = setup();
+    c.send(change(2, "a"));
+    clock.advance(10);
+    c.send(change(3, "ab")); // held
+    c.send(note("textDocument/didOpen", { textDocument: { uri: "file:///b.lean", version: 1, text: "" } })); // a barrier: v3 goes at 10
+    expect(sent()).toEqual(["v2@0", "v3@10", "textDocument/didOpen@10"]);
+    clock.advance(10);
+    c.send(change(4, "abc")); // inside the window v3 opened: held, not sent 10 ms after v3
+    expect(sent()).toHaveLength(3);
+    clock.advance(280); // 300 ms after v3, not after v2
+    expect(sent()).toHaveLength(3);
+    clock.advance(10);
+    expect(sent().at(-1)).toBe("v4@310");
   });
 
   it("didOpen, didClose, a ranged or multi-part didChange and a replay flush the held change and the queue, then go", () => {
