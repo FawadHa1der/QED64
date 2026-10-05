@@ -9,12 +9,13 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
 import "../../public/workers/lsp-front-door.js";
+import { deathCause } from "../../frontend/src/embed/failure";
 
 type Msg = { jsonrpc: "2.0"; id?: number | string; method?: string; params?: unknown; result?: unknown; error?: unknown };
 type Frame = { kind: "client"; msg: Msg; replay?: boolean } | { kind: "server"; msg: Msg } | { kind: "booted" } | { kind: "ring"; busy: boolean } | { kind: "died" };
 interface Status { phase: string; version: number | null; header: { mode: string } | null; collision: { names: string[]; version: number | null } | null; dropped: number }
 interface Result { state: unknown; ringWrites: Msg[]; replies: Msg[]; startLoop: boolean; statusDelta: Status }
-type Posted = { protocol?: number; type: string; kind?: string; msg?: Msg; requestId?: string; phase?: string; result?: { operation: string; open?: boolean }; error?: { code: string; recoverable: boolean } };
+type Posted = { protocol?: number; type: string; kind?: string; msg?: Msg; requestId?: string; phase?: string; result?: { operation: string; open?: boolean }; error?: { code: string; message: string; recoverable: boolean } };
 interface FrontDoor {
   initialState(): unknown;
   step(state: unknown, frame: Frame): Result;
@@ -517,6 +518,58 @@ describe("front door: worker host wiring (lean.worker.js)", () => {
     expect(posted.find((m) => m.requestId === "a3")).toMatchObject({ type: "result", result: { operation: "lsp-arm", open: true } });
     expect(calls).toHaveLength(3);
     expect(Atomics.load(new Int32Array(memory.buffer, 0, 4), 1)).toBe(written);
+  });
+});
+
+// Review g4 #24: the lazy import had no try/catch, so a front door that was not
+// served (or a link that dropped before the first `lsp`) posted nothing: the
+// page saw an error event after hello and classified "the checker's own crash".
+describe("front door: a lazy load that fails is a structured death (docs/EMBEDDING.md §7.2, §7.7)", () => {
+  function host(frontDoor: (src: string) => string | null) {
+    const workers = path.resolve(__dirname, "../../public/workers");
+    const posted: Posted[] = [];
+    const imported: string[] = [];
+    const listeners: Record<string, (e: { data: unknown }) => void> = {};
+    const sandbox: Record<string, unknown> = { crypto, performance, Blob, URL, WebAssembly, SharedArrayBuffer, Atomics, TextEncoder, TextDecoder, BigInt, console, setTimeout, clearTimeout };
+    sandbox.self = sandbox;
+    sandbox.postMessage = (m: unknown) => posted.push(m as Posted);
+    sandbox.addEventListener = (type: string, fn: (e: { data: unknown }) => void) => { listeners[type] = fn; };
+    // importScripts as the browser's: synchronous, and it throws when the script cannot be fetched.
+    sandbox.importScripts = (name: string) => {
+      imported.push(name);
+      const src = readFileSync(path.join(workers, name), "utf8");
+      const served = name === "lsp-front-door.js" ? frontDoor(src) : src;
+      if (served === null) throw new Error(`NetworkError: Failed to execute 'importScripts': The script at '${name}' failed to load.`);
+      vm.runInContext(served, sandbox, { filename: name });
+    };
+    vm.createContext(sandbox);
+    vm.runInContext(readFileSync(path.join(workers, "lean.worker.js"), "utf8"), sandbox, { filename: "lean.worker.js" });
+    return { posted, imported, deliver: (data: unknown) => listeners.message!({ data }) };
+  }
+
+  it("a front door that does not load posts WORKER_DEP_MISSING (unrecoverable) instead of throwing, and later frames are dropped", () => {
+    const w = host(() => null);
+    expect(() => w.deliver({ protocol: 1, type: "lsp", msg: initialize(1) })).not.toThrow();
+    const errors = w.posted.filter((m) => m.type === "error");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.error).toMatchObject({ code: "WORKER_DEP_MISSING", recoverable: false, message: expect.stringMatching(/needs lsp-front-door\.js served beside it/) });
+    // What the page makes of it: a script that never ran (probe the link), not the checker's own crash.
+    const e = errors[0]!.error!;
+    expect(deathCause(e.code, e.message, { errorCode: e.code })).toMatchObject({ kind: "other", code: "WORKER_SCRIPT_LOAD_FAILED" });
+    // Frames still in flight neither retry the import nor post again.
+    expect(() => w.deliver({ protocol: 1, type: "lsp", msg: didOpen(1, "A") })).not.toThrow();
+    expect(w.imported.filter((n) => n === "lsp-front-door.js")).toHaveLength(1);
+    expect(w.posted.filter((m) => m.type === "error")).toHaveLength(1);
+    expect(w.posted.filter((m) => m.type === "event" && m.kind === "lsp")).toEqual([]);
+  });
+
+  it("a front door of another revision posts WORKER_DEP_MISMATCH once and is never run", () => {
+    const w = host((src) => { const older = src.replace(/REVISION: "1" \}/, 'REVISION: "0" }'); expect(older).not.toBe(src); return older; });
+    expect(() => w.deliver({ protocol: 1, type: "lsp", msg: initialize(1) })).not.toThrow();
+    expect(w.posted.filter((m) => m.type === "error").map((m) => m.error)).toEqual([expect.objectContaining({ code: "WORKER_DEP_MISMATCH", recoverable: false })]);
+    expect(() => w.deliver({ protocol: 1, type: "lsp", msg: initialize(2) })).not.toThrow();
+    expect(w.posted.filter((m) => m.type === "error")).toHaveLength(1);
+    expect(w.posted.filter((m) => m.type === "event" && m.kind === "lsp")).toEqual([]); // the mismatched machine never answered initialize
   });
 });
 

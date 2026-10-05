@@ -301,6 +301,7 @@ function residentOpenLoop() {
 // ---------------------------------------------------------------------------
 let frontDoor = null; // machine state; null until the page speaks `lsp`
 let frontDoorArmed = false; // set by `lsp-arm`; the one Booting → Ready fact
+let frontDoorRefused = false; // lsp-front-door.js missing or of another revision (posted once)
 let ringBusy = false;
 let heartbeat = null;
 let hostStatus = { phase: "booting", version: null, header: null, dropped: 0 };
@@ -663,9 +664,20 @@ function emitStatus(delta) {
 function frontDoorApply(frame) {
   // Lazy load (see the import note at the top): synchronous and legal at any
   // time in a classic worker; the vitest vm harness injects the file itself.
+  // One that does not load (not served beside this script, the link dropped)
+  // or is of another revision is posted as a structured death, like the eager
+  // import's, and every later frame is dropped: never an uncaught throw, which
+  // the page could only read as the checker's own crash.
+  if (frontDoorRefused) return;
   if (typeof Qed64LspFrontDoor === "undefined" && typeof importScripts === "function") {
-    importScripts("lsp-front-door.js");
-    checkSibling("lsp-front-door.js", globalThis.Qed64LspFrontDoor);
+    try {
+      importScripts("lsp-front-door.js");
+    } catch (error) {
+      frontDoorRefused = true;
+      fail(undefined, new Error(`lean.worker.js needs lsp-front-door.js served beside it: ${error && error.message ? error.message : error}`), "WORKER_DEP_MISSING", false);
+      return;
+    }
+    try { checkSibling("lsp-front-door.js", globalThis.Qed64LspFrontDoor); } catch { frontDoorRefused = true; return; }
   }
   const FD = Qed64LspFrontDoor;
   if (frontDoor === null) {
@@ -1409,6 +1421,9 @@ async function boot(msg) {
     fail(requestId, error, "MEMORY_FAILED", false);
     return;
   }
+  // What was made, not what was asked: a rung below the request commits at
+  // most the rung, and telemetry (ready.memory included) reports this pair.
+  bootConfig.memory.initialBytes = mem.initialBytes;
   bootConfig.memory.maximumBytes = mem.maximumBytes;
   bootMemory = mem.memory;
   progress(requestId, "memory", `Shared Memory64 heap: ${(mem.initialBytes / 1048576) | 0} MiB → ${(mem.maximumBytes / 1073741824)} GiB max`);
@@ -1730,10 +1745,12 @@ async function loadSnapshot(msg) {
   const safeName = String(name || "boot.snap").replace(/[^A-Za-z0-9._-]/g, "_");
   // Same origin only (HARDENING #57): a region is committed to this site's
   // cache under the key the index names and loaded on every later visit.
+  // A host with no `self.location` (a Node harness) is told so by name.
   let target = null;
-  try { target = new URL(url, self.location.href); } catch { /* not a URL */ }
+  try { target = new URL(url, self.location.href); } catch { /* not a URL, or no location */ }
   if (!target || target.origin !== self.location.origin) {
-    fail(msg.requestId, new Error(`snapshot '${safeName}': ${target ? target.origin : "an invalid URL"} is not this site`), "SNAPSHOT_URL_REFUSED", true);
+    const where = target ? target.origin : self.location ? "an invalid URL" : "a URL on a host without self.location";
+    fail(msg.requestId, new Error(`snapshot '${safeName}': ${where} is not this site`), "SNAPSHOT_URL_REFUSED", true);
     return;
   }
   // Pairing (phase 1): a snapshot is a compacted region of the EXACT runtime

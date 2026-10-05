@@ -130,6 +130,10 @@ const st = { triggeredAt: 0, died: [], progress: { version: 0, processing: -1 },
 const QUIET_LOG = /^\s*$|^\[DEBUG:PROGRESS\]|^\[WASM INIT\]/;
 
 globalThis.self = globalThis;
+// A dedicated worker's `self.location`: the worker refuses a snapshot URL off
+// its origin (HARDENING #57), so the stubbed snapshot is a path on this one.
+// The glue never reads it here (`__filename` names its script first).
+globalThis.location = new URL("http://qed64-probe.localhost/workers/lean.worker.js");
 globalThis.postMessage = (msg) => {
   const t = Date.now();
   events.push({ t, msg });
@@ -268,7 +272,7 @@ vm.runInThisContext(fs.readFileSync(path.join(workersDir, "lean.worker.js"), "ut
 PROTOCOL = vm.runInThisContext("PROTOCOL");
 // The network, stubbed: the runtime from the stage1 tree, the snapshot from disk.
 globalThis.materialize = async (_file, label) => (label === "lean.js" ? leanJs : leanWasm);
-const SNAP_URL = "qed64-probe:init.snap";
+const SNAP_URL = "/snapshots/init.snap"; // on the worker's origin (see `location` above)
 const realFetch = globalThis.fetch;
 globalThis.fetch = async (url, init) => (url === SNAP_URL
   ? new Response(Readable.toWeb(fs.createReadStream(snapPath, { highWaterMark: 8 << 20 })), { status: 200 })
