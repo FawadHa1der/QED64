@@ -2,7 +2,8 @@
 
 *Discovered 2026-08-25 while porting Lean 4's language server to run in-browser
 (QED64, branch `feature/lean4web-frontend`). Repro and validation artifacts:
-`pipeline/lsp/` probes and the pure-C repro below.*
+`pipeline/lsp/` probes (removed 2026-10; `pipeline/snapshot/resident-probe.mjs`
+is the surviving Node driver of `--worker` mode) and the pure-C repro below.*
 
 ## Suggested issue title
 

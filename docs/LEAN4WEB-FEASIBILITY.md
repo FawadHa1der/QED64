@@ -40,7 +40,8 @@ The decisive technical facts, verified against source and by experiment:
    after which header imports load from `LEAN_PATH` — the WORKERFS pack
    mounts QED64 already ships.
 3. **Worker mode already runs under our wasm64 binary.** Probe
-   `pipeline/lsp/lsp-probe.mjs` drove `callMain(["--worker"])` with a scripted
+   `pipeline/lsp/lsp-probe.mjs` (removed 2026-10; its role passed to
+   `pipeline/snapshot/resident-probe.mjs`) drove `callMain(["--worker"])` with a scripted
    conversation: the worker parsed `initialize` + `didOpen` and emitted a
    correctly framed `publishDiagnostics` through byte-level stdio callbacks.
    It only died at scripted-EOF — Emscripten stdin cannot express "no data
@@ -196,7 +197,7 @@ What is PROVEN, each by direct experiment:
 
 1. **The server code runs under wasm64** — `--worker` mode parses
    `initialize` + `didOpen` and emits correctly framed LSP output
-   (`lsp-probe.mjs`).
+   (`lsp-probe.mjs`, removed 2026-10).
 2. **The pump exports work** — patches 0018/0019 build; `lean_wasm_lsp_init`
    returns success in Node and in the browser worker; the watchdog startup
    contract is reproduced exactly (research-confirmed: the watchdog sends
@@ -264,7 +265,8 @@ The blocker as originally isolated (kept for the record; now resolved — the
 
 ## Evidence log
 
-- `pipeline/lsp/lsp-probe.mjs` — callMain `--worker` conversation (framed
+- `pipeline/lsp/lsp-probe.mjs` (removed 2026-10 with the rest of
+  `pipeline/lsp/`; the resident probe supersedes it) — callMain `--worker` conversation (framed
   output verified; EOF limitation analyzed).
 - `pipeline/lsp/lsp-pump-probe.mjs` (deleted 2026-09-04 with the pump
   transport; the numbers stand as the historical record) — Node pump driver
