@@ -1,12 +1,11 @@
 /* QED64 snapshot prefetch worker.
  *
- * Fills the OPFS snapshot cache (`qed64-snapshots/<cacheKey>`) in the
+ * Fills the OPFS snapshot cache (`qed64-snapshots/<cacheKey>.raw`) in the
  * background so the Lean worker's first Mathlib load reads from storage
  * instead of the network. Download-only: loading into Lean stays on the Lean
- * worker. Writes stream into `<cacheKey>.partial` through an exclusive sync
- * access handle and commit by rename, exactly like the Lean worker's own
- * cache writer — whichever of the two opens the partial first wins, the
- * other backs off (sync access handles are exclusive per file).
+ * worker. Writes stream into `<cacheKey>.raw.partial` through an exclusive
+ * sync access handle and commit by rename; a second writer of the same
+ * partial backs off (sync access handles are exclusive per file).
  */
 
 "use strict";
@@ -28,73 +27,23 @@ self.onmessage = async (e) => {
     report({ status: "error", code: "SNAPSHOT_URL_REFUSED", error: `SNAPSHOT_URL_REFUSED: ${target ? target.origin : String(url).slice(0, 80)} is not this site` });
     return;
   }
-  // Raw mode: produce the INFLATED region cache entry (`<cacheKey>.raw`) the
-  // Lean worker's fast path sync-reads straight into its heap. Doing the
-  // download AND the gunzip here — in a worker that terminates when done —
-  // confines the multi-GB stream/inflate allocations to a disposable heap:
-  // a Lean worker that did this itself measured ~4.6 GB heavier for its
-  // whole lifetime. Prefers an already-cached compressed entry as the
-  // source; the raw entry supersedes it (quota reclaimed on commit).
-  if (typeof rawBytes === "number" && rawBytes > 0) {
-    return rawPrefetch(url, cacheKey, rawBytes, report);
-  }
-  let dir;
-  try {
-    const root = await navigator.storage.getDirectory();
-    dir = await root.getDirectoryHandle("qed64-snapshots", { create: true });
-  } catch (error) {
-    report({ status: "unavailable", error: String(error && error.message) });
+  // Produce the INFLATED region cache entry (`<cacheKey>.raw`) the Lean
+  // worker's fast path sync-reads straight into its heap. Doing the download
+  // AND the gunzip here — in a worker that terminates when done — confines
+  // the multi-GB stream/inflate allocations to a disposable heap: a Lean
+  // worker that did this itself measured ~4.6 GB heavier for its whole
+  // lifetime. Prefers an already-cached compressed entry as the source; the
+  // raw entry supersedes it (quota reclaimed on commit).
+  //
+  // The raw size is required: the compressed-only mode it used to select
+  // (writing `<cacheKey>` from the network) lost its last reader in W5, and
+  // it committed whatever a redirect or an HTML page answered, which raw
+  // mode then inflated from with no network check at all.
+  if (!(typeof rawBytes === "number" && rawBytes > 0)) {
+    report({ status: "error", error: `the snapshot index declares no raw size (bytes) for ${cacheKey}; nothing fetched` });
     return;
   }
-  try {
-    const existing = await dir.getFileHandle(cacheKey);
-    const f = await existing.getFile();
-    if (f.size > 0) {
-      report({ status: "already-cached", bytes: f.size });
-      return;
-    }
-  } catch {
-    /* not cached yet */
-  }
-  const partial = `${cacheKey}.partial`;
-  let handle = null;
-  let fh = null;
-  try {
-    try { await dir.removeEntry(partial); } catch { /* absent */ }
-    fh = await dir.getFileHandle(partial, { create: true });
-    handle = await fh.createSyncAccessHandle();
-  } catch (error) {
-    // The Lean worker is writing this cache entry right now — its copy wins.
-    report({ status: "busy", error: String(error && error.message) });
-    return;
-  }
-  try {
-    const response = await fetch(url);
-    if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
-    const reader = response.body.getReader();
-    let at = 0;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      handle.write(value, { at });
-      at += value.length;
-      if ((at & 0x3ffffff) < value.length) report({ status: "progress", bytes: at });
-    }
-    handle.flush();
-    handle.close();
-    handle = null;
-    try { await dir.removeEntry(cacheKey); } catch { /* absent */ }
-    if (typeof fh.move === "function") {
-      await fh.move(cacheKey);
-    } else {
-      throw new Error("FileSystemFileHandle.move unavailable");
-    }
-    report({ status: "done", bytes: at });
-  } catch (error) {
-    try { if (handle) handle.close(); } catch { /* closed */ }
-    dir.removeEntry(partial).catch(() => {});
-    report({ status: "error", error: String(error && error.message) });
-  }
+  return rawPrefetch(url, cacheKey, rawBytes, report);
 };
 
 async function rawPrefetch(url, cacheKey, rawBytes, report) {

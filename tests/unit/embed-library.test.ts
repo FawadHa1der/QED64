@@ -8,8 +8,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deathCause, failureCauseOf, failureKindOf, stageOfWorkerPhase } from "../../frontend/src/embed/failure";
 import { runtimeUrls } from "../../frontend/src/embed/urls";
 import { prefetchRaw, type ProgressInfo, type Qed64Artifacts, type StatusSink } from "../../frontend/src/qed64-boot";
-import { ResidentSession, type ResidentHost } from "../../frontend/src/resident-session";
-import type { RuntimeManifest } from "../../src/runtime/client";
+import { LspRelay, type RestartOptions } from "../../frontend/src/lsp-relay";
+import { ResidentSession, type ResidentHost, type SessionFile } from "../../frontend/src/resident-session";
+import type { ReadyInfo, RuntimeManifest } from "../../src/runtime/client";
 
 describe("failureKindOf: the worker's real messages", () => {
   it.each([
@@ -187,8 +188,11 @@ describe("ResidentSession.start(): stages, files, beforeArm, causes", () => {
   });
   afterEach(() => vi.unstubAllGlobals());
 
-  function session(extra: Partial<ResidentHost> = {}, snapshots = ["init", "mathlib"]) {
-    const s = new ResidentSession({ artifacts: artifacts(), ui, headerText: "import Mathlib\n", ...extra }, { snapshots });
+  function session(extra: Partial<ResidentHost> = {}, opts: RestartOptions = { snapshots: ["init", "mathlib"] }) {
+    return stubbed(new ResidentSession({ artifacts: artifacts(), ui, headerText: "import Mathlib\n", ...extra }, opts));
+  }
+  /** `s` with its worker calls spied: boot, the snapshot loads and writeFiles succeed, in `order`. */
+  function stubbed<S extends ResidentSession>(s: S) {
     const order: string[] = [];
     vi.spyOn(s.lean, "boot").mockImplementation(async () => { order.push("boot"); s.lean.onProgress({ phase: "runtime", label: "Verifying lean.wasm", loaded: 1, total: 2, unit: "bytes" }); return {} as never; });
     const loadSnapshot = vi.spyOn(s.lean, "loadSnapshot").mockImplementation(async (_u, name) => {
@@ -252,19 +256,80 @@ describe("ResidentSession.start(): stages, files, beforeArm, causes", () => {
     await expect(b.s.start()).rejects.toMatchObject({ cause: { kind: "unpaired", code: "SNAPSHOT_UNPAIRED" } });
   });
 
-  it("a death while booting carries the boot stage; after start() none", async () => {
+  it("a death while booting carries the boot stage — through the arm, the relay's last boot step; once armed none", async () => {
     const { s } = session();
+    vi.spyOn(s.lean, "arm").mockResolvedValue(undefined);
     const got: unknown[] = [];
     s.onDied = (_c, reason, _m, cause) => { got.push([reason, cause]); };
     s.lean.onDied(null, "RUNTIME_FETCH_FAILED", "lean.wasm chunk 1: HTTP 404", { errorCode: "RUNTIME_FETCH_FAILED" });
     await s.start();
+    // Between start() and the arm the relay is still booting (the lazy front door loads on its replay).
+    s.lean.onDied(null, "WORKER_DEP_MISSING", "lean.worker.js needs lsp-front-door.js served beside it", { errorCode: "WORKER_DEP_MISSING" });
+    await s.arm();
     s.lean.onDied(null, "abort", "boom");
     s.lean.onDied(null, "crash", "", { bare: true, beforeHello: false });
     expect(got).toEqual([
       ["RUNTIME_FETCH_FAILED", { kind: "missing", httpStatus: 404, stage: "runtime", code: "RUNTIME_FETCH_FAILED", message: "lean.wasm chunk 1: HTTP 404" }],
+      ["WORKER_DEP_MISSING", { kind: "other", stage: "files", code: "WORKER_SCRIPT_LOAD_FAILED", message: "lean.worker.js needs lsp-front-door.js served beside it" }],
       ["abort", { kind: "other", code: "abort", message: "boom" }],
       ["crash", null],
     ]);
+  });
+
+  // Review g4 #18/#30: only lean.boot, the snapshots and writeFiles carried a cause, so a host's files() fetch
+  // failing (lean4game's shape) reached Death and the page API as `cause: null` — "no evidence".
+  it("every boot failure carries a cause: the host's files() and beforeArm, a pack download, an arm the worker refuses", async () => {
+    const a = session({ files: async () => { throw new TypeError("Failed to fetch"); } });
+    await expect(a.s.start()).rejects.toMatchObject({ message: "Failed to fetch", cause: { kind: "network", stage: "files", message: "Failed to fetch" } });
+    const b = session({ beforeArm: async () => { throw new Error("level.json: HTTP 404"); } });
+    await expect(b.s.start()).rejects.toMatchObject({ message: "level.json: HTTP 404", cause: { kind: "missing", httpStatus: 404, stage: "files" } });
+    // "Load exact imports": the essential pack is installed before the boot, and its manifest is gone.
+    vi.stubGlobal("fetch", async () => new Response("Not Found", { status: 404 }));
+    const withPack = artifacts();
+    withPack.index.profiles.push({ id: "essential", manifest: "/profiles/essential.json", release: "r", modules: 1 });
+    const c = session({ artifacts: withPack }, { snapshots: ["init"], packs: ["essential"] });
+    await expect(c.s.start()).rejects.toMatchObject({ message: "Manifest /profiles/essential.json: HTTP 404", cause: { kind: "missing", httpStatus: 404, stage: "profile", subject: "essential" } });
+    expect(c.order).toEqual([]); // nothing booted
+    // The relay's last boot step: an arm the worker refuses.
+    const d = session();
+    await d.s.start();
+    vi.spyOn(d.s.lean, "arm").mockRejectedValue(Object.assign(new Error("Worker is 'dead', not ready; arm after boot and the pre-open snapshot loads."), { code: "BAD_STATE" }));
+    await expect(d.s.arm()).rejects.toMatchObject({ cause: { kind: "other", stage: "files", code: "BAD_STATE" } });
+  });
+
+  it("...and that cause is the relay's Death.cause, which the page API reports", async () => {
+    const relay = new LspRelay(() => session({ files: async () => { throw new TypeError("Failed to fetch"); } }).s, { status() {} }, () => new Promise<void>(() => {}));
+    await vi.waitFor(() => expect(relay.lastDeath).not.toBeNull());
+    expect(relay.lastDeath).toMatchObject({ reason: "bootFailed", message: "Failed to fetch", seq: 1, cause: { kind: "network", stage: "files" } });
+    relay.clientPort.close();
+  });
+
+  // Review g4 #19: a TS `private files` collided with lean4game's subclass (TS2415 under `tsc`), and at runtime its
+  // own `files` replaced the base's, so the base wrote the game data and the subclass wrote it again.
+  it("a subclass's own members never collide with the base's (lean4game's GameSession declares `files`)", async () => {
+    class GameSession extends ResidentSession {
+      constructor(host: ResidentHost, private readonly files: SessionFile[], opts?: RestartOptions) { super(host, opts); }
+      override async start(): Promise<void> { await super.start(); await this.lean.writeFiles(this.files); }
+    }
+    const level = [{ path: "/game/level.json", text: "{}" }];
+    const g = stubbed(new GameSession({ artifacts: artifacts(), ui, headerText: "import Mathlib\n" }, level, { snapshots: ["init"] }));
+    await g.s.start();
+    expect(g.order).toEqual(["boot", "snapshot:init.snap", "files:1"]);
+    expect(g.writeFiles).toHaveBeenCalledTimes(1);
+  });
+
+  // Review g4 #23: the worker commits min(request, rung) on the rung it reserves; status().memory read the request.
+  it("initialBytes is the commit the worker made once booted (its per-rung clamp can make less than the request)", async () => {
+    const GiB = 1024 ** 3;
+    const { s } = session({}, { snapshots: ["init"], initialBytes: 6 * GiB });
+    expect(s.initialBytes).toBe(6 * GiB); // the 8 GiB-device ladder under the 6 GiB cap starts at 6
+    vi.mocked(s.lean.boot).mockResolvedValue({ memory: { currentBytes: 4 * GiB, initialBytes: 4 * GiB, maximumBytes: 4 * GiB, shared: true } } as ReadyInfo);
+    await s.start();
+    expect(s.initialBytes).toBe(4 * GiB);
+    // A worker that reports no memory leaves the request standing.
+    const old = session({}, { snapshots: ["init"], initialBytes: 2 * GiB });
+    await old.s.start();
+    expect(old.s.initialBytes).toBe(2 * GiB);
   });
 
   it("a runtime boot failure keeps its message and gains a runtime-stage cause", async () => {

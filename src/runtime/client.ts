@@ -31,6 +31,8 @@ export interface CompileResult {
 
 export interface MemoryTelemetry {
   currentBytes: number;
+  /** The initial commit the worker made (its per-rung clamp can make it less than the request). */
+  initialBytes?: number;
   maximumBytes?: number;
   shared: boolean;
 }

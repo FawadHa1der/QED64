@@ -136,35 +136,46 @@ export function makeEditorPolicy(index: SnapshotIndex | null): ResidentPolicy {
   };
 }
 
+/** `err`, its message unchanged, with a FailureCause attached at `at`. */
+const failedAt = (err: unknown, at: { stage: BootStage; subject?: string }): Error =>
+  Object.assign(err instanceof Error ? err : new Error(String(err)), { cause: failureCauseOf(err, at) });
+
 export class ResidentSession implements RelaySession {
   readonly lean = new LeanSession();
   readonly id: string;
   /** The boot-only snapshot list this session loads (the page reads it to
    * know whether a session booted light). */
   readonly snapshots: string[];
-  readonly initialBytes: number;
   readonly maximumBytes: number;
   private readonly artifacts: Qed64Artifacts;
   private readonly ui: StatusSink;
-  private readonly files: ResidentHost["files"];
-  private readonly beforeArm: ResidentHost["beforeArm"];
+  // Members added after consumers subclassed this class are ECMAScript-private
+  // (#): a TS `private` name collides with a subclass's own member of that name
+  // (TS2415, and at runtime the subclass's field replaces it — lean4game's
+  // GameSession declares `files`, which made the base write them a second time).
+  readonly #files: ResidentHost["files"];
+  readonly #beforeArm: ResidentHost["beforeArm"];
+  /** The initial commit: requested (clamped to the ladder) until boot, then
+   * the one the worker made — its per-rung clamp can commit less. */
+  #initialBytes: number;
+  get initialBytes(): number { return this.#initialBytes; }
 
   constructor(host: ResidentHost, private readonly opts: RestartOptions = {}) {
     this.artifacts = host.artifacts;
     this.ui = host.ui;
-    this.files = host.files;
-    this.beforeArm = host.beforeArm;
+    this.#files = host.files;
+    this.#beforeArm = host.beforeArm;
     const policy = host.policy ?? {};
     this.snapshots = opts.snapshots ?? policy.snapshotsFor?.(host.headerText) ?? ["init", "mathlib"];
     // The commit can never exceed the largest reservation this device will try
     // (the worker clamps per rung too): ?memory=6 on a 4 GiB-ladder device commits 4.
     const wanted = opts.initialBytes ?? policy.initialBytesFor?.(host.headerText, this.snapshots) ?? 2048 * MiB;
     const rungs = memoryCandidates().filter((b) => b <= (policy.maximumBytes ?? DEFAULT_MAXIMUM_BYTES));
-    this.initialBytes = Math.min(wanted, rungs[0] ?? policy.maximumBytes ?? DEFAULT_MAXIMUM_BYTES);
+    this.#initialBytes = Math.min(wanted, rungs[0] ?? policy.maximumBytes ?? DEFAULT_MAXIMUM_BYTES);
     this.maximumBytes = policy.maximumBytes ?? DEFAULT_MAXIMUM_BYTES;
     this.id = this.lean.id;
     this.lean.onLog = (stream, text) => console.debug(`[lean:${stream}] ${text}`);
-    this.lean.onProgress = (p) => this.ui.progress(p.label ?? p.phase, { phase: p.phase, loaded: p.loaded, total: p.total, unit: p.unit, ...this.workerStage(p.phase, p.label) });
+    this.lean.onProgress = (p) => this.ui.progress(p.label ?? p.phase, { phase: p.phase, loaded: p.loaded, total: p.total, unit: p.unit, ...this.#workerStage(p.phase, p.label) });
   }
   get onLsp() { return this.lean.onLsp; }
   set onLsp(f: (msg: JsonRpcMessage) => void) { this.lean.onLsp = f; }
@@ -173,16 +184,19 @@ export class ResidentSession implements RelaySession {
   /** The death fact with its cause (docs/EMBEDDING.md §7.2): classified here
    * from what LeanSession knows, with the boot stage when the session died
    * booting; null only for a bare worker error event (no evidence). */
-  private diedHook: (code: number | null, reason: string, message: string, cause?: unknown) => void = () => {};
-  get onDied() { return this.diedHook; }
+  #diedHook: (code: number | null, reason: string, message: string, cause?: unknown) => void = () => {};
+  get onDied() { return this.#diedHook; }
   set onDied(f: (code: number | null, reason: string, message: string, cause?: unknown) => void) {
-    this.diedHook = f;
-    this.lean.onDied = (code, reason, message, facts) => f(code, reason, message, deathCause(reason, message, facts, this.bootStage ? { stage: this.bootStage } : {}));
+    this.#diedHook = f;
+    this.lean.onDied = (code, reason, message, facts) => f(code, reason, message, deathCause(reason, message, facts, this.#bootStage ? { stage: this.#bootStage } : {}));
   }
-  /** The boot step in progress, null once start() is done. */
-  private bootStage: BootStage | null = "runtime";
+  /** The boot step in progress, null once armed: the relay's boot ends with
+   * the arm, so a death or a refusal between start() and the arm is a boot's. */
+  #bootStage: BootStage | null = "runtime";
   lsp(msg: JsonRpcMessage, replay?: boolean) { this.lean.lsp(msg, replay); }
-  arm() { return this.lean.arm(); }
+  arm() {
+    return this.lean.arm().then(() => { this.#bootStage = null; }, (err: unknown) => { throw failedAt(err, { stage: this.#bootStage ?? "files" }); });
+  }
   dispose() { this.lean.dispose(); }
   /** The synchronous kill (Unload only): the relay's `unload()` calls
    * `dispose()` then `terminate()` inside the pagehide handler's own turn.
@@ -193,15 +207,30 @@ export class ResidentSession implements RelaySession {
   terminate(): void { this.lean.terminate(); }
 
   /** The snapshot a worker progress event belongs to (set while one loads). */
-  private loading: string | null = null;
-  private workerStage(phase: string, label?: string) {
+  #loading: string | null = null;
+  /** The library pack being installed (set while one installs). */
+  #installing: string | null = null;
+  #workerStage(phase: string, label?: string) {
     const st = stageOfWorkerPhase(phase);
     const verifying = /^Verifying (\S+)/.exec(label ?? "")?.[1];
-    const subject = st.stage === "snapshot" || st.stage === "modules" ? this.loading ?? undefined : st.stage === "runtime" ? verifying : undefined;
+    const subject = st.stage === "snapshot" || st.stage === "modules" ? this.#loading ?? undefined : st.stage === "runtime" ? verifying : undefined;
     return { ...st, ...(subject ? { subject } : {}) };
   }
 
+  /** Every boot failure carries its cause (docs/EMBEDDING.md §7.2), not only
+   * the runtime's and the snapshots': a pack download, the host's `files()`
+   * fetch, `beforeArm` — classified at the step it failed in (a cause the
+   * step attached itself wins). The message is unchanged. */
   async start(): Promise<void> {
+    try {
+      await this.#boot();
+    } catch (err) {
+      const subject = this.#installing ?? this.#loading;
+      throw failedAt(err, { stage: this.#installing ? "profile" : this.#bootStage ?? "files", ...(subject ? { subject } : {}) });
+    }
+  }
+
+  async #boot(): Promise<void> {
     const a = this.artifacts;
     const ui = this.ui;
     // "Load exact imports" (§3 row 8; HARDENING #43): the header is imported
@@ -211,8 +240,10 @@ export class ResidentSession implements RelaySession {
     // restart is the only restart. A pack missing from the index is not a
     // death: the warm compile then fails its imports and the session serves
     // the header covered, with the offer back.
-    if (this.opts.packs?.includes("essential") && !(await ensureProfile(a, "essential", ui))) {
-      ui.progress("the Mathlib library pack is unavailable — exact imports may fail", { stage: "profile", subject: "essential" });
+    if (this.opts.packs?.includes("essential")) {
+      this.#installing = "essential";
+      if (!(await ensureProfile(a, "essential", ui))) ui.progress("the Mathlib library pack is unavailable — exact imports may fail", { stage: "profile", subject: "essential" });
+      this.#installing = null;
     }
     // Memory-backed segments were TRANSFERRED to the worker that booted them
     // and are detached page-side; a reboot reinstalls them (an OPFS install
@@ -225,7 +256,9 @@ export class ResidentSession implements RelaySession {
       const entry = a.index.profiles.find((p) => p.id === id);
       if (!entry) { a.installed.delete(id); console.warn(`[qed64] pack ${id} was consumed by the previous worker and is not in the index; dropped from LEAN_PATH`); continue; }
       ui.busy(`re-preparing the ${id} library for the new session`, { stage: "profile", subject: id });
+      this.#installing = id;
       a.installed.set(id, await installProfile(entry, (p) => ui.progress(`${p.phase} ${id}`, { phase: `pack-${p.phase}`, loaded: p.loaded, total: p.total ?? 0, unit: "bytes", stage: "profile", subject: id, step: stepOfInstallPhase(p.phase) })));
+      this.#installing = null;
     }
     const packs: LibraryPack[] = [...a.installed.values()].flatMap((p) =>
       p.segments.map((segment, i) => ({ id: `${p.id}#${i}`, ...(segment.blob ? { blob: segment.blob } : {}), ...(segment.bytes ? { bytes: segment.bytes } : {}), metadata: segment.metadata, mountPoint: `/lib/packs/${p.id}` })),
@@ -235,43 +268,35 @@ export class ResidentSession implements RelaySession {
     // ladder (which would make boot fail instead of reserving less).
     const under = memoryCandidates().filter((b) => b <= this.maximumBytes);
     ui.busy("starting Lean", { stage: "runtime" });
-    try {
-      await this.lean.boot({
-        runtime: a.runtime,
-        memory: { initialBytes: this.initialBytes, maximumCandidates: under.length ? under : [this.maximumBytes] },
-        leanPath: [...a.installed.keys()].map((id) => `/lib/packs/${id}`).join(":"),
-        packs,
-      });
-    } catch (err) {
-      // The message is unchanged; the cause (docs/EMBEDDING.md §7.2) rides along.
-      throw Object.assign(err instanceof Error ? err : new Error(String(err)), { cause: failureCauseOf(err, { stage: "runtime" }) });
-    }
+    const ready = await this.lean.boot({
+      runtime: a.runtime,
+      memory: { initialBytes: this.#initialBytes, maximumCandidates: under.length ? under : [this.maximumBytes] },
+      leanPath: [...a.installed.keys()].map((id) => `/lib/packs/${id}`).join(":"),
+      packs,
+    });
+    const committed = ready?.memory?.initialBytes;
+    if (typeof committed === "number" && committed > 0) this.#initialBytes = committed;
     const qs: Qed64Session = { session: this.lean, loadedSnapshots: new Set() };
-    this.bootStage = "snapshot";
+    this.#bootStage = "snapshot";
     for (const name of this.snapshots) {
-      this.loading = name;
+      this.#loading = name;
       const ok = await loadSnapshotByName(a, qs, name, ui);
-      this.loading = null;
+      this.#loading = null;
       if (!ok) {
         throw Object.assign(new Error(`snapshot '${name}' failed to load`), {
           cause: qs.lastFailure ?? { kind: "other", stage: "snapshot", subject: name, message: `snapshot '${name}' failed to load` },
         });
       }
     }
-    this.bootStage = "warm";
+    this.#bootStage = "warm";
     if (this.opts.warmHeader) await this.warm(this.opts.warmHeader);
-    this.bootStage = "files";
-    const files = typeof this.files === "function" ? await this.files() : this.files;
+    this.#bootStage = "files";
+    const files = typeof this.#files === "function" ? await this.#files() : this.#files;
     if (files && files.length > 0) {
       ui.progress(`preparing ${files.length} session file${files.length === 1 ? "" : "s"}`, { stage: "files", step: "write" });
-      try {
-        await this.lean.writeFiles(files);
-      } catch (err) {
-        throw Object.assign(err instanceof Error ? err : new Error(String(err)), { cause: failureCauseOf(err, { stage: "files" }) });
-      }
+      await this.lean.writeFiles(files);
     }
-    if (this.beforeArm) await this.beforeArm(this.lean);
-    this.bootStage = null;
+    if (this.#beforeArm) await this.#beforeArm(this.lean);
     // Deliberately no arm() here: the relay arms after its replay (§2.3 BootOk).
   }
 
