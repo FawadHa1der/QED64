@@ -138,8 +138,8 @@ interface DeathInfo {
 
 interface LivenessInfo {              // the worker's liveness machine (HARDENING #52), projected
   stalled: boolean;                   // a probe is unanswered past wedgeAfterMs; death follows graceMs later
-  lastAnswerAgoMs: number | null;     // since the Lean side last answered a liveness probe
-  lastFrameAgoMs: number | null;      // since the Lean side last sent any frame (QED64's own frames excluded)
+  lastAnswerAgoMs: number | null;     // since this session's Lean side last answered a liveness probe; null until it has
+  lastFrameAgoMs: number | null;      // since this session's Lean side last sent any frame (QED64's own frames excluded); null until its first
   probeAfterMs: number; wedgeAfterMs: number; graceMs: number; // the worker's timings: 6000, 12000, 4000
 }
 ```
@@ -159,14 +159,29 @@ interface LivenessInfo {              // the worker's liveness machine (HARDENIN
     the boot document. It outranks `#code=`. It is a boot input: it decides
     which environment boots. The promise resolves once the page is up.
   * After that, it replaces the editor's text. `undoable: true` (the default)
-    pushes one undo step; `false` uses `setValue`. It resolves once the relay
-    has forwarded that exact text, with the text's document version.
-  * Identical text resolves at once with `unchanged: true` and sends nothing.
+    pushes one undo step; `false` uses `setValue`. It resolves with
+    `{version, unchanged: false}` once the relay has forwarded the editor's
+    text as of this edit or a later one: the first didOpen/didChange whose
+    version reaches the editor's version id after the edit.
+  * The LSP client syncs full text and coalesces: an edit only queues the
+    document, and one didChange carries the text current at flush time (250
+    ms after the last edit, or before the next request). A text replaced
+    inside that window (a second `setDocument`, a keystroke, an InfoView
+    edit) is never forwarded on its own; its promise still resolves, with
+    the version of the forward that carried the later text, and
+    `getDocument()` and the `document` event show that text. Nothing
+    rejects for being superseded.
+  * Identical text (compared with the editor's buffer) sends nothing and
+    resolves with `unchanged: true`: at once when the relay has already
+    forwarded that text, otherwise when the earlier edit's pending forward
+    goes out, with that forward's version.
   * Line endings are compared in the model's terms: Monaco stores one EOL,
     so CRLF or a lone CR in `text` is normalized.
-* **Before the page is up,** `whenReady`, `settled` and a pre-boot
-  `setDocument` reject with `{code: "BOOT_FAILED"}` when the boot fails
-  first (a refused parameter, a missing index).
+* **Before the page is up** (the relay bound and the editor mounted, which
+  is what `whenReady` waits for), `whenReady`, `settled` and a pre-boot
+  `setDocument` reject with `{code: "BOOT_FAILED"}` when the boot fails (a
+  refused parameter, a missing index, the editor failing to start), whether
+  they were called before the failure or after it.
 * **`settled({version, afterSession, timeoutMs})`**
   * Resolves with the status once the phase is `ready` or `headerRefused` at a
     document version `>= version`. The default `version` is the current
@@ -175,6 +190,10 @@ interface LivenessInfo {              // the worker's liveness machine (HARDENIN
   * With `afterSession`, it resolves only on a different (replacement)
     session.
   * It keeps waiting through reboots.
+  * It resolves with its own `ApiStatus` (what `status()` returns at that
+    moment), never the `status` event's payload; a status a `status`
+    listener superseded by restarting the session does not settle it.
+  * Called while the relay is halted, it rejects `HALTED` at once.
   * It rejects with `Error & {code: "HALTED"}` when the crash-loop breaker
     trips, and with `{code: "TIMEOUT"}` after `timeoutMs`.
 * **`restart({snapshots, initialBytes})`**
@@ -188,6 +207,9 @@ interface LivenessInfo {              // the worker's liveness machine (HARDENIN
     the page default (`?memory=`, else the index policy).
   * A commit is never larger than the largest reservation the device will
     try: the page and the worker both clamp it to the reservation ladder.
+    `status().memory.initialBytes` is the commit the worker actually made
+    once the session has booted (so it never exceeds `maximumBytes`); before
+    boot it is the request, clamped to the ladder.
   * On a halted relay, `restart()` with no arguments re-arms it on the
     default session, as an edit would.
   * It returns `{accepted: false}` while a boot is in flight.
@@ -200,7 +222,9 @@ interface LivenessInfo {              // the worker's liveness machine (HARDENIN
 ### 2.4 Events
 
 Listeners are called synchronously, each in its own `try/catch`. Payloads are
-fresh plain objects.
+fresh plain objects: copies of the page's state and of the LSP message, so
+editing one in place changes neither what the editor receives nor
+`status()`. All listeners of one event share its payload.
 
 | Event | Payload | When |
 |-------|---------|------|
@@ -310,6 +334,10 @@ Page-tier facts (stable, for preflights and deploy tools):
     (docs/RELEASE-BUNDLE.md), which refuses a dist whose build file
     disagrees.
   - Deploy and pin tools read it instead of scraping bundles.
+  - It is written last, after every other file of the build, and only by a
+    build that succeeded: a failed build writes none, and a previous build's
+    `dist/` keeps its own. `commit`/`dirty` are null only outside a git
+    checkout.
 
 **Security (HARDENING #57).**
 - *Before.* These parameters were spliced into fetch URLs unchecked.
@@ -475,7 +503,13 @@ classifies, so the same table holds against every worker version.
   `INIT_FAILED`, `CAPABILITY_MISSING`, `WRITE_FILES_FAILED`,
   `WORKER_DEP_MISMATCH`, …) is classified by the table.
 - Every other death is `other`, or `oom` when its message says so.
-- A death while booting carries the boot `stage`.
+- A death while booting carries the boot `stage`. Booting lasts until the
+  relay's `arm()` resolves, so a death during the replay and the arm carries
+  `files`, the last stage.
+- Every `bootFailed` death carries a cause: the step's own (runtime,
+  snapshot), or one classified at the step that threw. A library-pack
+  install is `stage: "profile"` with the pack id as `subject`; the host's
+  `files()`, `beforeArm` and an arm the worker refuses are `stage: "files"`.
 
 The cause travels through `LeanSession.onDied(code, reason, message, facts)`,
 then `ResidentSession` (which classifies), then
@@ -510,23 +544,41 @@ Both run on **every** boot (first and reboots), after the snapshots and the
 exact-import warm, immediately before the relay arms the loop. The front door
 queues every frame until `lsp-arm`, so Lean never sees the document before the
 files. `LeanSession.writeFiles(files)` is public. Bytes are copied, not
-transferred.
+transferred. A throw from either is a `bootFailed` death whose cause is
+classified at `stage: "files"` (a `files()` fetch that fails is `network`; an
+`HTTP 404` message is `missing`). The members `ResidentSession` gained in v1
+are ECMAScript-private (`#`), so a subclass can keep its own `files` or
+`beforeArm` (lean4game's `GameSession`) with no TS2415 collision and no
+second write.
 
 ### 7.4 The raw snapshot cache
 
 ```ts
-function prefetchRaw(entry, opts?: { onProgress?; signal?; silenceMs?; workerUrl?; onBusy?: "wait" | "return"; busyWaitMs? }):
+function prefetchRaw(entry, opts?: { onProgress?; signal?; silenceMs?; workerUrl?; onBusy?: "wait" | "return"; busyWaitMs?; onBusyWait? }):
   Promise<{ status: "cached" | "done" | "unavailable" | "busy" | "silent" | "aborted" | "error"; bytes?; error?: FailureCause }>;
 ```
 
 - **Single-flight in the page.** Callers of one cache key share one worker.
-  Each keeps its own `onProgress` and `signal`. An abort detaches only that
-  caller; the worker is terminated when every caller has aborted. An
-  already-aborted signal spawns nothing.
+  Each keeps its own `onProgress`, `signal`, `onBusy`, `busyWaitMs` and
+  `onBusyWait`; `silenceMs` and `workerUrl` are the first caller's. An abort
+  detaches only that caller; the worker is terminated when every caller has
+  aborted. An already-aborted signal spawns nothing, and an abort that
+  leaves no caller before the worker starts (including during the re-probe
+  under the lock) spawns nothing.
 - **Across tabs.** The writer holds the Web Lock `qed64-raw:<cacheKey>` for
-  its whole life. `onBusy: "return"` (the default) answers `busy` at once.
-  `"wait"` waits up to `busyWaitMs` (default `PREFETCH_SILENCE_MS`), then
-  re-probes `.raw`. `loadSnapshotByName` uses `"wait"`.
+  its whole life. A flight first asks for it with `ifAvailable`, so `busy`
+  and `onBusyWait` mean another tab really holds it (a free lock is granted
+  a task later, never at once). Then, per caller: `onBusy: "return"` (the
+  default) answers `busy` at once, including when it joins a flight of this
+  page that is already waiting; `"wait"` calls `onBusyWait` once as it
+  starts waiting, waits up to its own `busyWaitMs` (default
+  `PREFETCH_SILENCE_MS`), then re-probes `.raw`. The lock request is
+  withdrawn when the last waiting caller leaves. `loadSnapshotByName` uses
+  `"wait"`.
+- **It needs the raw size.** The prefetch worker refuses a message without a
+  positive `rawBytes` (the entry's `bytes`) with `error` (`corrupt`). Its
+  compressed-only mode, which fetched without the redirect and HTML
+  refusals, is gone.
 - **Silence or abort.**
   1. The worker is terminated.
   2. `<key>.raw.partial` is removed (never `.raw`).
@@ -581,7 +633,11 @@ overrides routed through `parseBootParams` / `validateBootOverrides`.
   refuses a sibling of another revision (`WORKER_DEP_MISMATCH`, a death the
   page can turn into a reload prompt) instead of running mixed versions.
   The front door loads lazily, so this check catches a deploy that lands
-  between the two loads.
+  between the two loads. A front door that cannot be loaded at that point
+  (not served, or the link dropped) is `WORKER_DEP_MISSING`, unrecoverable
+  like the eager import (so `WORKER_SCRIPT_LOAD_FAILED`); after either
+  refusal the worker drops every later frame and never throws an uncaught
+  error the page would read as the checker's crash.
 - **Feature flags.** `capabilities()` reports `protocolRevision` and
   `requests`, the request types the worker answers. A page detects a request
   with `requests?.includes(type)` and keeps its old path otherwise.
@@ -616,14 +672,23 @@ An entry may have **any name**. The page then:
 - **Sizes** the commit: the largest declared `initialBytes`; else 2 GiB with
   any non-base entry; else 256 MiB. `?memory=` overrides it.
 - **Widens** a running session once, when the kernel refuses its header and
-  an entry not yet loaded covers **every** missing module. For example, a
-  Mathlib session gaining `import HasseView` widens to an overlay whose roots
-  include both.
+  an entry not yet loaded covers **every** missing module, plus every header
+  module that some entry's roots claim and the base does not serve (the
+  replacement serves the whole header from one environment). For example, a
+  Mathlib session gaining `import HasseView` widens to an overlay whose
+  roots include both, whatever else the header imports from the umbrella's
+  closure (`Aesop`, `Qq`, `Lean.*`: a module no root names is the kernel's
+  to judge). It never widens when every missing module is Init or claimed by
+  a loaded entry's roots: the kernel has just refuted that claim (a prefix
+  being typed, a typo), and no snapshot would change the verdict. The
+  decision is stateless, so a session a reboot booted without the entry (the
+  header changed, then a crash) widens again.
 
 It is **opt-in.** Without `roots`, the entry named `mathlib` serves the
 umbrella roots (`Mathlib`, `Batteries`, `MIL`, `QED64`) and no other entry
 serves any. A legacy index therefore behaves exactly as before; the unit tests
-pin this parity on the stock index. The exact-imports restart keeps the
+pin this parity on the stock index and drive the page's self-widen
+(`frontend/src/self-widen.ts`) over the real relay. The exact-imports restart keeps the
 session's own snapshot list. The roots are claims, not membership: the
 kernel's header verdict stays authoritative.
 
@@ -648,7 +713,9 @@ product code:
 - `stats()`, `rawStatus()` (with the ring/pool/liveness counters),
   `telemetry()` and `session()`;
 - `lsp.on("in" | "out", fn)`;
-- `lsp.request(method, params)`, whose reply is swallowed and returned;
+- `lsp.request(method, params, timeoutMs = 30000)`, whose reply is swallowed
+  and returned. On timeout the promise rejects and the hatch sends
+  `$/cancelRequest` for its id; the late reply is still swallowed;
 - `lsp.notify(method, params)`.
 
 The worker's `self.__qed64TestExports` is its test hook, under the same
@@ -748,3 +815,24 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   - workers: the revision stamp, the `requests` flags, recoverable unknown
     requests, the protocol ledger, the definition of a release.
 - **Item 4:** overlay environments (§8).
+- **Branch review (after 90aef68; 36 confirmed findings, all fixed):**
+  - page API: `setDocument` resolves on the coalesced forward; a boot
+    failure is kept for later callers (a mount failure included); `settled`
+    resolves with its own status; `restart()` without `initialBytes` resets
+    the commit; liveness clocks are per session; payloads are copies; a
+    verdict the self-widen supersedes finishes no boot;
+  - the self-widen is stateless, never widens for a refuted root claim or
+    an Init typo, and ignores header modules no root names (§8);
+  - raw cache: `busy` is the lock's own answer (`ifAvailable`), per caller;
+    no worker after the last caller leaves;
+  - causes on every boot failure (pack, `files()`, `beforeArm`, arm);
+    subclass-safe private members; `status().memory` reports the commit
+    made; a lazy front door that fails to load is `WORKER_DEP_MISSING`; the
+    prefetch worker's compressed-only mode is removed;
+  - relay: each orphaned request is answered once and a restart issued
+    while they go out is refused; the test hatch (revision 0.1.1) cancels a
+    timed-out request and keeps swallowing its reply;
+  - build and CI: `qed64-build.json` only from a successful build; CI
+    installs the frontend before the unit step; release-manifest's
+    `--worktree --dist` dirty flag counts the workers; node-runner keeps the
+    first value of a repeated flag, as documented.

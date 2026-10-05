@@ -374,10 +374,11 @@ Fix (`frontend/build/lean4monaco-fixes.mjs`, `frontend/src/editor/infoview-edits
 - Every patch asserts its anchor occurs exactly once, so a lean4monaco upgrade fails the build rather than shipping unpatched.
 - `globalThis.qed64.api = {version: 1, capabilities: {editorRpc: true}}` is published at module start, so an embedder's own bridge stands down.
 
-Gates: `tests/unit/lean4monaco-fixes.test.ts` runs against the installed files, including the composed dev loader with the real import.meta.url plugin. `tests/unit/infoview-edits.test.ts` covers the three actions. `tests/adversarial/infoview-actions.mjs` checks the core Try this click, the `conv?` panel and Generate conv in Chromium.
+Gates: `tests/unit/lean4monaco-fixes.test.ts` runs against the installed files, including the composed dev loader with the real import.meta.url plugin. `tests/unit/infoview-edits.test.ts` covers the three actions. `tests/adversarial/infoview-actions.mjs` checks, in Chromium, the core Try this click, the `conv?` panel, Generate conv, and that showDocument for a foreign file sent over the iframe's RPC moves neither the selection nor the focus (with an own-document control); `tests/unit/infoview-actions.test.ts` pins that lane's verdicts against lean4monaco's real Rpc and wrapEditorRpcApi. The installed-file suites of `tests/unit/lean4monaco-fixes.test.ts` need frontend/node_modules: CI installs the frontend before the unit step (a test pins that order) and under CI they never skip; a fresh clone's `npm test` skips them with a notice, as pretest skips typecheck:site.
 
 Rules: when a library splits one protocol across two contexts, fix both halves in one change and test the round trip, not either half alone. And a dev-only loader chain needs a test that runs the real chain: unit tests of the patch function passed while the dev server served the unpatched module.
 
+From the branch review: the lane's own checks could not fail. `--only foreign-show` ran nothing and exited 0 (the scenario was nested inside conv-generate), foreign-show called the page hook directly and compared only the text (which showDocument never edits), and capability-flag captured the DOMContentLoaded value but never judged it. Each scenario now runs alone, an empty selection exits 3, foreign-show goes through the iframe's RPC wire and checks selection and focus against an own-document control, and the DOMContentLoaded value is part of the verdict.
 
 ### 57. A URL parameter spliced into a fetch path chooses the origin
 
@@ -391,8 +392,20 @@ Fix (`frontend/src/embed/params.ts`): one parser validates all three before any 
 
 Gate: `tests/unit/boot-params.test.ts` covers the accepted spellings, protocol-relative, absolute, percent-encoded, backslash and traversal values, and asserts a refusal sends no request.
 
-Two follow-ups from the branch review:
+Follow-ups from the branch reviews:
 - **Packs and redirects.** The library-pack loaders (index, manifests, parts) are checked too, and so is a redirect off the origin (`response.url`), not only the request URL.
+- **The prefetch worker's other fetch path.** Its legacy compressed-only mode, taken when a message carried no positive `rawBytes`, fetched with neither the redirect nor the HTML refusal. It committed `<cacheKey>`, which raw mode then inflated from with no network check. W5 had removed its last reader, so it is deleted, and a message without a raw size is refused. Gate: `tests/unit/worker-internals.test.ts` (the real script, an off-origin redirect).
+- **Node harnesses need the browser globals a guard reads.** The Lean worker's guard reads `self.location`. The #52 exit probe ran the worker under Node with no location and a custom-scheme snapshot URL, so every scenario of `tests/integration/fileworker-exit.test.ts` would exit 2 ("snapshot load failed"). The probe now sets `globalThis.location` and serves its snapshot at `/snapshots/init.snap`, and `tests/unit/worker-internals.test.ts` runs the real guard against the probe's own values.
 - **A document in the URL is code.** `#code=` was added for embedders and briefly honoured on the plain page. That reopened the same class: Lean source can define a widget module whose JS runs in the InfoView with no click. A boot document in the URL is now honoured only when the page is framed by a same-origin parent.
 
 Rule: any URL parameter that reaches a `fetch`, `importScripts` or `Worker` URL is an origin decision. Validate it as a path segment against an allowlist pattern before use, and fail loudly rather than fall back.
+
+### 58. A fake of an async browser API must keep its timing, and a loop guard keyed on text is a cache with no invalidation
+
+From a 119-agent review of the embedding branch (36 confirmed findings, all fixed before merge):
+- **Fakes that hid bugs.** The LSP client coalesces full-text didChange (vscode-languageclient's 250 ms Delayer) and a LockManager grants a free lock from a later task. The unit fakes forwarded every edit synchronously and granted locks inside request(), so `setDocument` resolving on exact text (it can hang when two edits coalesce) and a "busy" decided from elapsed microtasks (it fired on every prefetch) both passed. The fakes now coalesce and grant asynchronously, and contention is decided from the API's own answer (`ifAvailable` → null). Gates: `tests/unit/page-api.test.ts`, `tests/unit/raw-cache.test.ts`.
+- **Guards that outlive their session.** The self-widen remembered, per header text, which environments it had tried, with no expiry: after a reboot dropped the umbrella, that header could never widen again, and on an overlay index each keystroke of a Mathlib prefix could swap environments. The rule is now stateless (`frontend/src/self-widen.ts`): never act on a root claim the kernel has just refuted. Gate: `tests/unit/overlay-environments.test.ts` over the real relay.
+- **Build hooks.** Rollup runs closeBundle for a failed build, and Vite runs it after a failed write with no error; `qed64-build.json` is written in writeBundle (post, sequential), so a failed build reports its own error and never stamps a stale `dist/`.
+
+Rules: model an async API's timing in its fake, or the test certifies the bug. Make a loop-prevention rule loop-free by construction instead of remembering past actions. Write build outputs only from hooks that run after a successful write.
+

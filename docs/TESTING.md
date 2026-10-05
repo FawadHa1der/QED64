@@ -20,7 +20,7 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
 - **Pretest.** `npm test` and `run.mjs` first run `npm run typecheck:site`
   (the root `tsc` does not cover `frontend/`) and refuse on failure; `npm
   test` skips it with a printed notice when `frontend/node_modules` is absent
-  (a fresh clone — run `npm --prefix frontend ci`), `run.mjs` never skips.
+  (a fresh clone — run `npm --prefix frontend ci`), `run.mjs` never skips. tests/unit/lean4monaco-fixes.test.ts likewise skips its installed-file suites with a printed notice when frontend/node_modules is absent, except under CI (`CI` set); .github/workflows/ci.yml installs the frontend before `vitest run tests/unit`.
 - **Preflight** (`preflight.mjs --url <page url> [--no-boot]`): for the
   pairing the URL will boot (`?runtime=`, `?snapshots=` exactly as
   qed64-boot.ts reads them; the page has one transport, so `mode` in every
@@ -136,14 +136,21 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   AND stock, headed AND headless, with a release control arm in the same
   window.
 - **InfoView actions** (`infoview-actions.mjs --url <dev url> [--only <scenario>]`,
-  HARDENING #56): the InfoView's editor RPC on the real page. `capability-flag`
-  (`qed64.api` = `{version: 1, capabilities.editorRpc}` at DOMContentLoaded),
-  `try-this-apply` (init only: click the core "Try this" of `simp?`, the line
-  must read `by simp only [Nat.add_zero]` and elaborate without errors),
-  `conv-generate` (Mathlib: the `conv?` ProofWidgets panel renders — an
-  `mk_rpc_widget%` panel, sendClientRequest with an abortSignal — then
-  shift-click `c + b` and "Generate conv" must write a `conv => … enter …`
-  block), `foreign-show` (showDocument for another file is a no-op).
+  HARDENING #56): the InfoView's editor RPC on the real page, each scenario on
+  its own page (an `--only` that selects no scenario exits 3). `capability-flag`
+  (`qed64.api` = `{version: 1, capabilities.editorRpc}` as an init script's
+  DOMContentLoaded listener sees it, and again, frozen, at load),
+  `try-this-apply` (init only: click the core "Try this" `[apply]` link of
+  `simp?`, the line must read `by simp only [Nat.add_zero]` and elaborate
+  without errors), `conv-generate` (Mathlib: the `conv?` ProofWidgets panel
+  renders — an `mk_rpc_widget%` panel, sendClientRequest with an abortSignal —
+  then shift-click `c + b` and "Generate conv" must write a `conv => … enter …`
+  block), `foreign-show` (init only: showDocument sent from inside the
+  InfoView iframe, as the InfoView's own RPC puts it on the wire, for a
+  Mathlib file must leave the text, the selection and the focus alone; the
+  same call for the editor's document must select and focus it — the
+  control). The scenario selection, the in-browser probes and the verdicts
+  are pinned by tests/unit/infoview-actions.test.ts.
 - **Page API** (`page-api.mjs --url <dev url> [--only <scenario>]`,
   docs/EMBEDDING.md §2–§4): `qed64.api` used the way an embedder uses it,
   never the internal taps. `embed-code` (`?embed=1#code=`: that document,

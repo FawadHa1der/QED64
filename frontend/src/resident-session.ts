@@ -93,7 +93,7 @@ export const needsMathlib = (headerText: string): boolean => importedModulesOf(h
  * boots light — the init snapshot only — and anything naming Mathlib boots
  * the umbrella too. A header that later grows a Mathlib import on a light
  * session is refused by the kernel (nothing loaded covers it); the page then
- * restarts with the umbrella (main.ts, `widenForMathlib`). */
+ * restarts with the umbrella (frontend/src/self-widen.ts, called from main.ts). */
 export const snapshotsForHeader = (headerText: string): string[] => (needsMathlib(headerText) ? ["init", "mathlib"] : ["init"]);
 
 /** The umbrella-sized initial commit (2 GiB) whenever the umbrella snapshot
