@@ -13,6 +13,8 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { LspRelay, isImport, type RelaySession, type RelayStatus, type RestartOptions } from "../../frontend/src/lsp-relay";
+import { tapRelay } from "../../frontend/src/relay-taps";
+import { createTestHatch } from "../../frontend/src/test-hatch";
 import type { JsonRpcMessage as Msg, WorkerStatus } from "../../src/runtime/client";
 
 class FakeSession implements RelaySession {
@@ -608,5 +610,75 @@ describe("relay contract: unload is synchronous", () => {
     relay.unload();
     expect(live.disposed).toBe(true);
     expect(live.terminated).toBe(true);
+  });
+});
+
+describe("relay: reentrancy — failInFlight's replies reach the out-taps synchronously (the hatch's lsp.on, EMBEDDING §9)", () => {
+  // tapRelay runs the "out" observers inside relay.toClient, before the post: a harness observer that reacts to an
+  // orphan's error reply runs while the relay is still inside restart() or onDied().
+  const pendingThree = () => { for (const id of [10, 11, 12]) relay.fromClient(request(id, "textDocument/hover")); };
+  const outer: RestartOptions = { snapshots: ["init", "outer"] };
+  const nested: RestartOptions = { snapshots: ["init", "x"] };
+  it("a restart() from a tap reacting to a restart's orphan reply is refused: one replacement, booted and remembered with the outer options", async () => {
+    relay.fromClient(initialize);
+    relay.fromClient(didOpen(1, `${HEADER}\nx`));
+    await bootCurrent();
+    pendingThree();
+    const hatch = createTestHatch(relay, tapRelay(relay));
+    const tap: { request?: Promise<unknown> } = {};
+    hatch.lsp.on("out", (m) => {
+      if (m.error === undefined) return;
+      relay.restart(nested);
+      // ...and a request the tap sends meanwhile goes to the session being replaced: it is answered in the same pass, not stranded.
+      if (m.id === 10) tap.request = hatch.lsp.request("textDocument/hover", { textDocument: { uri: URI } });
+    });
+    const first = current();
+    relay.restart(outer);
+    await settle();
+    expect(errorsToClient().map((m) => m.id)).toEqual([10, 11, 12]); // the tap's own reply is the hatch's: swallowed
+    expect(FakeSession.all).toHaveLength(2);
+    expect(first.disposed).toBe(true);
+    expect(current().opts).toEqual(outer);
+    expect(relay.restartOpts).toEqual(outer);
+    expect(relay.stats).toMatchObject({ userRestarts: 1, failedInFlight: 4, reboots: 0 });
+    expect(await Promise.race([tap.request, settle().then(() => "stranded")])).toMatchObject({ id: "qed64-test:1", error: { code: -32603, data: { qed64: { kind: "restart" } } } });
+    expect(relay.pending.size).toBe(0);
+    await bootCurrent();
+    expect(relay.state.kind).toBe("serving");
+  });
+  it("a restart() from a tap reacting to a death's orphan reply is refused: the death's own reboot is the only replacement, none left undisposed", async () => {
+    relay.fromClient(didOpen(1, `${HEADER}\nx`));
+    await bootCurrent();
+    pendingThree();
+    const during: Array<{ relay: string; rebootReason: string | null }> = [];
+    createTestHatch(relay, tapRelay(relay)).lsp.on("out", (m) => {
+      if (m.error === undefined) return;
+      during.push({ relay: relay.status().relay, rebootReason: relay.status().rebootReason });
+      relay.restart(nested);
+    });
+    current().onDied(null, "heartbeat", "no heartbeat for 30 s");
+    await settle();
+    expect(errorsToClient().map((m) => m.id)).toEqual([10, 11, 12]);
+    expect(during).toEqual(Array(3).fill({ relay: "rebooting", rebootReason: "heartbeat" })); // out of "serving", with the reboot's own reason
+    expect(FakeSession.all).toHaveLength(2);
+    expect(FakeSession.all.filter((s) => s !== current() && !s.disposed)).toEqual([]);
+    expect(current().opts).toBeUndefined();
+    expect(relay.restartOpts).toBeNull();
+    expect(relay.state).toEqual({ kind: "rebooting", reason: "heartbeat" });
+    expect(relay.stats).toMatchObject({ workerDeaths: 1, reboots: 1, userRestarts: 0, failedInFlight: 3 });
+    await bootCurrent();
+  });
+  it("a nested failInFlight pass answers no id twice (delivered by hand: no tap can start one now that restart() is refused)", async () => {
+    relay.fromClient(didOpen(1, "A"));
+    await bootCurrent();
+    pendingThree();
+    const failInFlight = (relay as unknown as { failInFlight(why: string, kind: string, next: string): void }).failInFlight;
+    let once = true;
+    tapRelay(relay).onOut((m) => { if (m.id === 10 && once) { once = false; failInFlight.call(relay, "by hand", "orphaned", "crash"); } });
+    relay.restart(outer);
+    await settle();
+    expect(errorsToClient().map((m) => m.id).sort()).toEqual([10, 11, 12]); // the nested pass posts 11 and 12 before the outer 10
+    expect(relay.stats.failedInFlight).toBe(3);
+    await bootCurrent();
   });
 });
