@@ -61,7 +61,6 @@
     "test:watch": "vitest --exclude '**/integration/**'",
     "test:integration": "vitest run tests/integration --no-file-parallelism",
     "test:all": "vitest run",
-    "sync:artifacts": "node pipeline/release/sync-artifacts.mjs",
     "runner": "node pipeline/snapshot/node-runner.mjs",
     "bake:snapshot": "node pipeline/snapshot/bake-snapshot.mjs",
     "pack": "node pipeline/artifacts/pack.mjs",

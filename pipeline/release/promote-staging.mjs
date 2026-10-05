@@ -20,8 +20,8 @@
 // packs stay.
 //
 // OWNER OF public/profiles/index.json `runtime`. The field means "the runtime
-// these profiles are SERVED with" (its only writer before this script,
-// sync-artifacts.mjs, records the runtime it installs beside the packs; the
+// these profiles are SERVED with" (its only writer before this script, the
+// since-removed sync-artifacts.mjs, recorded the runtime it installed beside the packs; the
 // packs' PRODUCER is already in each entry's `release` and in the manifest's
 // content.lean). Nothing re-pointed it on a promote, so it went stale. This
 // script owns it now: every promote — kernel-only included — switches the
