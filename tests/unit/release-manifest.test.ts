@@ -4,13 +4,16 @@
 // (digest, artifactSetId, shellId recomputed here the way a downstream
 // would), and refusing every pairing fact it is meant to guard. The doctored
 // inputs live in a temp copy of HEAD's tracked manifests; nothing here
-// touches public/, work/ or dist/ of the repo.
+// touches public/, work/ or dist/ of the repo. The shell's own half,
+// frontend/build/build-info.mjs, is run inside real Vite builds at the end.
 import { describe, expect, test, beforeAll, afterAll } from "vitest";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
+import type { Plugin } from "vite";
 import {
   ReleaseRefusal,
   artifactSetIdOf,
@@ -425,6 +428,29 @@ describe.skipIf(!hasGit)("--dist: the shell section", () => {
     expect(refusal(withDist(missing))).toMatch(/is missing/);
   });
 
+  test("--worktree --dist: a worker the tree edited or lacks is a difference from HEAD (dirty)", () => {
+    const fromTree = (d: string) => buildReleaseManifest(treeSource(treeOpts()), { dist: d });
+    const d = makeDist(buildId); // workers verbatim from HEAD, as the tree has them
+    expect(fromTree(d).qed64.dirty).toBe(false);
+    const worker = fs.readdirSync(path.join(d, "workers")).sort()[0]!;
+    // Edited in the tree (uncommitted) and built: the shell matches the tree, the tree is not HEAD.
+    doctored(`public/workers/${worker}`, (t) => `${t}\n// edited, not committed\n`, () => {
+      fs.copyFileSync(treeFile(`public/workers/${worker}`), path.join(d, "workers", worker));
+      const m = fromTree(d);
+      expect(m.qed64).toMatchObject({ commit: head, source: "worktree", dirty: true });
+    });
+    // Deleted from the tree and so absent from its build: HEAD still has it.
+    const gone = makeDist(buildId);
+    const original = fs.readFileSync(treeFile(`public/workers/${worker}`));
+    fs.rmSync(treeFile(`public/workers/${worker}`));
+    fs.rmSync(path.join(gone, "workers", worker));
+    try {
+      expect(fromTree(gone).qed64.dirty).toBe(true);
+    } finally {
+      fs.writeFileSync(treeFile(`public/workers/${worker}`), original);
+    }
+  });
+
   test("a bundle that pins another runtime, none, or more than one", () => {
     expect(refusal(withDist(makeDist(OTHER_ID)))).toMatch(new RegExp(`main bundle pins runtime ${OTHER_ID}, expected exactly ${buildId}`));
     expect(refusal(withDist(makeDist(null)))).toMatch(/main bundle pins runtime \(none\)/);
@@ -447,5 +473,123 @@ describe.skipIf(!hasGit)("--dist: the shell section", () => {
     expect(refusal(withDist(noEntry))).toMatch(/loads no module script/);
 
     expect(refusal(withDist(path.join(tmp, "no-such-dist")))).toMatch(/is not a directory/);
+  });
+});
+
+// The build half: frontend/build/build-info.mjs inside real Vite builds (the
+// root's vite; the frontend's calls the same Rollup hooks) of a one-module
+// project. Rollup runs closeBundle for a FAILED build too — with the error
+// after a failed build phase, and with none from Vite's `finally {
+// bundle.close() }` after a failed write — so a stamp written there described
+// a stale or half-written dist/, or threw ENOENT over the real error.
+describe.skipIf(!hasGit)("frontend/build/build-info.mjs: dist/qed64-build.json only for a build that wrote dist/", () => {
+  let work: string;
+  beforeAll(() => { work = fs.mkdtempSync(path.join(os.tmpdir(), "qed64-build-info-")); });
+  afterAll(() => { if (work) fs.rmSync(work, { recursive: true, force: true }); });
+  const fixes = () => import("../../frontend/build/lean4monaco-fixes.mjs" as string) as Promise<{
+    lean4monacoFixesVite(): Plugin; patchWebviewJs(webviewJs: string, rpcJs: string): string;
+  }>;
+
+  /** Build `<work>/<name>`, whose entry is a lean4monaco infowebview.js (the
+   * real page-half transform applies to it), with build-info wired as
+   * frontend/vite.config.ts wires it, then `extra`. */
+  async function viteBuild(name: string, entry: string, extra: (dist: string) => Plugin[], seed?: (dist: string) => void) {
+    const dir = path.join(work, name);
+    const input = path.join(dir, "lean4monaco/dist/infowebview.js");
+    fs.mkdirSync(path.dirname(input), { recursive: true });
+    fs.writeFileSync(input, entry);
+    fs.writeFileSync(path.join(dir, "runtime-manifest.json"), JSON.stringify({ buildId, leanVersion: "9.9.9", sourceRevision: "test" }));
+    fs.writeFileSync(path.join(dir, "page-api.ts"), 'export const API_REVISION = "1.2.3";\n');
+    const dist = path.join(dir, "dist");
+    seed?.(dist);
+    const { buildInfoPlugin } = await import("../../frontend/build/build-info.mjs" as string) as { buildInfoPlugin(o: object): Plugin };
+    const { build } = await import("vite");
+    const run = build({
+      configFile: false, root: dir, logLevel: "silent", publicDir: false,
+      build: { outDir: dist, emptyOutDir: true, minify: false, rollupOptions: { input } },
+      plugins: [
+        (await fixes()).lean4monacoFixesVite(),
+        buildInfoPlugin({ manifestUrl: pathToFileURL(path.join(dir, "runtime-manifest.json")), pageApiUrl: pathToFileURL(path.join(dir, "page-api.ts")), repoDir: dir }),
+        ...extra(dist),
+      ],
+    });
+    return { dist, stamp: path.join(dist, "qed64-build.json"), run };
+  }
+  const REGISTERED = "rpc.register(editorApiOfRpc(editorRpcApi));\nexport {};\n"; // the anchor the page half patches
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  test("the lean4monaco tripwire in the build phase is the error Vite reports, and nothing is stamped", async () => {
+    const fresh = await viteBuild("tripwire-fresh", "rpc.register(api);\n", () => []);
+    await expect(fresh.run).rejects.toThrow(/infowebview\.js register: anchor not found \(lean4monaco changed\?\)/);
+    expect(fs.existsSync(fresh.dist)).toBe(false);
+    // A previous build's dist/ keeps its own stamp, not one for the failed build.
+    const old = await viteBuild("tripwire-old", "rpc.register(api);\n", () => [], (dist) => {
+      fs.mkdirSync(dist);
+      fs.writeFileSync(path.join(dist, "old.js"), "export const previous = 1;\n");
+      fs.writeFileSync(path.join(dist, "qed64-build.json"), "the previous build's stamp\n");
+    });
+    await expect(old.run).rejects.toThrow(/anchor not found/);
+    expect(fs.readFileSync(old.stamp, "utf8")).toBe("the previous build's stamp\n");
+  });
+
+  test("a failed write (a static-copy transform throwing in writeBundle) leaves no stamp", async () => {
+    const b = await viteBuild("failed-write", REGISTERED, () => [{
+      name: "static-copy-stand-in",
+      async writeBundle() { await sleep(5); (await fixes()).patchWebviewJs("const a=x;", "export function editorApiOfRpc(api) { return api; }"); },
+    }]);
+    await expect(b.run).rejects.toThrow(/webview\.js editor API: anchor not found/);
+    expect(fs.readdirSync(path.join(b.dist, "assets")).length).toBeGreaterThan(0); // Rollup did write the bundle
+    expect(fs.existsSync(b.stamp)).toBe(false);
+  });
+
+  test("a good build is stamped after every other writeBundle: the shell id covers the copied files", async () => {
+    const { shellIdOf } = await import("../../frontend/build/build-info.mjs" as string) as { shellIdOf(dir: string): string };
+    const b = await viteBuild("good", REGISTERED, (dist) => [{
+      name: "static-copy-stand-in",
+      async writeBundle() {
+        await sleep(20);
+        fs.mkdirSync(path.join(dist, "workers"), { recursive: true });
+        fs.writeFileSync(path.join(dist, "workers/lean.worker.js"), "// copied after the bundle\n");
+      },
+    }]);
+    await b.run;
+    const info = JSON.parse(fs.readFileSync(b.stamp, "utf8"));
+    expect(info).toMatchObject({ schema: "qed64.build/v1", buildId, leanVersion: "9.9.9", sourceRevision: "test", apiRevision: "1.2.3" });
+    expect(fs.readFileSync(path.join(b.dist, "workers/lean.worker.js"), "utf8")).toContain("copied");
+    expect(info.shell).toBe(shellIdOf(b.dist));
+  });
+
+  // frontend/vite.config.ts itself, loaded by Node (as Vite's loader does, with
+  // import.meta.url the file's URL) from a checkout whose path has a space:
+  // its repoDir must reach git as that directory (URL.pathname handed git
+  // "Lean%20Projects", and commit/dirty read null).
+  test.skipIf(!fs.existsSync(path.join(root, "frontend/node_modules/vite")))("frontend/vite.config.ts names the commit of a checkout under a path with a space", async () => {
+    const checkout = path.join(work, "Lean Projects", "QED64");
+    const frontend = path.join(checkout, "frontend");
+    fs.mkdirSync(path.join(checkout, "public/runtime"), { recursive: true });
+    fs.mkdirSync(frontend, { recursive: true });
+    for (const f of ["vite.config.ts", "package.json"]) fs.copyFileSync(path.join(root, "frontend", f), path.join(frontend, f));
+    fs.copyFileSync(path.join(root, "public/runtime/runtime-manifest.json"), path.join(checkout, "public/runtime/runtime-manifest.json"));
+    for (const d of ["build", "src", "node_modules"]) fs.symlinkSync(path.join(root, "frontend", d), path.join(frontend, d));
+    const g = (...args: string[]) => spawnSync("git", args, { cwd: checkout, encoding: "utf8" });
+    g("init", "-q");
+    g("add", "frontend/vite.config.ts", "public/runtime/runtime-manifest.json");
+    g("-c", "user.name=qed64-test", "-c", "user.email=test@qed64.invalid", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "a checkout under a space");
+    const commit = g("rev-parse", "HEAD").stdout.trim();
+    expect(commit).toMatch(/^[0-9a-f]{40}$/);
+    fs.mkdirSync(path.join(checkout, "dist"));
+    fs.writeFileSync(path.join(checkout, "dist/index.html"), "<!doctype html>\n");
+    const probe = [
+      'import { pathToFileURL } from "node:url";',
+      'const [file, root] = process.argv.slice(1);',
+      'const config = (await import(pathToFileURL(file).href)).default({ command: "build", mode: "production" });',
+      'const plugin = config.plugins.flat().find((p) => p?.name === "qed64-build-info");',
+      'plugin.configResolved({ root, build: config.build });',
+      'plugin.writeBundle.handler();',
+    ].join("\n");
+    const r = spawnSync(process.execPath, ["--input-type=module", "-e", probe, path.join(frontend, "vite.config.ts"), frontend], { encoding: "utf8", timeout: 60_000 });
+    expect(r.status, r.stderr).toBe(0);
+    const info = JSON.parse(fs.readFileSync(path.join(checkout, "dist/qed64-build.json"), "utf8"));
+    expect(info).toMatchObject({ commit, dirty: false, buildId });
   });
 });

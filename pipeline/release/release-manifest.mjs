@@ -12,7 +12,8 @@
 // digests and sizes come from the tracked manifests (the digest roots the
 // browser already trusts). `--worktree` reads public/ (and KERNEL-PIN) as they
 // are on disk instead — the state right after a promote, before the commit —
-// and records whether that differs from HEAD (`qed64.dirty`).
+// and records whether any input it read differs from HEAD (`qed64.dirty`;
+// with --dist that includes public/workers/*, a worker the tree lacks too).
 //
 // FORMAT. schema "qed64.release/v1"; key order is fixed by this file (every
 // object is built literally, nothing is copied through from an input), the
@@ -126,11 +127,12 @@ function resolveCommit(rev, repo) {
   return commit;
 }
 
-/** repo path → blob id at `commit`, for the paths that exist there. */
+/** repo path → blob id at `commit`, for the paths that exist there (a
+ * directory path: every file under it). */
 function treeBlobIds(commit, paths, repo) {
   const out = new Map();
   if (paths.length === 0) return out;
-  const r = git(["ls-tree", "-z", commit, "--", ...paths], repo);
+  const r = git(["ls-tree", "-r", "-z", commit, "--", ...paths], repo);
   if (r.status !== 0) refuse(`git ls-tree ${commit.slice(0, 7)} failed (${r.stderr.toString().trim()})`);
   for (const line of r.stdout.toString("utf8").split("\0")) {
     const m = /^\d+ blob ([0-9a-f]{40,64})\t(.+)$/.exec(line);
@@ -142,7 +144,9 @@ function treeBlobIds(commit, paths, repo) {
 // --------------------------------------------------------------- sources --
 // A source answers three questions: the bytes of a repo path (null when
 // absent), the files under a repo directory (relative, byte-ordered), and the
-// qed64 identity of what it read. Tests construct their own.
+// qed64 identity of what it read — describe(inputs, listed): every repo path
+// read as an input with its bytes, and the directories read as a whole.
+// Tests construct their own.
 
 /** Every input from one commit's tree; the working tree is never read. */
 export function commitSource(rev, { repo = repoRoot } = {}) {
@@ -190,12 +194,14 @@ export function treeSource({ publicDir = path.join(repoRoot, "public"), kernelPi
       const dir = toFile(repoDir);
       return fs.existsSync(dir) ? walkFiles(dir).sort(byteOrder) : [];
     },
-    describe(inputs) {
+    describe(inputs, listed = new Set()) {
       const head = git(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], repo);
       const commit = head.stdout.toString().trim();
       if (head.status !== 0 || !/^[0-9a-f]{40}$/.test(commit)) refuse(`--worktree needs a git checkout at ${repo} to name qed64.commit`);
-      const atHead = treeBlobIds(commit, [...inputs.keys()], repo);
-      const dirty = [...inputs].some(([p, bytes]) => atHead.get(p) !== gitBlobId(bytes));
+      const atHead = treeBlobIds(commit, [...inputs.keys(), ...[...listed].map((d) => `${d}/`)], repo);
+      // Every file of a listed directory was read, so one HEAD has there that is
+      // not an input is a file the tree lacks.
+      const dirty = [...inputs].some(([p, bytes]) => atHead.get(p) !== gitBlobId(bytes)) || [...atHead.keys()].some((p) => !inputs.has(p));
       return { commit, committedAt: commitMeta(commit, repo), dirty };
     },
   };
@@ -381,11 +387,12 @@ export function buildReleaseManifest(source, { dist = null } = {}) {
   });
   const profiles = { index: tracked(INPUTS.profileIndex, piBytes), packs };
 
-  // -- shell (optional)
-  const shell = dist === null ? null : shellSection(dist, { source, buildId });
+  // -- shell (optional): its workers are inputs too, each file and the directory
+  const listed = new Set();
+  const shell = dist === null ? null : shellSection(dist, { source, buildId, inputs, listed });
 
   const artifactSetId = `set-${sha256Hex(JSON.stringify({ runtime, snapshots, profiles })).slice(0, 16)}`;
-  const { commit, committedAt, dirty } = source.describe(inputs);
+  const { commit, committedAt, dirty } = source.describe(inputs, listed);
   const body = {
     schema: SCHEMA,
     releaseId: `qed64-${commit.slice(0, 7)}`,
@@ -407,12 +414,13 @@ export function buildReleaseManifest(source, { dist = null } = {}) {
  * listing (the format `shasum -a 256` prints), its sha256, and the runtime
  * id(s) the main bundle pins. Refuses a dist whose workers are not the
  * source's public/workers, whose bundle pins anything but `buildId`, or that
- * carries an artifact directory.
+ * carries an artifact directory. The workers it reads are recorded as inputs
+ * (`inputs`: each file, `listed`: the directory) for source.describe().
  */
 /** The shell's own identity file (frontend/build/build-info.mjs). */
 export const BUILD_INFO_FILE = "qed64-build.json";
 
-export function shellSection(distDir, { source, buildId }) {
+export function shellSection(distDir, { source, buildId, inputs = new Map(), listed = new Set() }) {
   let isDir = false;
   try { isDir = fs.statSync(distDir).isDirectory(); } catch { /* absent */ }
   if (!isDir) refuse(`--dist ${distDir} is not a directory`);
@@ -438,10 +446,12 @@ export function shellSection(distDir, { source, buildId }) {
   // anything else means the shell was built from another tree than the one
   // this manifest describes.
   const wanted = source.list(INPUTS.workers);
+  listed.add(INPUTS.workers);
   const shipped = rels.filter((r) => r.startsWith("workers/")).map((r) => r.slice("workers/".length));
   for (const name of shipped) if (!wanted.includes(name)) refuse(`--dist: workers/${name} is not in ${source.label}'s ${INPUTS.workers}`);
   for (const name of wanted) {
     const expected = source.read(`${INPUTS.workers}/${name}`);
+    if (expected !== null) inputs.set(`${INPUTS.workers}/${name}`, expected);
     const got = bytesOf.get(`workers/${name}`);
     if (!got) refuse(`--dist: workers/${name} is missing (${source.label} has ${INPUTS.workers}/${name})`);
     if (expected === null || !got.equals(expected)) refuse(`--dist: workers/${name} differs from ${source.label}'s ${INPUTS.workers}/${name} — the shell was not built from this tree`);

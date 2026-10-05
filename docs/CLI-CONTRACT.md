@@ -71,7 +71,8 @@ There is one implementation of the grammar, `cliContract` in
   unknown flag.
 - **The first occurrence of a repeated flag wins.** This is the legacy
   `process.argv.indexOf` behaviour. Each later occurrence of a value flag is
-  ignored, with a WARNING.
+  ignored, with a WARNING, and dropped from the normalized arguments. That
+  holds for node-runner too, whose own parser keeps the last value it sees.
 - **An empty value counts as absent.** `--out ""` or `--out=` means the
   default applies, with a WARNING. (Every legacy `arg()` already treated a
   falsy value that way.)
@@ -119,8 +120,9 @@ olean-imports and unpack one file at a time.
 
 The prelude runs right after the imports. For olean-imports it runs inside the
 main-module check, so importing the module stays side-effect-free. The
-prelude rewrites `--flag=value` into `process.argv` as the two-token form, so
-the script's own legacy parser reads it unchanged.
+prelude rewrites `--flag=value` into `process.argv` as the two-token form, and
+drops the later occurrences of a repeated value flag, so the script's own
+legacy parser reads it unchanged and sees only the first value.
 
 Only supervised-run and preflight import `parseCli` at run time. No downstream
 copies either of them without `cli.mjs`: the showcase gets `cli.mjs` with the

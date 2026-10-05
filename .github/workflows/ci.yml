@@ -20,9 +20,11 @@ jobs:
             package-lock.json
             frontend/package-lock.json
       - run: npm ci
+      # Before the unit step: tests/unit/lean4monaco-fixes.test.ts checks the
+      # installed lean4monaco files (HARDENING #56) and never skips under CI.
+      - run: npm ci --prefix frontend
       - run: npx tsc --noEmit
+      - run: npm run typecheck:site
       - run: npx vitest run tests/unit
       - run: node --check public/workers/lean.worker.js && node --check infra/worker.js && node --check infra/edge-worker.js
-      - run: npm ci --prefix frontend
-      - run: npm run typecheck:site
       - run: npm run build:site

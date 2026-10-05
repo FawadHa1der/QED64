@@ -29,7 +29,8 @@ import { buildIdOfArtifact, refuseInsidePublic, stagingDir } from "../toolchain/
 // fails on drift. Inline, not imported, because downstream vendors this file without cli.mjs.
 // It runs before any side effect: --help/-h prints the help and exits 0, a missing required
 // flag prints the usage line and exits 2, an unknown flag is a WARNING on stderr, and
-// --flag=value is rewritten to the two-token form this script reads (docs/CLI-CONTRACT.md).
+// --flag=value is rewritten to the two-token form this script reads, with the later values
+// of a repeated flag dropped so the first wins here too (docs/CLI-CONTRACT.md).
 {
   const spec = {"tool":"bake-snapshot","usage":"bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--roots <A,B,…>] [--label <text>] [--initial-bytes <bytes>]","flags":{"name":1,"probe":1,"artifact":1,"lib":1,"reserve":1,"work":1,"out":1,"roots":1,"label":1,"initial-bytes":1},"required":[],"passthrough":null,"passthroughRequired":false};
   spec.help = [
@@ -84,14 +85,15 @@ import { buildIdOfArtifact, refuseInsidePublic, stagingDir } from "../toolchain/
         continue;
       }
       const name = m[1];
+      const repeated = Object.hasOwn(values, name);
       let value = true;
       if (arity === 1) {
         value = m[2] !== undefined ? m[2].slice(1) : i + 1 < args.length ? args[(i += 1)] : undefined;
         if (value === "--help" || value === "-h") help = true;
-        normalized.push(`--${name}`, ...(value === undefined ? [] : [value]));
+        if (!repeated) normalized.push(`--${name}`, ...(value === undefined ? [] : [value]));
         if (!value) warnings.push(`flag --${name} has no value; ignored`);
       } else normalized.push(token);
-      if (!Object.hasOwn(values, name)) values[name] = value ?? "";
+      if (!repeated) values[name] = value ?? "";
       else if (arity === 1) warnings.push(`flag --${name} repeated; the first value wins`);
     }
     if (help) { io.out(spec.help); io.exit(0); return null; }

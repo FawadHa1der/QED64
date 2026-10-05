@@ -43,7 +43,7 @@ HEAD's manifest is about 23 KB, or 34 KB with the shell section. It describes
 | `digest` | `"sha256:" + sha256(JSON.stringify(manifest without digest))`: the manifest's own identity |
 | `releaseId` | `"qed64-" + qed64.commit[:7]` |
 | `artifactSetId` | `"set-" + sha256(JSON.stringify({runtime, snapshots, profiles}))[:16]` (see below) |
-| `qed64` | `{repo, commit, committedAt (UTC, from the commit object), source: "commit"\|"worktree", dirty}`. `dirty` is true only for `--worktree` when an input differs from HEAD |
+| `qed64` | `{repo, commit, committedAt (UTC, from the commit object), source: "commit"\|"worktree", dirty}`. `dirty` is true only for `--worktree` when an input differs from HEAD. With `--dist` the inputs include `public/workers/*`, so an edited worker, or one HEAD has and the tree lacks, makes it dirty |
 | `lean` | `{version, target}` of the runtime manifest |
 | `kernel` | `{repo: "FawadHa1der/lean4", branch: "qed64-wasm64", commit (KERNEL-PIN), sourceRevision (runtime manifest)}` |
 | `runtime` | `{buildId, manifest {path, sha256, gitBlob, pinnedPath}, files [{name, bytes, sha256, chunks [{path, bytes, sha256}]}]}` |
@@ -97,7 +97,8 @@ Conventions:
   differs.
   `dist/qed64-build.json` (written by the build, docs/EMBEDDING.md §4) names
   the same id, so it is left out of the listing. A build file that names
-  another shell, or another runtime, is refused.
+  another shell, or another runtime, is refused. The build writes it only
+  after it has written every other file, and never for a failed build.
 
 ## What it refuses
 
