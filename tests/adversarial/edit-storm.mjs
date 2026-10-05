@@ -27,9 +27,14 @@
 //   pagesleep 10 ms/char: the burst reaches the relay as ONE change (the
 //             delayer; the InfoView's and Monaco's requests are debounced
 //             past the burst), so the coalescer holds nothing here
-//   pageslow  150 ms/char: the InfoView's goal request follows each
-//             keystroke and flushes the client's pending change, so a change
-//             reaches the relay per keystroke and the coalescer is engaged
+//   pagecadence 150 ms/char with NO sleep: counts how many changes and
+//             requests a typing pace reaches the relay with (one per key
+//             when a request follows each keystroke)
+//   pageslow  150 ms/char above the sleep. KNOWN TO CRASH on every build so
+//             far (pool 24 → 52-64, HARDENING #59 "open"): at that cadence
+//             no two changes fall inside one window, so every keystroke is a
+//             new 3 s elaboration and its goal requests hold threads too. Not
+//             in the default list; run it to measure a fix.
 // Verdict per run: the typing happened, no renderer crash, no death or
 // reboot, ready at the last version typed, and the pool (unused + running,
 // the exact total: a finished thread's Worker goes back to the pool) not
@@ -38,7 +43,8 @@
 // running pthreads; with it they peak at 13-25.
 //
 // Usage: node tests/adversarial/edit-storm.mjs [--url http://localhost:5185/]
-//          [--reps 2] [--scenarios sleep,sleepreq,pagesleep,pageslow,fast] [--grow-tolerance 4]
+//          [--reps 2] [--scenarios sleep,sleepreq,pagesleep,pagecadence,fast] [--grow-tolerance 4]
+//          (pageslow runs only when named)
 // Run it through the host's browser lock (one heavy runtime at a time).
 // Exit 0 = every run passed, 1 = a run failed, 3 = infrastructure.
 import { chromium } from "playwright";
@@ -48,7 +54,7 @@ import { arg, fetchJson, resolveTarget, root, runDir, teeLog } from "./harness.m
 
 const url = arg("url", "http://localhost:5185/");
 const REPS = Number(arg("reps", "2"));
-const SCENARIOS = arg("scenarios", "sleep,sleepreq,pagesleep,pageslow,fast").split(",");
+const SCENARIOS = arg("scenarios", "sleep,sleepreq,pagesleep,pagecadence,fast").split(",");
 const GROW = Number(arg("grow-tolerance", "4"));
 const target = resolveTarget(url);
 const manifest = await fetchJson(target.manifestUrl).catch((e) => { console.error(`edit-storm: refused — ${e.message}`); process.exit(3); });
@@ -64,8 +70,9 @@ const SUFFIX = {
   sleepreq: "\n\n#eval (IO.sleep 3000 : IO Unit)\n",
   pagesleep: "\n\n#eval (IO.sleep 3000 : IO Unit)\n",
   pageslow: "\n\n#eval (IO.sleep 3000 : IO Unit)\n",
+  pagecadence: "\n\n#eval (1 : Nat)\n",
 };
-const isPage = (sc) => sc === "pagesleep" || sc === "pageslow";
+const isPage = (sc) => sc === "pagesleep" || sc === "pageslow" || sc === "pagecadence";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const results = [];
 
@@ -95,12 +102,12 @@ async function run(browser, sc, rep) {
     // so every change re-elaborates the sleep (below it, Lean would reuse the unchanged prefix and the scenario measures nothing).
     const placed = await page.evaluate(() => globalThis.qed64.api.setCursor({ lineNumber: 2, column: 1 }));
     if (placed !== true) throw new Error(`setCursor refused: ${JSON.stringify(placed)}`);
-    await page.keyboard.type(BODY, { delay: sc === "pageslow" ? 150 : 10 });
+    await page.keyboard.type(BODY, { delay: sc === "pagesleep" ? 10 : 150 });
     const endedAt = Date.now();
     await sleep(800); // the client's 250 ms delayer, then the forward
     const doc = await page.evaluate(() => globalThis.qed64.api.getDocument());
     const lines = doc.text.split("\n");
-    if (!(lines[1] ?? "").startsWith("example") || !lines.some((l, i) => i > 1 && l.startsWith("#eval"))) throw new Error(`the example did not land above the sleep: ${JSON.stringify(doc.text.slice(0, 160))}`);
+    if (!(lines[1] ?? "").startsWith("example") || !lines.some((l, i) => i > 1 && l.startsWith("#eval"))) throw new Error(`the example did not land above the #eval line: ${JSON.stringify(doc.text.slice(0, 160))}`);
     return { v: doc.version, endedAt };
   })().catch((e) => ({ error: String(e).slice(0, 200) })) : page.evaluate(async ({ uri, base, header, body, suffix, ms, req }) => {
     const line = header.split("\n").length - 1;

@@ -710,15 +710,22 @@ frame at once). Embedders do not need their own throttle.
   change for 250 ms but flushes it before every request, and lean4monaco's
   requests (the InfoView's goals on a cursor move, inlay hints, code actions,
   semantic tokens) follow a keystroke whenever typing is slow enough for
-  their debounces to fire between keys. Measured on the stock page: a burst
-  at 10 ms/char reaches the relay as one change (the delayer); at 150 ms/char
-  a change arrives per keystroke. lean4game's client sent one per keystroke
-  at 25 ms/char. Queuing those requests behind the held change, instead of
+  their debounces to fire between keys. Measured on the stock page (the
+  edit-storm lane counts the frames reaching the relay): a burst at 10
+  ms/char reaches it as one change and 17 requests (the delayer); at 150
+  ms/char, 57 keystrokes arrive as 54 changes and about 250 requests, four
+  to five per key. lean4game's client sent one change per keystroke at 25
+  ms/char. Queuing those requests behind the held change, instead of
   letting them flush it, is what keeps the coalescing effective.
-- It limits the rate, not the number of threads. Under sustained typing
-  about 3.3 elaborations start per second, so non-cancellable work longer
-  than a few seconds can still fill the pool. The root fix is a cap on live
-  dedicated threads in the runtime (docs/HARDENING.md #59, #55).
+- It caps bursts, not a sustained pace, and it limits the rate, not the
+  number of threads. Two keystrokes 150 ms apart never share a window, so at
+  that pace every change is forwarded (delayed, not merged), each one a new
+  elaboration, and each keystroke's requests that wait on a snapshot hold
+  threads too. Measured on the stock page: typing at 150 ms/char above an
+  `#eval IO.sleep 3000` with the InfoView open crashes the tab on every
+  build so far (docs/HARDENING.md #59, open). The fixes are back-pressure
+  keyed on the worker's pool, or a cap on live dedicated threads in the
+  runtime (#55).
 
 ---
 
