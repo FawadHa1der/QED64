@@ -194,6 +194,9 @@ interface LivenessInfo {              // the worker's liveness machine (HARDENIN
     moment), never the `status` event's payload; a status a `status`
     listener superseded by restarting the session does not settle it.
   * Called while the relay is halted, it rejects `HALTED` at once.
+  * Each check runs a microtask after the status that triggered it (and
+    after the call), so a restart made by any listener of that status, or
+    later in the same turn, supersedes it.
   * It rejects with `Error & {code: "HALTED"}` when the crash-loop breaker
     trips, and with `{code: "TIMEOUT"}` after `timeoutMs`.
 * **`restart({snapshots, initialBytes})`**
@@ -209,7 +212,9 @@ interface LivenessInfo {              // the worker's liveness machine (HARDENIN
     try: the page and the worker both clamp it to the reservation ladder.
     `status().memory.initialBytes` is the commit the worker actually made
     once the session has booted (so it never exceeds `maximumBytes`); before
-    boot it is the request, clamped to the ladder.
+    boot it is the request, clamped to the ladder. `currentBytes` and `maximumBytes`
+    are the current session's meter readings: null after a session change
+    until its first reading.
   * On a halted relay, `restart()` with no arguments re-arms it on the
     default session, as an edit would.
   * It returns `{accepted: false}` while a boot is in flight.

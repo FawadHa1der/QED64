@@ -16,6 +16,7 @@ import {
 import { normalizeMemoryBytes, parseMemoryParam } from "../../frontend/src/embed/params";
 import { LspRelay, type RelaySession, type RelayStatus, type RestartOptions } from "../../frontend/src/lsp-relay";
 import { tapRelay, type LspMessage } from "../../frontend/src/relay-taps";
+import { createCheckFallback } from "../../frontend/src/check-fallback";
 import type { JsonRpcMessage, WorkerStatus } from "../../src/runtime/client";
 
 const CAPS: Capabilities = {
@@ -515,6 +516,91 @@ describe("over the real relay", () => {
     h.current().report({ phase: "ready" });
     await flush();
     expect(seen).toEqual(["done s2 ready", "settled s2 ready"]);
+  });
+  it("the boot card's check fallback armed by the replaced light session never finishes the widened boot (main.ts with check-fallback.ts)", async () => {
+    const clock = new Clock();
+    let widened = false;
+    const finished: string[] = [];
+    let fallback!: ReturnType<typeof createCheckFallback>;
+    const h = overRelay((relay, page) => {
+      fallback = createCheckFallback(() => { finished.push(`fallback ${relay.session.id} ${relay.status().phase}`); page.bootFinished(); }, 30000, clock);
+      return pageStatusSink(
+        () => relay.session.id,
+        (s) => {
+          if (widened || s.phase !== "headerRefused" || s.header?.mode !== "refused") return;
+          widened = true;
+          relay.restart({ snapshots: ["init", "mathlib"] });
+        },
+        (s) => { if (s.phase === "ready" || s.phase === "headerRefused") { fallback.cancel(); page.bootFinished(); } else fallback.observe(s); }, // main.ts renderStatus
+        (s) => page.relayStatus(s),
+      );
+    });
+    const done: string[] = [];
+    h.api.on("boot", (b) => { if (b.done) done.push(`${h.api.status().session} ${h.api.status().phase}`); });
+    await flush(); // the light session serves (the arm's status carries a non-final phase): the fallback arms
+    expect(clock.timers).toHaveLength(1);
+    h.current().report({ phase: "headerRefused", header: { version: 1, mode: "refused", key: [], moduleCount: 0, missing: ["Mathlib"], ms: 0 } });
+    // Widened synchronously: the relay left serving, so the light session's timer is gone — while the
+    // replacement is still booting (its environment download can take minutes), nothing finishes the boot.
+    expect(h.relay.session.id).toBe("s2");
+    expect(clock.timers).toHaveLength(0);
+    clock.advance(30000);
+    expect(finished).toEqual([]);
+    expect(done).toEqual([]);
+    await flush(); // the replacement serves: ITS first serving status arms its own fallback
+    expect(clock.timers).toHaveLength(1);
+    h.current().report({ phase: "ready" });
+    await flush();
+    expect(done).toEqual(["s2 ready"]);
+    clock.advance(60000);
+    expect(finished).toEqual([]);
+  });
+});
+
+describe("integration-review fixes", () => {
+  it("status().memory forgets the previous session's meter reading when the session changes", () => {
+    const t = setup();
+    boot(t);
+    report(t, { session: "s1" });
+    t.page.memory(4 * GiB, 4 * GiB);
+    expect(t.api.status().memory).toMatchObject({ currentBytes: 4 * GiB, maximumBytes: 4 * GiB });
+    t.relay.session = { ...t.relay.session, id: "s2", initialBytes: 6 * GiB };
+    report(t, { session: "s2", phase: "booting", relay: "rebooting", rebootReason: "user", version: null });
+    expect(t.api.status().memory).toEqual({ initialBytes: 6 * GiB, currentBytes: null, maximumBytes: null });
+  });
+  it("settled() called BEFORE a restarting status listener is registered is not resolved by the superseded verdict", async () => {
+    const t = setup();
+    boot(t);
+    report(t, { phase: "elaborating", version: 1 });
+    const v = t.api.settled();
+    t.api.on("status", (s) => { // an embedder's own widening, wired after it started waiting
+      if (s.phase !== "headerRefused" || s.session !== "s1") return;
+      t.relay.session = { ...t.relay.session, id: "s2" };
+      t.relay.current = status({ phase: "booting", relay: "rebooting", rebootReason: "user", session: "s2", version: null });
+    });
+    report(t, { phase: "headerRefused", session: "s1", version: 1 });
+    expect(await outcome(v)).toBe("pending");
+    report(t, { phase: "ready", session: "s2", version: 1 });
+    expect(await outcome(v)).toMatchObject({ session: "s2", phase: "ready" });
+  });
+  it("settled() called from a boot-done listener waits past a restart a later status listener makes", async () => {
+    const t = setup();
+    boot(t);
+    let v: Promise<unknown> | null = null;
+    t.api.on("boot", (b) => { if (b.done && !v) v = t.api.settled(); });
+    t.api.on("status", (s) => {
+      if (s.phase !== "headerRefused" || s.session !== "s1") return;
+      t.relay.session = { ...t.relay.session, id: "s2" };
+      t.relay.current = status({ phase: "booting", relay: "rebooting", rebootReason: "user", session: "s2", version: null });
+    });
+    // main.ts's sink: renderStatus finishes the boot (boot done) BEFORE the API emits this status.
+    t.relay.current = status({ phase: "headerRefused", session: "s1", version: 1 });
+    t.page.bootFinished();
+    t.page.relayStatus(t.relay.current);
+    expect(v).not.toBeNull();
+    expect(await outcome(v!)).toBe("pending");
+    report(t, { phase: "ready", session: "s2", version: 1 });
+    expect(await outcome(v!)).toMatchObject({ session: "s2", phase: "ready" });
   });
 });
 

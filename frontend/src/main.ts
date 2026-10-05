@@ -15,6 +15,7 @@ import { failureCauseOf, type FailureCause } from "./embed/failure";
 import { tapRelay } from "./relay-taps";
 import { installWidgetSourceCache } from "./widget-source-cache";
 import { createTestHatch } from "./test-hatch";
+import { createCheckFallback } from "./check-fallback";
 
 // The embedder-facing surface (docs/EMBEDDING.md §2), published synchronously
 // at module start — before any of the page's own listeners matter — so an
@@ -161,25 +162,21 @@ function bootProgress(label: string, info?: ProgressInfo) {
   }
 }
 
-// The check fallback: once the relay SERVES (environment loaded, document
-// open, loop armed), what is left is Lean checking the document. A restored
-// buffer can make that minutes long or endless (`#eval` loops, a heavy
-// search), and the editor must not stay hidden behind the card while it
-// does; the pill keeps the phase and its elapsed time. Armed by the first
-// serving status, never by anything earlier: before it, the boot is still
-// downloading or loading, which is what the card is for.
+// The check fallback (check-fallback.ts): once the relay SERVES, what is left
+// is Lean checking the document, and the editor must not stay hidden behind
+// the card while it does; the pill keeps the phase and its elapsed time.
+// Armed by a session's first serving status, never earlier (before it the
+// boot is still downloading or loading, which is what the card is for), and
+// disarmed when the relay leaves serving: a self-widen's replacement is
+// still booting.
 const CHECK_FALLBACK_MS = 30000;
-let checkFallback: number | undefined;
-function armCheckFallback() {
-  if (bootDone || checkFallback !== undefined) return;
-  checkFallback = window.setTimeout(bootFinish, CHECK_FALLBACK_MS);
-}
+const checkFallback = createCheckFallback(() => bootFinish(), CHECK_FALLBACK_MS);
 
 function bootFinish() {
   if (bootDone) return;
   bootDone = true;
   pageApi.bootFinished();
-  window.clearTimeout(checkFallback);
+  checkFallback.cancel();
   bootStage = STAGES.length;
   renderStages();
   bootEl.classList.add("done");
@@ -314,6 +311,7 @@ function renderStatus(s: PageStatus) {
   if (s.phase === "ready") everReady = true;
   trackSearch(s);
   if (s.phase === "halted") {
+    checkFallback.cancel(); // a halt is never "the checker is still checking": the failure card or the pill stays
     const d = s.lastDeath ?? null;
     // Not gated on the overlay: once it is gone (the check fallback, or a
     // first boot that settled in headerRefused) `bootFail` is a no-op and the
@@ -336,7 +334,7 @@ function renderStatus(s: PageStatus) {
   if (s.phase === "booting" || s.phase === "starting" || s.phase === "elaborating" || s.phase === "dead") ui.busy(label);
   else ui.idle(label);
   if (s.phase === "ready" || s.phase === "headerRefused") bootFinish();
-  else if (s.relay === "serving") armCheckFallback();
+  else if (!bootDone) checkFallback.observe(s);
 }
 
 /** The worker's collision fact (front door `statusOf().collision`, carried
@@ -484,6 +482,8 @@ async function main() {
   const widenForRoots = selfWiden(() => relay, artifacts.snapshots, (target) => {
     widening = entryLabel(target);
     ui.busy(`loading ${widening}…`);
+    // The card's checklist follows the replacement's boot (runtime, then its environment).
+    if (!bootDone) { bootStage = Math.min(bootStage, STAGES.indexOf("runtime")); renderStages(); }
   });
   // The session adapter reads the document it will serve: the initial text
   // at first boot (the relay constructs its first session before `relay` is

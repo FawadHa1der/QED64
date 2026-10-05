@@ -331,11 +331,16 @@ export function createPageApi(
           if (settledPhase(s.phase) && s.relay === "serving" && (want === null || (s.version ?? -1) >= want)) { done(); resolve(s); return true; }
           return false;
         };
-        const unsubscribe = on("status", () => { check(); });
+        // Decided a microtask later, after the whole status sink and every
+        // listener ran: a listener registered after this one may restart the
+        // session, and then this status is superseded too.
+        let finished = false;
+        const later = () => queueMicrotask(() => { if (!finished) check(); });
+        const unsubscribe = on("status", later);
         const unsubscribeBoot = on("boot", (b) => { if (b.failed && !isBound()) { done(); reject(err("BOOT_FAILED", b.message ?? "the page could not start")); } });
-        const done = () => { unsubscribe(); unsubscribeBoot(); if (timer !== undefined) timers.clearTimeout(timer); };
+        const done = () => { finished = true; unsubscribe(); unsubscribeBoot(); if (timer !== undefined) timers.clearTimeout(timer); };
         if (opts.timeoutMs !== undefined) timer = timers.setTimeout(() => { done(); reject(err("TIMEOUT", `not settled within ${opts.timeoutMs} ms`)); }, opts.timeoutMs);
-        if (binding) check();
+        if (binding) later();
       });
     },
     on,
@@ -441,7 +446,8 @@ export function createPageApi(
 
   function trackLiveness(s: RelayStatus) {
     const c = s.liveness;
-    if (s.session !== liveSession) { liveSession = s.session; liveCounters = null; lastAnswerAt = null; lastFrameAt = null; } // a new session has proved nothing yet
+    // A new session has proved nothing yet, and its heap is not the dead one's.
+    if (s.session !== liveSession) { liveSession = s.session; liveCounters = null; lastAnswerAt = null; lastFrameAt = null; mem = null; }
     if (!c) return;
     const prev = liveCounters ?? { probes: 0, answered: 0, stalls: 0, resumed: 0, rescues: 0 };
     liveCounters = { ...c };
