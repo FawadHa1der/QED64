@@ -682,8 +682,11 @@ frame at once). Embedders do not need their own throttle.
   items also carry an edit range on the server's text). A queued one of
   those whose change a newer change replaces is answered `ContentModified`
   (-32801, `error.data.qed64.kind: "superseded"`) the moment that happens:
-  what Lean answers when the document changes under a request. The client
-  refetches the tokens, and the next keystroke re-triggers the completion.
+  the LSP code clients treat as "ask again" (vscode-languageclient returns
+  the feature's default and logs nothing; Lean 4.34 itself does not emit it
+  for an edit under a request, and the front door already answers completion
+  with it). The client refetches the tokens, and the next keystroke
+  re-triggers the completion.
   lean4monaco logs every error reply it receives to the console (its own
   TODO; the relay's death and restart errors already go there), so typing
   with the suggest widget open can print one such line per superseding

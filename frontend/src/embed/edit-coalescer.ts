@@ -44,9 +44,11 @@
 //     option-name and error-name items carry an edit range on the server's
 //     text, so accepting one would also delete the character after the
 //     cursor). A queued one of these whose change a newer change replaces is
-//     answered `ContentModified` (-32801) the moment that happens: what Lean
-//     answers when the document changes under a request; the client refetches
-//     the tokens and the next keystroke re-triggers the completion;
+//     answered `ContentModified` (-32801) the moment that happens: the code
+//     the client handles by returning its default and logging nothing (Lean
+//     4.34 itself never emits it for an edit under a request; the front door
+//     already answers completion with it); the client refetches the tokens
+//     and the next keystroke re-triggers the completion;
 //   * didOpen, didClose, a ranged (or multi-part) didChange, a replay, and a
 //     full-text change of another document first forward the held change and
 //     the queue, then go (or are held) themselves: a held change never
@@ -110,7 +112,7 @@ const isBarrier = (msg: CoalescibleMessage): boolean =>
 /** The requests whose reply the client rebases by its later edits: vscode-languageclient's RequestsToCancelOnContentModified, and completion. */
 export const SUPERSEDED_METHODS: ReadonlySet<string> = new Set(["textDocument/semanticTokens/full", "textDocument/semanticTokens/full/delta", "textDocument/semanticTokens/range", "textDocument/completion"]);
 
-/** The answer to such a request whose text a newer change replaced before it reached the checker (Lean's own code for it). */
+/** The answer to such a request whose text a newer change replaced before it reached the checker (the LSP code clients treat as "ask again"). */
 export const SUPERSEDED: JsonRpcError = Object.freeze({
   code: -32801,
   message: "QED64: the document changed before this request reached the checker",
