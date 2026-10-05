@@ -1,10 +1,11 @@
 // The raw snapshot region cache (frontend/src/embed/raw-cache.ts;
 // docs/EMBEDDING.md §7.4): single-flight per cache key in the page (callers
 // share one worker, abort detaches only the caller, the last abort terminates),
-// the cross-tab Web Lock (busy "return" vs "wait" + re-probe), cleanup on
-// silence/abort (partial removed, never .raw; a commit that beat the bail is
-// "done"), a worker that fails to load, late messages, same-origin URLs only,
-// and the exported cache helpers. Over a fake Worker, OPFS and LockManager.
+// the cross-tab Web Lock (busy "return" vs "wait" + re-probe, decided per
+// caller), cleanup on silence/abort (partial removed, never .raw; a commit
+// that beat the bail is "done"), a worker that fails to load, late messages,
+// same-origin URLs only, and the exported cache helpers. Over a fake Worker,
+// OPFS and a LockManager that grants a task later, as browsers do.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { isCacheKeyOf, isRawCached, prefetchRaw, rawRegionName, removeRawRegion, SNAPSHOT_CACHE_DIR } from "../../frontend/src/embed/raw-cache";
 import { snapshotCacheKey, type SnapshotIndex } from "../../src/runtime/snapshots";
@@ -20,42 +21,60 @@ class FakeWorker {
   terminate() { this.terminated = true; }
   emit(data: unknown) { this.onmessage?.({ data }); }
 }
-/** OPFS: a map of file name → size; `removed` records removals. */
+/** OPFS: a map of file name → size; `removed` records removals; `onLookup` runs as a lookup starts. */
 class FakeOpfs {
   files = new Map<string, number>();
   removed: string[] = [];
+  onLookup?: () => void;
   dir = {
-    getFileHandle: async (name: string) => { if (!this.files.has(name)) throw new Error("NotFoundError"); return { getFile: async () => ({ size: this.files.get(name)! }) }; },
+    getFileHandle: async (name: string) => { this.onLookup?.(); if (!this.files.has(name)) throw new Error("NotFoundError"); return { getFile: async () => ({ size: this.files.get(name)! }) }; },
     removeEntry: async (name: string) => { if (!this.files.delete(name)) throw new Error("NotFoundError"); this.removed.push(name); },
   };
 }
-/** Web Locks: one holder per name, FIFO waiters, ifAvailable and signal honoured. */
+/** Web Locks as Chromium implements the spec: one holder per name, FIFO
+ * waiters, ifAvailable. The callback (with the lock, or null for ifAvailable)
+ * is invoked from a LATER TASK, never in the requester's microtasks. An abort
+ * before that task rejects and cancels the request (freeing a lock granted
+ * meanwhile); after it, nothing. `held.add` / `release` play another tab. */
 class FakeLocks {
   held = new Set<string>();
   waiters = new Map<string, Array<() => void>>();
-  async request<T>(name: string, opts: { ifAvailable?: boolean; signal?: AbortSignal }, cb: (lock: object | null) => Promise<T>): Promise<T> {
-    if (this.held.has(name)) {
-      if (opts.ifAvailable) return cb(null);
-      await new Promise<void>((resolve, reject) => {
-        const q = this.waiters.get(name) ?? [];
-        q.push(resolve);
-        this.waiters.set(name, q);
-        opts.signal?.addEventListener("abort", () => { this.waiters.set(name, (this.waiters.get(name) ?? []).filter((w) => w !== resolve)); reject(new DOMException("aborted", "AbortError")); }, { once: true });
-      });
-    }
-    this.held.add(name);
-    try { return await cb({ name }); } finally {
-      this.held.delete(name);
-      this.waiters.get(name)?.shift()?.();
-    }
+  request(name: string, opts: { ifAvailable?: boolean; signal?: AbortSignal }, cb: (lock: object | null) => unknown): Promise<unknown> {
+    const signal = opts.signal;
+    if (signal?.aborted) return Promise.reject(signal.reason);
+    return new Promise((resolve, reject) => {
+      let state: "queued" | "granted" | "invoked" = "queued";
+      const invoke = (lock: object | null) => setTimeout(() => {
+        if (signal?.aborted) return; // cancelled while the grant was on its way
+        state = "invoked";
+        const waiting = (async () => cb(lock))();
+        resolve(waiting);
+        if (lock) void waiting.then(() => this.release(name), () => this.release(name));
+      }, 0);
+      const grant = () => { state = "granted"; this.held.add(name); invoke({ name }); };
+      signal?.addEventListener("abort", () => {
+        if (state === "invoked") return;
+        if (state === "granted") this.release(name);
+        else this.waiters.set(name, (this.waiters.get(name) ?? []).filter((g) => g !== grant));
+        reject(signal.reason);
+      }, { once: true });
+      if (!this.held.has(name)) grant();
+      else if (opts.ifAvailable) invoke(null);
+      else this.waiters.set(name, [...(this.waiters.get(name) ?? []), grant]);
+    });
   }
+  /** Free `name` and grant it to the next waiter. */
+  release(name: string) { this.held.delete(name); this.waiters.get(name)?.shift()?.(); }
 }
 
 const entry = { name: "mathlib", url: "/snapshots/mathlib.x.snapz", bytes: 1000, transfer: 400, digest: `sha256:${"ab".repeat(32)}`, imports: [] };
 const RAW = rawRegionName(entry)!;
+const LOCK = `qed64-raw:${snapshotCacheKey(entry)}`;
 let opfs: FakeOpfs;
 let locks: FakeLocks | undefined;
 const flush = async () => { for (let i = 0; i < 50; i++) await Promise.resolve(); };
+/** Real timers only: run tasks (a lock grant is one) until `cond` holds. */
+const until = async (cond: () => boolean) => { for (let i = 0; i < 50 && !cond(); i++) await new Promise((r) => setTimeout(r, 0)); };
 
 function stub({ withLocks = false } = {}) {
   opfs = new FakeOpfs();
@@ -150,54 +169,51 @@ describe("silence, load failures, late messages", () => {
 describe("across tabs (Web Locks)", () => {
   beforeEach(() => stub({ withLocks: true }));
   it("onBusy return: another tab's writer means busy at once", async () => {
-    locks!.held.add(`qed64-raw:${snapshotCacheKey(entry)}`);
+    locks!.held.add(LOCK);
     await expect(prefetchRaw(entry)).resolves.toEqual({ status: "busy" });
     expect(FakeWorker.all).toHaveLength(0);
   });
-  it("onBusy wait: waits for the other tab, re-probes, and finds it done without a worker", async () => {
-    const name = `qed64-raw:${snapshotCacheKey(entry)}`;
-    let release!: () => void;
-    void locks!.request(name, {}, () => new Promise<void>((r) => { release = r; }));
-    await flush();
-    const r = prefetchRaw(entry, { onBusy: "wait" });
-    await flush();
+  it("onBusy wait: says so once, waits for the other tab, re-probes, and finds it done without a worker", async () => {
+    locks!.held.add(LOCK); // another tab is writing
+    const waits: string[] = [];
+    const r = prefetchRaw(entry, { onBusy: "wait", onBusyWait: () => waits.push("waiting") });
+    await until(() => waits.length > 0);
     opfs.files.set(RAW, 1000); // the other tab committed
-    release();
+    locks!.release(LOCK);
     await expect(r).resolves.toEqual({ status: "done", bytes: 1000 });
     expect(FakeWorker.all).toHaveLength(0);
+    expect(waits).toEqual(["waiting"]);
   });
   it("onBusy wait gives up after busyWaitMs", async () => {
     vi.useFakeTimers();
-    locks!.held.add(`qed64-raw:${snapshotCacheKey(entry)}`);
+    locks!.held.add(LOCK);
     const r = prefetchRaw(entry, { onBusy: "wait", busyWaitMs: 500 });
     await vi.advanceTimersByTimeAsync(500);
     await expect(r).resolves.toEqual({ status: "busy" });
+    expect(locks!.waiters.get(LOCK)).toEqual([]); // the queued request was withdrawn
   });
   it("the writer holds the lock while its worker runs", async () => {
     const r = prefetchRaw(entry);
-    for (let i = 0; i < 20 && FakeWorker.all.length === 0; i++) await flush();
-    expect(locks!.held.has(`qed64-raw:${snapshotCacheKey(entry)}`)).toBe(true);
+    await until(() => FakeWorker.all.length > 0);
+    expect(locks!.held.has(LOCK)).toBe(true);
     FakeWorker.all[0]!.emit({ status: "done", bytes: 1000 });
     await r;
-    await flush();
+    await until(() => locks!.held.size === 0);
     expect(locks!.held.size).toBe(0);
   });
 });
 
 describe("review fixes", () => {
-  it("a 'wait' caller that joined a 'return' flight that came back busy waits on a flight of its own", async () => {
+  it("a 'wait' caller that joined a 'return' flight keeps waiting when the flight finds another tab writing", async () => {
     stub({ withLocks: true });
-    const name = `qed64-raw:${snapshotCacheKey(entry)}`;
-    let release!: () => void;
-    void locks!.request(name, {}, () => new Promise<void>((r) => { release = r; }));
-    await flush();
+    locks!.held.add(LOCK);
     const ret = prefetchRaw(entry); // "return": busy at once
     const waits: string[] = [];
     const waiter = prefetchRaw(entry, { onBusy: "wait", onBusyWait: () => waits.push("waiting") });
     await expect(ret).resolves.toEqual({ status: "busy" });
-    for (let i = 0; i < 5; i++) await flush();
+    await until(() => waits.length > 0);
     opfs.files.set(RAW, 1000);
-    release();
+    locks!.release(LOCK);
     await expect(waiter).resolves.toEqual({ status: "done", bytes: 1000 });
     expect(waits).toEqual(["waiting"]);
   });
@@ -219,6 +235,60 @@ describe("review fixes", () => {
     expect(FakeWorker.all).toHaveLength(2);
     FakeWorker.all[1]!.emit({ status: "done", bytes: 1000 });
     await expect(second).resolves.toEqual({ status: "done", bytes: 1000 });
+  });
+});
+
+describe("busy is the lock's answer, per caller", () => {
+  beforeEach(() => stub({ withLocks: true }));
+  it("onBusy wait with the lock free never says it is waiting for another tab (the grant is a task away)", async () => {
+    const waits: string[] = [];
+    const r = prefetchRaw(entry, { onBusy: "wait", onBusyWait: () => waits.push("waiting") });
+    await until(() => FakeWorker.all.length > 0);
+    FakeWorker.all[0]!.emit({ status: "done", bytes: 1000 });
+    await expect(r).resolves.toEqual({ status: "done", bytes: 1000 });
+    expect(waits).toEqual([]);
+  });
+  it("the last caller aborting during the re-probe under the lock spawns no worker and frees the lock", async () => {
+    const ac = new AbortController();
+    let lookups = 0;
+    opfs.onLookup = () => { if (++lookups === 2) ac.abort(); }; // the second .raw probe is the one under the lock
+    await expect(prefetchRaw(entry, { signal: ac.signal })).resolves.toEqual({ status: "aborted" });
+    await until(() => locks!.held.size === 0);
+    expect(FakeWorker.all).toHaveLength(0);
+    expect(locks!.held.size).toBe(0);
+    expect(lookups).toBe(2);
+  });
+  it("a 'return' caller is answered busy at once while this page waits for another tab, joining early or late", async () => {
+    locks!.held.add(LOCK); // another tab is writing
+    const waits: string[] = [], answers: unknown[] = [];
+    const waiter = prefetchRaw(entry, { onBusy: "wait", onBusyWait: () => waits.push("waiting") });
+    void prefetchRaw(entry).then((r) => answers.push(r)); // joins while the flight still asks for the lock
+    await until(() => waits.length > 0);
+    await flush();
+    void prefetchRaw(entry).then((r) => answers.push(r)); // the flight is waiting now
+    await flush(); // microtasks only: no lock task runs before the answer
+    expect(answers).toEqual([{ status: "busy" }, { status: "busy" }]);
+    opfs.files.set(RAW, 1000);
+    locks!.release(LOCK);
+    await expect(waiter).resolves.toEqual({ status: "done", bytes: 1000 });
+    expect(waits).toEqual(["waiting"]);
+  });
+  it("each 'wait' caller says so as it starts waiting and keeps its own busyWaitMs", async () => {
+    vi.useFakeTimers();
+    locks!.held.add(LOCK);
+    const said: string[] = [];
+    const a = prefetchRaw(entry, { onBusy: "wait", busyWaitMs: 500, onBusyWait: () => said.push("a") });
+    await vi.advanceTimersByTimeAsync(0);
+    const b = prefetchRaw(entry, { onBusy: "wait", busyWaitMs: 2000, onBusyWait: () => said.push("b") });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(said).toEqual(["a", "b"]); // b joined a flight that was already waiting
+    await vi.advanceTimersByTimeAsync(500);
+    await expect(a).resolves.toEqual({ status: "busy" });
+    opfs.files.set(RAW, 1000);
+    locks!.release(LOCK); // b is still queued for the lock
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(b).resolves.toEqual({ status: "done", bytes: 1000 });
+    expect(FakeWorker.all).toHaveLength(0);
   });
 });
 
