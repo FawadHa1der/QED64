@@ -23,7 +23,7 @@ export interface BootOverrides {
 
 export class BootParamError extends Error {
   readonly code = "BOOT_PARAM_REFUSED";
-  constructor(readonly param: keyof BootOverrides | "memory", readonly value: string, why: string) {
+  constructor(readonly param: keyof BootOverrides | "memory" | "edithold", readonly value: string, why: string) {
     super(`refused ?${param}=${JSON.stringify(value).slice(1, -1).slice(0, 80)}: ${why}`);
     this.name = "BootParamError";
   }
@@ -90,4 +90,18 @@ export function parseMemoryParam(search: string): number | null {
   if (!v) return null;
   if (!/^(?:[1-9]\d*|0)(?:\.\d{1,3})?$/.test(v)) throw new BootParamError("memory", v, "expected a number of GiB, e.g. 3 or 2.5");
   return normalizeMemoryBytes(Number(v) * GiB);
+}
+
+/** The free preallocated Workers an `?edithold=` may ask the hold to keep (the runtime preallocates 24). */
+export const EDIT_HOLD_MAX_FREE_WORKERS = 24;
+
+/** `?edithold=<n>` (docs/EMBEDDING.md §4, §7.8): hold full-text changes
+ * while fewer than n preallocated Workers are free, for every session of the
+ * page; 0 disables the hold; null when unset. A small integer only, never a
+ * number spliced anywhere: it becomes `ResidentHost.editBackPressure`. */
+export function parseEditHoldParam(search: string): number | null {
+  const v = new URLSearchParams(search).get("edithold");
+  if (v === null || v === "") return null;
+  if (!/^(?:0|[1-9]\d?)$/.test(v) || Number(v) > EDIT_HOLD_MAX_FREE_WORKERS) throw new BootParamError("edithold", v, `expected a whole number of free Workers, 0 to ${EDIT_HOLD_MAX_FREE_WORKERS}`);
+  return Number(v);
 }

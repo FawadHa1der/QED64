@@ -4,7 +4,7 @@
 // `/attacker.example/x` is protocol-relative once prefixed with "/" — and a
 // refusal must fail the boot BEFORE any fetch, naming the parameter.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { BootParamError, parseBootParams, validateBootOverrides } from "../../frontend/src/embed/params";
+import { BootParamError, EDIT_HOLD_MAX_FREE_WORKERS, parseBootParams, parseEditHoldParam, validateBootOverrides } from "../../frontend/src/embed/params";
 import { installArtifacts, type StatusSink } from "../../frontend/src/qed64-boot";
 
 const ORIGIN = "http://localhost:5199";
@@ -59,6 +59,22 @@ describe("parseBootParams", () => {
   it("validates programmatic overrides by the same rules", () => {
     expect(validateBootOverrides({ snapshots: "snapshots/widgets8" }, ORIGIN)).toEqual({ snapshots: "snapshots/widgets8", profiles: null, runtime: null });
     expect(() => validateBootOverrides({ snapshots: "//evil.example/x" }, ORIGIN)).toThrow(BootParamError);
+  });
+});
+
+describe("parseEditHoldParam (?edithold=, docs/EMBEDDING.md §4, §7.8)", () => {
+  it("accepts a whole number of free Workers from 0 (the hold off) to 24, unset or empty as null, and refuses everything else by name", () => {
+    expect(parseEditHoldParam("")).toBeNull();
+    expect(parseEditHoldParam("?memory=2")).toBeNull();
+    expect(parseEditHoldParam("?edithold=")).toBeNull();
+    expect(parseEditHoldParam("?edithold=0")).toBe(0);
+    expect(parseEditHoldParam("?edithold=6")).toBe(6);
+    expect(parseEditHoldParam("?edithold=24")).toBe(24);
+    expect(EDIT_HOLD_MAX_FREE_WORKERS).toBe(24);
+    for (const bad of ["25", "-1", "6.5", "06", "1e1", "6;DROP TABLE", "0x6", "six", " 6", "99999999999999999999", "../x", "6\n", "true"]) {
+      expect(() => parseEditHoldParam(`?edithold=${encodeURIComponent(bad)}`), bad).toThrow(/^refused \?edithold=/);
+      expect(() => parseEditHoldParam(`?edithold=${encodeURIComponent(bad)}`), bad).toThrow(BootParamError);
+    }
   });
 });
 

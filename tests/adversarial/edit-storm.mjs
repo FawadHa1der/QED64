@@ -30,11 +30,17 @@
 //   pagecadence 150 ms/char with NO sleep: counts how many changes and
 //             requests a typing pace reaches the relay with (one per key
 //             when a request follows each keystroke)
-//   pageslow  150 ms/char above the sleep. KNOWN TO CRASH on every build so
-//             far (pool 24 → 52-64, HARDENING #59 "open"): at that cadence
-//             no two changes fall inside one window, so every keystroke is a
-//             new 3 s elaboration and its goal requests hold threads too. Not
-//             in the default list; run it to measure a fix.
+//   pageslow  150 ms/char above the sleep: at that cadence no two changes
+//             fall inside one window, so without back-pressure every
+//             keystroke is a new 3 s elaboration and its goal requests hold
+//             threads too — the tab crashed on every build before the
+//             pool-keyed hold (pool 24 → 52-64, HARDENING #59). It measures
+//             the hold and the request cap: the session's back-pressure log
+//             lines ("[qed64] edit back-pressure: …") are counted per run
+//             (holds, releases, caps, the longest hold), and its record is
+//             read at the end (requests that waited for a slot, answered
+//             cancelled or superseded here). `--url …/?edithold=0` runs the
+//             same build with the hold off, the control arm.
 // Verdict per run: the typing happened, no renderer crash, no death or
 // reboot, ready at the last version typed, and the pool (unused + running,
 // the exact total: a finished thread's Worker goes back to the pool) not
@@ -43,8 +49,7 @@
 // running pthreads; with it they peak at 13-25.
 //
 // Usage: node tests/adversarial/edit-storm.mjs [--url http://localhost:5185/]
-//          [--reps 2] [--scenarios sleep,sleepreq,pagesleep,pagecadence,fast] [--grow-tolerance 4]
-//          (pageslow runs only when named)
+//          [--reps 2] [--scenarios sleep,sleepreq,pagesleep,pagecadence,fast,pageslow] [--grow-tolerance 4]
 // Run it through the host's browser lock (one heavy runtime at a time).
 // Exit 0 = every run passed, 1 = a run failed, 3 = infrastructure.
 import { chromium } from "playwright";
@@ -54,7 +59,7 @@ import { arg, fetchJson, resolveTarget, root, runDir, teeLog } from "./harness.m
 
 const url = arg("url", "http://localhost:5185/");
 const REPS = Number(arg("reps", "2"));
-const SCENARIOS = arg("scenarios", "sleep,sleepreq,pagesleep,pagecadence,fast").split(",");
+const SCENARIOS = arg("scenarios", "sleep,sleepreq,pagesleep,pagecadence,fast,pageslow").split(",");
 const GROW = Number(arg("grow-tolerance", "4"));
 const target = resolveTarget(url);
 const manifest = await fetchJson(target.manifestUrl).catch((e) => { console.error(`edit-storm: refused — ${e.message}`); process.exit(3); });
@@ -80,6 +85,15 @@ async function run(browser, sc, rep) {
   const context = await browser.newContext();
   if (isPage(sc)) await context.addInitScript((t) => { try { localStorage.setItem("qed64.buffer", t); } catch {} }, "import Mathlib\n\n" + SUFFIX[sc]);
   const page = await context.newPage();
+  // The session's back-pressure record, from its log lines (resident-session.ts: one per hold, release and cap).
+  const bp = { holds: 0, releases: 0, caps: 0, longestHoldMs: 0 };
+  page.on("console", (m) => {
+    const t = m.text();
+    if (!t.startsWith("[qed64] edit back-pressure:")) return;
+    const held = Number(/(?:released after|cap at) (\d+) ms/.exec(t)?.[1] ?? 0);
+    if (t.includes("holding")) bp.holds += 1; else if (t.includes("released after")) bp.releases += 1; else if (t.includes("cap at")) bp.caps += 1;
+    bp.longestHoldMs = Math.max(bp.longestHoldMs, held);
+  });
   let crashedAt = null;
   const t0 = Date.now();
   page.on("crash", () => { crashedAt = Date.now() - t0; });
@@ -137,7 +151,7 @@ async function run(browser, sc, rep) {
     if (Date.now() - tType > 180000) break;
     await sleep(100);
   }
-  const after = crashedAt !== null ? null : await page.evaluate(() => ({ stats: globalThis.qed64.test.stats(), status: globalThis.qed64.api.status(), seen: globalThis.__editStorm })).catch(() => null);
+  const after = crashedAt !== null ? null : await page.evaluate(() => ({ stats: globalThis.qed64.test.stats(), status: globalThis.qed64.api.status(), seen: globalThis.__editStorm, backPressure: globalThis.qed64.relay?.session?.backPressure ?? null })).catch(() => null);
   const total = (p) => (p ? p.unused + p.running : -1);
   // The first sample that saw the checker ready AT the last typed version (it can predate the typing promise, which
   // on the page path includes a settle sleep); coalescing may skip the versions before the last, never the last.
@@ -154,6 +168,8 @@ async function run(browser, sc, rep) {
     readyAfterFirstKeyMs: readySample ? readySample.t : null,
     readyAfterTypingMs: readySample && typingEndedAt !== null ? Math.max(0, readySample.at - typingEndedAt) : null,
     lastDeath: after?.status?.lastDeath ?? null,
+    // The console-derived counts (they survive a crash) under the session's own record when the page is still there.
+    backPressure: { ...bp, ...(after?.backPressure ?? {}) },
   };
   fs.writeFileSync(OUT.replace(/\.json$/, `-${sc}-${rep}-samples.json`), JSON.stringify(samples.map(({ at, ...s }) => s)));
   await context.close().catch(() => {});
@@ -177,7 +193,7 @@ try {
 const grownBy = (r) => (r.poolBefore ? r.peakPool - (r.poolBefore.unused + r.poolBefore.running) : null);
 const failed = (r) => !!r.infra || r.typedError !== null || r.lastVersion === null || r.crashedAt !== null || !r.settled || (r.deaths ?? 1) > 0 || (r.reboots ?? 1) > 0 || (grownBy(r) ?? 0) > GROW;
 const why = (r) => r.crashedAt !== null ? `renderer crashed at ${(r.crashedAt / 1000).toFixed(1)} s` : r.typedError !== null ? `the typing failed: ${r.typedError}` : r.lastVersion === null ? "the typing never ended" : !r.settled ? `never ready at the last version (${r.lastVersion})` : (r.deaths ?? 1) > 0 || (r.reboots ?? 1) > 0 ? `${r.deaths} death(s), ${r.reboots} reboot(s)` : `ready at the last version, ${r.deaths} deaths`;
-for (const r of results) if (!r.infra) console.log(`${failed(r) ? "FAIL" : "PASS"} ${r.sc}#${r.rep}: ${why(r)}; ${r.changesSeen ?? "?"} changes and ${r.requestsSeen ?? "?"} requests reached the relay; pool ${r.poolBefore.unused + r.poolBefore.running} → peak ${r.peakPool} (grown by ${Math.max(0, grownBy(r))}, running peak ${r.peakRunning}); ready ${r.readyAfterTypingMs ?? "-"} ms after the typing ended (${r.readyAfterFirstKeyMs} ms after its first key)`);
+for (const r of results) if (!r.infra) console.log(`${failed(r) ? "FAIL" : "PASS"} ${r.sc}#${r.rep}: ${why(r)}; ${r.changesSeen ?? "?"} changes and ${r.requestsSeen ?? "?"} requests reached the relay; pool ${r.poolBefore.unused + r.poolBefore.running} → peak ${r.peakPool} (grown by ${Math.max(0, grownBy(r))}, running peak ${r.peakRunning}); ready ${r.readyAfterTypingMs ?? "-"} ms after the typing ended (${r.readyAfterFirstKeyMs} ms after its first key); back-pressure held ${r.backPressure.holds} time(s), released ${r.backPressure.releases}, capped ${r.backPressure.caps}, longest hold ${r.backPressure.longestHoldMs} ms; ${r.backPressure.waits ?? "?"} requests waited for a slot, ${r.backPressure.cancelled ?? "?"} answered cancelled here, ${r.backPressure.superseded ?? "?"} superseded`);
 const bad = results.filter(failed).length;
 console.log(`edit-storm: ${results.length - bad}/${results.length} pass; report ${path.relative(root, OUT)}`);
 process.exit(results.some((r) => r.infra) && bad === results.length ? 3 : bad ? 1 : 0);
