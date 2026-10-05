@@ -308,6 +308,7 @@ runtime (one QED64 per page), navigate the frame away first, e.g. to
 | `profiles=<dir>` | an unpromoted profile set | `^(?:profiles/)?…` (same rule) |
 | `runtime=<buildId>` | an unpromoted runtime | `^wasm64-[0-9a-f]{16}$` |
 | `memory=<GiB>` | the initial Memory64 commit of **every** session | `^(?:[1-9]\d*\|0)(?:\.\d{1,3})?$`, rounded to 256 MiB and clamped to [1, 6] GiB |
+| `edithold=<n>` | the edit back-pressure's threshold for **every** session (§7.8): full-text changes are held while fewer than `n` preallocated Workers are free; `0` disables the hold | `^(?:0\|[1-9]\d?)$`, at most 24; maps to `ResidentHost.editBackPressure.minFreeWorkers` |
 
 Refusals:
 - A refused value is a **boot failure that names the parameter**: a `boot`
@@ -656,6 +657,13 @@ overrides routed through `parseBootParams` / `validateBootOverrides`.
   `closure.json` → `workerProtocol.deprecated` with the release it went
   unused in, and leaves the worker one release later. Long-lived tabs are
   covered by the recoverable refusal above and by the revision check.
+- **A `telemetry` request may be answered after a `status` event.** The
+  worker re-samples its status before replying and emits the event when
+  the status changed (the pool sample included); an unchanged status emits
+  nothing. The session relies on it while it holds an edit for the pool
+  (§7.8); a page that only reads the reply sees no difference, and the
+  status event stays the one channel for pool samples. Not a protocol
+  change: no new message, field or request type.
 
 ### 7.8 Edit coalescing
 
@@ -666,10 +674,14 @@ frame at once). Embedders do not need their own throttle.
   changes inside it are held, the newest replacing the held one. When the
   window ends, the held change goes and opens the next window. Each change
   carries the whole text, so Lean always sees the newest version.
-- While a change is held, every other frame (requests, `$/cancelRequest`,
-  other notifications) waits behind it in arrival order and goes right after
-  it. Nothing is reordered relative to the text. The cost: a frame sent
-  during a burst waits up to the window.
+- While a change is held, every other frame (requests, other notifications)
+  waits behind it in arrival order and goes right after it. Nothing is
+  reordered relative to the text. The cost: a frame sent during a burst
+  waits up to the window. A `$/cancelRequest` never waits: one naming a
+  request still queued answers that request `RequestCancelled` (-32800,
+  `error.data.qed64.kind: "cancelled"`) at once, what Lean would answer,
+  and the request never reaches the worker; one naming a request already
+  forwarded goes at once (the request it names is already there).
 - A request queued behind a change that a newer change then replaces is
   answered against the newer text, which is the client's view by then:
   editors cancel or re-issue their position-bound requests on every content
@@ -720,15 +732,74 @@ frame at once). Embedders do not need their own throttle.
   to five per key. lean4game's client sent one change per keystroke at 25
   ms/char. Queuing those requests behind the held change, instead of
   letting them flush it, is what keeps the coalescing effective.
-- It caps bursts, not a sustained pace, and it limits the rate, not the
-  number of threads. Keystrokes 150 ms apart rarely share a window, so at
-  that pace nearly every change is forwarded (delayed more than merged),
-  each one a new elaboration, and each keystroke's requests that wait on a
-  snapshot hold threads too. Measured on the stock page: typing at 150 ms/char above an
-  `#eval IO.sleep 3000` with the InfoView open crashes the tab on every
-  build so far (docs/HARDENING.md #59, open). The fixes are back-pressure
-  keyed on the worker's pool, or a cap on live dedicated threads in the
-  runtime (#55).
+- The window caps bursts, not a sustained pace, and it limits the rate,
+  not the number of threads. Keystrokes 150 ms apart rarely share a window,
+  so at that pace nearly every change is forwarded (delayed more than
+  merged), each one a new elaboration, and each keystroke's requests that
+  wait on a snapshot hold threads too. Measured on the stock page before
+  the back-pressure below: typing at 150 ms/char above an `#eval IO.sleep
+  3000` with the InfoView open crashed the tab on every build
+  (docs/HARDENING.md #59).
+- **Back-pressure on the worker's pool** (`ResidentHost.editBackPressure`;
+  the page maps `?edithold=<n>` onto it, §4). The session feeds the
+  coalescer the pool sample of every worker status (`status.pool`:
+  preallocated Workers free, pthreads alive). The pool is *pressured* while
+  the last sample shows fewer than `minFreeWorkers` free (default 6 of the
+  runtime's 24, so while more than 18 pthreads are alive), and for
+  `pressureMemoryMs` (default 1000) after the last such sample: request
+  threads live for milliseconds, so the free count flaps between 2 and 12
+  inside one 100 ms interval, and a window's end that happened to see a
+  drained sample would forward another elaboration. A sample that did not
+  measure the pool never pressures. Samples arrive only with the worker's
+  status events, and an idle worker emits none, so while a change is held
+  the session asks the worker for telemetry every 250 ms (the worker then
+  re-emits its status when the pool changed), and a hold that only the
+  memory keeps is re-checked when the memory expires.
+  - A change held when its window ends stays held while the pool is
+    pressured, and the frames behind it with it. The next status showing
+    the pool drained releases it at once: the newest change, then the
+    queue, and a new window opens. A change arriving with no window open
+    while the pool is pressured is held the same way instead of going at
+    once. Newest wins during the hold as inside the window, with the same
+    `ContentModified` answers for the superseded requests.
+  - The hold is capped: `maxHoldMs` (default 5000) after it began the
+    newest change goes regardless, and a newer change replacing the held
+    one does not restart the cap. A sustained pace under sustained pressure
+    therefore reaches Lean once per window plus cap, never not at all.
+    Samples arrive only with the worker's status events (every server
+    frame; there is no timer), so a silent worker is what the cap is for.
+  - Barriers, replays and another document's change flush a hold as they
+    flush a window; `dispose()` drops it. `{ minFreeWorkers: 0 }` disables
+    it, and with no status observed the coalescer behaves as without it.
+- **Requests in flight** (`editBackPressure.maxInFlightRequests`, default
+  6). Each request Lean is handling is a task on its own dedicated thread
+  while it waits for its snapshot, and a thread is a Worker: ~90 requests
+  released at once above a 3 s `IO.sleep` grew the pool 24 → 64 within
+  400 ms (the hold alone, HARDENING #59 addendum). So at most that many
+  requests are at the worker unanswered; the next waits at the head of the
+  queue and every frame behind it waits in order, and each reply admits the
+  next. A full-text change never waits for a slot: it goes ahead of the
+  waiting requests, which are answered against the newer text (the rule
+  above, `ContentModified` for the ones Monaco rebases). Barriers and
+  replays flush the whole queue past the cap. `0` is no cap. Under a
+  responsive checker the cap is never reached (the stock page sends four to
+  five requests per keystroke, answered in milliseconds); under one that
+  is not, the requests wait here instead of each on its own thread there.
+- The session logs each hold, release and cap to the console
+  (`[qed64] edit back-pressure: …`) and keeps a record
+  (`ResidentSession.backPressure`: `holds`, `releases`, `caps`, `waits`
+  (requests that waited for a slot), `cancelled`, `superseded`).
+- The cost: under pressure an edit waits for the pool, up to the cap, and
+  the InfoView follows when the change goes; past the cap a request waits
+  for a reply to an earlier one. That trades latency on a runtime already
+  near the cage ceiling (#55) for the tab staying alive. Measured with the
+  edit-storm lane's `pageslow` scenario, the typing above: see
+  docs/HARDENING.md #59 (addendum).
+- What it does not do: it keys on the pool and on the requests, not on the
+  work. Threads taken before the pool was pressured run to their end, and a
+  single command that spawns more threads than the pool has free is out of
+  its reach. The root fix is a cap on concurrently live dedicated threads
+  in the runtime's task manager (#55), the kernel's.
 
 ---
 
@@ -924,4 +995,8 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   - `ResidentSession` coalesces full-text didChanges (§7.8,
     `editCoalesceMs`), after lean4game's editor crash: an edit per keystroke
     over work that ignores cancellation grew the pthread pool until V8 ran
-    out of memory (HARDENING #59).
+    out of memory (HARDENING #59);
+  - the coalescer holds changes for the worker's pool (§7.8
+    `editBackPressure`, the page's `?edithold=`, §4), after the stock page
+    crashed typing at a normal pace above an uncancellable command with the
+    InfoView open (HARDENING #59 addendum).

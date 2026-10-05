@@ -1950,6 +1950,10 @@ self.addEventListener("message", (e) => {
       void loadSnapshot(msg);
       break;
     case "telemetry":
+      // A fresh status first (deduplicated: nothing when unchanged): the session
+      // polls telemetry while it holds an edit for the pool, and an idle worker
+      // emits no server frame to carry the pool sample that would release it.
+      emitStatus();
       post({
         type: "result",
         requestId: msg.requestId,

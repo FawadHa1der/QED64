@@ -162,6 +162,26 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   unchanged), `restart` (a `reboot` event to a new session, settled again),
   `bad-param` (`?snapshots=/attacker.example/x` fails the boot naming the
   parameter, with no off-origin request).
+- **Edit storm** (`edit-storm.mjs --url <prod preview> [--reps 2]
+  [--scenarios sleep,sleepreq,pagesleep,pagecadence,fast,pageslow]
+  [--grow-tolerance 4]`, HARDENING #59; docs/EMBEDDING.md §7.8): an edit per
+  keystroke over work that ignores cancellation, measured by the worker's
+  pool sample every 100 ms. Hatch scenarios send one full-text didChange per
+  typed character through `qed64.test.lsp.notify`, the library path past
+  the page's own client (`fast`, `slow`, `heavy`; `sleep` above `#eval
+  IO.sleep 3000`; `sleepreq` with a goal request after every change); page
+  scenarios type into the page's Monaco with the InfoView open on the line
+  above the sleep (`pagesleep` at 10 ms/char, `pageslow` at 150 ms/char)
+  or above a cheap `#eval` (`pagecadence`, which reports the changes and
+  requests that pace sends). A run passes when the typing happened, the
+  renderer did not crash, no death or reboot, the checker is ready at the
+  last typed version, and the pool total grew by at most the tolerance; it
+  also counts the didChanges and requests that reached the relay and the
+  session's back-pressure holds, releases, caps and longest hold.
+  `--url …/?edithold=0` runs the same build with the hold off (the control
+  arm for `pageslow`, which crashed on every build without it). Serve a
+  build (`scripts/serve-dist.mjs`), not the dev server, and run it through
+  the host browser lock.
 
 ## Pipeline CLI contract (docs/CLI-CONTRACT.md, tests/unit/cli-contract.test.ts)
 

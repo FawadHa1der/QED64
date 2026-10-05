@@ -10,7 +10,7 @@ import { entryLabel } from "../../src/runtime/snapshots";
 import { selfWiden } from "./self-widen";
 import { installInfoviewEditorApi, type EditsEditor } from "./editor/infoview-edits";
 import { codeFromHash, createPageApi, pageStatusSink, type EditorLike } from "./page-api";
-import { normalizeMemoryBytes, parseMemoryParam } from "./embed/params";
+import { normalizeMemoryBytes, parseEditHoldParam, parseMemoryParam } from "./embed/params";
 import { failureCauseOf, type FailureCause } from "./embed/failure";
 import { tapRelay } from "./relay-taps";
 import { installWidgetSourceCache } from "./widget-source-cache";
@@ -377,6 +377,9 @@ async function main() {
   // ?memory=<GiB> (docs/EMBEDDING.md §4): the initial commit of every session;
   // validated before anything is fetched, a refused value fails the boot.
   const memoryBytes = parseMemoryParam(location.search);
+  // ?edithold=<n> (§4, §7.8): the edit back-pressure's free-Worker threshold for
+  // every session (0 disables the hold); the ResidentHost option is the fact.
+  const editHold = parseEditHoldParam(location.search);
   const artifacts = await installArtifacts(ui);
   // Identify the exact compiler in the product bar: Lean version + fork
   // commit visible, full provenance (incl. runtime id) in the tooltip.
@@ -478,7 +481,7 @@ async function main() {
   // the didOpen lands), the relay's last full text on every later reboot —
   // a header change between sessions changes the boot inputs with it.
   relay = new LspRelay(
-    (opts) => new ResidentSession({ artifacts, ui, policy, headerText: relay?.lastText || initialText }, opts ?? {}),
+    (opts) => new ResidentSession({ artifacts, ui, policy, headerText: relay?.lastText || initialText, ...(editHold === null ? {} : { editBackPressure: { minFreeWorkers: editHold } }) }, opts ?? {}),
     { status: pageStatusSink(() => relay.session.id, widenForRoots, renderStatus, offerExactImports, (s) => pageApi.relayStatus(s)) },
     () => new Promise((r) => window.setTimeout(r, 1500)),
   );

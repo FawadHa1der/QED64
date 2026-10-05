@@ -19,10 +19,12 @@ import { LeanSession, memoryCandidates, type JsonRpcMessage, type LibraryPack, t
 import { installProfile } from "../../src/install/profiles";
 import { deathCause, failureCauseOf, stageOfWorkerPhase, stepOfInstallPhase, type BootStage } from "./embed/failure";
 import { chooseSnapshots, initialBytesForEntries, type SnapshotIndex } from "../../src/runtime/snapshots";
-import { createEditCoalescer, DEFAULT_EDIT_COALESCE_MS, type EditCoalescer } from "./embed/edit-coalescer";
+import { CANCELLED, createEditCoalescer, DEFAULT_EDIT_COALESCE_MS, type BackPressureEvent, type BackPressureOptions, type EditCoalescer } from "./embed/edit-coalescer";
 
 const MiB = 1048576;
 const GiB = 1073741824;
+/** The telemetry poll while a change is held for the pool (docs/EMBEDDING.md §7.8). */
+export const HOLD_POLL_MS = 250;
 
 /** Per-host boot policy: every hook is optional, so a consumer that only
  * wants the editor's defaults passes `{}`. `headerText` is the document text
@@ -62,6 +64,18 @@ export interface ResidentHost {
    * (embed/edit-coalescer.ts, docs/EMBEDDING.md §7.8). Default 300; 0 forwards
    * every frame at once. */
   editCoalesceMs?: number;
+  /** Back-pressure on full-text didChanges, keyed on the worker's pool
+   * sample (embed/edit-coalescer.ts, docs/EMBEDDING.md §7.8): a change is
+   * held, with the frames behind it, while the last `status` showed fewer
+   * than `minFreeWorkers` preallocated Workers free (default 6 of the
+   * runtime's 24: while more than 18 pthreads are alive), until a later
+   * status shows the pool drained (for `pressureMemoryMs`, default 1000,
+   * after the last pressured one) or `maxHoldMs` (default 5000) pass; and
+   * at most `maxInFlightRequests` (default 6) requests are at the worker
+   * unanswered, the rest waiting in order (each is a dedicated thread while
+   * it waits). `{ minFreeWorkers: 0 }` disables the hold,
+   * `{ maxInFlightRequests: 0 }` the cap. */
+  editBackPressure?: Pick<BackPressureOptions, "minFreeWorkers" | "maxHoldMs" | "pressureMemoryMs" | "maxInFlightRequests">;
 }
 
 /** One file for the worker's filesystem (`LeanSession.writeFiles`). */
@@ -175,10 +189,17 @@ export class ResidentSession implements RelaySession {
     this.#beforeArm = host.beforeArm;
     this.#edits = createEditCoalescer<JsonRpcMessage>({
       forward: (m, replay) => this.lean.lsp(m, replay),
-      // A superseded request's answer takes the worker's own path to the relay (which drops its pending entry and forwards it).
-      reject: (req, error) => this.lean.onLsp({ jsonrpc: "2.0", id: req.id, error }),
+      // A superseded or cancelled request's answer takes the worker's own path to the relay (which drops its pending entry and forwards it).
+      reject: (req, error) => { this.backPressure[error.code === CANCELLED.code ? "cancelled" : "superseded"] += 1; this.lean.onLsp({ jsonrpc: "2.0", id: req.id, error }); },
       ms: host.editCoalesceMs ?? DEFAULT_EDIT_COALESCE_MS,
+      backPressure: { ...host.editBackPressure, onEvent: (ev) => this.#backPressure(ev) },
     });
+    // Every worker status feeds the coalescer its pool sample before the
+    // host's own hook (the relay attaches its hook after construction, through
+    // the setter below, so the sample path cannot be the hook itself).
+    this.lean.onStatus = (st) => { this.#edits.observe(st.pool); this.#statusHook(st); };
+    // Every reply settles its request's slot before the host sees it (the local answers above take this path too, and settle nothing).
+    this.lean.onLsp = (m) => { if (m.id !== undefined && m.method === undefined) this.#edits.settle(m.id); this.#lspHook(m); };
     const policy = host.policy ?? {};
     this.snapshots = opts.snapshots ?? policy.snapshotsFor?.(host.headerText) ?? ["init", "mathlib"];
     // The commit can never exceed the largest reservation this device will try
@@ -191,10 +212,27 @@ export class ResidentSession implements RelaySession {
     this.lean.onLog = (stream, text) => console.debug(`[lean:${stream}] ${text}`);
     this.lean.onProgress = (p) => this.ui.progress(p.label ?? p.phase, { phase: p.phase, loaded: p.loaded, total: p.total, unit: p.unit, ...this.#workerStage(p.phase, p.label) });
   }
-  get onLsp() { return this.lean.onLsp; }
-  set onLsp(f: (msg: JsonRpcMessage) => void) { this.lean.onLsp = f; }
-  get onStatus() { return this.lean.onStatus; }
-  set onStatus(f: (s: WorkerStatus) => void) { this.lean.onStatus = f; }
+  #lspHook: (msg: JsonRpcMessage) => void = () => {};
+  get onLsp() { return this.#lspHook; }
+  set onLsp(f: (msg: JsonRpcMessage) => void) { this.#lspHook = f; }
+  #statusHook: (s: WorkerStatus) => void = () => {};
+  get onStatus() { return this.#statusHook; }
+  set onStatus(f: (s: WorkerStatus) => void) { this.#statusHook = f; }
+  /** The back-pressure's record (docs/EMBEDDING.md §7.8): holds begun, holds a drained pool released, holds the cap ended,
+   * requests that waited for a slot, requests answered RequestCancelled here, requests answered ContentModified here. */
+  readonly backPressure = { holds: 0, releases: 0, caps: 0, waits: 0, cancelled: 0, superseded: 0 };
+  /** While a change is held for the pool: a telemetry request every 250 ms, which makes the worker re-sample
+   * the pool and emit a status when it changed. An idle worker emits no server frame, and without one the
+   * sample that would release the hold never arrives (the hold ran to its cap with the pool drained). */
+  #holdPoll: ReturnType<typeof setInterval> | undefined;
+  #backPressure(ev: BackPressureEvent) {
+    this.backPressure[ev.kind === "hold" ? "holds" : ev.kind === "release" ? "releases" : ev.kind === "cap" ? "caps" : "waits"] += 1;
+    if (ev.kind === "wait") return; // one line per request would be noise; the counter tells
+    if (ev.kind === "hold") this.#holdPoll ??= setInterval(() => { this.lean.telemetry().catch(() => {}); }, HOLD_POLL_MS);
+    else { if (this.#holdPoll !== undefined) clearInterval(this.#holdPoll); this.#holdPoll = undefined; }
+    const state = `pool unused ${ev.pool.unused}, running ${ev.pool.running}; ${ev.queued} frame${ev.queued === 1 ? "" : "s"} queued, ${ev.inFlight} request${ev.inFlight === 1 ? "" : "s"} in flight`;
+    console.debug(`[qed64] edit back-pressure: ${ev.kind === "hold" ? "holding the newest change" : ev.kind === "release" ? `released after ${Math.round(ev.heldMs ?? 0)} ms` : `cap at ${Math.round(ev.heldMs ?? 0)} ms, forwarding the newest change`} (${state})`);
+  }
   /** The death fact with its cause (docs/EMBEDDING.md §7.2): classified here
    * from what LeanSession knows, with the boot stage when the session died
    * booting; null only for a bare worker error event (no evidence). */
@@ -212,14 +250,15 @@ export class ResidentSession implements RelaySession {
   arm() {
     return this.lean.arm().then(() => { this.#bootStage = null; }, (err: unknown) => { throw failedAt(err, { stage: this.#bootStage ?? "files" }); });
   }
-  dispose() { this.#edits.dispose(); this.lean.dispose(); }
+  dispose() { this.#edits.dispose(); this.#stopHoldPoll(); this.lean.dispose(); }
+  #stopHoldPoll() { if (this.#holdPoll !== undefined) clearInterval(this.#holdPoll); this.#holdPoll = undefined; }
   /** The synchronous kill (Unload only): the relay's `unload()` calls
    * `dispose()` then `terminate()` inside the pagehide handler's own turn.
    * `LeanSession.dispose()` alone hard-terminates 250 ms later behind a timer
    * a closing document never runs — reload storms stacked dead multi-GiB
    * heaps until the OS jetsammed the renderer (the pump shim's
    * `disposeForUnload`); `LeanSession.terminate()` kills the Worker NOW. */
-  terminate(): void { this.#edits.dispose(); this.lean.terminate(); }
+  terminate(): void { this.#edits.dispose(); this.#stopHoldPoll(); this.lean.terminate(); }
 
   /** The snapshot a worker progress event belongs to (set while one loads). */
   #loading: string | null = null;
