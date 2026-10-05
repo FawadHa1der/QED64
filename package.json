@@ -55,7 +55,6 @@
   "scripts": {
     "dev": "npm --prefix frontend run dev",
     "build:all": "tsc --noEmit && npm run build:site",
-    "preview": "node scripts/serve-dist.mjs",
     "pretest": "if [ -d frontend/node_modules ]; then npm run typecheck:site; else echo \"pretest: frontend/node_modules absent — skipping typecheck:site (run: npm --prefix frontend ci)\"; fi",
     "test": "vitest run --exclude '**/integration/**'",
     "test:watch": "vitest --exclude '**/integration/**'",
