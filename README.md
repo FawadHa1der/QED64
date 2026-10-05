@@ -8,7 +8,7 @@ mounted read-only from verified, content-addressed packs.
 
 ```
 ┌───────────────────────────── browser tab (COOP/COEP isolated) ─────────────────────────────┐
-│  UI (CodeMirror 6, goals, messages)                                                        │
+│  UI (lean4monaco: Monaco + the vscode-lean4 InfoView over the in-browser LSP)              │
 │    │ postMessage RPC                                                                       │
 │  Lean worker ── verified chunk fetch ──► lean.js + lean.wasm (SHA-256, 154 MB)             │
 │    │  shared WebAssembly.Memory({address:"i64"}) · 256 MiB → 8 GiB                         │
@@ -32,7 +32,8 @@ mounted read-only from verified, content-addressed packs.
 
 ```sh
 npm install && npm --prefix frontend ci
-npm run sync:artifacts   # verified copy of runtime + profiles into public/
+# place the served runtime, profile packs and snapshots under public/ (their
+# digests are pinned by the tracked manifests; docs/REBUILD.md "Trusted artifacts")
 npm run verify:release   # recompute every digest the browser will trust
 npm run dev              # http://localhost:5184 (COOP/COEP set by Vite)
 ```
@@ -65,10 +66,10 @@ survives is `docs/HARDENING.md`.
 | Path | What lives there |
 |---|---|
 | `frontend/` | the deployed shell: lean4monaco (Monaco + the vscode-lean4 InfoView) over the in-browser LSP — page (`main.ts`), relay, session adapter, import completion |
-| `src/` | shared runtime code: worker RPC client (`runtime/`), OPFS installer (`install/`), editor helpers pinned by the unit suite (`editor/`) |
+| `src/` | shared runtime code: worker RPC client (`runtime/`), OPFS installer (`install/`) |
 | `public/workers/lean.worker.js` | the Lean worker: verified runtime materialization, Memory64 heap, WORKERFS mounts, persistent compile loop |
 | `public/runtime`, `public/profiles` | content-addressed artifacts (synced, never committed) |
-| `pipeline/release` | `sync-artifacts` (provenance-checked copy), `verify-release` (out-of-band digest audit) |
+| `pipeline/release` | `import-packs` / `promote-staging` (stage and publish a runtime pairing), `verify-release` (out-of-band digest audit) |
 | `pipeline/artifacts` | deterministic packer + deep inspector for profile packs |
 | `public/snapshots` | baked environment snapshots + `index.json` (baked per runtime, never committed) |
 | `pipeline/snapshot` | Node runner for the wasm64 binary + `--incr-header-save` snapshot baking (`--lib` mounts an unpacked olean tree; upserts the snapshot index); `cli.mjs` is the pipeline CLI contract (every tool's `--help`, flags, exit codes, stable output: docs/CLI-CONTRACT.md) |
@@ -136,8 +137,9 @@ node --stack-size=8192 pipeline/snapshot/snapshot-probe.mjs --snap work/snapshot
 The runtime (`wasm64-7a2879deebfbc2c7`, Lean `4.33.0-pre`, clean-room build of
 `cauli/lean4@5732b84` + the 17-patch series in `pipeline/toolchain/patches/`)
 and both profile packs are consumed here **by digest**: every chunk
-and transport part is SHA-256-pinned in a manifest, `sync:artifacts` refuses
-unverified bytes, `verify:release` re-derives the raw pack digests, and the
+and transport part is SHA-256-pinned in a manifest, `promote:staging` refuses
+unverified bytes (as the retired `sync:artifacts` copy did before 2026-10),
+`verify:release` re-derives the raw pack digests, and the
 worker re-verifies every chunk before `importScripts`. See
 `docs/PROVENANCE.md` for the full chain and `pipeline/toolchain/` for how to
 rebuild the runtime from source.

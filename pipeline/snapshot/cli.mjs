@@ -469,8 +469,7 @@ export const SPECS = {
 export const DIAGNOSTIC = [
   "pipeline/snapshot/thread-storm-probe.mjs",
   "pipeline/snapshot/fileworker-exit-probe.mjs",
-  "pipeline/snapshot/header-switch-probe.mjs",
-  "pipeline/snapshot/resident-probe.mjs",
+  "pipeline/snapshot/resident-probe.mjs", // --snapshots/--mathlib/--act4 absorbed header-switch-probe.mjs (2026-10)
   "pipeline/artifacts/inspect.mjs",
 ];
 
