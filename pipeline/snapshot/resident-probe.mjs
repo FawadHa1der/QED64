@@ -8,6 +8,20 @@
 // diagnostics arrive for a deliberate error, and the loop shuts down clean.
 //
 //   node pipeline/snapshot/resident-probe.mjs [--artifact <stage1>] [--lib <tree>] [--budget-ms 180000]
+//                                             [--snapshots init,mathlib] [--mathlib] [--act2 | --act4 [--act4-ms 500]]
+//
+//   --snapshots  the work/snapshot/<name>.snap files seeded into the env cache
+//                before --worker starts (default: init; mathlib adds the
+//                umbrella env the Mathlib probe needs — 1.1 GB raw)
+//   --mathlib    probe a Mathlib header (`import Mathlib.Data.Real.Basic`)
+//                instead of Init; implies --snapshots init,mathlib unless given
+//   --act2       after act 1 drains, change the header via didChange and
+//                expect an in-process session replacement (exit 2 + re-callMain)
+//   --act4       the header-switch probe (formerly header-switch-probe.mjs):
+//                --act4-ms after the first non-empty fileProgress, send the
+//                document again as headerless full text (the Init header
+//                under a Mathlib-seeded session: the step-1 crash of the
+//                2026-09 gauntlets) and pass when progress drains with no abort
 import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
@@ -23,7 +37,20 @@ const budgetMs = Number(arg("budget-ms", "180000"));
 const leanJs = path.join(artifactDir, "bin/lean.js");
 if (!fs.existsSync(leanJs)) { console.error(`error: ${leanJs} not found`); process.exit(2); }
 
-const PROBE = (process.env.PROBE_MINIMAL ? [
+const MATHLIB = process.argv.includes("--mathlib");
+const ACT2 = process.argv.includes("--act2");
+const ACT4 = process.argv.includes("--act4");
+const ACT4_MS = Number(arg("act4-ms", process.env.ACT4_MS || "500"));
+const SNAPSHOTS = arg("snapshots", MATHLIB ? "init,mathlib" : "init").split(",").map((s) => s.trim()).filter(Boolean);
+
+const PROBE = (MATHLIB ? [
+  "import Mathlib.Data.Real.Basic",
+  "",
+  "example (a b : ℝ) : a + b = b + a := by",
+  "  exact add_comm a b",
+  "",
+  "theorem t1 : (2 : ℕ) + 2 = 4 := rfl",
+] : process.env.PROBE_MINIMAL ? [
   "import Init",
   "theorem two_two : (2 : Nat) + 2 = 4 := rfl",
   "example : (2 : Nat) + 2 = 5 := rfl",
@@ -39,8 +66,7 @@ const PROBE = (process.env.PROBE_MINIMAL ? [
 // Result tracking
 // ---------------------------------------------------------------------------
 const seen = { initializeResponse: false, fileProgressEvents: 0, progressDrained: false, diags: [], evalInfo: false,
-  act: 1, exit2: false, act2Diags: 0, act2Drained: false };
-const ACT2 = process.argv.includes("--act2");
+  act: 1, exit2: false, act2Diags: 0, act2Drained: false, act4Armed: false, act4SentAt: 0 };
 const t0 = Date.now();
 const log = (s) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1)}s] ${s}`);
 let finished = false;
@@ -125,6 +151,25 @@ function onMessage(msg) {
   if (msg.method === "$/lean/fileProgress") {
     seen.fileProgressEvents += 1;
     const processing = msg.params?.processing ?? [];
+    if (ACT4) {
+      // Act 4: the first non-empty progress means the header's session is
+      // elaborating; ACT4_MS later the whole document arrives again WITHOUT
+      // its import line (the page's full-text didChange after a header edit).
+      if (!seen.act4Armed && processing.length > 0) {
+        seen.act4Armed = true;
+        log(`ACT4: first non-empty fileProgress — sending headerless full text in ${ACT4_MS} ms`);
+        setTimeout(() => {
+          seen.act4SentAt = Date.now();
+          send({ jsonrpc: "2.0", method: "textDocument/didChange", params: {
+            textDocument: { uri: "file:///workspace/Probe.lean", version: 2 },
+            contentChanges: [{ text: PROBE.replace(/^import [^\n]*\n/, "") }] } });
+        }, ACT4_MS);
+      }
+      if (seen.act4SentAt && processing.length === 0 && seen.fileProgressEvents > 3) {
+        log(`ACT4 PASS: drained ${Date.now() - seen.act4SentAt} ms after the headerless switch`);
+        return finish(true, "act4 drained");
+      }
+    }
     if (seen.fileProgressEvents > 1 && processing.length === 0) seen.progressDrained = true;
     checkActs(); // the drained progress can land AFTER the last diagnostic
     return;
@@ -141,6 +186,7 @@ function onMessage(msg) {
 // Success conditions are evaluated from BOTH the diagnostics and the
 // fileProgress handlers: the burst order between them is not fixed.
 function checkActs() {
+  if (ACT4) return; // act 4 judges itself from fileProgress alone
   {
     // Act 1: progress drained AND our deliberate error surfaced.
     if (seen.act === 1 && seen.progressDrained && seen.diags.some((x) => /rfl|43|mismatch|failed/i.test(x))) {
@@ -283,8 +329,13 @@ globalThis.Module = {
     // cannot import oleans on its elaboration pthread (the long-documented
     // hang prepareHeader exists for) — a loaded snapshot publishes a
     // covering env (Shell.lean publish line in patch 0031) it finds instead.
-    const snapHost = path.join(repoRoot, "work/snapshot/init.snap");
-    if (fs.existsSync(snapHost)) {
+    // --snapshots names them in load order (init first, then the umbrella).
+    for (const snapName of SNAPSHOTS) {
+      const snapHost = path.join(repoRoot, `work/snapshot/${snapName}.snap`);
+      if (!fs.existsSync(snapHost)) {
+        log(`WARNING: ${snapHost} missing — a header it covers will try olean import (known hang)`);
+        continue;
+      }
       const total = fs.statSync(snapHost).size;
       const heapPtrRaw = M._malloc(BigInt(total));
       const heapPtr = typeof heapPtrRaw === "bigint" ? Number(heapPtrRaw) : heapPtrRaw;
@@ -300,9 +351,7 @@ globalThis.Module = {
       }
       fs.closeSync(fd);
       const lr = M._lean_wasm_load_snapshot_mem(BigInt(heapPtr), BigInt(total), 1n);
-      log(`init snapshot loaded (${total} bytes, io tag via ${typeof lr})`);
-    } else {
-      log("WARNING: work/snapshot/init.snap missing — header will try olean import (known hang)");
+      log(`${snapName}.snap loaded (${total} bytes, io tag via ${typeof lr})`);
     }
     log("runtime initialized — configuring ring");
     const raw = M._malloc(16 + CAP);
@@ -337,8 +386,9 @@ globalThis.Module = {
     // quiet, send requests that DON'T depend on the reporter. rpc/connect
     // answers immediately through the stdout writer; hover needs a body
     // elaboration snapshot. Their arrival (or not) tells reporter-wedged vs
-    // writer-stalled vs elaboration-stuck apart.
-    setTimeout(() => {
+    // writer-stalled vs elaboration-stuck apart. Not under --act4: that act
+    // measures one switch, and the extra requests would blur its drain.
+    if (!ACT4) setTimeout(() => {
       log("EXPERIMENT: sending rpc/connect + hover");
       send({ jsonrpc: "2.0", id: 9001, method: "$/lean/rpc/connect", params: { uri: "file:///workspace/Probe.lean" } });
       send({ jsonrpc: "2.0", id: 9002, method: "textDocument/hover", params: {

@@ -42,8 +42,10 @@ node pipeline/snapshot/cli.mjs --write-preludes  # regenerate the inline prelude
 | [pack](#pack) | `pipeline/artifacts/pack.mjs` | `pack` | 2 | inline prelude |
 | [unpack](#unpack) | `pipeline/artifacts/unpack.mjs` | — | 2 | inline prelude |
 
-Tier 3 tools: `pipeline/snapshot/{thread-storm-probe,fileworker-exit-probe,header-switch-probe,resident-probe}.mjs`,
-`pipeline/artifacts/inspect.mjs`.
+Tier 3 tools: `pipeline/snapshot/{thread-storm-probe,fileworker-exit-probe,resident-probe}.mjs`,
+`pipeline/artifacts/inspect.mjs`. (`header-switch-probe.mjs`, an edited copy of
+resident-probe, was folded into it on 2026-10-05 as `--snapshots <a,b>`,
+`--mathlib` and `--act4 [--act4-ms <ms>]`.)
 
 ## Conventions
 
@@ -753,6 +755,7 @@ usage: unpack.mjs --manifest <file> --out <dir>
 | 1 | 2026-10-04 | A missing required flag now exits 2 with the usage line. Before, the check tested `path.resolve("")`, which is the cwd and never empty, so the documented usage refusal was dead code: chunk-runtime without `--bin` spawned git and crashed with exit 1; pack without `--lib` walked and packed the cwd; unpack without `--out` wrote the tree into the cwd, and without `--manifest` crashed with exit 1; snapshot-probe without `--snap` crashed with exit 1 and leaked a tmp dir. | fix |
 | 1 | 2026-10-04 | node-runner creates `--work` only after the artifact checks pass, so a class-2 refusal leaves the filesystem as it was. | fix |
 | 1 | 2026-10-04 | `bake-snapshot --roots/--label/--initial-bytes` write the overlay fields of docs/EMBEDDING.md §8 into the entry (only when given); a malformed value exits 2 before anything is written. | additive |
+| 1 | 2026-10-05 | Tier 3: `pipeline/snapshot/header-switch-probe.mjs` is deleted; its Mathlib probe, two-snapshot seeding and ACT4 headerless switch live in `resident-probe.mjs` behind `--mathlib`, `--snapshots <a,b>` and `--act4 [--act4-ms <ms>]`. No consumer named it (lean4game's sync list and the showcase's pin script checked). | tier 3, no promise |
 
 ## Open decisions
 
