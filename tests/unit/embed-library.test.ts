@@ -204,7 +204,7 @@ describe("ResidentSession.start(): stages, files, beforeArm, causes", () => {
     return { s, order, loadSnapshot, writeFiles };
   }
 
-  it("lsp(): a burst of full-text didChanges reaches the worker at most once per 300 ms, the newest last; editCoalesceMs 0 forwards each (HARDENING #59)", () => {
+  it("lsp(): a burst of full-text didChanges reaches the worker at most once per 300 ms, the newest last, requests behind it; editCoalesceMs 0 forwards each (HARDENING #59)", () => {
     vi.useFakeTimers();
     try {
       const ch = (v: number) => ({ jsonrpc: "2.0", method: "textDocument/didChange", params: { textDocument: { uri: "file:///a.lean", version: v }, contentChanges: [{ text: `t${v}` }] } }) as never;
@@ -217,7 +217,9 @@ describe("ResidentSession.start(): stages, files, beforeArm, causes", () => {
       expect(versions(lsp)).toEqual([2, 10]);
       s.lsp(ch(11)); // v10's forward reopened the window: held
       s.lsp(ch(12)); // replaces v11
-      s.lsp({ jsonrpc: "2.0", id: 1, method: "textDocument/hover", params: {} } as never); // flushes v12 first
+      s.lsp({ jsonrpc: "2.0", id: 1, method: "textDocument/hover", params: {} } as never); // waits behind v12
+      expect(versions(lsp)).toEqual([2, 10]);
+      vi.advanceTimersByTime(300);
       expect(versions(lsp)).toEqual([2, 10, 12, "textDocument/hover"]);
       s.lsp(ch(13));
       s.dispose(); // a held change dies with the session (the relay replays its last text)

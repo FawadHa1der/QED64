@@ -658,26 +658,34 @@ overrides routed through `parseBootParams` / `validateBootOverrides`.
 
 `ResidentSession` forwards a full-text `didChange` to the worker at most once
 per window (`ResidentHost.editCoalesceMs`, default 300 ms; 0 forwards every
-change at once). Embedders do not need their own throttle.
+frame at once). Embedders do not need their own throttle.
 - The first change of a burst goes at once and opens the window. Later
   changes inside it are held, the newest replacing the held one. When the
   window ends, the held change goes and opens the next window. Each change
   carries the whole text, so Lean always sees the newest version.
-- Any other frame (a request, another notification, a ranged change, a
-  replay) first forwards the held change, then itself. Lean never answers a
-  request about text it has not been sent.
-- `dispose()` drops a held change; the relay replays its last full text into
-  the replacement session.
+- While a change is held, every other frame (requests, `$/cancelRequest`,
+  other notifications) waits behind it in arrival order and goes right after
+  it. Nothing is reordered relative to the text. A request queued behind a
+  change that a newer one replaced is answered against the newer text, which
+  is the client's view by then. The cost: a frame sent during a burst waits
+  up to the window.
+- `didOpen`, `didClose`, a ranged or multi-part `didChange`, a replay, and a
+  full-text change of another document first send the held change and its
+  queue, then go (or are held) themselves.
+- With nothing held, every frame goes at once.
+- `dispose()` drops a held change and its queue. The relay replays its last
+  full text into the replacement session and answers every request it
+  forwarded that the dead session did not.
 - Why: each full-text change starts a new elaboration, and Lean abandons the
   previous one only at its next cancellation check. Work that never checks
   (`IO.sleep`, a long kernel check, a blocking `#eval`) keeps its pthread, so
   a change per keystroke grows the runtime's pool past its preallocated
-  Workers until V8 runs out of memory (docs/HARDENING.md #59). The page's own
-  client already coalesces (vscode-languageclient, 250 ms); the window
-  changes nothing there except inside a burst.
-- What it does not cover: a client that sends a request after every change
-  defeats it, because each request flushes the held change. Lean4 InfoViews
-  ask at the cursor; see #59 for what was measured.
+  Workers until V8 runs out of memory (docs/HARDENING.md #59). A client's own
+  coalescing does not prevent it: lean4monaco's language client sends
+  semantic-token, inlay-hint and code-action requests (and the InfoView its
+  goal calls) after each keystroke, and flushes its pending change before
+  each one. Queuing those requests behind the held change, instead of letting
+  them flush it, is what keeps the coalescing effective.
 
 ---
 

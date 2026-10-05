@@ -1,7 +1,9 @@
 // Full-text edit coalescing (frontend/src/embed/edit-coalescer.ts; docs/EMBEDDING.md
 // §7.8, HARDENING #59): a burst of full-text didChanges reaches the worker at
-// most once per window, the newest last; anything else flushes a held change
-// first, so Lean never answers about text it has not been sent.
+// most once per window, the newest last; while a change is held every other
+// frame waits behind it in order (a client's per-keystroke requests must not
+// defeat the coalescing), except the frames that change the document set or
+// edit it partially, which flush it first.
 import { describe, expect, it } from "vitest";
 import { createEditCoalescer, isFullTextChange } from "../../frontend/src/embed/edit-coalescer";
 
@@ -66,45 +68,88 @@ describe("createEditCoalescer", () => {
     expect((out.at(-1)!.m.params as { textDocument: { version: number } }).textDocument.version).toBe(301); // the newest arrives
   });
 
-  it("any other frame forwards the held change first, then itself", () => {
-    const { clock, c, sent } = setup();
-    c.send(change(2, "a"));
-    clock.advance(50);
-    c.send(change(3, "ab"));
-    c.send({ jsonrpc: "2.0", id: 7, method: "$/lean/plainGoal", params: {} });
-    expect(sent()).toEqual(["v2@0", "v3@50", "$/lean/plainGoal@50"]);
-    c.send(change(4, "abc")); // the window is still open: held
-    c.send({ jsonrpc: "2.0", method: "textDocument/didChange", params: { textDocument: { uri: "file:///a.lean", version: 5 }, contentChanges: [{ range: {}, text: "d" }] } }); // ranged: never held, never reordered
-    expect(sent()).toEqual(["v2@0", "v3@50", "$/lean/plainGoal@50", "v4@50", "v5@50"]);
-    clock.advance(300);
-    expect(sent()).toHaveLength(5);
+  const req = (id: number, method = "$/lean/plainGoal"): Msg => ({ jsonrpc: "2.0", id, method, params: {} });
+  const note = (method: string, params: unknown = {}): Msg => ({ jsonrpc: "2.0", method, params });
+
+  it("with nothing held, every frame goes at once", () => {
+    const { c, sent } = setup();
+    c.send(req(1, "textDocument/hover"));
+    c.send(change(2, "a")); // the leading edge
+    c.send(req(2, "textDocument/semanticTokens/full")); // nothing held: at once
+    expect(sent()).toEqual(["textDocument/hover@0", "v2@0", "textDocument/semanticTokens/full@0"]);
   });
 
-  it("a replay is forwarded as a replay, after a held change; a replayed didChange is never held", () => {
+  it("while a change is held, requests and notifications wait behind it in order (lean4monaco's change + requests per keystroke)", () => {
+    const { clock, c, sent } = setup();
+    c.send(change(2, "a"));
+    clock.advance(10);
+    for (let v = 3; v <= 6; v += 1) {
+      c.send(change(v, "a".repeat(v)));
+      c.send(req(v, "textDocument/semanticTokens/full"));
+      c.send(req(100 + v, "$/lean/rpc/call"));
+      clock.advance(10);
+    }
+    c.send(note("$/cancelRequest", { id: 103 }));
+    expect(sent()).toEqual(["v2@0"]); // everything since waits for the window
+    clock.advance(300);
+    expect(sent()).toEqual([
+      "v2@0", "v6@300", // the newest change first: the queued requests are answered against it
+      "textDocument/semanticTokens/full@300", "$/lean/rpc/call@300", "textDocument/semanticTokens/full@300", "$/lean/rpc/call@300",
+      "textDocument/semanticTokens/full@300", "$/lean/rpc/call@300", "textDocument/semanticTokens/full@300", "$/lean/rpc/call@300",
+      "$/cancelRequest@300",
+    ]);
+    clock.advance(1000);
+    expect(sent()).toHaveLength(11); // the window closed with nothing held
+  });
+
+  it("didOpen, didClose, a ranged or multi-part didChange and a replay flush the held change and the queue, then go", () => {
+    const ranged: Msg = { jsonrpc: "2.0", method: "textDocument/didChange", params: { textDocument: { uri: "file:///a.lean", version: 9 }, contentChanges: [{ range: {}, text: "d" }] } };
+    const multi: Msg = { jsonrpc: "2.0", method: "textDocument/didChange", params: { textDocument: { uri: "file:///a.lean", version: 9 }, contentChanges: [{ text: "x" }, { text: "y" }] } };
+    for (const [name, barrier, replay] of [
+      ["didOpen", note("textDocument/didOpen", { textDocument: { uri: "file:///a.lean", version: 9, text: "z" } }), false],
+      ["didClose", note("textDocument/didClose", { textDocument: { uri: "file:///a.lean" } }), false],
+      ["ranged", ranged, false],
+      ["multi", multi, false],
+      ["replay", req(0, "initialize"), true],
+    ] as const) {
+      const { clock, c, out } = setup();
+      c.send(change(2, "a"));
+      c.send(change(3, "ab"));
+      c.send(req(7));
+      c.send(barrier, replay);
+      expect(out.map((o) => o.m.method), name).toEqual(["textDocument/didChange", "textDocument/didChange", "$/lean/plainGoal", barrier.method]);
+      expect(out.at(-1)!.replay ?? false, name).toBe(replay);
+      clock.advance(300);
+      expect(out, name).toHaveLength(4);
+    }
+  });
+
+  it("a replayed didChange is never held", () => {
     const { clock, c, out } = setup();
     c.send(change(2, "a"));
-    c.send(change(3, "ab"));
-    c.send({ jsonrpc: "2.0", id: 0, method: "initialize", params: {} }, true);
+    c.send(change(3, "ab"), true);
     c.send(change(4, "abc"), true);
-    expect(out.map((o) => [o.m.method, o.replay ?? false])).toEqual([
-      ["textDocument/didChange", false], ["textDocument/didChange", false], ["initialize", true], ["textDocument/didChange", true],
-    ]);
+    expect(out.map((o) => o.replay ?? false)).toEqual([false, true, true]);
     clock.advance(300);
-    expect(out).toHaveLength(4);
+    expect(out).toHaveLength(3);
   });
 
   it("never merges changes of different documents", () => {
-    const { c, sent } = setup();
+    const { c, sent, clock } = setup();
     c.send(change(2, "a", "file:///a.lean"));
     c.send(change(3, "b", "file:///a.lean"));
+    c.send(req(5));
     c.send(change(1, "c", "file:///b.lean"));
-    expect(sent()).toEqual(["v2@0", "v3@0"]); // a's held change went before b's was held
+    expect(sent()).toEqual(["v2@0", "v3@0", "$/lean/plainGoal@0"]); // a's held change and its queue went before b's was held
+    clock.advance(300);
+    expect(sent()).toEqual(["v2@0", "v3@0", "$/lean/plainGoal@0", "v1@300"]);
   });
 
-  it("dispose drops the held change and stops the window; later sends are ignored", () => {
+  it("dispose drops the held change and the queue and stops the window; later sends are ignored", () => {
     const { clock, c, out } = setup();
     c.send(change(2, "a"));
     c.send(change(3, "ab"));
+    c.send(req(4));
     c.dispose();
     expect(clock.timers).toHaveLength(0);
     clock.advance(1000);

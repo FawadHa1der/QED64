@@ -57,8 +57,9 @@ export interface ResidentHost {
   /** The last step of every boot, after `files`; a throw is a bootFailed death. */
   beforeArm?(session: LeanSession): Promise<void>;
   /** Full-text didChanges reach the worker at most once per this many ms, the
-   * newest last; any other frame flushes a held change first (embed/edit-coalescer.ts,
-   * docs/EMBEDDING.md §7.8). Default 300; 0 forwards every change at once. */
+   * newest last; other frames sent while a change is held wait behind it
+   * (embed/edit-coalescer.ts, docs/EMBEDDING.md §7.8). Default 300; 0 forwards
+   * every frame at once. */
   editCoalesceMs?: number;
 }
 
