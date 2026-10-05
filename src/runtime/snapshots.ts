@@ -170,16 +170,25 @@ export function chooseSnapshots(index: SnapshotIndex, modules: readonly string[]
 }
 
 /** The entry to widen a running session to when the kernel refused its header
- * for `missing` modules: the smallest entry not already loaded that covers
- * EVERY one of them — and, given the header's modules, every one of those the
- * base does not serve (the new session serves the whole header from ONE
- * environment: an entry covering only what is missing NOW would be refused
- * for what the old session covered, and widening back would loop) — else null
- * (a near-miss root never widens: no snapshot would change the verdict). */
+ * for `missing` modules: the smallest entry not already loaded whose roots
+ * cover EVERY one of them and, given the header's modules, every one of those
+ * some entry claims and the base does not serve — the new session serves the
+ * whole header from ONE environment (an entry covering only what is missing
+ * NOW would be refused for what the old session covered, and widening back
+ * would loop); a module no root names (`Aesop`, `Lean.Elab`) tells no entry
+ * apart and is left to the kernel, as in chooseSnapshots. Else null — always
+ * when every missing module is Init or claimed by a loaded entry's roots: the
+ * kernel has just refuted that claim (a prefix being typed, a typo) and, as
+ * for a near-miss root no entry claims, no snapshot would change the verdict.
+ * Stateless: the session a widen boots, with the base, claims every module of
+ * its header that any entry claims, so a later refusal of that header never
+ * widens it again — there is no memory of past widens to go stale. */
 export function widenTarget(index: SnapshotIndex, missing: readonly string[], loaded: readonly string[], headerModules: readonly string[] = [], base: readonly string[] = BASE_SNAPSHOTS): SnapshotEntry | null {
-  if (missing.length === 0) return null;
-  const baseRoots = index.snapshots.filter((e) => base.includes(e.name)).flatMap((e) => [...entryRoots(e)]);
-  const required = [...new Set([...missing, ...headerModules])].filter((m) => !isInit(m) && !coversModule(baseRoots, m));
+  const rootsOf = (names: readonly string[]) => index.snapshots.filter((e) => names.includes(e.name)).flatMap((e) => [...entryRoots(e)]);
+  const baseRoots = rootsOf(base), loadedRoots = rootsOf([...base, ...loaded]);
+  if (missing.every((m) => isInit(m) || coversModule(loadedRoots, m))) return null;
+  const claimed = (m: string) => index.snapshots.some((e) => coversModule(entryRoots(e), m));
+  const required = [...new Set([...missing, ...headerModules.filter((m) => !isInit(m) && !coversModule(baseRoots, m) && claimed(m))])];
   let best: SnapshotEntry | null = null;
   for (const e of index.snapshots) {
     if (loaded.includes(e.name)) continue;

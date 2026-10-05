@@ -5,8 +5,9 @@ import { LeanMonaco, LeanMonacoEditor, type LeanMonacoOptions } from "lean4monac
 import { installArtifacts, type ProgressInfo, type StatusSink } from "./qed64-boot";
 import { registerImportCompletion } from "./import-completion";
 import { LspRelay, type RelayStatus } from "./lsp-relay";
-import { ResidentSession, importLinesOf, importedModulesOf, makeEditorPolicy, type ResidentPolicy } from "./resident-session";
-import { BASE_SNAPSHOTS, entryLabel, widenTarget, LEGACY_UMBRELLA_ROOTS, coversModule } from "../../src/runtime/snapshots";
+import { ResidentSession, makeEditorPolicy, type ResidentPolicy } from "./resident-session";
+import { entryLabel } from "../../src/runtime/snapshots";
+import { selfWiden } from "./self-widen";
 import { installInfoviewEditorApi, type EditsEditor } from "./editor/infoview-edits";
 import { codeFromHash, createPageApi, pageStatusSink, type EditorLike } from "./page-api";
 import { normalizeMemoryBytes, parseMemoryParam } from "./embed/params";
@@ -476,35 +477,14 @@ async function main() {
       pageApi.setOffer(null);
     }
   };
-  // GAP 3, the other half of the light boot: the kernel refuses a header a
-  // session cannot cover (K1: nothing loaded contains the modules) and
-  // reports which modules are missing. When one entry of the snapshot index
-  // not yet loaded covers every one of them by its roots (the umbrella for
-  // Mathlib, an overlay for its own roots — snapshots.ts `widenTarget`), the
-  // fix is that entry — restart ONCE with it (a user restart, never a death;
-  // the relay remembers these options across a crash reboot while the header
-  // stays the same). A refusal no entry covers is final: no snapshot would
-  // change the verdict.
-  let widened: string | null = null;
-  // Entries already widened to for a header: never twice (a refusal the
-  // replacement could not fix must not bounce between environments).
-  const tried = new Map<string, Set<string>>();
-  const widenForRoots = (s: RelayStatus) => {
-    if (s.phase !== "headerRefused" || !s.header || s.header.mode !== "refused" || relay.state.kind !== "serving") return;
-    const session = relay.session as ResidentSession;
-    if (session.id !== s.session || widened === s.session) return;
-    const missing = s.header.missing;
-    const header = importLinesOf(relay.lastText).join("\n");
-    const target = artifacts.snapshots
-      ? widenTarget(artifacts.snapshots, missing, session.snapshots, importedModulesOf(relay.lastText))
-      : !session.snapshots.includes("mathlib") && missing.length > 0 && missing.every((m) => coversModule(LEGACY_UMBRELLA_ROOTS, m)) ? { name: "mathlib" } : null;
-    if (!target || tried.get(header)?.has(target.name)) return;
-    tried.set(header, new Set([...(tried.get(header) ?? []), target.name]));
-    widened = s.session;
+  // GAP 3, the other half of the light boot: a header the kernel refuses for
+  // modules one index entry not yet loaded covers widens the session to that
+  // entry, once (self-widen.ts; stateless, so a reboot that dropped the entry
+  // widens again).
+  const widenForRoots = selfWiden(() => relay, artifacts.snapshots, (target) => {
     widening = entryLabel(target);
     ui.busy(`loading ${widening}…`);
-    relay.restart({ snapshots: [...BASE_SNAPSHOTS, target.name] });
-  };
+  });
   // The session adapter reads the document it will serve: the initial text
   // at first boot (the relay constructs its first session before `relay` is
   // assigned, so the factory sees `undefined`) AND on a reboot that precedes
