@@ -8,7 +8,7 @@ mounted read-only from verified, content-addressed packs.
 
 ```
 ┌───────────────────────────── browser tab (COOP/COEP isolated) ─────────────────────────────┐
-│  UI (CodeMirror 6, goals, messages)                                                        │
+│  UI (lean4monaco: Monaco + the vscode-lean4 InfoView over the in-browser LSP)              │
 │    │ postMessage RPC                                                                       │
 │  Lean worker ── verified chunk fetch ──► lean.js + lean.wasm (SHA-256, 154 MB)             │
 │    │  shared WebAssembly.Memory({address:"i64"}) · 256 MiB → 8 GiB                         │
@@ -65,7 +65,7 @@ survives is `docs/HARDENING.md`.
 | Path | What lives there |
 |---|---|
 | `frontend/` | the deployed shell: lean4monaco (Monaco + the vscode-lean4 InfoView) over the in-browser LSP — page (`main.ts`), relay, session adapter, import completion |
-| `src/` | shared runtime code: worker RPC client (`runtime/`), OPFS installer (`install/`), editor helpers pinned by the unit suite (`editor/`) |
+| `src/` | shared runtime code: worker RPC client (`runtime/`), OPFS installer (`install/`) |
 | `public/workers/lean.worker.js` | the Lean worker: verified runtime materialization, Memory64 heap, WORKERFS mounts, persistent compile loop |
 | `public/runtime`, `public/profiles` | content-addressed artifacts (synced, never committed) |
 | `pipeline/release` | `sync-artifacts` (provenance-checked copy), `verify-release` (out-of-band digest audit) |
