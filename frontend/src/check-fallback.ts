@@ -5,22 +5,26 @@
 // the first serving status of a session that is still checking arms a timer
 // that finishes the boot after `ms`.
 //
-// It is page-wide on purpose: a crash reboot or a halt does NOT disarm it. A
-// restored buffer that kills the checker shortly after every serve must still
-// surface the editor 30 s after the first serve (the user edits the offending
-// line; the relay's halted note says so), never stay behind the card or turn
-// into a "could not start" card a reload only repeats. The one exception is
-// the page's self-widen from a light session to an umbrella or overlay
-// environment: that replacement still has to download and load its
-// environment, so the widen calls `cancel()` and the replacement's own first
-// serving status arms the timer again.
+// The whole decision is `observe(status)`, fed every status the page renders:
+//   * a final verdict (ready, headerRefused) cancels it — the boot finishes by
+//     the verdict;
+//   * a DELIBERATE replacement (the relay rebooting for reason "user": the
+//     page's self-widen, api.restart, "Load exact imports") cancels it — the
+//     replacement still downloads and loads its environment, and its own first
+//     serving status arms the timer again;
+//   * a crash reboot (crash, heartbeat, wedged, bootFailed) and a halt leave it
+//     armed — a restored buffer that kills the checker shortly after every
+//     serve must still surface the editor 30 s after the first serve (the user
+//     edits the offending line; the relay's halted note says so), never stay
+//     behind the card or turn into a "could not start" card a reload repeats;
+//   * a serving status arms it when none is armed.
 //
 // Pure (injected timers): unit-tested under node.
 
 export interface CheckFallback {
-  /** Feed every relay status the page renders: a serving one arms the timer if none is armed. */
-  observe(s: { relay: string; phase: string }): void;
-  /** The boot finished some other way (a final verdict), or the page's self-widen replaced the session. */
+  /** Feed every relay status the page renders (see the rules above). */
+  observe(s: { relay: string; phase: string; rebootReason?: string | null }): void;
+  /** The boot finished some other way. */
   cancel(): void;
 }
 
@@ -39,7 +43,9 @@ export function createCheckFallback(
   };
   return {
     observe(s) {
-      if (s.relay !== "serving" || timer !== undefined || s.phase === "ready" || s.phase === "headerRefused") return;
+      if (s.phase === "ready" || s.phase === "headerRefused") return cancel();
+      if (s.relay === "rebooting" && s.rebootReason === "user") return cancel();
+      if (s.relay !== "serving" || timer !== undefined) return;
       timer = timers.setTimeout(() => { timer = undefined; fire(); }, ms);
     },
     cancel,

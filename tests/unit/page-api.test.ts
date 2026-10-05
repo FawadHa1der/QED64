@@ -424,6 +424,26 @@ describe("review fixes", () => {
 
 /** A RelaySession that boots at once, its commit sized the way ResidentSession sizes it: the restart's
  * `initialBytes`, else the page's policy (main.ts: the sticky api commit, else the default). */
+/** main.ts's boot card as renderStatus drives it: EVERY status goes to the real check fallback first; a halt
+ * before any ready turns the card into the failure card (bootFail); a final verdict finishes the boot; the
+ * fallback's timer finishes it too. Only the card's own bookkeeping is modelled here — the fallback decision is
+ * check-fallback.ts itself. */
+function bootCardModel(page: PageApi, clock: Clock, onFire: () => void) {
+  let bootDone = false, everReady = false;
+  const events: string[] = [];
+  const finish = (why: string) => { if (bootDone) return; bootDone = true; events.push(why); page.bootFinished(); };
+  const fallback = createCheckFallback(() => { onFire(); finish("editor shown"); }, 30000, clock);
+  return {
+    events,
+    renderStatus(s: RelayStatus) {
+      if (!bootDone) fallback.observe(s);
+      if (s.phase === "ready") everReady = true;
+      if (s.phase === "halted") { if (s.lastDeath && !everReady && !bootDone) events.push("failure card"); return; }
+      if (s.phase === "ready" || s.phase === "headerRefused") finish("verdict");
+    },
+  };
+}
+
 class Session implements RelaySession {
   onLsp: (msg: JsonRpcMessage) => void = () => {};
   onStatus: (status: WorkerStatus) => void = () => {};
@@ -517,22 +537,21 @@ describe("over the real relay", () => {
     await flush();
     expect(seen).toEqual(["done s2 ready", "settled s2 ready"]);
   });
-  it("the boot card's check fallback armed by the replaced light session never finishes the widened boot (main.ts with check-fallback.ts)", async () => {
+  it("the boot card's check fallback armed by the replaced light session never finishes the widened boot (check-fallback.ts, fed every status as main.ts does)", async () => {
     const clock = new Clock();
     let widened = false;
     const finished: string[] = [];
-    let fallback!: ReturnType<typeof createCheckFallback>;
+    let card!: ReturnType<typeof bootCardModel>;
     const h = overRelay((relay, page) => {
-      fallback = createCheckFallback(() => { finished.push(`fallback ${relay.session.id} ${relay.status().phase}`); page.bootFinished(); }, 30000, clock);
+      card = bootCardModel(page, clock, () => finished.push(`fallback ${relay.session.id} ${relay.status().phase}`));
       return pageStatusSink(
         () => relay.session.id,
-        (s) => { // main.ts selfWiden + its callback: the replacement still boots, so the light session's fallback is cancelled
+        (s) => { // main.ts selfWiden: restart once with the environment that covers the refused header
           if (widened || s.phase !== "headerRefused" || s.header?.mode !== "refused") return;
           widened = true;
-          fallback.cancel();
           relay.restart({ snapshots: ["init", "mathlib"] });
         },
-        (s) => { if (s.phase === "ready" || s.phase === "headerRefused") { fallback.cancel(); page.bootFinished(); } else fallback.observe(s); }, // main.ts renderStatus
+        card.renderStatus,
         (s) => page.relayStatus(s),
       );
     });
@@ -541,8 +560,8 @@ describe("over the real relay", () => {
     await flush(); // the light session serves (the arm's status carries a non-final phase): the fallback arms
     expect(clock.timers).toHaveLength(1);
     h.current().report({ phase: "headerRefused", header: { version: 1, mode: "refused", key: [], moduleCount: 0, missing: ["Mathlib"], ms: 0 } });
-    // Widened synchronously: the relay left serving, so the light session's timer is gone — while the
-    // replacement is still booting (its environment download can take minutes), nothing finishes the boot.
+    // Widened synchronously: the replacement's rebooting status (reason "user") disarmed the light session's
+    // timer — while the replacement is still booting (its download can take minutes), nothing finishes the boot.
     expect(h.relay.session.id).toBe("s2");
     expect(clock.timers).toHaveLength(0);
     clock.advance(30000);
@@ -556,6 +575,26 @@ describe("over the real relay", () => {
     clock.advance(60000);
     expect(finished).toEqual([]);
   });
+  it("a deliberate restart during the first boot (api.restart, \"Load exact imports\") disarms the light session's fallback too", async () => {
+    for (const how of ["api.restart", "offer"] as const) {
+      const clock = new Clock();
+      const finished: string[] = [];
+      let card!: ReturnType<typeof bootCardModel>;
+      const h = overRelay((relay, page) => {
+        card = bootCardModel(page, clock, () => finished.push(`fallback ${relay.session.id}`));
+        return pageStatusSink(() => relay.session.id, () => {}, card.renderStatus, (s) => page.relayStatus(s));
+      });
+      await flush(); // s1 serves: armed
+      h.current().report({ phase: "elaborating" });
+      clock.advance(5000);
+      if (how === "api.restart") expect(h.api.restart({ snapshots: ["init", "mathlib"] }).accepted).toBe(true);
+      else h.relay.restart({ snapshots: ["init", "mathlib"], warmHeader: "import Mathlib\n", packs: ["essential"] }); // main.ts's offer
+      expect(clock.timers, how).toHaveLength(0);
+      clock.advance(60000); // the replacement is still booting (a download): nothing finishes the boot
+      expect(finished, how).toEqual([]);
+      expect(h.api.status().boot.done, how).toBe(false);
+    }
+  });
 });
 
 describe("the check fallback over the real relay's crash loop", () => {
@@ -563,17 +602,11 @@ describe("the check fallback over the real relay's crash loop", () => {
   afterEach(() => { for (const r of relays.splice(0)) { r.clientPort.close(); r.unload(); } });
   it("a restored buffer that kills the checker after every serve still surfaces the editor 30 s after the first serve: crash reboots and the halt leave the fallback armed", async () => {
     const clock = new Clock();
-    const events: string[] = [];
-    let bootDone = false;
     const page = createPageApi(CAPS, new Clock());
     const sessions: Session[] = [];
-    const fallback = createCheckFallback(() => { if (!bootDone) { bootDone = true; events.push("fallback: editor shown"); page.bootFinished(); } }, 30000, clock);
+    const card = bootCardModel(page, clock, () => {});
     const relay: LspRelay = new LspRelay(() => { const x = new Session(`s${sessions.length + 1}`, {}, null); sessions.push(x); return x; }, {
-      status: pageStatusSink(() => relay.session.id, () => {}, (s) => { // main.ts renderStatus: bootFail on a halt before any ready, never a cancel
-        if (s.phase === "halted") { if (!bootDone) events.push("failure card"); return; }
-        if (s.phase === "ready" || s.phase === "headerRefused") { bootDone = true; fallback.cancel(); return; }
-        if (!bootDone) fallback.observe(s);
-      }, (s) => page.relayStatus(s)),
+      status: pageStatusSink(() => relay.session.id, () => {}, card.renderStatus, (s) => page.relayStatus(s)),
     }, () => Promise.resolve());
     relays.push(relay);
     await flush(); // s1 serves: the fallback arms
@@ -585,9 +618,9 @@ describe("the check fallback over the real relay's crash loop", () => {
       await flush();
     }
     expect(relay.state.kind).toBe("halted"); // the breaker: three deaths inside 120 s
-    expect(events).toEqual(["failure card"]);
+    expect(card.events).toEqual(["failure card"]);
     clock.advance(15000); // 30 s after the FIRST serve
-    expect(events).toEqual(["failure card", "fallback: editor shown"]); // the editor appears; the halted pill and note say "edit the file"
+    expect(card.events).toEqual(["failure card", "editor shown"]); // the editor appears; the halted pill and note say "edit the file"
   });
 });
 
