@@ -416,18 +416,18 @@ Reported 2026-10-05 by lean4game: in editor mode, select-all + Backspace and the
 
 QED64's page never showed it, and an earlier probe that typed into the page's editor passed 15/15. The difference is the client path. vscode-languageclient holds a full-text change for 250 ms but flushes it before every request and notification. lean4game's client sends semantic-token, inlay-hint and code-action requests and the InfoView's goal calls after each keystroke, so every keystroke reached Lean.
 
-Mechanism, measured with a raw-edit probe (`tests/adversarial/edit-storm.mjs`). It sends full-text didChanges through the test hatch, which is the library path, past the page's own client, and samples the worker's pool `{unused, running}` every 100 ms. Lean abandons an elaboration only at its next cancellation check. Work that never checks keeps its pthread: `IO.sleep`, a blocking `#eval`, a long kernel check. So the rate of changes times the length of that work is the number of live threads.
+Mechanism, measured with a raw-edit probe (`tests/adversarial/edit-storm.mjs`). It sends full-text didChanges through the test hatch, which is the library path, past the page's own client (one clear plus one change per typed character: 58 changes, versions 2 to 59), and samples the worker's pool `{unused, running}` every 100 ms. Lean abandons an elaboration only at its next cancellation check. Work that never checks keeps its pthread: `IO.sleep`, a blocking `#eval`, a long kernel check. So the rate of changes times the length of that work is the number of live threads.
 
 Results on fd6c2ae (no coalescing), Mathlib document, prod build, headless, kernel 0035 (parked-thread reuse does not help):
 
 | Scenario | Runs | Peak running pthreads | Outcome |
 |---|---|---|---|
-| 59 changes in 600 ms, cheap body | 3 | 14-19 | ok (pool stays 24) |
+| 58 changes in 600 ms, cheap body | 3 | 14-19 | ok (pool stays 24) |
 | same at 150 ms/char | 3 | 10-12 | ok |
 | same above a cancellable `decide` | 3 | 13-15 | ok |
 | same above `#eval (IO.sleep 3000 : IO Unit)` | 3 | 65-69 | crash ~15 s in |
 | sleep, plus a goal request after every change | 2 | 69-70 | crash ~17 s in |
-| typing into the page's Monaco (see below: typed BELOW the sleep, so it measured nothing) | 2 | 9-12 | ok |
+| typing into the page's Monaco at 10 ms/char (this run typed BELOW the sleep by a lane bug; corrected below) | 2 | 9-12 | ok |
 
 Fix (`frontend/src/embed/edit-coalescer.ts`, used by `ResidentSession.lsp`; docs/EMBEDDING.md §7.8): lean4game's measured throttle rule, in the library, for every embedder.
 - A full-text change goes at once and opens a 300 ms window. Changes inside the window are held, newest wins. The window's end forwards the held one and opens the next.
@@ -441,12 +441,23 @@ Results on 65d918b, 2 runs each, every one ready at the last version typed with 
 |---|---|---|
 | sleep | 13-15 | 6.2 s |
 | sleep plus a request per change | 23-24 (pool 24 → 26: grown by 2, within the lane's tolerance of 4) | 6.3 s |
-| page Monaco (see below: this run typed BELOW the sleep, so it measured nothing) | 9 | 1.7 s |
+| page Monaco at 10 ms/char (typed BELOW the sleep by a lane bug; corrected below) | 9 | 1.7 s |
 | cheap body, 10 ms/char | 11 | 1.0 s (0.8 s without coalescing) |
 | 150 ms/char (8.9 s of typing) | 10-12 | 8.9 s |
 | cancellable `decide` below | 11-13 | 1.0 s |
 
 The page lanes on 65d918b: page-api 6/6, infoview-actions 4/4, liveness drills 6/6, reload storms 0/5 stock and 0/5 embedded, edit-crash probe 3/3.
+
+Results on 27ab4ad (the lane's page scenario repaired: the cursor on the empty line ABOVE the sleep, checked after typing; `ContentModified` for semantic tokens only; one run per row on fd6c2ae, two on 27ab4ad; every 27ab4ad run ready at the last typed version with 0 deaths):
+
+| Scenario | fd6c2ae (no coalescing) | 27ab4ad |
+|---|---|---|
+| sleep | crash at 18.2 s, pool 24 → 69 | pool 24, running peak 15, ready 5.7 s after the last key |
+| sleep plus a request per change | (crashed on fd6c2ae above) | pool 24 → 24-28 (grown by 0-4, at the lane's tolerance), running peak 21-25 |
+| page Monaco at 10 ms/char, above the sleep | pool 24, running peak 15, ready 3.2 s after the last key | pool 24, running peak 11-12, ready 3.2 s |
+| cheap body, 10 ms/char | | pool 24, running peak 12, ready 0.4 s |
+
+Two readings of that table. The page scenario at 10 ms/char passes on BOTH builds: the stock page's own client (vscode-languageclient's 250 ms delayer) turns the burst into a single change, and the InfoView's and Monaco's requests are debounced past it, so the coalescer holds nothing there; the crash was always the library path (lean4game's client sent a change per keystroke at 25 ms/char). The lane now counts the changes that reach the relay and has a 150 ms/char page scenario, where the InfoView's goal request follows each keystroke and flushes the client's pending change, to measure the page path with the coalescer engaged. And the request-per-keystroke worst case (a `$/lean/plainGoal` after every change, no cancellations) grew the pool by 4 in one run once those requests were no longer answered `ContentModified` (on e575160 they were, and the pool stayed at 24 with a running peak of 14): each forwarded request becomes a task that may take a pool thread. A client cancels its superseded requests, and those cancellations are queued behind the held change too; answering a queued request whose `$/cancelRequest` is also queued with `RequestCancelled` locally, as Lean would, would spare the worker those tasks. Not applied: the measured growth is inside the tolerance under a worst case no real client produces.
 
 What it does not fix: the coalescer limits the rate, it does not cap the threads. Under sustained typing about 3.3 elaborations start per second. Non-cancellable work of D seconds then keeps about D/0.3 threads alive: ~10 for 3 s. With a ready runtime's ~10 busy pthreads, that fills the 24-Worker pool at D ≈ 4 s and passes the ~30-isolate ceiling at D ≈ 6 s. The root fix is the one #55 named: a cap on concurrently live dedicated threads in the task manager (the kernel's), or smaller isolates. That is outside this repository's frontend.
 

@@ -673,18 +673,21 @@ frame at once). Embedders do not need their own throttle.
 - A request queued behind a change that a newer change then replaces is
   answered against the newer text, which is the client's view by then:
   editors cancel or re-issue their position-bound requests on every content
-  change, and the InfoView re-asks at the cursor. One family is the
-  exception: document semantic tokens (`textDocument/semanticTokens/full`,
-  `/full/delta`, `/range`), whose reply Monaco rebases by every edit made
-  since the request, so a reply computed on the newer text would get the
-  edit applied twice. A queued one of those whose change a newer change
-  replaces is answered `ContentModified` (-32801,
-  `error.data.qed64.kind: "superseded"`) the moment that happens: what Lean
-  answers when the document changes under a request, and the requests
-  vscode-languageclient itself cancels and refetches on that code. lean4monaco
-  logs every error reply it receives to the console (its own TODO; the
-  relay's death and restart errors already go there), so a typing burst with
-  semantic highlighting on can print one such line per superseding change.
+  change (hover, inlay hints, code actions, highlights, folding, symbols),
+  and the InfoView keeps only its latest answer. The exceptions are the
+  requests whose reply Monaco rebases by the edits made since the request,
+  so a reply computed on the newer text would get the edit applied twice:
+  document semantic tokens (`textDocument/semanticTokens/full`, `/full/delta`,
+  `/range`) and `textDocument/completion` (Lean's option-name and error-name
+  items also carry an edit range on the server's text). A queued one of
+  those whose change a newer change replaces is answered `ContentModified`
+  (-32801, `error.data.qed64.kind: "superseded"`) the moment that happens:
+  what Lean answers when the document changes under a request. The client
+  refetches the tokens, and the next keystroke re-triggers the completion.
+  lean4monaco logs every error reply it receives to the console (its own
+  TODO; the relay's death and restart errors already go there), so typing
+  with the suggest widget open can print one such line per superseding
+  change.
 - Every forwarded change opens the window again. A barrier (didOpen,
   didClose, a ranged change) or another document's change forwards a held
   change at once, inside the window its predecessor opened: barriers never
@@ -703,11 +706,15 @@ frame at once). Embedders do not need their own throttle.
   (`IO.sleep`, a long kernel check, a blocking `#eval`) keeps its pthread, so
   a change per keystroke grows the runtime's pool past its preallocated
   Workers until V8 runs out of memory (docs/HARDENING.md #59). A client's own
-  coalescing does not prevent it: lean4monaco's language client sends
-  semantic-token, inlay-hint and code-action requests (and the InfoView its
-  goal calls) after each keystroke, and flushes its pending change before
-  each one. Queuing those requests behind the held change, instead of letting
-  them flush it, is what keeps the coalescing effective.
+  coalescing does not prevent it: vscode-languageclient holds a full-text
+  change for 250 ms but flushes it before every request, and lean4monaco's
+  requests (the InfoView's goals on a cursor move, inlay hints, code actions,
+  semantic tokens) follow a keystroke whenever typing is slow enough for
+  their debounces to fire between keys. Measured on the stock page: a burst
+  at 10 ms/char reaches the relay as one change (the delayer); at 150 ms/char
+  a change arrives per keystroke. lean4game's client sent one per keystroke
+  at 25 ms/char. Queuing those requests behind the held change, instead of
+  letting them flush it, is what keeps the coalescing effective.
 - It limits the rate, not the number of threads. Under sustained typing
   about 3.3 elaborations start per second, so non-cancellable work longer
   than a few seconds can still fill the pool. The root fix is a cap on live

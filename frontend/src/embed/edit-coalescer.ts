@@ -8,12 +8,15 @@
 // preallocated workers, and the tab dies of a V8 out-of-memory (lean4game,
 // 2026-10-05: 9 changes in 230 ms, 24 → 38 workers; QED64's edit-storm lane:
 // 59 changes in 600 ms above an `IO.sleep 3000`, 24 → 69, a crash every run).
-// A client's own coalescing does not prevent it: lean4monaco's language
-// client sends its per-keystroke requests (semantic tokens, inlay hints,
-// code actions, the InfoView's goals) right after each change, and flushes
-// its pending change before each of them. So the session coalesces for every
-// caller, and holds those requests behind the change instead of letting them
-// flush it (lean4game's measured throttle, client/src/wasm/change-throttle.ts):
+// A client's own coalescing does not prevent it: vscode-languageclient holds
+// a full-text change for 250 ms but flushes it before every request, and
+// lean4monaco's requests (the InfoView's goals on a cursor move, inlay hints,
+// code actions, semantic tokens) follow a keystroke whenever typing is slow
+// enough for their debounces to fire between keys; a 10 ms/char burst stays
+// one change (the edit-storm lane measures both). So the session coalesces
+// for every caller, and holds those requests behind the change instead of
+// letting them flush it (lean4game's measured throttle,
+// client/src/wasm/change-throttle.ts):
 //
 //   * a full-text didChange is forwarded at once when no window is open, and
 //     opens a window of `ms`; one arriving inside the window is held, the
@@ -30,16 +33,20 @@
 //     their position-bound requests on every content change, and the
 //     InfoView re-asks at the cursor. The cost: a frame sent during a burst
 //     waits up to `ms`;
-//   * one family of requests is the exception: document semantic tokens
-//     (`textDocument/semanticTokens/full`, `/full/delta`, `/range`). Monaco
-//     rebases their reply by every edit made since the request, so a reply
-//     computed on the newer text gets the edit applied twice and the
-//     highlighting lands one line off. These are exactly the requests
-//     vscode-languageclient itself cancels on `ContentModified`
-//     (RequestsToCancelOnContentModified), so a queued one whose change a
-//     newer change replaces is answered `ContentModified` (-32801) the moment
-//     that happens: what Lean answers when the document changes under a
-//     request, and what makes the client refetch;
+//   * the exceptions are the requests whose reply Monaco rebases by the edits
+//     made since the request, so that a reply computed on the newer text gets
+//     the edit applied twice: document semantic tokens
+//     (`textDocument/semanticTokens/full`, `/full/delta`, `/range`; the
+//     highlighting lands one line off; exactly the requests
+//     vscode-languageclient itself cancels on `ContentModified`) and
+//     `textDocument/completion` (Monaco neither cancels nor re-issues it while
+//     typing forward and shifts the reply by the typed delta; Lean's
+//     option-name and error-name items carry an edit range on the server's
+//     text, so accepting one would also delete the character after the
+//     cursor). A queued one of these whose change a newer change replaces is
+//     answered `ContentModified` (-32801) the moment that happens: what Lean
+//     answers when the document changes under a request; the client refetches
+//     the tokens and the next keystroke re-triggers the completion;
 //   * didOpen, didClose, a ranged (or multi-part) didChange, a replay, and a
 //     full-text change of another document first forward the held change and
 //     the queue, then go (or are held) themselves: a held change never
@@ -100,8 +107,8 @@ const uriOf = (msg: CoalescibleMessage): unknown => (msg.params as { textDocumen
 const isBarrier = (msg: CoalescibleMessage): boolean =>
   msg.method === "textDocument/didOpen" || msg.method === "textDocument/didClose" || (msg.method === "textDocument/didChange" && !isFullTextChange(msg));
 
-/** The requests whose reply the client rebases by its later edits (vscode-languageclient's RequestsToCancelOnContentModified). */
-export const SUPERSEDED_METHODS: ReadonlySet<string> = new Set(["textDocument/semanticTokens/full", "textDocument/semanticTokens/full/delta", "textDocument/semanticTokens/range"]);
+/** The requests whose reply the client rebases by its later edits: vscode-languageclient's RequestsToCancelOnContentModified, and completion. */
+export const SUPERSEDED_METHODS: ReadonlySet<string> = new Set(["textDocument/semanticTokens/full", "textDocument/semanticTokens/full/delta", "textDocument/semanticTokens/range", "textDocument/completion"]);
 
 /** The answer to such a request whose text a newer change replaced before it reached the checker (Lean's own code for it). */
 export const SUPERSEDED: JsonRpcError = Object.freeze({

@@ -116,7 +116,7 @@ describe("createEditCoalescer", () => {
   });
 
   it("a semantic-tokens request queued behind a change that a newer change replaces is answered ContentModified at once; every other frame stays queued", () => {
-    expect([...SUPERSEDED_METHODS].sort()).toEqual(["textDocument/semanticTokens/full", "textDocument/semanticTokens/full/delta", "textDocument/semanticTokens/range"]);
+    expect([...SUPERSEDED_METHODS].sort()).toEqual(["textDocument/completion", "textDocument/semanticTokens/full", "textDocument/semanticTokens/full/delta", "textDocument/semanticTokens/range"]);
     const { clock, c, sent, rejected } = setup();
     c.send(change(10, "a")); // the window
     clock.advance(80);
@@ -128,17 +128,35 @@ describe("createEditCoalescer", () => {
     c.send(req(5, "textDocument/semanticTokens/range", { textDocument: { uri: "file:///b.lean" }, range: {} })); // another document's tokens: not this change's
     clock.advance(170);
     c.send(req(3, "textDocument/semanticTokens/full", { textDocument: { uri: "file:///a.lean" } })); // Monaco's document tokens, made against v11
+    c.send(req(6, "textDocument/completion", { textDocument: { uri: "file:///a.lean" }, position: { line: 0, character: 2 } })); // the quick suggest, made against v11; adjacent to 3
     expect(rejected).toEqual([]);
     clock.advance(30);
     c.send(change(12, "ab\n")); // v12 replaces v11: Monaco would rebase a reply computed on v12 by the v11→v12 edit a second time
-    expect(rejected).toEqual([{ id: 3, method: "textDocument/semanticTokens/full", code: -32801, t: 280 }]);
+    expect(rejected).toEqual([{ id: 3, method: "textDocument/semanticTokens/full", code: -32801, t: 280 }, { id: 6, method: "textDocument/completion", code: -32801, t: 280 }]);
     expect(SUPERSEDED.code).toBe(-32801);
     expect(sent()).toEqual(["v10@0"]);
     clock.advance(20);
     expect(sent()).toEqual(["v10@0", "v12@300", "$/lean/plainGoal@300", "$/lean/rpc/connect@300", "$/lean/rpc/keepAlive@300", "textDocument/didSave@300", "textDocument/semanticTokens/range@300"]);
     c.send(req(4, "textDocument/semanticTokens/full", { textDocument: { uri: "file:///a.lean" } })); // the window is open again, nothing held: at once
     expect(sent().at(-1)).toBe("textDocument/semanticTokens/full@300");
-    expect(rejected).toHaveLength(1);
+    expect(rejected).toHaveLength(2);
+  });
+
+  it("a superseded request flushed by a barrier or by another document's change is forwarded, never answered here: its change reaches the checker", () => {
+    for (const [name, mk] of [
+      ["didOpen", () => note("textDocument/didOpen", { textDocument: { uri: "file:///b.lean", version: 1, text: "" } })],
+      ["another document's change", () => change(1, "c", "file:///b.lean")],
+      ["ranged change", (): Msg => ({ jsonrpc: "2.0", method: "textDocument/didChange", params: { textDocument: { uri: "file:///a.lean", version: 4 }, contentChanges: [{ range: {}, text: "d" }] } })],
+    ] as const) {
+      const { c, sent, rejected } = setup();
+      c.send(change(2, "a"));
+      c.send(change(3, "ab")); // held
+      c.send(req(5, "textDocument/semanticTokens/full", { textDocument: { uri: "file:///a.lean" } })); // against v3
+      c.send(req(6, "textDocument/completion", { textDocument: { uri: "file:///a.lean" }, position: { line: 0, character: 2 } })); // adjacent, against v3
+      c.send(mk());
+      expect(rejected, name).toEqual([]);
+      expect(sent().slice(0, 4), name).toEqual(["v2@0", "v3@0", "textDocument/semanticTokens/full@0", "textDocument/completion@0"]); // v3 went, so the replies are right
+    }
   });
 
   it("a reject hook that sends frames back in (a page observer) never loses the newest change or misfiles its frames", () => {
