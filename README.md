@@ -79,7 +79,7 @@ survives is `docs/HARDENING.md`.
 
 ```sh
 npm test                  # unit: abbreviations, manifests, pack format, worker internals, diagnostics
-npm run test:integration  # real wasm64 Lean under Node: proofs, errors, sorry, exit codes
+npm run test:integration  # real wasm64 Lean under Node: proofs, errors, sorry, run verdicts
 QED64_SLOW=1 npm run test:integration  # + import Lean closure and snapshot baking
 ```
 

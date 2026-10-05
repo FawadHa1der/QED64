@@ -16,6 +16,7 @@ import { tapRelay } from "./relay-taps";
 import { installWidgetSourceCache } from "./widget-source-cache";
 import { createTestHatch } from "./test-hatch";
 import { createCheckFallback } from "./check-fallback";
+import { STAGES, createBootChecklist } from "./boot-checklist";
 
 // The embedder-facing surface (docs/EMBEDDING.md §2), published synchronously
 // at module start — before any of the page's own listeners matter — so an
@@ -89,30 +90,18 @@ const bootFill = document.getElementById("bootfill")!;
 const bootLabel = document.getElementById("bootlabel")!;
 const bootNums = document.getElementById("bootnums")!;
 const bootReload = document.getElementById("bootreload")! as HTMLButtonElement;
-const STAGES = ["manifests", "core", "runtime", "env", "load", "check"];
-let bootStage = 0;
+const checklist = createBootChecklist(); // boot-checklist.ts: the active step and its rules
 let bootDone = false;
 // Downloads report cumulative bytes; a short moving window gives a stable
 // speed and time-left estimate that still tracks real throughput changes.
 const speedWindow: Array<{ t: number; loaded: number }> = [];
 let speedKey = "";
 
-function stageOf(label: string, info?: ProgressInfo): string | null {
-  const phase = info?.phase ?? "";
-  if (/^fetching manifests/.test(label)) return "manifests";
-  if (phase.startsWith("core-") || /core library/.test(label)) return "core";
-  if (/^(runtime|filesystem|initialize|memory|import)$/.test(phase) || /^(Starting|Mounting|Initializing)/.test(label)) return "runtime";
-  if (phase === "snapshot" || phase === "snapshot-cache" || /environment \(|environment snapshot/i.test(label)) return "env";
-  if (phase === "snapshot-load" || phase === "snapshot-init" || /into Lean/.test(label)) return "load";
-  if (/elaborating|checking/.test(label)) return "check";
-  return null;
-}
-
 function renderStages() {
   document.querySelectorAll<HTMLElement>("#bootstages li").forEach((li) => {
-    const i = STAGES.indexOf(li.dataset.stage!);
-    li.classList.toggle("done", i < bootStage);
-    li.classList.toggle("active", i === bootStage);
+    const i = STAGES.indexOf(li.dataset.stage as (typeof STAGES)[number]);
+    li.classList.toggle("done", i < checklist.stage);
+    li.classList.toggle("active", i === checklist.stage);
   });
 }
 
@@ -122,16 +111,9 @@ function fmtMB(n: number) {
 
 function bootProgress(label: string, info?: ProgressInfo) {
   if (bootDone) return;
-  const stage = stageOf(label, info);
-  if (stage) {
-    const i = STAGES.indexOf(stage);
-    // Snapshots load one after another (init, then mathlib): the next one's
-    // download follows the previous one's load, and the checklist must show
-    // that download as the active step, not as done (HARDENING #54).
-    const next = stage === "env" && STAGES[bootStage] === "load";
-    if (i > bootStage || next) speedWindow.length = 0;
-    if (i >= bootStage || next) { bootStage = i; renderStages(); }
-  }
+  const step = checklist.progress(label, info);
+  if (step.fresh) speedWindow.length = 0;
+  if (step.moved) renderStages();
   bootLabel.textContent = label;
   const { loaded, total, unit } = info ?? {};
   if (unit === "bytes" && typeof loaded === "number" && typeof total === "number" && total > 0) {
@@ -177,7 +159,7 @@ function bootFinish() {
   bootDone = true;
   pageApi.bootFinished();
   checkFallback.cancel();
-  bootStage = STAGES.length;
+  checklist.finish();
   renderStages();
   bootEl.classList.add("done");
   window.setTimeout(() => bootEl.remove(), 600);
@@ -308,7 +290,10 @@ function tickSearchHint(): void {
 let widening: string | null = null;
 
 function renderStatus(s: PageStatus) {
-  if (!bootDone) checkFallback.observe(s);
+  if (!bootDone) {
+    checkFallback.observe(s);
+    if (checklist.observe(s)) renderStages(); // a deliberate replacement's first status: back to the runtime step
+  }
   if (s.phase === "ready") everReady = true;
   trackSearch(s);
   if (s.phase === "halted") {
@@ -481,9 +466,9 @@ async function main() {
   const widenForRoots = selfWiden(() => relay, artifacts.snapshots, (target) => {
     widening = entryLabel(target);
     ui.busy(`loading ${widening}…`);
-    // The card's checklist follows the replacement (runtime, then its
-    // environment); its rebooting status disarms the light session's fallback.
-    if (!bootDone) { bootStage = Math.min(bootStage, STAGES.indexOf("runtime")); renderStages(); }
+    // The replacement's rebooting status (reason "user") disarms the light
+    // session's check fallback and rewinds the card's checklist to the runtime
+    // step (renderStatus: check-fallback.ts, boot-checklist.ts).
   });
   // The session adapter reads the document it will serve: the initial text
   // at first boot (the relay constructs its first session before `relay` is

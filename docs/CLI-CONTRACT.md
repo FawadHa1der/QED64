@@ -402,6 +402,9 @@ usage: supervised-run.mjs --target <file> [--quiet-ms n] [--stable-ms n] [--give
 - The showcase's `scripts/headless/run-e2.sh` (vendored; it reads the
   `^supervised-run: ` verdict line).
 - `tests/unit/import-lane.test.ts`.
+- `tests/integration/runtime-smoke.test.ts` (every run: it passes
+  `--target`, `--quiet-ms`, `--stable-ms` and `--give-up-ms`, and judges each
+  test by the exit code and the verdict line).
 
 ### preflight
 
@@ -537,8 +540,9 @@ usage: node-runner.mjs [--artifact <dir>] [--work <dir>] [--lib <dir>] [--] <lea
 4. Does not exit after `main` returns.
 
 **Consumers:** bake-snapshot, supervised-run, `pipeline/toolchain/gate.mjs`,
-`tests/integration/runtime-smoke.test.ts`, and lean4game (vendored, through
-its gate and bakes).
+`tests/integration/runtime-smoke.test.ts` (through supervised-run, with
+node-runner's own flags after `--`), and lean4game (vendored, through its gate
+and bakes).
 
 ### persistent-probe
 

@@ -201,7 +201,12 @@ describeSlow("wasm64 runtime — slow tier (QED64_SLOW=1)", () => {
         ].join("\n"),
         { ...QUICK, giveUpMs: 600_000 },
       );
-      expect(r.stdout).toContain("64");
+      // The verdict first: a metaprogram that throws is a Lean error line, a
+      // failed run, while `64` is already printed (and the verdict line's
+      // elapsed time can contain "64" too).
+      expect(r.status).toBe(0);
+      expect(r.stdout).toMatch(/^64$/m);
+      expect(r.stdout).not.toMatch(/error/i);
     },
   );
 

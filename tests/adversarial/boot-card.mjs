@@ -17,6 +17,13 @@
 //                   (`#eval IO.sleep`). Verdict: the card goes about
 //                   --fallback-ms after the relay starts serving, while the
 //                   phase is still `elaborating`, and the page reaches `ready`.
+//   restart-during-boot  the same buffer; while the card shows "Check", the
+//                   page API restarts with Mathlib (what an embedder or "Load
+//                   exact imports" does). Verdict: the card stays up for the
+//                   whole replacement boot and its checklist shows that boot
+//                   (never "Check" before the replacement elaborates), then
+//                   the card goes about --fallback-ms after the replacement
+//                   serves, still elaborating, and the page reaches `ready`.
 //
 // CDP network emulation does not reach the Lean worker's downloads (a
 // dedicated worker's session answers Network.emulateNetworkConditions with
@@ -26,7 +33,7 @@
 // (COOP/COEP intact).
 //
 // Usage: node tests/adversarial/boot-card.mjs [--url http://localhost:5185/]
-//          [--scenario slow-link|check-fallback|all] [--mbps 16] [--rtt 40]
+//          [--scenario slow-link|check-fallback|restart-during-boot|all] [--mbps 16] [--rtt 40]
 //          [--fallback-ms 30000] [--budget-s 1500] [--run-dir <dir>]
 // Serve the production build (`npm run build:site && npm run preview:prod`)
 // and run this through the host's browser lock. Exit 0 = every verdict
@@ -143,7 +150,7 @@ const SAMPLE = () => {
   };
 };
 
-async function visit({ name, pageUrl, init, link, untilMs, stopWhen }) {
+async function visit({ name, pageUrl, init, link, untilMs, stopWhen, act }) {
   const browser = await chromium.launch({ args: ["--enable-features=SharedArrayBuffer"] });
   const t0 = Date.now();
   const samples = [];
@@ -183,6 +190,7 @@ async function visit({ name, pageUrl, init, link, untilMs, stopWhen }) {
           await sleep(8000);
           rssAtReady = rssByType(process.pid);
         }
+        if (act) await act(s, page);
         if (stopWhen(s, samples)) break;
       }
       if (samples.length && samples.length % 60 === 0) await page.screenshot({ path: path.join(dir, `${name}-${(t / 1000) | 0}s.png`) }).catch(() => {});
@@ -302,6 +310,53 @@ try {
       const after = goneAt === null ? null : goneAt - servingAt;
       const ok = after !== null && Math.abs(after - FALLBACK_MS) <= 3000 && atGone.phase === "elaborating" && readyAt !== null && readyAt > goneAt;
       verdict("check-fallback", ok, after === null ? "the card never went" : `card gone ${(after / 1000).toFixed(1)} s after serving (expected ~${FALLBACK_MS / 1000} s) in phase ${atGone.phase}; ready at ${readyAt === null ? "never" : `${(readyAt / 1000).toFixed(0)} s`}`, facts);
+    }
+  }
+
+  // ---------- scenario: a deliberate restart while the card shows "Check" ----------
+  if (SCENARIO === "all" || SCENARIO === "restart-during-boot") {
+    if (SCENARIO === "all") await sleep(30000);
+    const DOC = "-- boot-card restart-during-boot: elaborates for 60 s\n#eval (IO.sleep 60000 : IO Unit)\n";
+    let restartedAt = null;
+    let answer = null;
+    const { samples, crashed } = await visit({
+      name: "restart-during-boot",
+      pageUrl: url,
+      init: { fn: (text) => { try { window.localStorage.setItem("qed64.buffer", text); } catch { /* storage unavailable */ } }, arg: DOC },
+      untilMs: Math.min(BUDGET_MS, 900000),
+      act: async (s, page) => {
+        if (restartedAt !== null || !s.shown || s.relay !== "serving" || s.phase !== "elaborating" || s.stage !== "check") return;
+        restartedAt = s.t;
+        answer = await page.evaluate(() => globalThis.qed64.api.restart({ snapshots: ["init", "mathlib"] })).catch((e) => ({ error: String(e).slice(0, 200) }));
+        console.log(`  [restart-during-boot ${(s.t / 1000).toFixed(0).padStart(4)} s] api.restart({snapshots: ["init", "mathlib"]}) → ${JSON.stringify(answer)}`);
+      },
+      stopWhen: (s, all) => restartedAt !== null && s.phase === "ready" && all.some((x) => !x.shown),
+    });
+    const after = restartedAt === null ? [] : samples.filter((s) => s.t > restartedAt);
+    const replacementServingAt = first(after, (s) => s.relay === "serving");
+    const until = replacementServingAt ?? Infinity;
+    const boot = after.filter((s) => s.t < until);
+    const goneAt = first(samples, (s) => !s.shown);
+    const readyAt = first(after, (s) => s.phase === "ready");
+    const atGone = goneAt === null ? null : samples.find((s) => s.t === goneAt);
+    const stagesSeen = [...new Set(boot.filter((s) => s.shown).map((s) => s.stage))];
+    const facts = { restartedAt, answer, replacementServingAt, goneAt, readyAt, crashed, stagesSeen, phaseAtGone: atGone?.phase ?? null, fallbackMs: FALLBACK_MS };
+    console.log(`restart-during-boot facts: ${JSON.stringify(facts)}`);
+    if (restartedAt === null || replacementServingAt === null) {
+      infra = crashed === null && restartedAt === null;
+      verdict("restart-during-boot", false, restartedAt === null ? `the card never showed "Check" while serving (crashed=${crashed})` : `the replacement never served (crashed=${crashed})`, facts);
+    } else {
+      const problems = [];
+      if (answer?.accepted !== true) problems.push(`restart answered ${JSON.stringify(answer)}`);
+      const hidden = boot.find((s) => !s.shown);
+      if (hidden) problems.push(`card gone at ${(hidden.t / 1000).toFixed(0)} s while the replacement was still booting (${hidden.phase}/${hidden.relay})`);
+      const stuck = boot.find((s) => s.shown && s.stage === "check" && s.phase !== "elaborating");
+      if (stuck) problems.push(`at ${(stuck.t / 1000).toFixed(0)} s the checklist shows "Check" while the replacement boots: ${JSON.stringify(stuck.label.slice(0, 60))}`);
+      if (!stagesSeen.some((st) => st === "runtime" || st === "env" || st === "load")) problems.push(`the checklist never showed the replacement's boot (steps seen: ${stagesSeen.join(", ") || "none"})`);
+      const gap = goneAt === null ? null : goneAt - replacementServingAt;
+      if (gap === null || Math.abs(gap - FALLBACK_MS) > 3000 || atGone.phase !== "elaborating") problems.push(gap === null ? "the card never went" : `card gone ${(gap / 1000).toFixed(1)} s after the replacement served (expected ~${FALLBACK_MS / 1000} s) in phase ${atGone.phase}`);
+      if (readyAt === null) problems.push("never ready after the restart");
+      verdict("restart-during-boot", problems.length === 0, problems.length ? problems.join("; ") : `restart at ${(restartedAt / 1000).toFixed(0)} s; card up through the replacement's boot (steps ${stagesSeen.join(" → ")}); gone ${(gap / 1000).toFixed(1)} s after it served, still elaborating; ready at ${(readyAt / 1000).toFixed(0)} s`, facts);
     }
   }
 } finally {

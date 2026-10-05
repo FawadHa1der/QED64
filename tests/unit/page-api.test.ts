@@ -17,6 +17,7 @@ import { normalizeMemoryBytes, parseMemoryParam } from "../../frontend/src/embed
 import { LspRelay, type RelaySession, type RelayStatus, type RestartOptions } from "../../frontend/src/lsp-relay";
 import { tapRelay, type LspMessage } from "../../frontend/src/relay-taps";
 import { createCheckFallback } from "../../frontend/src/check-fallback";
+import { STAGES, createBootChecklist } from "../../frontend/src/boot-checklist";
 import type { JsonRpcMessage, WorkerStatus } from "../../src/runtime/client";
 
 const CAPS: Capabilities = {
@@ -431,12 +432,18 @@ describe("review fixes", () => {
 function bootCardModel(page: PageApi, clock: Clock, onFire: () => void) {
   let bootDone = false, everReady = false;
   const events: string[] = [];
-  const finish = (why: string) => { if (bootDone) return; bootDone = true; events.push(why); page.bootFinished(); };
+  const checklist = createBootChecklist();
+  const finish = (why: string) => { if (bootDone) return; bootDone = true; events.push(why); page.bootFinished(); checklist.finish(); };
   const fallback = createCheckFallback(() => { onFire(); finish("editor shown"); }, 30000, clock);
   return {
     events,
+    checklist,
+    /** The active checklist step's name ("done" once finished). */
+    step: () => STAGES[checklist.stage] ?? "done",
+    /** main.ts bootProgress: a progress report while the card is up. */
+    progress(label: string, info?: { phase?: string }) { if (!bootDone) checklist.progress(label, info); },
     renderStatus(s: RelayStatus) {
-      if (!bootDone) fallback.observe(s);
+      if (!bootDone) { fallback.observe(s); checklist.observe(s); }
       if (s.phase === "ready") everReady = true;
       if (s.phase === "halted") { if (s.lastDeath && !everReady && !bootDone) events.push("failure card"); return; }
       if (s.phase === "ready" || s.phase === "headerRefused") finish("verdict");
@@ -559,7 +566,10 @@ describe("over the real relay", () => {
     h.api.on("boot", (b) => { if (b.done) done.push(`${h.api.status().session} ${h.api.status().phase}`); });
     await flush(); // the light session serves (the arm's status carries a non-final phase): the fallback arms
     expect(clock.timers).toHaveLength(1);
+    card.progress("elaborating");
+    expect(card.step()).toBe("check");
     h.current().report({ phase: "headerRefused", header: { version: 1, mode: "refused", key: [], moduleCount: 0, missing: ["Mathlib"], ms: 0 } });
+    expect(card.step()).toBe("runtime"); // the checklist follows the replacement's download
     // Widened synchronously: the replacement's rebooting status (reason "user") disarmed the light session's
     // timer — while the replacement is still booting (its download can take minutes), nothing finishes the boot.
     expect(h.relay.session.id).toBe("s2");
@@ -586,10 +596,19 @@ describe("over the real relay", () => {
       });
       await flush(); // s1 serves: armed
       h.current().report({ phase: "elaborating" });
+      card.progress("elaborating");
+      expect(card.step(), how).toBe("check");
       clock.advance(5000);
       if (how === "api.restart") expect(h.api.restart({ snapshots: ["init", "mathlib"] }).accepted).toBe(true);
       else h.relay.restart({ snapshots: ["init", "mathlib"], warmHeader: "import Mathlib\n", packs: ["essential"] }); // main.ts's offer
       expect(clock.timers, how).toHaveLength(0);
+      // The card stays up for the replacement's download, and its checklist shows that download, not "Check".
+      expect(card.step(), how).toBe("runtime");
+      card.progress("downloading the Mathlib environment (1.0 GB)", { phase: "snapshot" });
+      expect(card.step(), how).toBe("env");
+      h.current().report({ phase: "booting", version: null }); // a later status of the same replacement: no second rewind
+      expect(h.relay.state.kind, how).toBe("rebooting");
+      expect(card.step(), how).toBe("env");
       clock.advance(60000); // the replacement is still booting (a download): nothing finishes the boot
       expect(finished, how).toEqual([]);
       expect(h.api.status().boot.done, how).toBe(false);
@@ -613,14 +632,34 @@ describe("the check fallback over the real relay's crash loop", () => {
     expect(clock.timers).toHaveLength(1);
     for (let i = 0; i < 3; i += 1) {
       sessions.at(-1)!.report({ phase: "elaborating" });
+      card.progress("elaborating");
       clock.advance(5000);
       sessions.at(-1)!.die(); // the buffer kills the checker; the relay reboots (a crash reboot keeps the timer)
+      expect(card.step()).toBe("check"); // and does not rewind the checklist: the card is gone 30 s after the first serve
       await flush();
     }
     expect(relay.state.kind).toBe("halted"); // the breaker: three deaths inside 120 s
     expect(card.events).toEqual(["failure card"]);
     clock.advance(15000); // 30 s after the FIRST serve
     expect(card.events).toEqual(["failure card", "editor shown"]); // the editor appears; the halted pill and note say "edit the file"
+  });
+  it("a boot that fails before any session serves keeps the failure card: only a serving status arms the fallback", async () => {
+    const clock = new Clock();
+    const page = createPageApi(CAPS, new Clock());
+    const card = bootCardModel(page, clock, () => {});
+    class Refused extends Session { override start() { return Promise.reject(new Error("Memory64 reservation refused")); } }
+    let n = 0;
+    const relay: LspRelay = new LspRelay(() => new Refused(`s${++n}`, {}, null), {
+      status: pageStatusSink(() => relay.session.id, () => {}, card.renderStatus, (s) => page.relayStatus(s)),
+    }, () => Promise.resolve());
+    relays.push(relay);
+    for (let i = 0; i < 6; i += 1) await flush();
+    expect(relay.state.kind).toBe("halted"); // bootFailed three times: the breaker
+    expect(relay.status().lastDeath?.reason).toBe("bootFailed");
+    expect(card.events).toEqual(["failure card"]);
+    expect(clock.timers).toHaveLength(0); // the rebooting statuses (reason bootFailed) never armed it
+    clock.advance(120000);
+    expect(card.events).toEqual(["failure card"]);
   });
 });
 
