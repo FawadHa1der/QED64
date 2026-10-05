@@ -5,8 +5,9 @@
 // relay's status and its taps, restart's inputs and guards, the cursor,
 // liveness, memory and the offer. The fakes behave like what they stand for:
 // the editor's edits reach the relay as the LSP client sends them (coalesced,
-// never synchronously), the relay remembers its restart options and posts a
-// copy; where a sequence of sessions matters, the real LspRelay runs.
+// never synchronously), the relay remembers its restart options, posts a copy
+// and reports its own status(); where a sequence of sessions matters, the real
+// LspRelay runs.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   codeFromHash, createPageApi, isSyntheticFrame, pageStatusSink, toApiStatus, FILE_PROGRESS_MS, LIVENESS_TIMING,
@@ -122,6 +123,11 @@ function boot(t: T, text = "example : True := trivial\n") {
   t.relay.fromClient({ method: "textDocument/didOpen", params: { textDocument: { uri: URI, version: 1, text } } });
   t.page.editorReady();
 }
+/** The relay reports a status: its sink gets the relay's own status() (LspRelay calls `sink.status(this.status())`). */
+function report(t: T, over: Partial<RelayStatus>) {
+  t.relay.current = status(over);
+  t.page.relayStatus(t.relay.current);
+}
 const flush = () => new Promise((r) => setTimeout(r, 0));
 /** What a promise has come to once pending work ran: its value, its rejection, or "pending". */
 async function outcome(p: Promise<unknown>): Promise<unknown> {
@@ -219,12 +225,12 @@ describe("setDocument / settled", () => {
     t.relay.current = status({ phase: "elaborating", version: 1 });
     let got: ApiStatus | null = null;
     void t.api.settled({ version: 2 }).then((s) => { got = s; });
-    t.page.relayStatus(status({ phase: "ready", version: 1 })); // an older version settling is not it
+    report(t, { phase: "ready", version: 1 }); // an older version settling is not it
     t.relay.session = { ...t.relay.session, id: "s2" };
-    t.page.relayStatus(status({ phase: "booting", relay: "rebooting", rebootReason: "crash", session: "s2", version: null }));
+    report(t, { phase: "booting", relay: "rebooting", rebootReason: "crash", session: "s2", version: null });
     await flush();
     expect(got).toBeNull();
-    t.page.relayStatus(status({ phase: "ready", version: 2, session: "s2" }));
+    report(t, { phase: "ready", version: 2, session: "s2" });
     await flush();
     expect(got).toMatchObject({ phase: "ready", version: 2, session: "s2" });
   });
@@ -233,11 +239,11 @@ describe("setDocument / settled", () => {
     boot(t);
     let got: ApiStatus | null = null;
     void t.api.settled({ afterSession: "s1" }).then((s) => { got = s; });
-    t.page.relayStatus(status({ phase: "ready", version: 1, session: "s1" }));
+    report(t, { phase: "ready", version: 1, session: "s1" });
     await flush();
     expect(got).toBeNull();
     t.relay.session = { ...t.relay.session, id: "s2" };
-    t.page.relayStatus(status({ phase: "ready", version: 1, session: "s2" }));
+    report(t, { phase: "ready", version: 1, session: "s2" });
     await flush();
     expect(got).toMatchObject({ session: "s2" });
   });
@@ -257,8 +263,10 @@ describe("setDocument / settled", () => {
     boot(t);
     await expect(t.api.settled()).resolves.toMatchObject({ phase: "ready", version: 1 });
     const halted = t.api.settled({ version: 9 });
-    t.page.relayStatus(status({ phase: "halted", relay: "halted", version: 1 }));
+    report(t, { phase: "halted", relay: "halted", version: 1 });
     await expect(halted).rejects.toMatchObject({ code: "HALTED" });
+    await expect(t.api.settled()).rejects.toMatchObject({ code: "HALTED" }); // still halted: at once
+    report(t, { phase: "elaborating", version: 1 }); // re-armed by an edit
     const slow = t.api.settled({ version: 9, timeoutMs: 1000 });
     t.clock.advance(1000);
     await expect(slow).rejects.toMatchObject({ code: "TIMEOUT" });
@@ -275,14 +283,21 @@ describe("review fixes", () => {
     expect(t.editor.text).toBe("B\nC\nD\n");
     await expect(t.api.setDocument("B\r\nC\nD\r\n")).resolves.toEqual({ version: 2, unchanged: true });
   });
-  it("a status listener that restarts the session suppresses the superseded ready", () => {
+  it("a status listener that restarts the session suppresses the superseded ready and settled", async () => {
     const t = setup();
     boot(t);
+    t.relay.current = status({ phase: "elaborating" });
     const readies: string[] = [];
     t.api.on("ready", (r) => readies.push(r.session));
-    const off = t.api.on("status", () => { off(); t.relay.session = { ...t.relay.session, id: "s2" }; }); // an embedder's own widening
-    t.page.relayStatus(status({ phase: "headerRefused", session: "s1", version: 1 }));
+    const off = t.api.on("status", () => { // an embedder's own widening
+      off();
+      t.relay.session = { ...t.relay.session, id: "s2" };
+      t.relay.current = status({ phase: "booting", relay: "rebooting", rebootReason: "user", session: "s2", version: null });
+    });
+    const verdict = t.api.settled();
+    report(t, { phase: "headerRefused", session: "s1", version: 1 });
     expect(readies).toEqual([]);
+    expect(await outcome(verdict)).toBe("pending");
   });
   it("a boot that fails before the page is up rejects whenReady, settled and a pre-boot setDocument", async () => {
     const t = setup();
@@ -315,6 +330,32 @@ describe("review fixes", () => {
     expect(await outcome(t.api.whenReady())).toMatchObject({ code: "BOOT_FAILED", message: "refused ?snapshots=/evil: …" });
     expect(await outcome(t.api.settled())).toMatchObject({ code: "BOOT_FAILED" });
     expect(await outcome(t.api.setDocument("x"))).toMatchObject({ code: "BOOT_FAILED" });
+  });
+  it("a boot that fails after bind but before the editor mounts rejects settled too, called before or after it", async () => {
+    // main(): bind(), then `await leanMonaco.start()` throws, so editorReady never comes. With no didOpen the
+    // front door says "starting" (lsp-front-door.js phaseOf: no doc), and no verdict will ever settle it.
+    const t = setup();
+    t.page.takeBootDocument();
+    t.page.bind({ relay: t.relay, taps: t.taps, editor: () => undefined, build: BUILD, snapshotNames: [] });
+    report(t, { phase: "starting", version: null });
+    const before = outcome(t.api.settled());
+    t.page.bootFailed("monaco failed to start");
+    expect(await outcome(t.api.whenReady())).toMatchObject({ code: "BOOT_FAILED" });
+    expect(await before).toMatchObject({ code: "BOOT_FAILED" });
+    expect(await outcome(t.api.settled())).toMatchObject({ code: "BOOT_FAILED" });
+  });
+  it("settled resolves with its own status: a status listener editing the shared payload, before or after it, changes nothing", async () => {
+    const t = setup();
+    boot(t);
+    const payloads: ApiStatus[] = [];
+    t.api.on("status", (s) => { payloads.push(s); s.version = 0; s.header?.missing.splice(0); }); // runs before settled's check
+    const verdict = t.api.settled({ version: 2 });
+    t.api.on("status", (s) => { s.header?.missing.splice(0); }); // runs after it, before its caller sees the value
+    report(t, { phase: "headerRefused", version: 2, header: { version: 2, mode: "refused", key: [], moduleCount: 0, missing: ["Mathlib"], ms: 0 } });
+    const got = await outcome(verdict);
+    expect(got).toMatchObject({ phase: "headerRefused", version: 2, header: { missing: ["Mathlib"] } });
+    expect(payloads).not.toContain(got);
+    expect(t.api.status().header?.missing).toEqual(["Mathlib"]);
   });
   it("back-to-back setDocument calls settle on the ONE didChange the LSP client coalesces them into; a repeat waits for it", async () => {
     const t = setup();

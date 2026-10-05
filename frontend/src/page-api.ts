@@ -318,20 +318,24 @@ export function createPageApi(
     whenReady: () => (isBound() ? Promise.resolve(statusNow()) : new Promise<ApiStatus>((r, j) => onReady(() => r(statusNow()), j))),
     settled(opts: { version?: number; afterSession?: string; timeoutMs?: number } = {}) {
       return new Promise<ApiStatus>((resolve, reject) => {
-        if (!binding && failedBeforeUp !== null) return reject(bootFailure());
+        if (!isBound() && failedBeforeUp !== null) return reject(bootFailure());
         const want = opts.version ?? binding?.relay.doc?.version ?? null;
         let timer: unknown;
-        const check = (s: ApiStatus): boolean => {
+        // Decided on, and resolved with, its own status() — never the `status`
+        // payload every listener shares: one may edit it in place, or restart
+        // the session and so supersede it, before or after this one runs.
+        const check = (): boolean => {
+          const s = statusNow();
           if (s.phase === "halted") { done(); reject(err("HALTED", "the checker halted after repeated crashes; edit the document to restart it")); return true; }
           if (opts.afterSession !== undefined && (s.session === null || s.session === opts.afterSession)) return false;
           if (settledPhase(s.phase) && s.relay === "serving" && (want === null || (s.version ?? -1) >= want)) { done(); resolve(s); return true; }
           return false;
         };
-        const unsubscribe = on("status", (s) => { check(s); });
-        const unsubscribeBoot = on("boot", (b) => { if (b.failed && !binding) { done(); reject(err("BOOT_FAILED", b.message ?? "the page could not start")); } });
+        const unsubscribe = on("status", () => { check(); });
+        const unsubscribeBoot = on("boot", (b) => { if (b.failed && !isBound()) { done(); reject(err("BOOT_FAILED", b.message ?? "the page could not start")); } });
         const done = () => { unsubscribe(); unsubscribeBoot(); if (timer !== undefined) timers.clearTimeout(timer); };
         if (opts.timeoutMs !== undefined) timer = timers.setTimeout(() => { done(); reject(err("TIMEOUT", `not settled within ${opts.timeoutMs} ms`)); }, opts.timeoutMs);
-        if (binding) check(statusNow());
+        if (binding) check();
       });
     },
     on,
