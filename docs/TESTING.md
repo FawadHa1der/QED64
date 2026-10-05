@@ -224,9 +224,17 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
 
 - Unit tests execute the REAL worker source (vm sandbox) and the REAL
   published manifests — refactors cannot silently diverge from shipped code.
-- Integration tests skip cleanly when the runtime artifact volume is absent.
-  runtime-smoke also skips, and says why, when the artifact predates patch
-  0020 (the old codex stage1 fallback): that CLI exits on its own and is not
-  the runtime the browser runs.
+- Integration tests skip cleanly when the runtime artifact volume is absent
+  (runtime-smoke and persistent-path print why). Those two also skip, with a
+  printed reason, when the artifact is too old for what they assert (the old
+  codex stage1 fallback, which a checkout without its own stage1 build picks
+  up): runtime-smoke when it predates patch 0020 (that CLI exits on its own and is not the runtime the
+  browser runs), and persistent-path's parse-error test when it predates
+  patch 0010 (its `wasmCompile` drops parser diagnostics). 0010 changes only
+  compiled Lean code, so the check reads the build's
+  `lib/lean/Lean/Shell.ilean`: a patched `wasmCompile` references
+  `Lean.Parser.parseCommand`. When that file is missing the test runs. To run
+  both against the paired runtime from a worktree, set `QED64_LEAN_ARTIFACT`
+  to the main checkout's `pipeline/toolchain/work/build/stage1`.
 - Every live-debugging failure class gained a pinned regression test the same
   day (see installer-stream.test.ts).
