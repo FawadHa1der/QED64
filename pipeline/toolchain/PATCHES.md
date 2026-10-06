@@ -1,3 +1,5 @@
+> **Retired 2026-10 (plan B1):** the build is the fork's `wasm64-build/` (FawadHa1der/lean4 `qed64-wasm64`); see docs/REBUILD.md §1. Kept as provenance only; the scripts here refuse.
+
 # The wasm64 patch series
 
 **The authoritative, upstream-ready series lives in [`patches/`](patches/):**

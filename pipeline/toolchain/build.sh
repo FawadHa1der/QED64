@@ -1,4 +1,6 @@
 #!/bin/bash
+# Retired 2026-10 (plan B1): refuses before any work; the rest is provenance only.
+echo "build.sh: retired 2026-10 (plan B1) — the toolchain build moved to the fork: FawadHa1der/lean4 qed64-wasm64 wasm64-build/ at release.json kernel.commit (docs/REBUILD.md §1)" >&2; exit 2
 # QED64 clean-room wasm64 toolchain build. Logs everything; exits nonzero on
 # the first failure. Expected wall-clock on a 14-core M-series: 1.5-3 h.
 set -euo pipefail

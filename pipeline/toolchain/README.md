@@ -1,3 +1,5 @@
+> **Retired 2026-10 (plan B1):** the build is the fork's `wasm64-build/` (FawadHa1der/lean4 `qed64-wasm64`); see docs/REBUILD.md §1. Kept as provenance only; the scripts here refuse.
+
 > **Kernel home:** the patched Lean source now lives as REAL git history on
 > `github.com/FawadHa1der/lean4` branch `qed64-wasm64` (local checkout:
 > `~/code/wasm64-lean-kernel`), together with its own `wasm64-build/`

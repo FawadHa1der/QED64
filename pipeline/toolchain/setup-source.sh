@@ -1,4 +1,6 @@
 #!/bin/bash
+# Retired 2026-10 (plan B1): refuses before any work; the rest is provenance only.
+echo "setup-source.sh: retired 2026-10 (plan B1) — the kernel source is the fork itself: FawadHa1der/lean4 qed64-wasm64 wasm64-build/ at release.json kernel.commit (docs/REBUILD.md §1)" >&2; exit 2
 # Materialize the wasm64 kernel source in work/lean4 from its home repo:
 # github.com/FawadHa1der/lean4, branch qed64-wasm64 (cauli's Memory64 base +
 # the QED64 patch series as real git history + the wasm64-build/ tooling).
