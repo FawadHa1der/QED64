@@ -1229,13 +1229,51 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
 | renaming the overlay region to `mathlib` | any name with `roots` (§8); update C6, which asserts the refusal of `import HasseView` |
 | `__qed64Bridge` expando | rename (`__qed64*` is reserved) |
 
+- From a pin at or after plan step A3c, `lean.worker.js` no longer carries a
+  `const MEMORY64_PROBE = new Uint8Array([…])` literal: the bytes live in
+  `public/workers/memory64-probe.js` (§7.0). `scripts/check-gallery.mjs`
+  (the block that compares `gallery/lib.js` `MEMORY64_PROBE` with the active
+  pin's probe, a G1 gate through `deploy-manifest.mjs`) must read them from
+  `<pin store>/public/workers/memory64-probe.js` instead, or it prints a FAIL
+  and exits 1 at the bump. Either run the file in a fresh context and read
+  the global it publishes:
+
+  ```js
+  const ctx = vm.createContext({});
+  vm.runInContext(fs.readFileSync(path.join(store, "public/workers/memory64-probe.js"), "utf8"), ctx);
+  const wbytes = Array.from(ctx.Qed64Memory64.MEMORY64_PROBE);
+  ```
+
+  or `await import(pathToFileURL(<that path>))` and read
+  `globalThis.Qed64Memory64.MEMORY64_PROBE`. Serving needs no change: the
+  showcase serves QED64's `dist/workers`, which has the file.
+
 **lean4game (library tier):**
 - Delete the vendored copies and `sync-qed64.sh`. Import from `qed64/embed`,
   and stage the workers from `closure.json`.
-- Until then, a `sync-qed64.sh` pin at or after plan step A3c must vendor
-  `public/workers/memory64-probe.js` with the other worker scripts:
-  `lean.worker.js` loads it eagerly and dies `WORKER_DEP_MISSING` without it.
-  Staging from `closure.json` picks it up with no change.
+- Until then, a `sync-qed64.sh` pin at or after plan step A3c must name
+  `public/workers/memory64-probe.js` at every by-name site of the vendored
+  lane (branch `wasm64-port`), or the game breaks in one of two ways:
+  - `scripts/sync-qed64.sh` `PATHS` must vendor it. The vendored
+    `src/runtime/client.ts` has a bare `import
+    "../../public/workers/memory64-probe.js"`, so without the file the
+    client build fails (the script's own sanity regex, which matches only
+    `from "…"` and `import("…")`, does not see a bare `import "…"`; it
+    should).
+  - `scripts/stage-workers.sh` must copy it into `client/public/workers`
+    beside `lean.worker.js` (for example guarded like `lsp-frames.js`: when
+    `lean.worker.js` contains `importScripts("memory64-probe.js")`, require
+    the file and copy it). `lean.worker.js` loads it eagerly, so a vendored
+    but unstaged file is a 404 and every session dies `WORKER_DEP_MISSING`
+    at script load.
+  - `scripts/deploy-app.sh`'s required-files list and
+    `client/src/wasm/game-boot.ts` `WORKER_SCRIPTS` (the reboot preflight)
+    should name `/workers/memory64-probe.js`, so the deploy check and the
+    preflight catch a missing copy. Replacing those fixed lists with
+    closure.json `workers` / `WORKER_URLS` removes the by-name sites.
+
+  Staging from `closure.json` (the package lane, branch `qed64-dep`) picks
+  the file up with no change.
 - Route URL overrides through `validateBootOverrides` (lean4game keeps its
   own parser; `parseBootParams` is internal since `1.0.0-pre.5`) and boot
   with `installArtifacts(ui, {overrides, profiles: "none"})` or the exported
@@ -1451,7 +1489,14 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
     which a bundler drops the import). The worker protocol revision stays
     `"1"` (§7.7 "What changes the revision"). A consumer that copies
     closure.json `workers` needs no change; one that lists the scripts by
-    name adds the file (§10). `EMBED_API_REVISION` → `1.0.0-pre.6`.
+    name adds the file at every such site (§10: lean4game's vendored lane
+    names it in `sync-qed64.sh`, `stage-workers.sh`, `deploy-app.sh` and
+    `game-boot.ts`). `lean.worker.js` no longer has a `MEMORY64_PROBE`
+    literal, so a consumer that parses it out of that file reads
+    `memory64-probe.js` instead: from a pin at or after A3c the showcase's
+    `scripts/check-gallery.mjs` probe comparison must take the bytes from
+    `public/workers/memory64-probe.js` (§10 has the recipe), or its G1 gate
+    fails. `EMBED_API_REVISION` → `1.0.0-pre.6`.
   - G2 (`npm run test:consumer`) also checks, from the extracted tarball:
     importing `qed64/workers/lsp-frames.js` publishes
     `globalThis.Qed64LspFrames` and `qed64/workers/memory64-probe.js`
@@ -1468,3 +1513,9 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
     (`WORKER_DEP_MISMATCH`, kind `stale`, for scripts of two revisions; not
     for a whole set from the previous pin). G2 runs step 3's script from the
     packed document over a stale set.
+  - review fixes, no library change: §10 lists every consumer site the
+    probe's move touches (the showcase's `check-gallery.mjs` comparison, and
+    lean4game's vendored lane: `sync-qed64.sh`, `stage-workers.sh`,
+    `deploy-app.sh`, `game-boot.ts`); preflight's refusal is always one
+    stdout line and names a missing dependency of playwright instead of
+    calling playwright unresolvable (docs/CLI-CONTRACT.md changelog).
