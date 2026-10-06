@@ -8,6 +8,7 @@
 //     pipeline relative paths and node: built-ins only, every import resolves
 //     inside its own list; lean.worker.js's importScripts targets and the
 //     workers the page spawns ship beside it, and WORKER_URLS is that list;
+//   * the edge-worker library (`qed64/edge`, closure.infra) imports nothing;
 //   * `exports` targets exist, and `npm pack` ships the closure and nothing
 //     beyond the `files` allowlist (plus npm's own README/LICENSE/package.json).
 import { execFileSync } from "node:child_process";
@@ -19,8 +20,10 @@ import { WORKER_URLS } from "../../frontend/src/embed/urls";
 const root = path.resolve(__dirname, "../..");
 const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 const closure = JSON.parse(fs.readFileSync(path.join(root, "embedding/closure.json"), "utf8")) as {
-  schema: string; entry: string; embed: string[]; workers: { path: string; serveAs: string }[]; pipeline: string[]; pipelineData: string[];
+  schema: string; entry: string; embed: string[]; workers: { path: string; serveAs: string }[]; infra: string[]; pipeline: string[]; pipelineData: string[];
 };
+/** Every file the closure names, embedding/closure.json itself excluded. */
+const closureFiles = () => [...closure.embed, ...closure.workers.map((w) => w.path), ...closure.infra, ...closure.pipeline, ...closure.pipelineData];
 const tracked = new Set(execFileSync("git", ["ls-files"], { cwd: root, encoding: "utf8" }).split("\n").filter(Boolean));
 const read = (rel: string) => fs.readFileSync(path.join(root, rel), "utf8");
 
@@ -60,8 +63,10 @@ describe("package.json", () => {
   });
 
   it("exports the documented entries, each pointing at shipped files", () => {
-    expect(Object.keys(pkg.exports).sort()).toEqual(["./embed", "./embedding/closure.json", "./package.json", "./pipeline/*", "./workers/*"]);
+    expect(Object.keys(pkg.exports).sort()).toEqual(["./edge", "./embed", "./embedding/closure.json", "./package.json", "./pipeline/*", "./workers/*"]);
     expect(pkg.exports["./embed"]).toEqual({ types: `./${closure.entry}`, default: `./${closure.entry}` });
+    expect(pkg.exports["./edge"]).toEqual({ types: "./infra/edge-worker.d.ts", default: "./infra/edge-worker.js" });
+    for (const t of Object.values(pkg.exports["./edge"]) as string[]) expect(closure.infra, t).toContain(t.slice(2));
     expect(pkg.exports["./workers/*"]).toBe("./public/workers/*");
     expect(pkg.exports["./pipeline/*"]).toBe("./pipeline/*");
     for (const w of closure.workers) expect(w.path.startsWith("public/workers/") && w.serveAs === `/workers/${path.posix.basename(w.path)}`, w.path).toBe(true);
@@ -70,7 +75,7 @@ describe("package.json", () => {
 });
 
 describe("embedding/closure.json", () => {
-  const all = [...closure.embed, ...closure.workers.map((w) => w.path), ...closure.pipeline, ...closure.pipelineData];
+  const all = closureFiles();
 
   it("names tracked files only, once each", () => {
     expect(closure.schema).toBe("qed64.closure/v1");
@@ -127,6 +132,14 @@ describe("embedding/closure.json", () => {
     for (const m of gate.matchAll(/"(pipeline\/[\w/.-]+\.mjs)"/g)) expect(listed.has(m[1]!), m[1]).toBe(true);
   });
 
+  it("the edge-worker library (qed64/edge) imports nothing: one dependency-free ES module plus its types", () => {
+    expect([...closure.infra].sort()).toEqual(["infra/edge-worker.d.ts", "infra/edge-worker.js"]);
+    for (const f of closure.infra) {
+      expect(specifiers(read(f)), f).toEqual([]);
+      expect(read(f), f).not.toMatch(/\brequire\s*\(|["']node:/);
+    }
+  });
+
   it("every script a shipped worker importScripts by name, or the page spawns, ships beside it", () => {
     const names = new Set(closure.workers.map((w) => path.posix.basename(w.path)));
     for (const w of closure.workers) {
@@ -171,7 +184,7 @@ describe("npm pack", () => {
       f === "package.json" || /(^|\/)(README|LICENSE|LICENCE)(\.[a-z]+)?$/i.test(f)
       || (pkg.files as string[]).some((e) => (e.endsWith("/") ? f.startsWith(e) : f === e));
     for (const f of packed) expect(allowed(f), `${f} is packed but not allowlisted`).toBe(true);
-    for (const f of [...closure.embed, ...closure.workers.map((w) => w.path), ...closure.pipeline, ...closure.pipelineData, "embedding/closure.json"]) {
+    for (const f of [...closureFiles(), "embedding/closure.json"]) {
       expect(packed.has(f), `${f} is in the closure but not packed`).toBe(true);
     }
   });

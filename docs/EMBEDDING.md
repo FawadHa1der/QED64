@@ -402,6 +402,8 @@ tarball, with no git or SSH needed, and honours `files`.
   `build:all`, and CI uses `build:site`.
 - `exports`:
   - `"./embed"` → `frontend/src/embed/index.ts`;
+  - `"./edge"` → `infra/edge-worker.js` (types `infra/edge-worker.d.ts`):
+    the edge-worker library of docs/DEPLOY.md, dependency-free;
   - `"./workers/*"`;
   - `"./pipeline/*"`;
   - `"./embedding/closure.json"`;
@@ -426,6 +428,7 @@ Notes for consumers:
 - `workers`: `{path, serveAs}`. `lean.worker.js` `importScripts`
   `lsp-frames.js` and `lsp-front-door.js` from its own directory, so all
   four ship together;
+- `infra`: the edge-worker library behind `qed64/edge`;
 - `pipeline` and `pipelineData`;
 - `runtime.minKernelPatch`: `"0032"`, the oldest kernel patch level these
   workers drive correctly. Compare it against your own KERNEL-PIN;
@@ -1000,3 +1003,8 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
     `editBackPressure`, the page's `?edithold=`, §4), after the stock page
     crashed typing at a normal pace above an uncancellable command with the
     InfoView open (HARDENING #59 addendum).
+- **Packaging surface (plan step A2, 2026-10-06):**
+  - `exports["./edge"]` → `infra/edge-worker.js` with its types, shipped in
+    `files` and listed as closure.json `infra`; `createWorker` gains
+    `assetHeadLength` (a HEAD on a static asset carries the GET's
+    `Content-Length`; hardened default on, `QED64_LEGACY` off).

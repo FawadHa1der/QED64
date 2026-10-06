@@ -185,6 +185,7 @@ The behaviour switches default to the hardened forks' behaviour;
 | `artifactMethods` | `["GET", "HEAD"]`: others → **405** + `Allow`, R2 untouched | `null`: any method reads |
 | `rejectUnsafeKeys` | `true`: empty/`.`/`..` segments, `\`, control chars → 404 without R2 | `false` |
 | `fullGetLength` | `true`: explicit `Content-Length` on a full GET | `false` |
+| `assetHeadLength` | `true`: a 200 HEAD on a static asset that the assets binding answers without `Content-Length` (it never sends one for HEAD) gets the length of the same asset fetched with GET (Range/If-Range dropped; the body is discarded); a GET that is not a 200 leaves the HEAD as it was | `false`: the binding's HEAD passes through |
 | `errorCacheControl` | `"no-store"` for every status ≥ 400 | `null`: the path rule (a 404 on a digest-named path is cached for a year) |
 
 New consumers take the defaults. Adopt switches one at a time with
@@ -192,6 +193,65 @@ New consumers take the defaults. Adopt switches one at a time with
 the hardened switches the worker's bucket operations are still reads only
 (`get` and `head`). Neither mode sets a `Content-Encoding` (the runtime
 worker refuses transformed chunks) or carries an upstream `statusText`.
+
+## Using qed64/edge in your own Worker
+
+The package exports the library as `qed64/edge` (`infra/edge-worker.js` plus
+`infra/edge-worker.d.ts`; it imports nothing, so wrangler bundles it as is).
+With `"qed64": "github:FawadHa1der/QED64#<sha>"` in your `package.json`:
+
+```js
+// infra/worker.js: the widgets showcase's worker, as options
+import { createWorker } from "qed64/edge";
+
+export default createWorker({
+  r2Prefix: (env) => env.R2_PREFIX,               // "qed64-showcase/" in a shared bucket; unset → "" (a bucket of your own)
+  rootRedirect: (env) => env.ROOT_REDIRECT ?? null, // "/showcase/": a bare "/" goes to the gallery; "/?snapshots=…" is never redirected
+});
+```
+
+```toml
+main = "infra/worker.js"
+[assets]
+directory = "out/deploy/assets"     # the pinned QED64 dist at / and the gallery under showcase/
+binding = "ASSETS"
+run_worker_first = true             # REQUIRED (COOP/COEP on the shell)
+not_found_handling = "none"
+html_handling = "auto-trailing-slash"
+[[r2_buckets]]
+binding = "ARTIFACTS"
+bucket_name = "qed64-artifacts"
+[vars]
+R2_PREFIX = "qed64-showcase/"
+ROOT_REDIRECT = "/showcase/"
+```
+
+What each need of that worker maps to:
+
+- **A second static root (`/showcase/`).** Nothing to configure. Both roots
+  are directories of the one `[assets]` tree, and every path outside
+  `artifactPrefixes` is a static asset. A root served by something else
+  (another binding, a rewrite) is an `extraRoutes` entry that calls
+  `kit.serveAsset(request)` or returns its own response.
+- **A root redirect.** `rootRedirect`. It applies to a bare `/` without a
+  query only, and a function returning null or `""` turns it off.
+- **An R2 key prefix.** `r2Prefix`. A value that is not `name/`
+  segments answers artifact requests 500 no-store and never reaches R2.
+- **HEAD with Content-Length.** On artifacts this is `artifactHead:
+  "metadata"`, from `head()`, so no body is opened; on static assets it is
+  `assetHeadLength`. Both are on by default.
+- **A single Range on `.snapz`.** `ranges` (on by default) covers every
+  artifact path. See the table above for 206, If-Range and 416.
+
+Every hardened switch is on by default, so the example needs no others. The
+showcase's own worker also keeps an upstream `statusText`; this library drops
+it, as QED64's worker always has. `isImmutable`, `artifactKey`, `parseRange`,
+`resolveRange` and `withIsolationHeaders` are exported for tests and extra
+routes. `tests/unit/edge-worker.test.ts` ("the showcase's worker as
+createWorker options") runs this exact configuration against fake bindings.
+
+QED64's own `infra/worker.js` stays `createWorker(QED64_LEGACY)`. Moving the
+live site to the hardened defaults is a separate decision (plan step A4).
 
 ## Alternative: one small VPS (~€4/month)
 

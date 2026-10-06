@@ -11,6 +11,10 @@
       "types": "./frontend/src/embed/index.ts",
       "default": "./frontend/src/embed/index.ts"
     },
+    "./edge": {
+      "types": "./infra/edge-worker.d.ts",
+      "default": "./infra/edge-worker.js"
+    },
     "./workers/*": "./public/workers/*",
     "./pipeline/*": "./pipeline/*",
     "./embedding/closure.json": "./embedding/closure.json",
@@ -28,6 +32,8 @@
     "src/install/profiles.ts",
     "src/runtime/client.ts",
     "src/runtime/snapshots.ts",
+    "infra/edge-worker.js",
+    "infra/edge-worker.d.ts",
     "public/workers/lean.worker.js",
     "public/workers/lsp-frames.js",
     "public/workers/lsp-front-door.js",

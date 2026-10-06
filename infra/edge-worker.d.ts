@@ -120,6 +120,10 @@ export interface EdgeWorkerOptions<Env = any> {
   rejectUnsafeKeys?: boolean;
   /** Explicit Content-Length (object size) on a full artifact GET. Default true; legacy false. */
   fullGetLength?: boolean;
+  /** HEAD on a static asset: when the assets binding answers 200 without a Content-Length (the
+   * Workers assets binding does), fetch the same asset with GET and answer the HEAD with that
+   * length, discarding the body. Default true; legacy false. */
+  assetHeadLength?: boolean;
   /** Cache-Control for any status >= 400; null = the path's cache rule (a 404 on a digest-named
    * path is then cached for a year). Default "no-store"; legacy null. */
   errorCacheControl?: string | null;

@@ -9,13 +9,17 @@
  *   import { createWorker } from "./edge-worker.js";
  *   export default createWorker({ r2Prefix: "my-game/" });
  *
+ * or imports it from the package as `qed64/edge` (docs/DEPLOY.md, "Using
+ * qed64/edge in your own Worker"; package.json exports, closure.json infra).
+ *
  * QED64's own infra/worker.js is `createWorker(QED64_LEGACY)`, which
  * reproduces the pre-library worker byte for byte (status, headers, body,
  * and every binding call); tests/unit/edge-worker.test.ts runs a request
  * matrix through both. The hardened defaults (ranges, metadata HEAD, 405,
- * traversal refusal, explicit Content-Length, no-store errors) come from the
- * lean4game and widgets-showcase forks of that worker; each one is a switch,
- * and QED64_LEGACY sets every switch to the old behaviour.
+ * traversal refusal, explicit Content-Length, asset HEAD Content-Length,
+ * no-store errors) come from the lean4game and widgets-showcase forks of that
+ * worker; each one is a switch, and QED64_LEGACY sets every switch to the old
+ * behaviour.
  *
  * Request order: rootRedirect (bare "/" without a query) → extraRoutes, in
  * order → artifact prefixes (R2) → static assets. See docs/DEPLOY.md,
@@ -180,6 +184,7 @@ export const QED64_LEGACY = Object.freeze({
   artifactMethods: null,
   rejectUnsafeKeys: false,
   fullGetLength: false,
+  assetHeadLength: false,
   errorCacheControl: null,
 });
 
@@ -191,6 +196,7 @@ const DEFAULTS = Object.freeze({
   artifactMethods: Object.freeze(["GET", "HEAD"]),
   rejectUnsafeKeys: true,
   fullGetLength: true,
+  assetHeadLength: true,
   errorCacheControl: "no-store",
 });
 
@@ -231,7 +237,7 @@ function checkOptions(options) {
   if (typeof o.isImmutable !== "function") throw new TypeError("edge-worker: isImmutable must be a function");
   if (o.decorate !== null && typeof o.decorate !== "function") throw new TypeError("edge-worker: decorate must be null or a function");
   if (o.artifactHead !== "metadata" && o.artifactHead !== "get") throw new TypeError('edge-worker: artifactHead must be "metadata" or "get"');
-  for (const k of ["ranges", "rejectUnsafeKeys", "fullGetLength"]) {
+  for (const k of ["ranges", "rejectUnsafeKeys", "fullGetLength", "assetHeadLength"]) {
     if (typeof o[k] !== "boolean") throw new TypeError(`edge-worker: ${k} must be a boolean`);
   }
   if (o.artifactMethods !== null && (!Array.isArray(o.artifactMethods) || o.artifactMethods.length === 0 || o.artifactMethods.some((m) => typeof m !== "string" || m === ""))) {
@@ -251,6 +257,7 @@ function checkOptions(options) {
     artifactMethods: o.artifactMethods === null ? null : o.artifactMethods.map((m) => m.toUpperCase()),
     rejectUnsafeKeys: o.rejectUnsafeKeys,
     fullGetLength: o.fullGetLength,
+    assetHeadLength: o.assetHeadLength,
     headerOpts: {
       isolation: resolveIsolation(o.isolation),
       isImmutable: o.isImmutable,
@@ -258,6 +265,41 @@ function checkOptions(options) {
       decorate: o.decorate,
     },
   };
+}
+
+/** The Workers assets binding answers HEAD with a null body and NO
+ * Content-Length (it takes the length from the GET body stream only; seen
+ * under wrangler dev 4.125.0, widgets-showcase rehearsal 2026-10-01). So a
+ * 200 HEAD without one fetches the same asset with GET (Range and If-Range
+ * dropped: HEAD ignores them), takes that length (counting the body when the
+ * GET carries none) and discards the body: HEAD then carries the length GET
+ * would (RFC 9110 §9.3.2). A GET that is not a 200 or yields no length
+ * leaves the HEAD answer as it was. Only HEADs pay for this; browsers GET
+ * assets. From the widgets showcase's infra/worker.js. */
+async function assetHeadWithLength(assets, request, head) {
+  const headers = new Headers(request.headers);
+  headers.delete("range");
+  headers.delete("if-range");
+  const get = await assets.fetch(new Request(request.url, { method: "GET", headers }));
+  let length = get.headers.get("content-length");
+  if (get.status !== 200) {
+    if (get.body) await get.body.cancel();
+    return head;
+  }
+  if (length === null && get.body) {
+    let n = 0;
+    const reader = get.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      n += value.byteLength;
+    }
+    length = String(n);
+  } else if (get.body) await get.body.cancel();
+  if (length === null) return head;
+  const out = new Headers(head.headers);
+  out.set("content-length", length);
+  return new Response(null, { status: head.status, headers: out });
 }
 
 /** Build the worker. `options` are documented in infra/edge-worker.d.ts and
@@ -344,7 +386,10 @@ export function createWorker(options = {}) {
 
   async function serveAsset(request, env) {
     const assets = resolveBinding(cfg.assets, env, "assets");
-    const response = await assets.fetch(request);
+    let response = await assets.fetch(request);
+    if (cfg.assetHeadLength && request.method === "HEAD" && response.status === 200 && !response.headers.has("content-length")) {
+      response = await assetHeadWithLength(assets, request, response);
+    }
     return done(response, new URL(request.url).pathname, "asset");
   }
 

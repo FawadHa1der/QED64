@@ -267,7 +267,7 @@ describe("equivalence: createWorker(QED64_LEGACY) is the pre-library worker, byt
     expect([...DEFAULT_ARTIFACT_PREFIXES]).toEqual(["/runtime/", "/profiles/", "/snapshots/"]);
     expect(QED64_LEGACY).toMatchObject({
       artifactHead: "get", ranges: false, artifactMethods: null, rejectUnsafeKeys: false, fullGetLength: false,
-      errorCacheControl: null, r2Prefix: "", rootRedirect: null, decorate: null, isImmutable,
+      assetHeadLength: false, errorCacheControl: null, r2Prefix: "", rootRedirect: null, decorate: null, isImmutable,
     });
   });
 
@@ -437,6 +437,57 @@ describe("hardened defaults: HEAD, methods, keys, errors", () => {
     expect(r.status).toBe(200);
     expect(r.headers.get("content-length")).toBe("1000");
     expect(env.ARTIFACTS.calls).toEqual([{ op: "get", key: KEY, argc: 1 }]);
+  });
+
+  test("HEAD on a static asset carries the Content-Length a GET would (the binding sends none); legacy passes the binding's answer through", async () => {
+    const env = makeEnv();
+    const r = await w.fetch(req("/showcase/", { method: "HEAD", headers: { range: "bytes=0-3" } }), env);
+    expect(r.status).toBe(200);
+    isolated(r);
+    expect(r.headers.get("content-length")).toBe(String("<!doctype html>gallery".length));
+    expect(r.headers.get("content-type")).toBe("text/html");
+    expect(r.headers.get("etag")).toBe(`"a-${"<!doctype html>gallery".length}"`);
+    expect(r.body).toBeNull();
+    expect(env.ASSETS.calls).toEqual(["HEAD /showcase/", "GET /showcase/"]);
+    // the follow-up GET drops Range and If-Range (HEAD ignores them) and keeps the other headers
+    const seen: Request[] = [];
+    const spy = { fetch: async (q: Request) => { seen.push(q); return makeEnv().ASSETS.fetch(q); } };
+    await w.fetch(req("/assets/x.js", { method: "HEAD", headers: { range: "bytes=0-3", "if-range": '"x"', "x-pass": "1" } }), { ...makeEnv(), ASSETS: spy });
+    expect(seen.map((q) => [q.method, q.headers.get("range"), q.headers.get("if-range"), q.headers.get("x-pass")])).toEqual([["HEAD", "bytes=0-3", '"x"', "1"], ["GET", null, null, "1"]]);
+    // a GET that declares its length is not read; a HEAD that already has one, a non-200 HEAD, GET and legacy make no second call
+    let cancelled = false;
+    const declared = {
+      fetch: async (q: Request) => q.method === "HEAD"
+        ? new Response(null, { headers: { "content-type": "text/javascript" } })
+        : new Response(new ReadableStream({ cancel() { cancelled = true; } }), { headers: { "content-length": "4242" } }),
+    };
+    const big = await w.fetch(req("/big.js", { method: "HEAD" }), { ...makeEnv(), ASSETS: declared });
+    expect([big.headers.get("content-length"), cancelled]).toEqual(["4242", true]);
+    for (const [p, init, worker, calls] of [
+      ["/missing.js", { method: "HEAD" }, w, ["HEAD /missing.js"]],
+      ["/assets/x.js", {}, w, ["GET /assets/x.js"]],
+      ["/showcase/", { method: "HEAD" }, createWorker(QED64_LEGACY), ["HEAD /showcase/"]],
+      ["/showcase/", { method: "HEAD" }, createWorker({ assetHeadLength: false }), ["HEAD /showcase/"]],
+    ] as [string, RequestInit, EdgeWorker, string[]][]) {
+      const e = makeEnv();
+      const x = await worker.fetch(req(p, init), e);
+      expect(e.ASSETS.calls, `${init.method ?? "GET"} ${p}`).toEqual(calls);
+      if (init.method === "HEAD" && x.status === 200) expect(x.headers.get("content-length")).toBeNull();
+    }
+    const withLength = { fetch: async () => new Response(null, { headers: { "content-length": "7" } }) };
+    const seenOnce: string[] = [];
+    const once = { fetch: async (q: Request) => { seenOnce.push(q.method); return withLength.fetch(); } };
+    expect((await w.fetch(req("/a.js", { method: "HEAD" }), { ...makeEnv(), ASSETS: once })).headers.get("content-length")).toBe("7");
+    expect(seenOnce).toEqual(["HEAD"]);
+    // the GET is not a 200 (the file changed under us, a 304, …): the HEAD answer stands, the GET body is released
+    let released = false;
+    const flaky = {
+      fetch: async (q: Request) => q.method === "HEAD"
+        ? new Response(null, { status: 200 })
+        : new Response(new ReadableStream({ cancel() { released = true; } }), { status: 404 }),
+    };
+    const stands = await w.fetch(req("/gone.js", { method: "HEAD" }), { ...makeEnv(), ASSETS: flaky });
+    expect([stands.status, stands.headers.get("content-length"), released]).toEqual([200, null, true]);
   });
 
   test("other methods on artifacts: 405 with Allow, no R2 access, no-store; custom method lists", async () => {
@@ -718,6 +769,7 @@ describe("configuration", () => {
       [{ constructor: 1 }, /unknown option/],
       [{ artifactHead: "body" }, /artifactHead/],
       [{ ranges: "yes" }, /ranges/],
+      [{ assetHeadLength: 1 }, /assetHeadLength/],
       [{ artifactMethods: [] }, /artifactMethods/],
       [{ artifactPrefixes: ["runtime/"] }, /artifactPrefixes/],
       [{ extraRoutes: [{ handle: () => null }] }, /prefix or a match/],
@@ -749,5 +801,59 @@ describe("configuration", () => {
     expect(opts.headers.get("cache-control")).toBe("no-store");
     expect(JSON.parse(opts.headers.get("x-info")!)).toEqual({ pathname: "/a", route: "asset", status: 500 });
     expect(withIsolationHeaders(new Response(""), "/a", { cacheControl: "no-cache" }).headers.get("cache-control")).toBe("no-cache");
+  });
+});
+
+// ------------------------------------------------------------------ (c) the widgets showcase
+// Its infra/worker.js (qed64-showcase, 2026-10-05) hand-rolls: the pinned QED64 dist at "/" and
+// the gallery at "/showcase/" (two static roots, ONE assets directory: no route needed), a
+// ROOT_REDIRECT var for a bare "/", an R2_PREFIX var into the shared bucket, HEAD answered with
+// Content-Length (artifacts from head(), assets via GET), and one Range on .snapz. The same
+// worker as options, the docs/DEPLOY.md "Using qed64/edge in your own Worker" example:
+describe("the showcase's worker as createWorker options", () => {
+  type ShowcaseEnv = FakeEnv & { R2_PREFIX?: string; ROOT_REDIRECT?: string };
+  const showcase = createWorker<ShowcaseEnv>({
+    r2Prefix: (env) => env.R2_PREFIX,
+    rootRedirect: (env) => env.ROOT_REDIRECT ?? null,
+  });
+  const OVERLAY = `/snapshots/widgets8/widgets.${HEX16}.snapz`;
+  const objects: Record<string, Obj> = {
+    "qed64-showcase/snapshots/widgets8/index.json": { bytes: json({ schema: "qed64.snapshot-index/v1" }), contentType: "application/json" },
+    [`qed64-showcase${OVERLAY}`]: { bytes: BYTES },
+  };
+  const env = (vars: Partial<ShowcaseEnv> = { R2_PREFIX: "qed64-showcase/", ROOT_REDIRECT: "/showcase/" }): ShowcaseEnv =>
+    ({ ASSETS: fakeAssets(FILES), ARTIFACTS: fakeBucket(objects), ...vars });
+
+  test("a bare / redirects to the gallery; the gallery's iframe URL (a query) and /showcase/ are static assets", async () => {
+    const root = await showcase.fetch(req("/"), env());
+    expect([root.status, root.headers.get("location")]).toEqual([302, `${ORIGIN}/showcase/`]);
+    isolated(root);
+    const frame = await showcase.fetch(req("/?snapshots=snapshots/widgets8"), env());
+    expect([frame.status, await frame.text()]).toEqual([200, "<!doctype html>qed64"]);
+    const gallery = await showcase.fetch(req("/showcase/"), env());
+    expect([gallery.status, await gallery.text()]).toEqual([200, "<!doctype html>gallery"]);
+    isolated(gallery);
+    // ROOT_REDIRECT unset: "/" is the stock QED64 page
+    expect((await showcase.fetch(req("/"), env({ R2_PREFIX: "qed64-showcase/" }))).status).toBe(200);
+  });
+
+  test("artifacts come from R2_PREFIX; HEAD carries Content-Length (overlay .snapz and gallery assets); one Range on the .snapz", async () => {
+    const e = env();
+    const head = await showcase.fetch(req(OVERLAY, { method: "HEAD" }), e);
+    expect([head.status, head.headers.get("content-length"), head.headers.get("accept-ranges")]).toEqual([200, "1000", "bytes"]);
+    expect(e.ARTIFACTS.calls).toEqual([{ op: "head", key: `qed64-showcase${OVERLAY}` }]);
+    const asset = await showcase.fetch(req("/showcase/", { method: "HEAD" }), env());
+    expect(asset.headers.get("content-length")).toBe(String("<!doctype html>gallery".length));
+    const ranged = await showcase.fetch(req(OVERLAY, { headers: { range: "bytes=100-199" } }), env());
+    expect([ranged.status, ranged.headers.get("content-range"), ranged.headers.get("content-length")]).toEqual([206, "bytes 100-199/1000", "100"]);
+    expect(await bytesOf(ranged)).toEqual(BYTES.slice(100, 200));
+    const past = await showcase.fetch(req(OVERLAY, { headers: { range: "bytes=5000-" } }), env());
+    expect([past.status, past.headers.get("content-range"), past.headers.get("cache-control")]).toEqual([416, "bytes */1000", "no-store"]);
+    const index = await showcase.fetch(req("/snapshots/widgets8/index.json"), env());
+    expect([index.status, index.headers.get("cache-control")]).toEqual([200, "public, max-age=0, must-revalidate"]);
+    // without the var the keys are unprefixed (a bucket of one's own)
+    const own = env({});
+    expect((await showcase.fetch(req(OVERLAY, { method: "HEAD" }), own)).status).toBe(404);
+    expect(own.ARTIFACTS.calls).toEqual([{ op: "head", key: OVERLAY.slice(1) }]);
   });
 });
