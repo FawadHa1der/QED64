@@ -6,6 +6,8 @@ export interface CliMarker {
   stream: "stdout" | "stderr";
   template: string[];
   source?: string;
+  /** The template is the lean4-wasm64 package's: the script (relative to the package dir) a forward runs. */
+  forwarded?: string;
   prefix?: boolean;
   regex: RegExp;
   example: string;

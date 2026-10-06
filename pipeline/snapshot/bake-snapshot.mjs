@@ -12,7 +12,7 @@
 // the pairing is a datum rather than prose (review C6). `--out` inside
 // public/ is refused before the runner starts; promotion is a separate step.
 //
-// Usage: node pipeline/snapshot/bake-snapshot.mjs [--name init] [--probe '#check 2+2'] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--allow-legacy-imports]
+// Usage: node pipeline/snapshot/bake-snapshot.mjs [--name init] [--probe '#check 2+2'] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--allow-legacy-imports] [--runner <script>]
 // Paths: each flag, else its variable (QED64_LEAN_ARTIFACT, QED64_WORK,
 // QED64_STAGING), else the deprecated repo-relative default with one WARNING
 // (docs/CLI-CONTRACT.md "Path resolution").
@@ -25,7 +25,7 @@ import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { createGzip } from "node:zlib";
 import { fileURLToPath } from "node:url";
-import { buildIdOfArtifact, refuseInsidePublic, resolveToolPath, stagingDir } from "../toolchain/artifact-paths.mjs";
+import { buildIdOfArtifact, refuseInsidePublic, resolveToolPath, stagingDir, toolPath } from "../toolchain/artifact-paths.mjs";
 
 // <cli-contract> generated from SPECS["bake-snapshot"] in pipeline/snapshot/cli.mjs. Do not edit:
 // `node pipeline/snapshot/cli.mjs --write-preludes` rewrites it and tests/unit/cli-contract.test.ts
@@ -35,9 +35,9 @@ import { buildIdOfArtifact, refuseInsidePublic, resolveToolPath, stagingDir } fr
 // --flag=value is rewritten to the two-token form this script reads, with the later values
 // of a repeated flag dropped so the first wins here too (docs/CLI-CONTRACT.md).
 {
-  const spec = {"tool":"bake-snapshot","usage":"bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--roots <A,B,…>] [--label <text>] [--initial-bytes <bytes>] [--allow-legacy-imports]","flags":{"name":1,"probe":1,"artifact":1,"lib":1,"reserve":1,"work":1,"out":1,"roots":1,"label":1,"initial-bytes":1,"allow-legacy-imports":0},"required":[],"passthrough":null,"passthroughRequired":false};
+  const spec = {"tool":"bake-snapshot","usage":"bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--roots <A,B,…>] [--label <text>] [--initial-bytes <bytes>] [--allow-legacy-imports] [--runner <script>]","flags":{"name":1,"probe":1,"artifact":1,"lib":1,"reserve":1,"work":1,"out":1,"roots":1,"label":1,"initial-bytes":1,"allow-legacy-imports":0,"runner":1},"required":[],"passthrough":null,"passthroughRequired":false};
   spec.help = [
-    "usage: bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--roots <A,B,…>] [--label <text>] [--initial-bytes <bytes>] [--allow-legacy-imports]",
+    "usage: bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--roots <A,B,…>] [--label <text>] [--initial-bytes <bytes>] [--allow-legacy-imports] [--runner <script>]",
     "Bake an environment snapshot with the exact wasm64 runtime under Node (the runner is supervised and reaped), gzip it content-addressed into the staging dir and upsert its index entry.",
     "run as: node pipeline/snapshot/bake-snapshot.mjs (or npm run bake:snapshot -- …)",
     "",
@@ -53,12 +53,14 @@ import { buildIdOfArtifact, refuseInsidePublic, resolveToolPath, stagingDir } fr
     "  --label <text>           the entry's human name for the page's pill and boot card (default: none)",
     "  --initial-bytes <bytes>  initial Memory64 commit when the entry is loaded (default: none (2 GiB with a non-base entry))",
     "  --allow-legacy-imports   let the runner's env cache load legacy non-module packages (patch 0030): sets QED64_ALLOW_LEGACY_IMPORTS=1 for the runner; an inherited QED64_ALLOW_LEGACY_IMPORTS does the same",
+    "  --runner <script>        the runner script, spawned as <this node> --stack-size=8192 <script> --work <dir> --artifact <dir> [--lib <tree>] -- …; a relative path resolves against the cwd (default: $QED64_RUNNER, else QED64's own pipeline/snapshot/node-runner.mjs (not deprecated))",
     "  -h, --help               print this help and exit 0, before any side effect",
     "",
     "environment:",
     "  QED64_LEAN_ARTIFACT       stage1 artifact dir (bin/lean.js, bin/lean.wasm, lib/lean) used when --artifact is absent (empty = unset)",
     "  QED64_WORK                the dir mounted at /work (bake-snapshot: where <name>.snap lands) used when --work is absent",
     "  QED64_STAGING             the staging root used when --out is absent: --out is <QED64_STAGING>/<buildId>/{snapshots,runtime}",
+    "  QED64_RUNNER              the runner script bake-snapshot spawns when --runner is absent (default: QED64's own pipeline/snapshot/node-runner.mjs)",
     "  LEAN_COMPACTOR_RESERVE    bytes the compactor reserves up front for a whole-environment save (toolchain patch 0011)",
     "  QED64_ALLOW_LEGACY_IMPORTS",
     "                            when set (non-empty), lets the exported-level env cache load legacy non-module packages (patch 0030; the lean4game bakes); bake-snapshot --allow-legacy-imports sets it to 1 for its runner",
@@ -67,7 +69,7 @@ import { buildIdOfArtifact, refuseInsidePublic, resolveToolPath, stagingDir } fr
     "exit codes:",
     "  0  baked and the index upserted (also when the wedged runner was reaped); NOT a verdict on the probe's Lean messages",
     "  1  the runner exited non-zero, or no .snap was produced",
-    "  2  refused before the runner: no --artifact, QED64_LEAN_ARTIFACT or deprecated default; no lean.wasm under the artifact, --out inside public/, an index paired with another runtime or with none, a malformed --roots or --initial-bytes",
+    "  2  refused before the runner: no --artifact, QED64_LEAN_ARTIFACT or deprecated default; no lean.wasm under the artifact, --out inside public/, an index paired with another runtime or with none, a malformed --roots or --initial-bytes, a --runner (or QED64_RUNNER) script that does not exist",
     "",
     "tier 1 (downstream-stable). Contract: docs/CLI-CONTRACT.md",
   ].join("\n");
@@ -137,7 +139,7 @@ if (initialBytes !== null && !(Number.isSafeInteger(initialBytes) && initialByte
   console.error(`bake-snapshot: refusing --initial-bytes ${JSON.stringify(initialBytesArg)}: expected a positive whole number of bytes`);
   process.exit(2);
 }
-const USAGE = "bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--roots <A,B,…>] [--label <text>] [--initial-bytes <bytes>] [--allow-legacy-imports]";
+const USAGE = "bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--roots <A,B,…>] [--label <text>] [--initial-bytes <bytes>] [--allow-legacy-imports] [--runner <script>]";
 // The runtime identity comes from the artifact that will do the baking,
 // never from a manifest in public/ — a bake must not inherit whatever the
 // served tree happens to say.
@@ -157,6 +159,14 @@ const out = resolveToolPath({
   legacy: stagingDir(root, buildId, "snapshots"), legacyLabel: "work/staging/<buildId>/snapshots under the repo root", usage: USAGE,
 }).path;
 refuseInsidePublic(root, out, "bake-snapshot");
+// The runner: --runner, else QED64_RUNNER, else QED64's own node-runner (the
+// default, not deprecated). Checked here, before the index is read or the
+// paired .snap unlinked.
+const runner = toolPath({ value: arg("runner", null), env: "QED64_RUNNER", legacy: path.join(root, "pipeline/snapshot/node-runner.mjs") }).path;
+if (!fs.existsSync(runner)) {
+  console.error(`bake-snapshot: no runner script ${runner} — pass --runner <script> or set QED64_RUNNER`);
+  process.exit(2);
+}
 
 // The index this bake will upsert into is ONE pairing, checked before the
 // runner starts (a refusal after a 20-minute bake is the expensive kind):
@@ -191,7 +201,7 @@ fs.mkdirSync(work, { recursive: true });
 fs.writeFileSync(path.join(work, "probe.lean"), `${probe}\n`);
 
 const runnerArgs = [
-  path.join(root, "pipeline/snapshot/node-runner.mjs"),
+  runner,
   "--work", work,
 ];
 // Always the RESOLVED artifact: the `runtime` stamped below (from
@@ -220,7 +230,7 @@ console.log(`baking ${name}.snap for runtime ${buildId} (probe: ${JSON.stringify
 // before the new save even begins (it cost two silently-skipped bakes).
 try { fs.rmSync(path.join(work, `${name}.snap`)); } catch { /* absent */ }
 await new Promise((resolve, reject) => {
-  const child = execFile("node", ["--stack-size=8192", ...runnerArgs], {
+  const child = execFile(process.execPath, ["--stack-size=8192", ...runnerArgs], {
     env: { ...process.env, LEAN_COMPACTOR_RESERVE: reserve, ...(allowLegacyImports ? { QED64_ALLOW_LEGACY_IMPORTS: "1" } : {}) },
     maxBuffer: 64 * 1024 * 1024,
   }, () => {});

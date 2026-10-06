@@ -30,7 +30,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** Bumped on a breaking change to the contract (docs/CLI-CONTRACT.md "Stability"). */
-export const CONTRACT_VERSION = 2;
+export const CONTRACT_VERSION = 3;
 
 /** Substrings new output (any line a pipeline run can print, help and
  * warnings included) must not contain: downstream log judges match them
@@ -99,6 +99,14 @@ export const ENV = {
     doc: "when set, forwarded into the wasm environment to profile the [init] replay",
     readBy: ["node-runner", "snapshot-probe"],
   },
+  QED64_RUNNER: {
+    doc: "the runner script bake-snapshot spawns when --runner is absent (default: QED64's own pipeline/snapshot/node-runner.mjs)",
+    readBy: ["bake-snapshot"],
+  },
+  LEAN4_WASM64_DIR: {
+    doc: "the lean4-wasm64 package dir the forwards run (unpack, and the tier-3 inspect and gate); unset: the first node_modules/lean4-wasm64 above the cwd",
+    readBy: ["unpack"],
+  },
 };
 
 /** "flag, else variable, else the deprecated repo-relative default" (docs/CLI-CONTRACT.md "Path resolution"). */
@@ -137,7 +145,7 @@ export const SPECS = {
     tier: 1,
     binding: "inline",
     node: "node",
-    synopsis: "bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--roots <A,B,…>] [--label <text>] [--initial-bytes <bytes>] [--allow-legacy-imports]",
+    synopsis: "bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--roots <A,B,…>] [--label <text>] [--initial-bytes <bytes>] [--allow-legacy-imports] [--runner <script>]",
     summary: "Bake an environment snapshot with the exact wasm64 runtime under Node (the runner is supervised and reaped), gzip it content-addressed into the staging dir and upsert its index entry.",
     flags: [
       { name: "name", value: "<name>", default: "init", doc: "snapshot name: <work>/<name>.snap, <name>.<digest16>.snapz and the index entry" },
@@ -151,12 +159,13 @@ export const SPECS = {
       { name: "label", value: "<text>", default: "none", doc: "the entry's human name for the page's pill and boot card" },
       { name: "initial-bytes", value: "<bytes>", default: "none (2 GiB with a non-base entry)", doc: "initial Memory64 commit when the entry is loaded" },
       { name: "allow-legacy-imports", doc: "let the runner's env cache load legacy non-module packages (patch 0030): sets QED64_ALLOW_LEGACY_IMPORTS=1 for the runner; an inherited QED64_ALLOW_LEGACY_IMPORTS does the same" },
+      { name: "runner", value: "<script>", default: "$QED64_RUNNER, else QED64's own pipeline/snapshot/node-runner.mjs (not deprecated)", doc: "the runner script, spawned as <this node> --stack-size=8192 <script> --work <dir> --artifact <dir> [--lib <tree>] -- …; a relative path resolves against the cwd" },
     ],
-    env: ["QED64_LEAN_ARTIFACT", "QED64_WORK", "QED64_STAGING", "LEAN_COMPACTOR_RESERVE", "QED64_ALLOW_LEGACY_IMPORTS", "QED64_PROFILE_INIT"],
+    env: ["QED64_LEAN_ARTIFACT", "QED64_WORK", "QED64_STAGING", "QED64_RUNNER", "LEAN_COMPACTOR_RESERVE", "QED64_ALLOW_LEGACY_IMPORTS", "QED64_PROFILE_INIT"],
     exits: {
       0: "baked and the index upserted (also when the wedged runner was reaped); NOT a verdict on the probe's Lean messages",
       1: "the runner exited non-zero, or no .snap was produced",
-      2: "refused before the runner: no --artifact, QED64_LEAN_ARTIFACT or deprecated default; no lean.wasm under the artifact, --out inside public/, an index paired with another runtime or with none, a malformed --roots or --initial-bytes",
+      2: "refused before the runner: no --artifact, QED64_LEAN_ARTIFACT or deprecated default; no lean.wasm under the artifact, --out inside public/, an index paired with another runtime or with none, a malformed --roots or --initial-bytes, a --runner (or QED64_RUNNER) script that does not exist",
     },
     markers: [
       { id: "baking", stream: "stdout", template: ["baking ${name}.snap for runtime ${buildId} (probe: ${JSON.stringify(probe)}; compactor reserve ${(Number(reserve) / 1024 ** 3).toFixed(1)} GiB) → ${out}"],
@@ -173,6 +182,9 @@ export const SPECS = {
         example: "baked /repo/work/staging/wasm64-0123456789abcdef/snapshots/init.0123456789abcdef.snapz (107000000 bytes transfer, 342000000 raw); index updated (imports: [], runtime wasm64-0123456789abcdef)" },
       { id: "no-snap", stream: "stderr", template: ["FAIL: snapshot file was not produced"],
         regex: /^FAIL: snapshot file was not produced$/, example: "FAIL: snapshot file was not produced" },
+      { id: "no-runner", stream: "stderr", template: ["bake-snapshot: no runner script ${runner} — pass --runner <script> or set QED64_RUNNER"],
+        regex: /^bake-snapshot: no runner script (.+) — pass --runner <script> or set QED64_RUNNER$/,
+        example: "bake-snapshot: no runner script /tmp/missing/node-runner.mjs — pass --runner <script> or set QED64_RUNNER" },
       { id: "no-artifact", stream: "stderr", template: ["bake-snapshot: no lean.wasm under ${artifactDir} — pass --artifact <stage1 dir>"],
         regex: /^bake-snapshot: no lean\.wasm under (.+) — pass --artifact <stage1 dir>$/,
         example: "bake-snapshot: no lean.wasm under /tmp/missing — pass --artifact <stage1 dir>" },
@@ -534,24 +546,31 @@ export const SPECS = {
     tier: 2,
     binding: "inline",
     node: "node",
-    synopsis: "unpack.mjs --manifest <file> --out <dir>",
-    summary: "Reconstruct an on-disk olean tree from a profile's verified transport parts (each part and the raw pack sha256-checked), for the Node-side bakes.",
+    synopsis: "unpack.mjs --manifest <file> --out <dir> [--slim]",
+    summary: "Reconstruct an on-disk olean tree from a profile's verified transport parts (each part and the raw pack sha256-checked), for the Node-side bakes. Deprecated forward (contract 3): after this help and the usage check it prints one WARNING and runs lean4-wasm64 unpack with the same arguments.",
     flags: [
       { name: "manifest", value: "<file>", doc: "a profile manifest; its parts are read from the same directory by basename" },
       { name: "out", value: "<dir>", doc: "the tree to write (files are added or overwritten, never deleted)" },
+      { name: "slim", doc: "do not write *.olean.private facets (lean4-wasm64 unpack --slim)" },
     ],
     required: [["manifest"], ["out"]],
-    env: [],
+    env: ["LEAN4_WASM64_DIR"],
     exits: {
       0: "unpacked",
       1: "a part, the raw pack or a path failed verification (or the manifest is unreadable)",
-      2: "usage",
+      2: "usage, or lean4-wasm64 not found (set LEAN4_WASM64_DIR or install the devDependency)",
     },
     markers: [
-      { id: "done", stream: "stdout", template: ["${release}: unpacked ${files} files, ${(bytes / 1e9).toFixed(2)} GB → ${outDir}"],
+      { id: "done", stream: "stdout", forwarded: "unpack.mjs", template: ["${release}: unpacked ${files} files, ${(bytes / 1e9).toFixed(2)} GB → ${outDir}"],
         regex: /^(\S+): unpacked (\d+) files, (\d+\.\d\d) GB → (.+)$/, example: "lean-core-4.34.0-wasm64-36a96239e08fd2e0: unpacked 3245 files, 0.39 GB → /repo/work/lib-tree" },
-      { id: "fail", stream: "stderr", template: ["FAIL: transport part ${part.url} failed verification"], regex: /^FAIL: (.*)$/,
+      { id: "fail", stream: "stderr", forwarded: "unpack.mjs", template: ["FAIL: transport part ${part.url} failed verification"], regex: /^FAIL: (.*)$/,
         example: "FAIL: transport part /profiles/lean-core.pack.gzip.0123456789abcdef0123.part-000 failed verification" },
+      { id: "deprecated", stream: "stderr", template: ["unpack: WARNING — pipeline/artifacts/unpack.mjs is deprecated; use lean4-wasm64 unpack (the fork's package) (docs/CLI-CONTRACT.md)"],
+        regex: /^unpack: WARNING — pipeline\/artifacts\/unpack\.mjs is deprecated; use lean4-wasm64 unpack/,
+        example: "unpack: WARNING — pipeline/artifacts/unpack.mjs is deprecated; use lean4-wasm64 unpack (the fork's package) (docs/CLI-CONTRACT.md)" },
+      { id: "no-package", stream: "stderr", source: "pipeline/toolchain/artifact-paths.mjs", prefix: true, template: ["${tool}: lean4-wasm64 not found — "],
+        regex: /^(\S+): lean4-wasm64 not found — set LEAN4_WASM64_DIR=<package dir> or install it: /,
+        example: "unpack: lean4-wasm64 not found — set LEAN4_WASM64_DIR=<package dir> or install it: npm i -D <release tgz URL> (toolchain/lean4-wasm64-release.json names it) (docs/CLI-CONTRACT.md)" },
     ],
   },
 };
