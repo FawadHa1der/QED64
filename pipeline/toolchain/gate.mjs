@@ -14,19 +14,26 @@
 // Exits nonzero if any gate fails (all are run).
 //
 // Usage: node pipeline/toolchain/gate.mjs --artifact <dir>
+//   (else $QED64_LEAN_ARTIFACT; the old default, the cwd when it holds
+//   bin/lean.js, is deprecated and prints one WARNING; nothing else: exit 2)
 
 import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveToolPath } from "./artifact-paths.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 function arg(name, fallback) {
   const i = process.argv.indexOf(`--${name}`);
   return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : fallback;
 }
-const artifact = path.resolve(arg("artifact", ""));
+const artifact = resolveToolPath({
+  tool: "gate", flag: "artifact", placeholder: "<dir>", value: arg("artifact", null), env: "QED64_LEAN_ARTIFACT",
+  legacy: process.cwd(), legacyLabel: "the current directory", holds: (dir) => fs.existsSync(path.join(dir, "bin/lean.js")),
+  needs: "bin/lean.js", usage: "gate.mjs --artifact <dir>",
+}).path;
 if (!fs.existsSync(path.join(artifact, "bin/lean.js"))) {
   console.error(`gate: ${artifact}/bin/lean.js not found`);
   process.exit(2);

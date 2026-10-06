@@ -91,12 +91,15 @@ describe("chunk-runtime.mjs", () => {
     expect(m.sourceRevision === "unspecified" || /^qed64-wasm64@[0-9a-f]+ \(base v9\.9\.9\)$/.test(m.sourceRevision)).toBe(true);
   });
 
-  test("default --out is work/staging/<buildId>/runtime (never public/)", () => {
+  test("default --out is work/staging/<buildId>/runtime (never public/), deprecated with one WARNING", () => {
     const bin = fakeBin("default");
-    const r = run(chunker, ["--bin", bin, "--revision", "test"]);
+    const r = spawnSync("node", [chunker, "--bin", bin, "--revision", "test"], { cwd: root, encoding: "utf8", timeout: 60_000, env: { ...process.env, QED64_STAGING: "" } });
     expect(r.status).toBe(0);
     const id = runtimeBuildId(Buffer.from("\0asmdefault"));
     const staged = path.join(root, "work/staging", id, "runtime");
+    expect(r.stderr.split("\n").filter((l) => l.includes("is deprecated"))).toEqual([
+      `chunk-runtime: WARNING — the default --out work/staging/<buildId>/runtime under the repo root (${staged}) is deprecated; use --out <dir> or set QED64_STAGING (docs/CLI-CONTRACT.md)`,
+    ]);
     expect(fs.existsSync(path.join(staged, "runtime-manifest.json"))).toBe(true);
     fs.rmSync(path.join(root, "work/staging", id), { recursive: true, force: true });
   });

@@ -18,6 +18,8 @@
 // the library packs against (profiles/index.json runtime.leanVersion, each
 // pack's content.lean.version): omitting it is a loud warning, not an error —
 // bump-chain.sh only passes it when QED64_LEAN_VERSION is set.
+// --out: else <$QED64_STAGING>/<buildId>/runtime, else (deprecated, one
+// WARNING) work/staging/<buildId>/runtime under the repo root.
 // (--help; the contract is docs/CLI-CONTRACT.md)
 
 import { createHash } from "node:crypto";
@@ -25,7 +27,7 @@ import fs from "node:fs";
 import { execSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { refuseInsidePublic, runtimeBuildId, stagingDir } from "./artifact-paths.mjs";
+import { refuseInsidePublic, resolveToolPath, runtimeBuildId, stagingDir } from "./artifact-paths.mjs";
 
 // <cli-contract> generated from SPECS["chunk-runtime"] in pipeline/snapshot/cli.mjs. Do not edit:
 // `node pipeline/snapshot/cli.mjs --write-preludes` rewrites it and tests/unit/cli-contract.test.ts
@@ -44,11 +46,14 @@ import { refuseInsidePublic, runtimeBuildId, stagingDir } from "./artifact-paths
     "flags:",
     "  --bin <dir>               dir holding lean.js + lean.wasm [required]",
     "  --lean-version <x.y.z>    the manifest's leanVersion; promote pairs packs against it (default: 4.33.0-pre, with a WARNING on stderr)",
-    "  --revision <string>       the manifest's sourceRevision (default: qed64-wasm64@<HEAD of pipeline/toolchain/work/lean4> (base <upstream-base>), else unspecified)",
+    "  --revision <string>       the manifest's sourceRevision (default: qed64-wasm64@<HEAD of pipeline/toolchain/work/lean4, relative to the cwd> (base <upstream-base>), else unspecified; git runs only when --revision is absent)",
     "  --upstream-base <sha|tag>",
     "                            the upstream base named in the default --revision (default: 5732b84)",
-    "  --out <dir>               staging dir; refused inside public/ (default: work/staging/<buildId>/runtime under the repo root)",
+    "  --out <dir>               staging dir; refused inside public/; a relative --out resolves against the repo root (default: $QED64_STAGING, else (deprecated, one WARNING) work/staging/<buildId>/runtime under the repo root; with QED64_STAGING, <QED64_STAGING>/<buildId>/runtime)",
     "  -h, --help                print this help and exit 0, before any side effect",
+    "",
+    "environment:",
+    "  QED64_STAGING  the staging root used when --out is absent: --out is <QED64_STAGING>/<buildId>/{snapshots,runtime}",
     "",
     "exit codes:",
     "  0  chunked",
@@ -129,7 +134,8 @@ function forkRevision() {
     return "unspecified";
   }
 }
-const revision = arg("revision", forkRevision());
+// Lazy: git runs only when the default is needed (an explicit --revision touches no checkout).
+const revision = arg("revision", null) ?? forkRevision();
 if (!binDir) {
   console.error("usage: chunk-runtime.mjs --bin <dir> [--lean-version v] [--revision sha] [--upstream-base sha] [--out dir]");
   process.exit(2);
@@ -151,7 +157,12 @@ const wasmBytes = fs.readFileSync(path.join(binDir, "lean.wasm"));
 const buildId = runtimeBuildId(wasmBytes);
 // The staging default is keyed by the build so two chunk runs never share a
 // tree; an explicit --out inside public/ is refused before anything is written.
-const outDir = path.resolve(root, arg("out", stagingDir(root, buildId, "runtime")));
+const outDir = resolveToolPath({
+  tool: "chunk-runtime", flag: "out", placeholder: "<dir>", value: arg("out", null), base: root,
+  env: "QED64_STAGING", envTo: (staging) => path.join(staging, buildId, "runtime"),
+  legacy: stagingDir(root, buildId, "runtime"), legacyLabel: "work/staging/<buildId>/runtime under the repo root",
+  usage: "chunk-runtime.mjs --bin <dir> [--lean-version v] [--revision sha] [--upstream-base sha] [--out dir]",
+}).path;
 refuseInsidePublic(root, outDir, "chunk-runtime");
 
 // Additive only: content-addressed chunk names cannot collide across builds,

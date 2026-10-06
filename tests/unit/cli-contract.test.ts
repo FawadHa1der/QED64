@@ -201,7 +201,7 @@ describe("SPECS", () => {
     const r = spawnSync("node", [cliScript, "--print-specs"], { encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL" });
     expect(r.status).toBe(0);
     const json = JSON.parse(r.stdout) as { contractVersion: number; specs: Record<string, { synopsis: string; markers: { regex: string; example: string }[] }>; env: object; exitClasses: object };
-    expect(json.contractVersion).toBe(1);
+    expect(json.contractVersion).toBe(2); // 2: the path rule of 2026-10-06 (the sibling-checkout fallback deleted)
     expect(Object.keys(json.specs).sort()).toEqual([...TOOLS].sort());
     expect(Object.keys(json.exitClasses)).toEqual(["0", "1", "2", "3"]);
     for (const tool of TOOLS) {
