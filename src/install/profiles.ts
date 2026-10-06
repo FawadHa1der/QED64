@@ -639,12 +639,3 @@ export async function installProfile(
     throw error;
   }
 }
-
-export async function storageEstimate(): Promise<{ usage: number; quota: number } | null> {
-  try {
-    const estimate = await navigator.storage.estimate();
-    return { usage: estimate.usage ?? 0, quota: estimate.quota ?? 0 };
-  } catch {
-    return null;
-  }
-}

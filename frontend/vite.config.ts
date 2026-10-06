@@ -54,6 +54,7 @@ export default defineConfig(({ command }) => ({
     buildInfoPlugin({
       manifestUrl: new URL("../public/runtime/runtime-manifest.json", import.meta.url),
       pageApiUrl: new URL("./src/page-api.ts", import.meta.url),
+      embedApiUrl: new URL("./src/embed/index.ts", import.meta.url),
       repoDir: new URL("..", import.meta.url), // a URL, as above: .pathname is percent-encoded ("Lean%20Projects")
     }),
     nodePolyfills({ overrides: { fs: "memfs" } }),

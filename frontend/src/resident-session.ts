@@ -109,7 +109,7 @@ export function importedModulesOf(text: string): string[] {
  * four tutorial aliases Mathlib, Mathlib.Tactic, Batteries, MIL.Common). A
  * near-miss root (`Mathlib2`) is NOT one of these: the kernel refuses it and
  * no snapshot would change that. */
-export const UMBRELLA_ROOTS: ReadonlySet<string> = new Set(["Mathlib", "Batteries", "MIL", "QED64"]);
+const UMBRELLA_ROOTS: ReadonlySet<string> = new Set(["Mathlib", "Batteries", "MIL", "QED64"]);
 export const isUmbrellaModule = (name: string): boolean => UMBRELLA_ROOTS.has(name.split(".")[0] ?? "");
 
 /** True when any import line names a module the umbrella serves. */

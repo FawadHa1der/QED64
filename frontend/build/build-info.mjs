@@ -10,6 +10,8 @@
 //                   dist/ except this one: exactly pipeline/release/release-manifest.mjs's
 //                   shell.shellId, which refuses a dist whose qed64-build.json disagrees
 //   apiRevision     globalThis.qed64.api.revision of this shell
+//   embedApiRevision  EMBED_API_REVISION of the qed64/embed barrel this shell was
+//                   built from (docs/EMBEDDING.md §7); null when not given
 // Written in writeBundle (post, sequential), after every plugin (the static
 // copies included) has written its files, and ONLY for a build that wrote
 // them: closeBundle also runs for a failed build (Rollup passes the build
@@ -45,7 +47,7 @@ export function shellIdOf(distDir) {
 }
 
 /** repoDir: the checkout as a path or a file: URL (never a URL's percent-encoded pathname). */
-export function buildInfoPlugin({ manifestUrl, pageApiUrl, repoDir }) {
+export function buildInfoPlugin({ manifestUrl, pageApiUrl, embedApiUrl = null, repoDir }) {
   let outDir = null;
   return {
     name: "qed64-build-info",
@@ -57,6 +59,8 @@ export function buildInfoPlugin({ manifestUrl, pageApiUrl, repoDir }) {
       handler() {
         const manifest = JSON.parse(fs.readFileSync(manifestUrl, "utf8"));
         const apiRevision = /export const API_REVISION = "([^"]+)"/.exec(fs.readFileSync(pageApiUrl, "utf8"))?.[1] ?? null;
+        const embedApiRevision = embedApiUrl === null ? null
+          : /export const EMBED_API_REVISION = "([^"]+)"/.exec(fs.readFileSync(embedApiUrl, "utf8"))?.[1] ?? null;
         const commit = git(["rev-parse", "HEAD"], repoDir);
         const info = {
           schema: "qed64.build/v1",
@@ -67,6 +71,7 @@ export function buildInfoPlugin({ manifestUrl, pageApiUrl, repoDir }) {
           dirty: commit === null ? null : (git(["status", "--porcelain", "--untracked-files=no"], repoDir) ?? "") !== "",
           shell: shellIdOf(outDir),
           apiRevision,
+          embedApiRevision,
         };
         fs.writeFileSync(path.join(outDir, BUILD_INFO_FILE), `${JSON.stringify(info, null, 2)}\n`);
       },

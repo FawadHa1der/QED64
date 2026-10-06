@@ -500,6 +500,7 @@ describe.skipIf(!hasGit)("frontend/build/build-info.mjs: dist/qed64-build.json o
     fs.writeFileSync(input, entry);
     fs.writeFileSync(path.join(dir, "runtime-manifest.json"), JSON.stringify({ buildId, leanVersion: "9.9.9", sourceRevision: "test" }));
     fs.writeFileSync(path.join(dir, "page-api.ts"), 'export const API_REVISION = "1.2.3";\n');
+    fs.writeFileSync(path.join(dir, "embed-index.ts"), 'export const EMBED_API_REVISION = "4.5.6-pre.7";\n');
     const dist = path.join(dir, "dist");
     seed?.(dist);
     const { buildInfoPlugin } = await import("../../frontend/build/build-info.mjs" as string) as { buildInfoPlugin(o: object): Plugin };
@@ -509,7 +510,7 @@ describe.skipIf(!hasGit)("frontend/build/build-info.mjs: dist/qed64-build.json o
       build: { outDir: dist, emptyOutDir: true, minify: false, rollupOptions: { input } },
       plugins: [
         (await fixes()).lean4monacoFixesVite(),
-        buildInfoPlugin({ manifestUrl: pathToFileURL(path.join(dir, "runtime-manifest.json")), pageApiUrl: pathToFileURL(path.join(dir, "page-api.ts")), repoDir: dir }),
+        buildInfoPlugin({ manifestUrl: pathToFileURL(path.join(dir, "runtime-manifest.json")), pageApiUrl: pathToFileURL(path.join(dir, "page-api.ts")), embedApiUrl: pathToFileURL(path.join(dir, "embed-index.ts")), repoDir: dir }),
         ...extra(dist),
       ],
     });
@@ -554,7 +555,7 @@ describe.skipIf(!hasGit)("frontend/build/build-info.mjs: dist/qed64-build.json o
     }]);
     await b.run;
     const info = JSON.parse(fs.readFileSync(b.stamp, "utf8"));
-    expect(info).toMatchObject({ schema: "qed64.build/v1", buildId, leanVersion: "9.9.9", sourceRevision: "test", apiRevision: "1.2.3" });
+    expect(info).toMatchObject({ schema: "qed64.build/v1", buildId, leanVersion: "9.9.9", sourceRevision: "test", apiRevision: "1.2.3", embedApiRevision: "4.5.6-pre.7" });
     expect(fs.readFileSync(path.join(b.dist, "workers/lean.worker.js"), "utf8")).toContain("copied");
     expect(info.shell).toBe(shellIdOf(b.dist));
   });
@@ -591,5 +592,9 @@ describe.skipIf(!hasGit)("frontend/build/build-info.mjs: dist/qed64-build.json o
     expect(r.status, r.stderr).toBe(0);
     const info = JSON.parse(fs.readFileSync(path.join(checkout, "dist/qed64-build.json"), "utf8"));
     expect(info).toMatchObject({ commit, dirty: false, buildId });
+    // vite.config.ts wires the barrel's revision (frontend/src/embed/index.ts) into the stamp.
+    const barrel = fs.readFileSync(path.join(root, "frontend/src/embed/index.ts"), "utf8");
+    expect(info.embedApiRevision).toBe(/export const EMBED_API_REVISION = "([^"]+)"/.exec(barrel)?.[1]);
+    expect(info.embedApiRevision).toMatch(/^\d+\.\d+\.\d+(-[\w.]+)?$/);
   });
 });

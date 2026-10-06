@@ -440,36 +440,49 @@ Notes for consumers:
 
 ## 7. The library API: `qed64/embed`
 
-`EMBED_API_REVISION` is the semver of this section (minor = additive).
+`EMBED_API_REVISION` is the semver of this section (minor = additive). A
+built shell records it as `embedApiRevision` in `dist/qed64-build.json`
+(beside the page API's `apiRevision`), so a deploy or pin tool reads which
+library contract a dist was built from without opening the bundle.
 
 ### 7.0 Exports
 
 - **runtime:** `LeanSession`, `PROTOCOL`, `probeMemory64`, `MEMORY64_PROBE`
   (the 13 probe bytes `probeMemory64` and the worker validate; a fixed-shape
   `Uint8Array`, read-only by convention: refuse an incapable browser before
-  loading anything with `WebAssembly.validate(MEMORY64_PROBE)`),
-  `memoryCandidates`, and the types.
+  loading anything with `WebAssembly.validate(MEMORY64_PROBE)`), and the
+  types.
 - **snapshots:**
   - the index: `loadSnapshotIndex` (throws, naming the fault),
     `fetchSnapshotIndex` (null on any fault) and `snapshotCacheKey`;
   - the overlay helpers of §8.
-- **raw cache (§7.4):** `prefetchRaw`, `isRawCached`, `rawRegionName`,
-  `removeRawRegion`, `isCacheKeyOf`, `SNAPSHOT_CACHE_DIR` and
-  `PREFETCH_SILENCE_MS`.
-- **boot:** `installArtifacts`, `overridesOf`, `resolveRuntimeManifest`,
-  `fetchSnapshotIndexFor`, `ensureProfile` and `loadSnapshotByName`.
-- **parameters:** `parseBootParams(search, origin)`,
-  `validateBootOverrides`, `BootParamError` (`code:
-  "BOOT_PARAM_REFUSED"`, `param`) and `NO_OVERRIDES`.
+- **raw cache (§7.4):** `prefetchRaw`, `isRawCached`, `removeRawRegion`,
+  `isCacheKeyOf`, `SNAPSHOT_CACHE_DIR` and `PREFETCH_SILENCE_MS`.
+- **boot:** `installArtifacts`, `resolveRuntimeManifest`,
+  `fetchSnapshotIndexFor` and `loadSnapshotByName`.
+- **parameters:** `validateBootOverrides` and `BootParamError` (`code:
+  "BOOT_PARAM_REFUSED"`, `param`).
 - **session:** `ResidentSession`, `ResidentPolicy`, `ResidentHost`,
   `SessionFile`, `EDITOR_POLICY`, `makeEditorPolicy(index)` and the header
   helpers.
 - **relay:** `LspRelay` (its contract members in §7.9: `clientPort`,
   `unload()`, `status()`, `rearm()`, `restart()`), `RelaySession`,
   `RelayStatus`, `RestartOptions` and `Death`.
-- **causes (§7.2):** `failureKindOf`, `failureCauseOf`, `deathCause`,
-  `httpStatusOf`, `WORKER_SCRIPT_LOAD_FAILED` and `WORKER_DEP_MISMATCH`.
+- **causes (§7.2):** `failureCauseOf`, `deathCause`,
+  `WORKER_SCRIPT_LOAD_FAILED` and `WORKER_DEP_MISMATCH`.
 - **offline:** `runtimeUrls(manifest)` and `WORKER_URLS`.
+- **internal re-exports** (`/** @internal */` in the barrel): `memoryCandidates`,
+  `fetchProfileIndex`, `installProfile`, `ensureProfile`, `overridesOf`,
+  `rawRegionName`, `failureKindOf`, `httpStatusOf`, `parseBootParams`,
+  `NO_OVERRIDES` and `isImport`. They stay exported, so an import of one
+  still builds, but they are outside the contract (§9): neither consumer
+  imports them, the stock page reaches them only through its own modules,
+  and a revision may change or remove them. Use the contract member that
+  wraps each one instead: `ResidentSession` (memory rungs, packs, the
+  profile index), `failureCauseOf` (kind and HTTP status),
+  `validateBootOverrides` (your own URL parsing, or `installArtifacts`'
+  `overrides: "url"`), `prefetchRaw`/`isRawCached`/`removeRawRegion` (the
+  region name), `LspRelay` (the header rule).
 
 ### 7.1 Structured progress
 
@@ -635,8 +648,9 @@ function prefetchRaw(entry, opts?: { onProgress?; signal?; silenceMs?; workerUrl
 - **It only ever produces `.raw`.** It never throws.
 
 Helpers: `isRawCached(entry)` (null when there is no OPFS),
-`rawRegionName(entry)`, `removeRawRegion(entry)`, `isCacheKeyOf(fileName,
-index)` (for sweeping stale bakes) and `SNAPSHOT_CACHE_DIR`.
+`removeRawRegion(entry)`, `isCacheKeyOf(fileName, index)` (for sweeping
+stale bakes) and `SNAPSHOT_CACHE_DIR`. (`rawRegionName(entry)` is an
+internal re-export, §7.0.)
 
 **Integrity.**
 - A region is trusted by its cache key, and the key comes from the index.
@@ -667,7 +681,8 @@ fetchSnapshotIndexFor(overrides): Promise<SnapshotIndex | null>;   // a requeste
 ```
 
 A game page wants `{overrides: "none", profiles: "none"}`, or its own
-overrides routed through `parseBootParams` / `validateBootOverrides`.
+overrides routed through `validateBootOverrides` (lean4game parses its URL
+itself; `parseBootParams` is an internal re-export, §7.0).
 
 ### 7.7 Workers: compatibility across deploys
 
@@ -927,7 +942,8 @@ These are internal and may change in any commit:
 - the `qed64.buffer` key;
 - every DOM id/class and every label string;
 - `globalThis.__qed64InfoviewEditorApi`;
-- every path not in `exports` / `closure.json`.
+- every path not in `exports` / `closure.json`;
+- every `qed64/embed` re-export marked `@internal` (§7.0).
 
 Embedders may add their own listeners to the framed window (e.g. a capture
 `keydown` for an F6 escape). The `__qed64*` namespace is reserved for QED64.
@@ -971,8 +987,9 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
 **lean4game (library tier):**
 - Delete the vendored copies and `sync-qed64.sh`. Import from `qed64/embed`,
   and stage the workers from `closure.json`.
-- Route URL overrides through `parseBootParams` and boot with
-  `installArtifacts(ui, {overrides, profiles: "none"})` or the exported
+- Route URL overrides through `validateBootOverrides` (lean4game keeps its
+  own parser; `parseBootParams` is internal since `1.0.0-pre.5`) and boot
+  with `installArtifacts(ui, {overrides, profiles: "none"})` or the exported
   resolvers.
 - Replace `GameSession` with `files`.
 - Replace the label regexes with `stage`/`subject`/`error`.
@@ -1116,3 +1133,21 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
     `WORKER_DEP_MISMATCH` is exported. The stock page shows a standing
     Reload button for it; the page API's `death` event and a halted boot's
     `boot.error` carry it. `EMBED_API_REVISION` → `1.0.0-pre.4`.
+- **The barrel's surface (plan step A2c, 2026-10-06):**
+  - removed from `qed64/embed`: `storageEstimate` (the function is deleted:
+    nothing called it) and `UMBRELLA_ROOTS` (now module-private; the
+    exported `isUmbrellaModule` reads it). Neither consumer, the stock page
+    nor any test imported them (checked with grep over this repo, lean4game's
+    qed64-dep branch and its bump worktree, and the showcase).
+  - marked `/** @internal */`, still exported: `installProfile`,
+    `ensureProfile`, `fetchProfileIndex`, `parseBootParams`, `overridesOf`,
+    `NO_OVERRIDES`, `memoryCandidates`, `rawRegionName`, `httpStatusOf`,
+    `failureKindOf` and `isImport` (§7.0 lists the contract member to use
+    instead). Every name lean4game imports through the barrel stays in the
+    contract; `tests/unit/embed-barrel.test.ts` pins both lists.
+  - the stock page (`frontend/src/main.ts`) imports the library surface
+    from the barrel instead of deep paths: it is the barrel's first
+    consumer. No behaviour change.
+  - `dist/qed64-build.json` gains `embedApiRevision` (the barrel's
+    `EMBED_API_REVISION`; an additive key: `qed64.build/v1` readers ignore
+    it). `EMBED_API_REVISION` → `1.0.0-pre.5`.
