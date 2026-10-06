@@ -755,6 +755,15 @@ interface FailureCause { kind: FailureKind; httpStatus?: number; stage?: BootSta
 | `stale` | the site was deployed under this page: the worker scripts it loaded are of different revisions (§7.7). **Reload the page.** Retrying in place does not help: the relay heals by itself (its replacement worker loads the new scripts, and the relay replays `initialize` and the document, so the language client never re-initializes), but it then serves under this page's older bundle, which holds only while the worker protocol changes additively | `WORKER_DEP_MISMATCH` (`code` is always `"WORKER_DEP_MISMATCH"`, exported as `WORKER_DEP_MISMATCH`) |
 | `other` | the checker's own failure, with **one exception**: `code: "WORKER_SCRIPT_LOAD_FAILED"` means a worker script never ran, which looks the same offline as on a 404, so probe the link | `abort`, `wedged`, `SNAPSHOT_URL_REFUSED` |
 
+An `unpaired` failure is decided by the page wherever it holds both facts,
+the index entry's `runtime` and the runtime manifest's `buildId`: the same
+cause and projection as the worker's refusal, now without the runtime
+starting or a byte of the snapshot downloading (the session's Worker object
+is created and disposed, but no `boot` request, `lean.wasm` fetch or
+Memory64 reservation happens; `ResidentSession.start()` rejects first;
+`loadSnapshotByName` returns false before fetching; an entry without
+`runtime` is still the worker's to decide; HARDENING #62).
+
 Classification is per throw, from the error code **and** message:
 `RUNTIME_FETCH_FAILED` covers a 404, a cut and a SHA mismatch alike. The page
 classifies, so the same table holds against every worker version.
@@ -1529,3 +1538,25 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
     `deploy-app.sh`, `game-boot.ts`); preflight's refusal is always one
     stdout line and names a missing dependency of playwright instead of
     calling playwright unresolvable (docs/CLI-CONTRACT.md changelog).
+- **An unpaired snapshot refused early (HARDENING #62, 2026-10-06):** the
+  page compares an index entry's `runtime` with the runtime manifest's
+  `buildId` before it spends anything on the snapshot (§7.2).
+  `ResidentSession.start()` rejects `snapshot '<name>' failed to load` with
+  the `unpaired` cause (`code: "SNAPSHOT_UNPAIRED"`, `stage: "snapshot"`)
+  when a snapshot it loads before opening is unpaired, before a pack
+  install, the runtime boot and any snapshot fetch; `loadSnapshotByName`
+  refuses such an entry before the raw prefetch, with the same `lastFailure`
+  and progress call the worker path makes. The relay's `Death`, the page
+  API's `boot` and `lastDeath` and the boot card are as before; no console
+  line is added, and the relay and its breaker are unchanged (each of the
+  three retries now costs no runtime and no download). The halt comes about
+  3 s after the relay is constructed, often before the language client sends
+  `initialize`: the client's `initialize` may then be answered with the
+  breaker's "QED64: checker halted after repeated crashes" error instead of
+  "QED64: the Lean checker died (bootFailed)", and the died line may appear
+  fewer than three times or not at all (both shapes were already the
+  relay's, and the showcase's C9 allowlists both). An entry without
+  `runtime` is not refused by the page. The cause's message says "this page
+  runs runtime <id>" where the worker's says "this worker booted <id>"
+  (classify by `kind`/`code`, never by the words). No export changes:
+  `EMBED_API_REVISION` stays `1.0.0-pre.6`.
