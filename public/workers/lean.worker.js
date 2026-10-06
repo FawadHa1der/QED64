@@ -51,7 +51,7 @@ let sink = null;
 // which loads lsp-frames.js into the sandbox itself. memory64-probe.js
 // (globalThis.Qed64Memory64) is loaded the same way, eagerly: it is the one
 // source of the Memory64 probe bytes, shared with the page library
-// (src/runtime/client.ts imports the same file), and capabilities() needs it.
+// (lib/client.ts imports the same file), and capabilities() needs it.
 //
 // lsp-front-door.js is deliberately NOT loaded here: it is imported lazily by
 // `frontDoorApply` on the first `lsp`/`lsp-arm` message. A consumer that only
