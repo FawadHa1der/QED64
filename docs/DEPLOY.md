@@ -89,6 +89,54 @@ but the script's step names `build:site` or `typecheck:site`), that no
 other tracked file outside docs and tests runs the prune or `wrangler
 deploy`, and the script itself, run with stub `npm`/`npx` commands.
 
+### Local preview: the Worker's own code
+
+`npm run build:site && npm run preview:prod` (`node scripts/serve-dist.mjs`,
+http://localhost:5185) serves a production build through **the same code
+the live site runs**: each request becomes a Fetch `Request` for
+`infra/worker.js`'s `fetch(request, env, ctx)`, and its `Response` is written
+back (status, every header, the body streamed; HEAD sends none). There are
+no local path rules or headers to drift from the Worker's. `env` holds Node
+stand-ins for the two `wrangler.toml` bindings:
+
+- `ASSETS`: the Workers static-assets subset QED64 relies on, over `dist/`
+  (or `DIST=<dir>`): `/` and `<dir>/` serve their `index.html`,
+  `html_handling`'s default `auto-trailing-slash` redirects
+  (`/index.html` and `/x.html` answer 307 to `/` and `/x`), the live
+  content types (`text/html`, `text/javascript`, ... without a charset),
+  an etag and `Content-Length` on GET (HTML has neither, as live), no
+  `Content-Length` on HEAD (the real binding sends none), an empty 404.
+  Encoded `..` segments and symlinks that leave `dist/` are refused.
+- `ARTIFACTS`: an R2 bucket over `public/` (`runtime/`, `profiles/`,
+  `snapshots/`; symlinks followed, as in a worktree): `head`/`get` with R2's
+  range semantics, streamed file bodies, the content type rclone stores
+  (`application/json` for `.json`, else `application/octet-stream`). Its
+  etag is a hash of size and mtime, not R2's MD5.
+
+Where the Workers runtime adds a `Content-Length` the worker does not set
+(an R2 body, the worker's own `not found`), the Node layer adds it too, so
+a legacy artifact GET carries its length and a legacy HEAD carries none,
+exactly as on the live site (header table checked against
+`qed64.fawadworkaddress.workers.dev` on 2026-10-06: the same headers apart
+from Cloudflare's own, etag values, and lengths of files the two builds
+differ in).
+
+`QED64_EDGE` picks the worker: `legacy` (the default) is `infra/worker.js`,
+`createWorker(QED64_LEGACY)`, what is deployed; `hardened` is
+`createWorker({})`, the defaults of "Legacy vs hardened" below, which the live
+site has **not** adopted. Use it to preview and test that switch locally
+(Range 206/416, metadata HEAD with `Content-Length`, 405, no-store errors)
+before deciding on it. Any other value exits 2 with the usage line before
+listening. The startup line names the mode: `prod preview:
+http://localhost:5185 (<dist> + public artifacts) edge=legacy`.
+
+One route is local only and never in the Worker: `/embed-host.html` (the
+test embed host, `public/embed-host.html`) is answered by the Node layer
+before the worker, with the isolation headers. `PORT` and `DIST` work as
+before. `tests/unit/serve-dist.test.ts` pins the headers per mode and runs a
+request matrix through serve-dist and through the worker's own `fetch` with
+in-memory bindings, which must agree.
+
 ## Consistency rule
 
 Snapshots are binary-paired to the runtime. **Never upload a runtime
@@ -228,7 +276,9 @@ The behaviour switches default to the hardened forks' behaviour;
 | `errorCacheControl` | `"no-store"` for every status ≥ 400 | `null`: the path rule (a 404 on a digest-named path is cached for a year) |
 
 New consumers take the defaults. Adopt switches one at a time with
-`createWorker({ ...QED64_LEGACY, errorCacheControl: "no-store" })`. Under
+`createWorker({ ...QED64_LEGACY, errorCacheControl: "no-store" })`.
+`QED64_EDGE=hardened npm run preview:prod` serves a local build through the
+hardened defaults ("Local preview: the Worker's own code" above). Under
 the hardened switches the worker's bucket operations are still reads only
 (`get` and `head`). Neither mode sets a `Content-Encoding` (the runtime
 worker refuses transformed chunks) or carries an upstream `statusText`.

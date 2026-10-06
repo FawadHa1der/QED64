@@ -78,6 +78,13 @@ takes the runtime and the profile packs from a Lean fork release in the
 served layout (its `release.json` is checked too), and the snapshots, which
 the site owns, still from `--origin`.
 
+`npm run preview:prod` (`scripts/serve-dist.mjs`) is the live Worker's own
+code (`infra/worker.js`) behind a Node server, with `dist/` and `public/` as
+its bindings (docs/DEPLOY.md, "Local preview: the Worker's own code"); the
+lanes that name it run against it unchanged. Its default `QED64_EDGE=legacy`
+is what is deployed; `QED64_EDGE=hardened` serves the hardened edge-worker
+defaults, which the live site has not adopted.
+
 ## Adversarial suite (`npm run test:adversarial`, tests/adversarial/)
 
 Harness trust rules (docs/ARCHITECTURE-REEVALUATION-2026-09-02.md C7,
@@ -336,6 +343,17 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   unsafe keys, r2Prefix validation, rootRedirect, extraRoutes + kit,
   decorate, isolation overrides, no-store errors) are pinned against the
   same fakes, whose ranged `get()` throws where R2 would be leaned on.
+- The local preview (`tests/unit/serve-dist.test.ts`): `scripts/serve-dist.mjs`
+  answers through the worker itself, in-process on port 0 over a scratch
+  `dist/` and `public/` in the OS temp dir. Pinned per `QED64_EDGE` mode: the
+  isolation headers and the cache rule on the shell, an asset and artifacts
+  (through a symlinked `chunks/`), 404s, HEAD lengths as on the live site,
+  traversal refusal (encoded `..`, symlinks out of `dist/`), the local-only
+  `/embed-host.html`, Range (hardened 206/416, legacy a full 200), and
+  `QED64_EDGE=bogus` exiting 2 before listening. A parity matrix answered by
+  serve-dist and by the worker's own `fetch` with in-memory bindings over the
+  same bytes must agree on status, headers (apart from content-length, etag,
+  date and Node's connection headers) and body.
 
 ## Conventions
 
