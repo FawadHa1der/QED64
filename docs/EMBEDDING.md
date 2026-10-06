@@ -1076,8 +1076,15 @@ frame at once). Embedders do not need their own throttle.
   queue and every frame behind it waits in order, and each reply admits the
   next. A full-text change never waits for a slot: it goes ahead of the
   waiting requests, which are answered against the newer text (the rule
-  above, `ContentModified` for the ones Monaco rebases). Barriers and
-  replays flush the whole queue past the cap. `0` is no cap. Under a
+  above, `ContentModified` for the ones Monaco rebases). A
+  `$/lean/rpc/keepAlive` never waits for a slot either: Lean handles it
+  synchronously, ignores one for a session it does not know, and expires an
+  RPC session 30 s after its last keep-alive, so one held behind requests
+  waiting out a long silent check cost the InfoView its session ("Outdated
+  RPC session", -32900, when the check ended). It still waits behind a held
+  change (at most the window or the hold's cap). `$/lean/rpc/release` keeps
+  its place: a queued call may still use the references it frees. Barriers
+  and replays flush the whole queue past the cap. `0` is no cap. Under a
   responsive checker the cap is never reached (the stock page sends four to
   five requests per keystroke, answered in milliseconds); under one that
   is not, the requests wait here instead of each on its own thread there.
