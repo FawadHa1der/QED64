@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { oleanImportEntries, oleanImports } from "../../pipeline/artifacts/olean-imports.mjs";
+import { oleanExtEntryCounts, oleanImportEntries, oleanImports } from "../../pipeline/artifacts/olean-imports.mjs";
 
 const root = path.resolve(__dirname, "../..");
 const packer = path.join(root, "pipeline/artifacts/pack.mjs");
@@ -26,8 +26,10 @@ type ImportSpec = { module: string; importAll?: boolean; isExported?: boolean; i
 
 /** A minimal 64-bit compacted region holding ModuleData { imports := … }: the
  * same object layout Lean writes (header, base address, root pointer, then
- * strings / Names / Imports / the Array / the root constructor). */
-function makeOlean(imports: ImportSpec[]): Buffer {
+ * strings / Names / Imports / the Array / the root constructor). With
+ * `data`, constNames and entries (`Array (Name × Array _)`, each inner array
+ * of `count` boxed scalars) are filled in too; without it they are box 0. */
+function makeOlean(imports: ImportSpec[], data?: { constNames: string[]; entries: [string, number][] }): Buffer {
   const BASE = 0x2000_0000_0000n;
   const chunks: Buffer[] = [];
   let offset = 96;
@@ -72,8 +74,16 @@ function makeOlean(imports: ImportSpec[]): Buffer {
     flags.writeUInt8(spec.isMeta ? 1 : 0, 2);
     return push(Buffer.concat([objectHeader(19, 1, 0), u64(leanName(spec.module)), flags]));
   });
-  const array = push(Buffer.concat([objectHeader(1, 0, 246), u64(BigInt(entries.length), BigInt(entries.length), ...entries)]));
-  const rootObject = push(Buffer.concat([objectHeader(49, 5, 0), u64(array, BOX0, BOX0, BOX0, BOX0, 1n)]));
+  const leanArray = (items: bigint[]) => push(Buffer.concat([objectHeader(1, 0, 246), u64(BigInt(items.length), BigInt(items.length), ...items)]));
+  const array = leanArray(entries);
+  let constNames = BOX0;
+  let extEntries = BOX0;
+  if (data) {
+    constNames = leanArray(data.constNames.map(leanName));
+    extEntries = leanArray(data.entries.map(([ext, count]) =>
+      push(Buffer.concat([objectHeader(24, 2, 0), u64(leanName(ext), leanArray(Array.from({ length: count }, () => BOX0)))]))));
+  }
+  const rootObject = push(Buffer.concat([objectHeader(49, 5, 0), u64(array, constNames, BOX0, BOX0, extEntries, 1n)]));
   const header = Buffer.alloc(96);
   header.write("olean", 0, "latin1");
   header.writeUInt8(2, 5);
@@ -120,6 +130,50 @@ describe("olean-imports.mjs", () => {
     const wild = makeOlean([{ module: "A.B" }]);
     wild.writeBigUInt64LE(0xdead_beefn, 88); // root pointer outside the region
     expect(oleanImports(wild)).toBeNull();
+  });
+
+  test("oleanExtEntryCounts: ModuleData's constant names and per-extension entry counts (synthetic and the real fixtures)", () => {
+    const bytes = makeOlean([{ module: "Init" }], {
+      constNames: ["A.b", "A.c.2", "D"],
+      entries: [["Lean.IR.declMapExt", 3], ["_private.Lean.Foo.0.Lean.barExt", 0], ["Lean.protectedExt", 1]],
+    });
+    expect(oleanExtEntryCounts(bytes)).toEqual({
+      constNames: 3,
+      entries: { "Lean.IR.declMapExt": 3, "_private.Lean.Foo.0.Lean.barExt": 0, "Lean.protectedExt": 1 },
+    });
+    expect(oleanImports(bytes)).toEqual(["Init"]); // the import reader is unaffected by the other fields
+    const fixture = path.join(root, "tests/fixtures/mini-lib/Init");
+    const core = oleanExtEntryCounts(fs.readFileSync(path.join(fixture, "Core.olean")))!;
+    expect(core.constNames).toBe(1124);
+    expect(Object.keys(core.entries)).toHaveLength(54);
+    expect(core.entries).toMatchObject({ "Lean.IR.declMapExt": 541, "Lean.protectedExt": 212, "Lean.auxRecExt": 127 });
+    const prelude = oleanExtEntryCounts(fs.readFileSync(path.join(fixture, "Prelude.olean")))!;
+    expect([prelude.constNames, Object.keys(prelude.entries).length, prelude.entries["Lean.IR.declMapExt"]]).toEqual([2204, 56, 890]);
+    for (const n of [...Object.values(core.entries), ...Object.values(prelude.entries)]) expect(Number.isInteger(n) && n >= 0).toBe(true);
+    // null for what it does not understand: box-0 fields (no ModuleData arrays), junk, a cut region, a wild root
+    expect(oleanExtEntryCounts(makeOlean([{ module: "A" }]))).toBeNull();
+    expect(oleanExtEntryCounts(Buffer.from("not an olean at all"))).toBeNull();
+    expect(oleanExtEntryCounts(fs.readFileSync(path.join(fixture, "Core.olean")).subarray(0, 4096))).toBeNull();
+    const wild = Buffer.from(bytes);
+    wild.writeBigUInt64LE(0xdead_beefn, 88);
+    expect(oleanExtEntryCounts(wild)).toBeNull();
+  });
+
+  test("--entries prints one `entries of <file>: <JSON>` line; refusals exit 2, an unreadable region exits 1", () => {
+    const script = path.join(root, "pipeline/artifacts/olean-imports.mjs");
+    const core = path.join(root, "tests/fixtures/mini-lib/Init/Core.olean");
+    const r = run(script, ["--entries", core]);
+    expect([r.status, r.stderr]).toEqual([0, ""]);
+    const m = /^entries of (.+): (\{.*\})\n$/.exec(r.stdout);
+    expect(m && m[1]).toBe(core);
+    expect(JSON.parse(m![2]!)).toEqual(oleanExtEntryCounts(fs.readFileSync(core)));
+    const junk = path.join(tmp, "junk.olean");
+    fs.writeFileSync(junk, "olean but not really");
+    expect([run(script, ["--entries", junk]).status, run(script, ["--entries", junk]).stdout]).toEqual([1, `no readable ModuleData in ${junk}\n`]);
+    for (const args of [["--entries", path.join(tmp, "absent.olean")], ["--entries", tmp], ["--entries", core, "--audit", tmp], []]) {
+      const x = run(script, args);
+      expect([x.status, x.stdout, x.stderr], args.join(" ")).toEqual([2, "", "usage: olean-imports.mjs (--audit <olean tree> | --entries <olean file>)\n"]);
+    }
   });
 
   test("--audit lists the `import all` edges of a tree, by importer", () => {

@@ -35,7 +35,7 @@ node pipeline/snapshot/cli.mjs --write-preludes  # regenerate the inline prelude
 | [snapshot-probe](#snapshot-probe) | `pipeline/snapshot/snapshot-probe.mjs` | — | 1 | inline prelude |
 | [supervised-run](#supervised-run) | `pipeline/snapshot/supervised-run.mjs` | — | 1 | imports `cli.mjs` |
 | [preflight](#preflight) | `pipeline/release/preflight.mjs` (shim at `tests/adversarial/preflight.mjs`) | — | 1 | imports `cli.mjs` |
-| [olean-imports --audit](#olean-imports---audit) | `pipeline/artifacts/olean-imports.mjs` | — | 1 | inline prelude (inside the main-module check) |
+| [olean-imports](#olean-imports---audit----entries) | `pipeline/artifacts/olean-imports.mjs` | — | 1 | inline prelude (inside the main-module check) |
 | [node-runner](#node-runner) | `pipeline/snapshot/node-runner.mjs` | `runner` | 2 | inline prelude |
 | [persistent-probe](#persistent-probe) | `pipeline/snapshot/persistent-probe.mjs` | — | 2 | inline prelude |
 | [chunk-runtime](#chunk-runtime) | `pipeline/toolchain/chunk-runtime.mjs` | — | 2 | inline prelude |
@@ -473,19 +473,23 @@ usage: preflight.mjs [--url <page url>] [--no-boot] [--boot-budget-ms 180000] [-
   (old path, through the shim, until it re-pins).
 - The showcase's `tests/experiments/x1-preflight.mjs` (old path, likewise).
 
-### olean-imports --audit
+### olean-imports --audit / --entries
 
-**Tier 1.** `node pipeline/artifacts/olean-imports.mjs --audit <tree>`. As a
-module it exports `oleanImportEntries` and `oleanImports`, and importing it
-has no side effects.
+**Tier 1.** `node pipeline/artifacts/olean-imports.mjs --audit <tree>` or
+`--entries <file>`. As a module it exports `oleanImportEntries`,
+`oleanImports` and `oleanExtEntryCounts` (ModuleData's constant-name count
+and the entry count of each environment extension: `{ constNames, entries:
+{ <extension>: count } }`, the shape of the showcase's `olean-entries.mjs`),
+and importing it has no side effects.
 
 ```
-usage: olean-imports.mjs --audit <olean tree>
+usage: olean-imports.mjs (--audit <olean tree> | --entries <olean file>)
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--audit <olean tree>` | — | **Required.** The tree to audit (every `*.olean` under it). It must exist. |
+| `--audit <olean tree>` | — | The tree to audit (every `*.olean` under it). It must exist. One of `--audit` and `--entries` is **required**; both is a usage refusal. |
+| `--entries <olean file>` | — | Prints one line, `entries of <file>: <JSON>`, the JSON being `oleanExtEntryCounts` of the file. It must be an existing file. |
 
 - **Environment:** none.
 - **Inputs:** the tree. The tool only reads it.
@@ -496,12 +500,13 @@ usage: olean-imports.mjs --audit <olean tree>
 | summary | stdout | `` ^import-all audit of (.+): (\d+) modules, (\d+) `import all` edge\(s\)(, (\d+) unreadable \.olean file\(s\))?$ `` (the first line) |
 | outside | stdout | `^ {2}outside Init\/Std\/Lean\/Lake: (\d+)$` |
 | edge | stdout | `^ {4}(\S+) → import all (\S+)$` (at most 40 lines, then `    … N more`) |
+| entries | stdout | `^entries of (.+): (\{"constNames":\d+,"entries":\{.*\}\})$` (`--entries`: the only line) |
 
 | Exit | Meaning |
 |---|---|
-| 0 | Audited. |
-| 1 | Audited, but some `.olean` files had no readable import table. |
-| 2 | Usage: `--audit` is missing, or the tree does not exist. |
+| 0 | Audited, or (`--entries`) the counts printed. |
+| 1 | Audited, but some `.olean` files had no readable import table; or (`--entries`) the file has no readable ModuleData (`no readable ModuleData in <file>` on stdout). |
+| 2 | Usage: neither `--audit` nor `--entries`, both, or the tree or file does not exist. |
 
 **Side effects:** none.
 
@@ -771,6 +776,7 @@ usage: unpack.mjs --manifest <file> --out <dir>
 | 1 | 2026-10-04 | `bake-snapshot --roots/--label/--initial-bytes` write the overlay fields of docs/EMBEDDING.md §8 into the entry (only when given); a malformed value exits 2 before anything is written. | additive |
 | 1 | 2026-10-05 | Tier 3: `pipeline/snapshot/header-switch-probe.mjs` is deleted; its Mathlib probe, two-snapshot seeding and ACT4 headerless switch live in `resident-probe.mjs` behind `--mathlib`, `--snapshots <a,b>` and `--act4 [--act4-ms <ms>]`. No consumer named it (lean4game's sync list and the showcase's pin script checked). | tier 3, no promise |
 | 1 | 2026-10-06 | preflight moved from `tests/adversarial/preflight.mjs` to `pipeline/release/preflight.mjs` (same flags, output and exit codes), shim at the old path: it runs the moved script after a stderr deprecation WARNING. Its two harness helpers (`resolveTarget`, `fetchJson`) moved to `pipeline/release/page-target.mjs` (the harness re-exports them). It ships in the package with `cli.mjs`, `cli.d.mts` and `supervised-run.mjs`, so every Tier 1/2 tool is in `files` and closure.json `pipeline`. | moved, shim at the old path |
+| 1 | 2026-10-06 | olean-imports gains `--entries <olean file>` (one `entries of <file>: <JSON>` line, a new marker) and the module export `oleanExtEntryCounts`; the usage line becomes `olean-imports.mjs (--audit <olean tree> \| --entries <olean file>)`. `--audit` output and exits are unchanged. | additive |
 
 ## Open decisions
 
