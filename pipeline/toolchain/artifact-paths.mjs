@@ -134,3 +134,60 @@ export function ensureStackSize(tool, kib = 8192, proc = process) {
   }
   return "absent";
 }
+
+/** How to get the lean4-wasm64 package (decision 10: a devDependency pinned by its release tgz URL). */
+export const LEAN4_WASM64_TGZ_HINT = "npm i -D <release tgz URL> (toolchain/lean4-wasm64-release.json names it)";
+
+/**
+ * The lean4-wasm64 package dir: $LEAN4_WASM64_DIR (relative to `cwd`), else
+ * the first <ancestor of cwd>/node_modules/lean4-wasm64 whose package.json
+ * name is lean4-wasm64 (the consumer's own install), else null. Never
+ * resolves from this file's own location and never imports the package: the
+ * forwards below hand it paths (docs/CLI-CONTRACT.md "lean4-wasm64").
+ */
+export function lean4Wasm64Dir({ env = process.env, cwd = process.cwd() } = {}) {
+  if (env.LEAN4_WASM64_DIR) return path.resolve(cwd, env.LEAN4_WASM64_DIR);
+  for (let d = path.resolve(cwd); ; d = path.dirname(d)) {
+    const candidate = path.join(d, "node_modules", "lean4-wasm64");
+    try {
+      if (JSON.parse(fs.readFileSync(path.join(candidate, "package.json"), "utf8")).name === "lean4-wasm64") return candidate;
+    } catch { /* absent or not a package: keep walking */ }
+    if (path.dirname(d) === d) return null;
+  }
+}
+
+/**
+ * Replace this process with `node <pkg>/<script> ...args` through
+ * process.execve: the same PID, stdio and exit code, so a supervisor sees one
+ * process. Where execve is unavailable (or would drop an IPC channel) the
+ * script runs as a child with inherited stdio and this process exits with its
+ * status. Absent package: one stderr line naming LEAN4_WASM64_DIR and the
+ * install, exit 2; a package without `script`: one line naming the dir, exit 2.
+ */
+export function forwardToLean4Wasm64(tool, script, args, { env = process.env, cwd = process.cwd(), proc = process } = {}) {
+  const dir = lean4Wasm64Dir({ env, cwd });
+  const how = `set LEAN4_WASM64_DIR=<package dir> or install it: ${LEAN4_WASM64_TGZ_HINT} (docs/CLI-CONTRACT.md)`;
+  if (!dir) {
+    console.error(`${tool}: lean4-wasm64 not found — ${how}`);
+    return proc.exit(2);
+  }
+  const target = path.join(dir, script);
+  if (!fs.existsSync(target)) {
+    console.error(`${tool}: lean4-wasm64 at ${dir} has no ${script} — ${how}`);
+    return proc.exit(2);
+  }
+  const argv = [proc.execPath, target, ...args];
+  if (typeof proc.execve === "function" && !proc.channel) {
+    try {
+      return proc.execve(proc.execPath, argv, { ...env });
+    } catch { /* fall through to a child process */ }
+  }
+  // A built-in fetched lazily, so this file's import list stays as lean4game vendors it.
+  const { spawnSync } = proc.getBuiltinModule("node:child_process");
+  const r = spawnSync(proc.execPath, argv.slice(1), { stdio: "inherit", env: { ...env } });
+  if (r.error) {
+    console.error(`${tool}: could not start lean4-wasm64 ${script} (${r.error.code ?? r.error.message}) — ${how}`);
+    return proc.exit(2);
+  }
+  return proc.exit(r.status ?? 1);
+}

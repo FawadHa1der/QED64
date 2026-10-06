@@ -36,3 +36,13 @@ export function resolveToolPath(
   io?: { err: (s: string) => void; exit: (code: number) => void; environment?: Record<string, string | undefined> },
 ): { path: string; source: ToolPathSource } | null;
 export function ensureStackSize(tool: string, kib?: number, proc?: NodeJS.Process): "present" | "absent";
+export const LEAN4_WASM64_TGZ_HINT: string;
+/** The lean4-wasm64 package dir: $LEAN4_WASM64_DIR, else the first <ancestor of cwd>/node_modules/lean4-wasm64 whose package.json name is lean4-wasm64, else null. */
+export function lean4Wasm64Dir(o?: { env?: Record<string, string | undefined>; cwd?: string }): string | null;
+/** Replace this process with `node <pkg>/<script> ...args`; absent package: one stderr line, exit 2. */
+export function forwardToLean4Wasm64(
+  tool: string,
+  script: string,
+  args: string[],
+  o?: { env?: Record<string, string | undefined>; cwd?: string; proc?: NodeJS.Process },
+): never;
