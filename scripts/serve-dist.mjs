@@ -13,8 +13,13 @@
 //              not_found_handling, the default html_handling
 //              "auto-trailing-slash"): "/" and "<dir>/" serve their
 //              index.html; "/x/index.html" and "/x.html" answer 307 to "/x/"
-//              and "/x" (the query kept), "/x" serves x.html and "/dir"
-//              answers 307 to "/dir/" when dir/index.html exists; another
+//              and "/x" (the query kept), "/x" serves x.html ("/index" and
+//              "<dir>/index" instead answer 307 to "/" and "<dir>/") and
+//              "/dir" answers 307 to "/dir/" when dir/index.html exists; a
+//              path with a run of slashes ("//assets/x.html") is resolved
+//              with them collapsed and answers one 307: to that rule's
+//              target, or to the collapsed path when it would serve a file
+//              (no Location ever starts with "//"); another
 //              existing file is a 200 with the content type by extension
 //              (ASSET_MIME), an etag and, on GET, Content-Length (HTML has
 //              neither etag nor length, as on the live site); HEAD has no
@@ -39,6 +44,11 @@
 //              quoted md5 of "<size>-<mtimeMs>": stable while the file is
 //              unchanged, NOT R2's md5 of the content, so it never equals the
 //              live site's etag for the same bytes.
+// A file that stats but cannot be opened (EACCES, or a snapshot replaced in
+// the main checkout between stat and open) is opened before the binding
+// returns, so the binding throws and the request answers 500 "internal error"
+// with the isolation headers (logged), never a 200 head and a reset socket; a
+// read error after the head is logged (a client going away is not).
 // Content-Length: live R2 bodies carry their length, so an artifact GET on the
 // live (legacy) Worker has Content-Length although the worker sets none. The
 // Node layer adds it from the object's known size when the worker's response
@@ -65,8 +75,8 @@
 // only when run as the main module.
 import { createServer } from "node:http";
 import { createHash } from "node:crypto";
-import { createReadStream, realpathSync } from "node:fs";
-import { readFile, realpath, stat } from "node:fs/promises";
+import { realpathSync } from "node:fs";
+import { open, readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -128,10 +138,17 @@ const knownLength = new WeakMap();
 
 const etagOf = (st) => `"${createHash("md5").update(`${st.size}-${st.mtimeMs}`).digest("hex")}"`;
 
-function fileStream(file, start, length, { lengthKnown = true } = {}) {
-  const body = length === 0
-    ? new ReadableStream({ start: (c) => c.close() })
-    : Readable.toWeb(createReadStream(file, { start, end: start + length - 1 }));
+// Opened here, eagerly: a file that stats but cannot be opened throws now, in
+// the binding, rather than inside the response pipeline after a 200 head.
+async function fileStream(file, start, length, { lengthKnown = true } = {}) {
+  const fh = await open(file, "r");
+  let body;
+  if (length === 0) {
+    await fh.close();
+    body = new ReadableStream({ start: (c) => c.close() });
+  } else {
+    body = Readable.toWeb(fh.createReadStream({ start, end: start + length - 1, autoClose: true }));
+  }
   knownLength.set(body, lengthKnown ? length : null);
   return body;
 }
@@ -149,7 +166,8 @@ async function statFile(file) {
 export function createAssetsBinding(dist) {
   const root = path.resolve(dist);
   const notFound = () => new Response(null, { status: 404 });
-  const redirect = (location) => new Response(null, { status: 307, headers: { location } });
+  // Never a protocol-relative Location ("//host/x" is another host to a browser).
+  const redirect = (location) => new Response(null, { status: 307, headers: { location: location.replace(/^\/{2,}/, "/") } });
   const encodePath = (p) => p.split("/").map(encodeURIComponent).join("/");
 
   // The file for a decoded, segment-checked path, or null; its realpath must stay inside dist.
@@ -167,7 +185,7 @@ export function createAssetsBinding(dist) {
     return { file, st };
   }
 
-  function serve(request, { file, st }) {
+  async function serve(request, { file, st }) {
     const ext = path.extname(file).toLowerCase();
     const headers = new Headers({ "content-type": ASSET_MIME[ext] ?? "application/octet-stream" });
     // The live site's HTML (the shell, the extension-host iframe) comes with
@@ -175,7 +193,7 @@ export function createAssetsBinding(dist) {
     // asset carries both.
     if (ext === ".html") {
       if (request.method === "HEAD") return new Response(null, { status: 200, headers });
-      return new Response(fileStream(file, 0, st.size, { lengthKnown: false }), { status: 200, headers });
+      return new Response(await fileStream(file, 0, st.size, { lengthKnown: false }), { status: 200, headers });
     }
     const etag = etagOf(st);
     headers.set("etag", etag);
@@ -185,7 +203,26 @@ export function createAssetsBinding(dist) {
     }
     if (request.method === "HEAD") return new Response(null, { status: 200, headers });
     headers.set("content-length", String(st.size));
-    return new Response(fileStream(file, 0, st.size), { status: 200, headers });
+    return new Response(await fileStream(file, 0, st.size), { status: 200, headers });
+  }
+
+  // auto-trailing-slash for a decoded, segment-checked path with no run of
+  // slashes: { to } (a redirect target, unencoded, without the query),
+  // { found } (the file to serve), or null (404).
+  async function resolve(p) {
+    if (p.endsWith("/index.html")) return (await lookup(p)) ? { to: p.slice(0, -"index.html".length) } : null;
+    if (p.endsWith(".html")) return (await lookup(p)) ? { to: p.slice(0, -".html".length) } : null;
+    if (p.endsWith("/")) {
+      const index = await lookup(p + "index.html");
+      return index ? { found: index } : null;
+    }
+    const exact = await lookup(p);
+    if (exact) return { found: exact };
+    const html = await lookup(p + ".html");
+    // "/index" and "<dir>/index" are index.html, which is "/" and "<dir>/" (live: 307)
+    if (html) return p.endsWith("/index") ? { to: p.slice(0, -"index".length) } : { found: html };
+    if (await lookup(p + "/index.html")) return { to: p + "/" };
+    return null;
   }
 
   return {
@@ -202,20 +239,14 @@ export function createAssetsBinding(dist) {
       }
       if (/[\\\u0000]/.test(p) || p.split("/").some((s) => s === "." || s === "..")) return notFound();
       const q = url.search;
-      if (p.endsWith("/index.html")) {
-        return (await lookup(p)) ? redirect(encodePath(p.slice(0, -"index.html".length)) + q) : notFound();
-      }
-      if (p.endsWith(".html")) return (await lookup(p)) ? redirect(encodePath(p.slice(0, -".html".length)) + q) : notFound();
-      if (p.endsWith("/")) {
-        const index = await lookup(p + "index.html");
-        return index ? serve(request, index) : notFound();
-      }
-      const exact = await lookup(p);
-      if (exact) return serve(request, exact);
-      const html = await lookup(p + ".html");
-      if (html) return serve(request, html);
-      if (await lookup(p + "/index.html")) return redirect(encodePath(p + "/") + q);
-      return notFound();
+      // Runs of slashes collapse (as live): "//assets/x.html" answers one 307
+      // straight to "/assets/x", "//assets/x.css" one 307 to "/assets/x.css".
+      const c = p.replace(/\/{2,}/g, "/");
+      const r = await resolve(c);
+      if (r === null) return notFound();
+      if (r.to !== undefined) return redirect(encodePath(r.to) + q);
+      if (c !== p) return redirect(encodePath(c) + q);
+      return serve(request, r.found);
     },
   };
 }
@@ -281,7 +312,7 @@ export function createArtifactsBinding(publicDir) {
       const range = options?.range !== undefined && options.range !== null ? rangeOf(options.range, size) : null;
       const offset = range?.offset ?? 0;
       const length = range?.length ?? size;
-      return { ...meta(found), range: { offset, length }, body: fileStream(found.file, offset, length) };
+      return { ...meta(found), range: { offset, length }, body: await fileStream(found.file, offset, length) };
     },
   };
 }
@@ -382,10 +413,15 @@ async function writeResponse(req, res, response) {
   res.writeHead(status, headers);
   try {
     await pipeline(source, res);
-  } catch {
-    // the client went away mid-body; pipeline has destroyed both ends
+  } catch (err) {
+    // pipeline has destroyed both ends. The client going away is routine;
+    // anything else (a read error after the head) is the server's and logged.
+    if (!CLIENT_GONE.has(err?.code)) console.error(`serve-dist: ${req.method} ${req.url}: body failed after the head: ${err?.stack ?? err}`);
   }
 }
+
+// Error codes of a client that went away mid-body.
+const CLIENT_GONE = new Set(["ERR_STREAM_PREMATURE_CLOSE", "EPIPE", "ECONNRESET"]);
 
 function plain(res, status, text, extra = {}) {
   res.writeHead(status, { "content-type": "text/plain", ...ISOLATION, ...extra }).end(text);

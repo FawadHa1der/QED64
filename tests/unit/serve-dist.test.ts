@@ -9,7 +9,7 @@
 // independently of serve-dist's fs-backed ones) must agree on status, headers
 // (apart from content-length, etag, date and Node's connection headers) and
 // body, in both modes.
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
@@ -244,6 +244,69 @@ describe.each(["legacy", "hardened"] as const)("serve-dist, edge=%s", (edge) => 
     });
   });
 
+  test("doubled slashes collapse in one 307 (as live) and no Location is protocol-relative; /index is /", async () => {
+    await withServer(edge, async (port) => {
+      const want: Record<string, string> = {
+        "//assets/frame-AbCd1234.html": "/assets/frame-AbCd1234",
+        "//assets/frame-AbCd1234.html?x=1": "/assets/frame-AbCd1234?x=1",
+        "//assets/app.css": "/assets/app.css",
+        "/assets//app.css": "/assets/app.css",
+        "/%2Fassets/app.css": "/assets/app.css",
+        "//sub": "/sub/",
+        "//sub/": "/sub/",
+        "//sub/index.html": "/sub/",
+        "//index.html": "/",
+        "//": "/",
+        "/index": "/",
+        "/index?x=1": "/?x=1",
+        "/sub/index": "/sub/",
+        "//sub/index": "/sub/",
+      };
+      for (const [p, location] of Object.entries(want)) {
+        for (const method of ["GET", "HEAD"]) {
+          const a = await ask(port, method, p);
+          expect(a.status, `${method} ${p}`).toBe(307);
+          isolated(a);
+          expect(a.headers["location"], `${method} ${p}`).toBe(location);
+        }
+      }
+      for (const p of [...PATHS, ...Object.keys(want), "///assets//frame-AbCd1234.html", "//nope.html", "//x/"]) {
+        const a = await ask(port, "GET", p);
+        expect(a.headers["location"] ?? "", p).not.toMatch(/^\/\//);
+      }
+      expect((await ask(port, "GET", "//nope.html")).status).toBe(404);
+    });
+  });
+
+  test("a file that stats but cannot be opened: 500 with the isolation headers, not a reset", async () => {
+    if (process.getuid?.() === 0) return; // root opens a mode-000 file
+    const lockedArtifact = path.join(publicDir, "snapshots/locked.0123456789abcdef.snapz");
+    const lockedAsset = path.join(distDir, "assets/locked-AbCd1234.js");
+    const lockedHtml = path.join(distDir, "locked.html");
+    for (const f of [lockedArtifact, lockedAsset, lockedHtml]) {
+      fs.writeFileSync(f, "x");
+      fs.chmodSync(f, 0o000);
+    }
+    const errors: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => void errors.push(args.join(" ")));
+    try {
+      await withServer(edge, async (port) => {
+        for (const p of ["/snapshots/locked.0123456789abcdef.snapz", "/assets/locked-AbCd1234.js", "/locked"]) {
+          const a = await ask(port, "GET", p);
+          expect(a.status, p).toBe(500);
+          isolated(a);
+          expect(a.body.toString(), p).toBe("internal error");
+          expect(errors.some((e) => e.includes(p) && e.includes("EACCES")), p).toBe(true);
+        }
+        // legacy HEAD on an artifact reads it with get() too
+        if (edge === "legacy") expect((await ask(port, "HEAD", "/snapshots/locked.0123456789abcdef.snapz")).status).toBe(500);
+      });
+    } finally {
+      spy.mockRestore();
+      for (const f of [lockedArtifact, lockedAsset, lockedHtml]) fs.rmSync(f, { force: true });
+    }
+  });
+
   test("/embed-host.html comes from public/ with the isolation headers (Node layer, not the worker)", async () => {
     await withServer(edge, async (port) => {
       const a = await ask(port, "GET", "/embed-host.html?src=%2F");
@@ -335,7 +398,7 @@ function memAssets() {
         return new Response(null, { status: 404 });
       }
       if (p.split("/").some((s) => s === ".." || s === ".")) return new Response(null, { status: 404 });
-      const redirect = (to: string) => new Response(null, { status: 307, headers: { location: to + u.search } });
+      const redirect = (to: string) => new Response(null, { status: 307, headers: { location: (to + u.search).replace(/^\/{2,}/, "/") } });
       const ok = (f: { body: string; type: string }) =>
         new Response(request.method === "HEAD" ? null : f.body, {
           headers:
@@ -343,13 +406,23 @@ function memAssets() {
               ? { "content-type": f.type }
               : { "content-type": f.type, etag: `"${"0".repeat(32)}"`, ...(request.method === "HEAD" ? {} : { "content-length": String(f.body.length) }) },
         });
-      if (p.endsWith("/index.html")) return files.has(p) ? redirect(p.slice(0, -"index.html".length)) : new Response(null, { status: 404 });
-      if (p.endsWith(".html")) return files.has(p) ? redirect(p.slice(0, -".html".length)) : new Response(null, { status: 404 });
-      if (p.endsWith("/")) return files.has(p + "index.html") ? ok(files.get(p + "index.html")!) : new Response(null, { status: 404 });
-      if (files.has(p)) return ok(files.get(p)!);
-      if (files.has(p + ".html")) return ok(files.get(p + ".html")!);
-      if (files.has(p + "/index.html")) return redirect(p + "/");
-      return new Response(null, { status: 404 });
+      // auto-trailing-slash on a path without runs of slashes: a redirect target, a file, or null
+      const resolve = (c: string): { to: string } | { file: { body: string; type: string } } | null => {
+        if (c.endsWith("/index.html")) return files.has(c) ? { to: c.slice(0, -"index.html".length) } : null;
+        if (c.endsWith(".html")) return files.has(c) ? { to: c.slice(0, -".html".length) } : null;
+        if (c.endsWith("/")) return files.has(c + "index.html") ? { file: files.get(c + "index.html")! } : null;
+        if (files.has(c)) return { file: files.get(c)! };
+        if (files.has(c + ".html")) return c.endsWith("/index") ? { to: c.slice(0, -"index".length) } : { file: files.get(c + ".html")! };
+        if (files.has(c + "/index.html")) return { to: c + "/" };
+        return null;
+      };
+      // runs of slashes collapse: one 307 to the rule's target, or to the collapsed path
+      const c = p.replace(/\/{2,}/g, "/");
+      const r = resolve(c);
+      if (r === null) return new Response(null, { status: 404 });
+      if ("to" in r) return redirect(r.to);
+      if (c !== p) return redirect(c);
+      return ok(r.file);
     },
   };
 }
@@ -396,6 +469,7 @@ const PATHS = [
   MANIFEST, PINNED, CHUNK, SNAPZ, "/snapshots/index.json", "/profiles/index.json", "/runtime/chunks/missing.part-000",
   "/snapshots/missing.dca2763359db27e7.snapz", "/runtime/", "/snapshots/a/../index.json", "/snapshots/%2e%2e/runtime/runtime-manifest.json",
   `${SNAPZ}?v=1`, "//runtime/runtime-manifest.json",
+  "//assets/frame-AbCd1234.html", "//assets/app.css", "/index", "/sub/index",
 ];
 const MATRIX: Case[] = [
   ...PATHS.flatMap((p) => ["GET", "HEAD"].map((method) => ({ method, path: p }))),
