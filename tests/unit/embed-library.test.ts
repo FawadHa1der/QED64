@@ -11,6 +11,7 @@ import { PREFETCH_SILENCE_MS, prefetchRaw, type ProgressInfo, type Qed64Artifact
 import { LspRelay, type RestartOptions } from "../../frontend/src/lsp-relay";
 import { ResidentSession, type ResidentHost, type SessionFile } from "../../frontend/src/resident-session";
 import type { ReadyInfo, RuntimeManifest } from "../../src/runtime/client";
+import * as embed from "../../frontend/src/embed/index";
 
 describe("failureKindOf: the worker's real messages", () => {
   it.each([
@@ -401,3 +402,39 @@ describe("ResidentSession.start(): stages, files, beforeArm, causes", () => {
     await expect(s.start()).rejects.toMatchObject({ message: "Memory64 reservation of 6 GiB refused", cause: { kind: "oom", stage: "runtime", code: "MEMORY_FAILED" } });
   });
 });
+
+// lean4game cannot use a relay without these two, and v1 did not name them (docs/EMBEDDING.md §7.9).
+describe("LspRelay's contract members through qed64/embed: clientPort and unload()", () => {
+  it("clientPort is the client's MessagePort for the relay's life; unload() disposes and kills the session in the caller's turn", async () => {
+    const log: string[] = [];
+    const sessions: embed.RelaySession[] = [];
+    const make = (): embed.RelaySession => {
+      const s: embed.RelaySession = {
+        id: `s${sessions.length + 1}`,
+        start: () => new Promise<void>(() => {}), // booting: frames are queued at the worker
+        arm: async () => {},
+        lsp: (m) => { log.push(`lsp ${s.id} ${m.method}`); if (m.method === "initialize") s.onLsp({ jsonrpc: "2.0", id: m.id, result: { capabilities: {} } }); },
+        onLsp: () => {}, onStatus: () => {}, onDied: () => {},
+        dispose: () => log.push(`dispose ${s.id}`),
+        terminate: () => log.push(`terminate ${s.id}`),
+      };
+      sessions.push(s);
+      return s;
+    };
+    const relay = new embed.LspRelay(make, { status() {} }, () => Promise.resolve());
+    const port: MessagePort = relay.clientPort;
+    const unload: () => void = relay.unload;
+    expect(port).toBeInstanceOf(MessagePort);
+    expect(typeof unload).toBe("function");
+    const replies: unknown[] = [];
+    port.onmessage = (e) => replies.push(e.data);
+    port.postMessage({ jsonrpc: "2.0", id: 0, method: "initialize", params: {} });
+    await vi.waitFor(() => expect(replies).toEqual([{ jsonrpc: "2.0", id: 0, result: { capabilities: {} } }]));
+    expect(log).toEqual(["lsp s1 initialize"]);
+    relay.unload();
+    expect(log).toEqual(["lsp s1 initialize", "dispose s1", "terminate s1"]); // nothing awaited
+    expect(relay.clientPort).toBe(port);
+    port.close();
+  });
+});
+

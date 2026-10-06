@@ -464,8 +464,9 @@ Notes for consumers:
 - **session:** `ResidentSession`, `ResidentPolicy`, `ResidentHost`,
   `SessionFile`, `EDITOR_POLICY`, `makeEditorPolicy(index)` and the header
   helpers.
-- **relay:** `LspRelay`, `RelaySession`, `RelayStatus`, `RestartOptions` and
-  `Death`.
+- **relay:** `LspRelay` (its contract members in §7.9: `clientPort`,
+  `unload()`, `status()`, `rearm()`, `restart()`), `RelaySession`,
+  `RelayStatus`, `RestartOptions` and `Death`.
 - **causes (§7.2):** `failureKindOf`, `failureCauseOf`, `deathCause`,
   `httpStatusOf` and `WORKER_SCRIPT_LOAD_FAILED`.
 - **offline:** `runtimeUrls(manifest)` and `WORKER_URLS`.
@@ -822,6 +823,43 @@ frame at once). Embedders do not need their own throttle.
   its reach. The root fix is a cap on concurrently live dedicated threads
   in the runtime's task manager (#55), the kernel's.
 
+### 7.9 The relay: the members an embedder uses
+
+```ts
+new LspRelay(makeSession: (opts?: RestartOptions) => RelaySession, sink: { status(s: RelayStatus): void }, settle: () => Promise<void>);
+relay.clientPort: MessagePort;   // the language client's end of the LSP channel
+relay.unload(): void;            // the synchronous teardown, from `pagehide`
+relay.status(): RelayStatus;     // the projection (§7.2: lastDeath, its cause)
+relay.rearm(): boolean;          // re-arm a halted relay without an edit (§7.2)
+relay.restart(opts: RestartOptions): void;  // a deliberate replacement, not a death
+```
+
+- **`clientPort`** is the `MessagePort` a language client connects to: the
+  editor's LSP client (lean4monaco's `WorkerDirect` `messagePort`, the stock
+  page's wiring) or a translation layer in front of it (lean4game's
+  `GameTranslation.attachServer(relay.clientPort)`). Every JSON-RPC message
+  posted on it is a client message (the relay records `initialize`,
+  `didOpen` and full-text `didChange` for its replay, then forwards it to
+  the session, whose booting worker queues it; a halted relay answers a
+  request itself, §7.2); every message the relay sends back (the
+  worker's replies and notifications, the relay's own error replies and
+  halted note) arrives on it. It is the same port for the relay's whole
+  life: a reboot replaces the session behind it, never the port, so a
+  client connects once. The relay creates its first session in the
+  constructor, so connect right after constructing it.
+- **`unload()`** disposes the live session and terminates its worker
+  **inside the caller's turn**: nothing is awaited or deferred, because a
+  closing document runs no later timer (`dispose()` alone terminates 250 ms
+  later, and reload storms stacked dead multi-GiB heaps until the OS killed
+  the renderer). Call it once, from `pagehide` (`addEventListener("pagehide",
+  () => relay.unload(), { once: true })`), or when the embedder discards the
+  relay for good. Nothing reboots the killed session (a disposed session
+  reports no death), so discard the relay afterwards and build a new one to
+  check again.
+- The relay's other fields (`state`, `session`, `lastDeath`, `doc`,
+  `pending`, `stats`, `fromClient`, `toClient`, …) are internal and may
+  change in any commit; read `status()` instead.
+
 ---
 
 ## 8. Overlay environments
@@ -1045,3 +1083,5 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
     `busyWaitMs` (default unchanged, `PREFETCH_SILENCE_MS`);
     `loadSnapshotByName` gains the same option (`LoadSnapshotOptions`, a
     fifth argument).
+  - `LspRelay.clientPort` and `LspRelay.unload()` named as contract members
+    (§7.9, with `status()`, `rearm()` and `restart()`); no behaviour change.
