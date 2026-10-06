@@ -11,7 +11,7 @@
 
 /** Semver of the library contract (docs/EMBEDDING.md §7): minor = additive.
  * "-pre" until the contract's review is settled. */
-export const EMBED_API_REVISION = "1.0.0-pre.3";
+export const EMBED_API_REVISION = "1.0.0-pre.4";
 
 // runtime
 export { LeanSession, PROTOCOL, MEMORY64_PROBE, probeMemory64, memoryCandidates } from "../../../src/runtime/client";
@@ -40,7 +40,7 @@ export { PREFETCH_SILENCE_MS, SNAPSHOT_CACHE_DIR, isCacheKeyOf, isRawCached, pre
 export type { PrefetchRawOptions, PrefetchRawResult } from "./raw-cache";
 
 // structured progress and failure causes (docs/EMBEDDING.md §7.1, §7.2)
-export { deathCause, failureCauseOf, failureKindOf, httpStatusOf, WORKER_SCRIPT_LOAD_FAILED } from "./failure";
+export { deathCause, failureCauseOf, failureKindOf, httpStatusOf, WORKER_DEP_MISMATCH, WORKER_SCRIPT_LOAD_FAILED } from "./failure";
 export type { BootStage, BootStep, FailureCause, FailureKind } from "./failure";
 
 // offline URL list (docs/EMBEDDING.md §7.5)

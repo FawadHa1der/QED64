@@ -32,6 +32,8 @@ describe("failureKindOf: the worker's real messages", () => {
     [undefined, "incorrect header check", "corrupt"],
     [undefined, "QuotaExceededError: the quota has been exceeded", "storage"],
     ["COMPILE_CRASHED", "something else entirely", "other"],
+    ["WORKER_DEP_MISMATCH", "lsp-front-door.js is revision \"2\", lean.worker.js needs 1 (a deploy mixed versions; reload)", "stale"],
+    [undefined, "Uncaught Error: lsp-frames.js is revision missing, lean.worker.js needs 1 (a deploy mixed versions; reload)", "stale"],
   ] as const)("%s %s → %s", (code, message, kind) => {
     expect(failureKindOf(code, message)).toBe(kind);
   });
@@ -49,6 +51,13 @@ describe("failureKindOf: the worker's real messages", () => {
     expect(deathCause("crash", "", { bare: true, beforeHello: false })).toBeNull();
     expect(deathCause("crash", "", { bare: true, beforeHello: true })).toMatchObject({ kind: "other", code: "WORKER_SCRIPT_LOAD_FAILED" });
     expect(deathCause("WORKER_DEP_MISSING", "importScripts failed", { errorCode: "WORKER_DEP_MISSING" })).toMatchObject({ kind: "other", code: "WORKER_SCRIPT_LOAD_FAILED" });
+    // A sibling of another revision: the site was deployed under the page (stale), by its code, or by the words of
+    // the same refusal's uncaught error event, which can arrive before the hello (never "probe the link").
+    const mismatch = "lsp-frames.js is revision \"2\", lean.worker.js needs 1 (a deploy mixed versions; reload)";
+    expect(deathCause("WORKER_DEP_MISMATCH", mismatch, { errorCode: "WORKER_DEP_MISMATCH" }, { stage: "files" }))
+      .toEqual({ kind: "stale", stage: "files", code: "WORKER_DEP_MISMATCH", message: mismatch });
+    expect(deathCause("crash", `Uncaught Error: ${mismatch}`, { beforeHello: true })).toMatchObject({ kind: "stale", code: "WORKER_DEP_MISMATCH" });
+    expect(failureCauseOf(Object.assign(new Error(mismatch), { code: "WORKER_DEP_MISMATCH" }))).toEqual({ kind: "stale", code: "WORKER_DEP_MISMATCH", message: mismatch });
     expect(deathCause("RUNTIME_FETCH_FAILED", "lean.wasm chunk 3: HTTP 404", { errorCode: "RUNTIME_FETCH_FAILED" }, { stage: "runtime" }))
       .toEqual({ kind: "missing", httpStatus: 404, stage: "runtime", code: "RUNTIME_FETCH_FAILED", message: "lean.wasm chunk 3: HTTP 404" });
     expect(deathCause("RUNTIME_FETCH_FAILED", "lean.wasm chunk 3 failed SHA-256 verification.", { errorCode: "RUNTIME_FETCH_FAILED" })).toMatchObject({ kind: "corrupt" });
@@ -359,6 +368,18 @@ describe("ResidentSession.start(): stages, files, beforeArm, causes", () => {
     await d.s.start();
     vi.spyOn(d.s.lean, "arm").mockRejectedValue(Object.assign(new Error("Worker is 'dead', not ready; arm after boot and the pre-open snapshot loads."), { code: "BAD_STATE" }));
     await expect(d.s.arm()).rejects.toMatchObject({ cause: { kind: "other", stage: "files", code: "BAD_STATE" } });
+  });
+
+  it("a worker that refuses a sibling of another revision dies stale through ResidentSession into the relay's Death, which reboots", async () => {
+    const sessions: ResidentSession[] = [];
+    const relay = new LspRelay(() => { const s = session().s; vi.spyOn(s.lean, "arm").mockResolvedValue(undefined); sessions.push(s); return s; }, { status() {} }, () => Promise.resolve());
+    await vi.waitFor(() => expect(relay.state.kind).toBe("serving"));
+    const message = "lsp-front-door.js is revision \"2\", lean.worker.js needs 1 (a deploy mixed versions; reload)";
+    sessions[0]!.lean.onDied(null, "WORKER_DEP_MISMATCH", message, { errorCode: "WORKER_DEP_MISMATCH" });
+    expect(relay.lastDeath).toMatchObject({ reason: "WORKER_DEP_MISMATCH", cause: { kind: "stale", code: embed.WORKER_DEP_MISMATCH, message } });
+    expect(relay.status()).toMatchObject({ relay: "rebooting", rebootReason: "crash" }); // the relay heals: a replacement loads the new scripts
+    expect(sessions).toHaveLength(2);
+    relay.clientPort.close();
   });
 
   it("...and that cause is the relay's Death.cause, which the page API reports", async () => {

@@ -17,10 +17,12 @@ export type BootStep = "check" | "download" | "inflate" | "commit" | "verify" | 
  * snapshot the index does not list (a deploy problem: retrying cannot help);
  * corrupt: it arrived but is wrong (length, SHA-256, gzip, magic, a region the
  * loader refuses); unpaired: a snapshot of another runtime build; oom: an
- * allocation or memory reservation failed; storage: OPFS/quota; other: the
+ * allocation or memory reservation failed; storage: OPFS/quota; stale: the
+ * site was updated under this page (its worker scripts are of another
+ * revision than each other: WORKER_DEP_MISMATCH) — reload the page; other: the
  * checker's own failure. A death with NO cause is "no evidence" (a bare worker
  * error event) — see docs/EMBEDDING.md §7.2. */
-export type FailureKind = "network" | "missing" | "corrupt" | "unpaired" | "oom" | "storage" | "other";
+export type FailureKind = "network" | "missing" | "corrupt" | "unpaired" | "oom" | "storage" | "stale" | "other";
 export interface FailureCause {
   kind: FailureKind;
   /** The HTTP status that decided it, when there was one. */
@@ -40,6 +42,7 @@ export interface FailureCause {
  * inside a fetch path is OOM, and a chunk that arrived but fails its SHA-256
  * or length check is corrupt, though its code says RUNTIME_FETCH_FAILED. */
 export function failureKindOf(code: string | undefined, message: string): FailureKind {
+  if (code === WORKER_DEP_MISMATCH || STALE_MESSAGE.test(message)) return "stale";
   if (code === "SNAPSHOT_UNPAIRED" || /was baked for runtime/.test(message)) return "unpaired";
   if (code === "SNAPSHOT_URL_REFUSED" || /SNAPSHOT_URL_REFUSED/.test(message)) return "other";
   if (code === "SNAPSHOT_NOT_IN_INDEX") return "missing";
@@ -55,6 +58,15 @@ export function failureKindOf(code: string | undefined, message: string): Failur
   if (/QuotaExceeded|quota|NoModificationAllowed|NotReadableError|getDirectory|createWritable|createSyncAccessHandle|OPFS/i.test(message)) return "storage";
   return "other";
 }
+
+/** lean.worker.js refused a sibling script of another revision (docs/EMBEDDING.md
+ * §7.7): the deployed worker scripts changed under this page. Its cause is
+ * `stale`: the relay's replacement worker loads the new scripts and usually
+ * serves again, but under this page's older bundle — reload the page. */
+export const WORKER_DEP_MISMATCH = "WORKER_DEP_MISMATCH";
+/** The refusal's own words (lean.worker.js checkSibling), for the same throw's
+ * uncaught error event, which carries the message but no code. */
+const STALE_MESSAGE = /\ba deploy mixed versions\b/;
 
 /** The HTTP status a worker or page message names ("HTTP 404"), if any. */
 export function httpStatusOf(message: string): number | undefined {
@@ -85,12 +97,15 @@ export function failureCauseOf(err: unknown, at: { stage?: BootStage; subject?: 
 export const WORKER_SCRIPT_LOAD_FAILED = "WORKER_SCRIPT_LOAD_FAILED";
 
 /** The cause of a session death (LeanSession.onDied's facts, docs/EMBEDDING.md
- * §7.2): null only for a bare worker error event (no evidence); a worker that
- * never said hello, or could not import a script, is WORKER_SCRIPT_LOAD_FAILED;
- * an error code is classified by the table; every other death is the
- * checker's own (`other`, or `oom` when its message says so). */
+ * §7.2): null only for a bare worker error event (no evidence); a sibling
+ * script of another revision is `stale` (WORKER_DEP_MISMATCH, by its code or,
+ * on the uncaught error event of the same refusal, by its words); a worker
+ * that never said hello, or could not import a script, is
+ * WORKER_SCRIPT_LOAD_FAILED; an error code is classified by the table; every
+ * other death is the checker's own (`other`, or `oom` when its message says so). */
 export function deathCause(reason: string, message: string, facts: { beforeHello?: boolean; bare?: boolean; errorCode?: string } = {}, at: { stage?: BootStage; subject?: string } = {}): FailureCause | null {
   if (reason === "crash" && facts.bare && !facts.beforeHello) return null;
+  if (facts.errorCode === WORKER_DEP_MISMATCH || STALE_MESSAGE.test(message)) return { kind: "stale", ...at, code: WORKER_DEP_MISMATCH, message };
   if ((reason === "crash" && facts.beforeHello) || facts.errorCode === "WORKER_DEP_MISSING") {
     return { kind: "other", ...at, code: WORKER_SCRIPT_LOAD_FAILED, message: message || "the worker script did not load" };
   }

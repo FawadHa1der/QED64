@@ -18,6 +18,8 @@ import { LspRelay, type RelaySession, type RelayStatus, type RestartOptions } fr
 import { tapRelay, type LspMessage } from "../../frontend/src/relay-taps";
 import { createCheckFallback } from "../../frontend/src/check-fallback";
 import { STAGES, createBootChecklist } from "../../frontend/src/boot-checklist";
+import { STALE_NOTICE, createStaleWatch, isStaleDeath } from "../../frontend/src/stale-notice";
+import { deathCause } from "../../frontend/src/embed/failure";
 import type { JsonRpcMessage, WorkerStatus } from "../../src/runtime/client";
 
 const CAPS: Capabilities = {
@@ -493,6 +495,46 @@ describe("over the real relay", () => {
     return { relay, page, api: page.api, current: () => sessions[sessions.length - 1]! };
   }
 
+  // lean4game QD-API-2: a deploy under a running page pairs two worker revisions; the relay heals, but the page
+  // runs its old bundle and had no typed way to know. The cause kind `stale` is that signal (EMBEDDING §7.2).
+  it("a stale-page death (WORKER_DEP_MISMATCH) reaches the death event and a halted boot's failure as kind stale; the page's prompt shows once", async () => {
+    const shown: string[] = [];
+    const watch = createStaleWatch((d) => shown.push(d.message));
+    const h = overRelay((relay, page) => (s) => { // main.ts renderStatus: the watch, and a halt before ready is bootFail(message, cause)
+      page.relayStatus(s);
+      watch(s);
+      if (s.phase === "halted" && s.lastDeath) page.bootFailed(s.lastDeath.message, s.lastDeath.cause);
+    });
+    const deaths: string[] = [];
+    const boots: string[] = [];
+    h.api.on("death", (d) => deaths.push(`${d.session} ${d.reason} ${d.cause?.kind} ${d.cause?.code} reboot=${d.willReboot} halted=${d.halted}`));
+    h.api.on("boot", (b) => { if (b.failed) boots.push(`${b.stage} ${b.error?.kind} ${b.error?.code}`); });
+    await flush();
+    h.current().report({ phase: "ready" });
+    const message = "lsp-front-door.js is revision \"2\", lean.worker.js needs 1 (a deploy mixed versions; reload)";
+    // What ResidentSession hands the relay for the worker's error reply (deathCause, embed-library.test.ts).
+    const dieStale = () => h.current().onDied(null, "WORKER_DEP_MISMATCH", message, deathCause("WORKER_DEP_MISMATCH", message, { errorCode: "WORKER_DEP_MISMATCH" }));
+    dieStale();
+    await flush();
+    expect(deaths).toEqual(["s1 WORKER_DEP_MISMATCH stale WORKER_DEP_MISMATCH reboot=true halted=false"]);
+    expect(isStaleDeath(h.relay.status().lastDeath)).toBe(true);
+    expect(shown).toEqual([message]);
+    h.current().report({ phase: "ready" }); // the replacement loaded the new scripts and serves: lastDeath clears, the prompt stays
+    expect(h.relay.status().lastDeath).toBeNull();
+    for (let i = 0; i < 2; i++) { dieStale(); await flush(); } // each replacement boots, then dies the same way: the breaker halts
+    expect(h.relay.state.kind).toBe("halted");
+    expect(deaths.at(-1)).toBe("s3 WORKER_DEP_MISMATCH stale WORKER_DEP_MISMATCH reboot=false halted=true");
+    expect(boots).toEqual(["failed stale WORKER_DEP_MISMATCH"]);
+    expect(shown).toHaveLength(1); // once per page
+    expect(STALE_NOTICE).toMatch(/reload/);
+  });
+  it("the stale watch ignores every other death and a status without one", () => {
+    const shown: unknown[] = [];
+    const watch = createStaleWatch((d) => shown.push(d));
+    const other = { reason: "WORKER_DEP_MISSING", message: "x", seq: 1, session: "s1", cause: { kind: "other" as const, code: "WORKER_SCRIPT_LOAD_FAILED", message: "x" } };
+    expect([watch({ lastDeath: null }), watch({ lastDeath: other }), watch({ lastDeath: { ...other, cause: undefined } })]).toEqual([false, false, false]);
+    expect(shown).toEqual([]);
+  });
   it("restart() without initialBytes goes back to the page default: the relay's remembered options carry no commit", async () => {
     const h = overRelay();
     await flush();

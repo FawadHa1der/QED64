@@ -17,6 +17,7 @@ import { installWidgetSourceCache } from "./widget-source-cache";
 import { createTestHatch } from "./test-hatch";
 import { createCheckFallback } from "./check-fallback";
 import { STAGES, createBootChecklist } from "./boot-checklist";
+import { STALE_NOTICE, createStaleWatch } from "./stale-notice";
 
 // The embedder-facing surface (docs/EMBEDDING.md §2), published synchronously
 // at module start — before any of the page's own listeners matter — so an
@@ -70,6 +71,21 @@ function renderAction(label: string | null, run?: () => void): void {
   actionBtn.title = label;
   actionBtn.onclick = () => { renderAction(null); run?.(); };
 }
+// The stale-page prompt (stale-notice.ts; docs/EMBEDDING.md §7.2 `stale`):
+// the site was deployed under this page. The relay heals by itself, so the
+// prompt is a standing Reload button beside the pill, never a card over the
+// editor; a halt before the first ready already gets the failure card's.
+const staleWatch = createStaleWatch((d) => {
+  console.warn(`[qed64] ${STALE_NOTICE} (${d.message})`);
+  const btn = document.createElement("button");
+  btn.id = "stalereload";
+  btn.type = "button";
+  btn.textContent = "Updated — reload";
+  btn.title = STALE_NOTICE;
+  btn.style.cssText = "margin-left:.6em;padding:.15em .6em;font:inherit;font-size:.9em;cursor:pointer;border-radius:.4em;border:1px solid #4f6df5;background:#4f6df5;color:#fff";
+  btn.onclick = () => window.location.reload();
+  pillEl.insertAdjacentElement("afterend", btn);
+});
 const ptime = document.getElementById("ptime")!;
 const examplesEl = document.getElementById("examples")! as HTMLSelectElement;
 if (EMBED) examplesEl.style.display = "none";
@@ -290,6 +306,7 @@ function tickSearchHint(): void {
 let widening: string | null = null;
 
 function renderStatus(s: PageStatus) {
+  staleWatch(s);
   if (!bootDone) {
     checkFallback.observe(s);
     if (checklist.observe(s)) renderStages(); // a deliberate replacement's first status: back to the runtime step

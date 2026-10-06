@@ -242,7 +242,7 @@ editing one in place changes neither what the editor receives nor
 | `document` | `{uri, version, length, text}` | every didOpen/didChange the relay forwards. This is the persistence hook in embed mode. The checker sees the newest of these; a text replaced inside the session's coalescing window (§7.8) never reaches it, so wait per version with `settled({version})` (which accepts a later one), never for a verdict at that exact version. |
 | `diagnostics` | `{uri, version, diagnostics, origin: "lean" \| "qed64"}` | every `publishDiagnostics` the editor receives. `qed64` = the page's own notes. |
 | `fileProgress` | `{uri, version, processing}` | `$/lean/fileProgress`, coalesced to at most one per 100 ms on a timer (rAF does not run in hidden frames), and flushed before the next `status` |
-| `death` | `{session, kind, reason, message, cause, seq, exitCode, willReboot, halted}` | a session died (once per session) |
+| `death` | `{session, kind, reason, message, cause, seq, exitCode, willReboot, halted}` | a session died (once per session); `cause.kind` `"stale"`: the site was updated under the page, offer a reload (§7.2) |
 | `reboot` | `{reason, fromSession, toSession}` | the relay replaced the session |
 | `liveness` | `{session, kind: "answered" \| "stall" \| "resumed" \| "rescue"}` | each step of the worker's liveness counters |
 | `offer` | `{kind, label} \| null` | the page's offer appears or is withdrawn |
@@ -468,7 +468,7 @@ Notes for consumers:
   `unload()`, `status()`, `rearm()`, `restart()`), `RelaySession`,
   `RelayStatus`, `RestartOptions` and `Death`.
 - **causes (§7.2):** `failureKindOf`, `failureCauseOf`, `deathCause`,
-  `httpStatusOf` and `WORKER_SCRIPT_LOAD_FAILED`.
+  `httpStatusOf`, `WORKER_SCRIPT_LOAD_FAILED` and `WORKER_DEP_MISMATCH`.
 - **offline:** `runtimeUrls(manifest)` and `WORKER_URLS`.
 
 ### 7.1 Structured progress
@@ -494,7 +494,7 @@ Units:
 ### 7.2 Failure causes and deaths
 
 ```ts
-type FailureKind = "network" | "missing" | "corrupt" | "unpaired" | "oom" | "storage" | "other";
+type FailureKind = "network" | "missing" | "corrupt" | "unpaired" | "oom" | "storage" | "stale" | "other";
 interface FailureCause { kind: FailureKind; httpStatus?: number; stage?: BootStage; subject?: string; code?: string; message: string }
 ```
 
@@ -506,6 +506,7 @@ interface FailureCause { kind: FailureKind; httpStatus?: number; stage?: BootSta
 | `unpaired` | a snapshot baked by another runtime build | `SNAPSHOT_UNPAIRED` |
 | `oom` | an allocation or reservation failed | `MEMORY_FAILED`, `could not allocate`, `Cannot enlarge memory` |
 | `storage` | OPFS or quota | `QuotaExceededError` |
+| `stale` | the site was deployed under this page: the worker scripts it loaded are of different revisions (§7.7). **Reload the page.** Retrying in place does not help: the relay heals by itself (its replacement worker loads the new scripts, and the relay replays `initialize` and the document, so the language client never re-initializes), but it then serves under this page's older bundle, which holds only while the worker protocol changes additively | `WORKER_DEP_MISMATCH` (`code` is always `"WORKER_DEP_MISMATCH"`, exported as `WORKER_DEP_MISMATCH`) |
 | `other` | the checker's own failure, with **one exception**: `code: "WORKER_SCRIPT_LOAD_FAILED"` means a worker script never ran, which looks the same offline as on a 404, so probe the link | `abort`, `wedged`, `SNAPSHOT_URL_REFUSED` |
 
 Classification is per throw, from the error code **and** message:
@@ -515,11 +516,23 @@ classifies, so the same table holds against every worker version.
 **Deaths.**
 - `cause` **null or absent = no evidence**. This happens only for a bare
   worker error event (no message, after the worker said hello).
+- A sibling script of another revision is `stale` with `code:
+  "WORKER_DEP_MISMATCH"`: by the worker's error code, or by the refusal's
+  own words ("a deploy mixed versions") on the same throw's uncaught error
+  event, which can arrive first and before the hello. What to do: offer a
+  reload (the stock page shows a standing "Updated — reload" button beside
+  its pill; a halt before the first `ready` gets the failure card's Reload).
+  The relay reboots meanwhile and usually serves again; `lastDeath` clears
+  at that `ready`, so keep the fact yourself (the page API's `death` event
+  carries the cause, §2.4, and a boot that halts carries it as
+  `boot.error`).
 - A worker that never said hello, or a `WORKER_DEP_MISSING`, is
-  `WORKER_SCRIPT_LOAD_FAILED`.
+  `WORKER_SCRIPT_LOAD_FAILED`. A sibling that does not load at all is not
+  `stale`: offline it looks the same as a deploy that dropped the file, and
+  a reload offline would lose the page, so it means "probe the link".
 - An unrecoverable error code (`RUNTIME_FETCH_FAILED`, `MEMORY_FAILED`,
-  `INIT_FAILED`, `CAPABILITY_MISSING`, `WRITE_FILES_FAILED`,
-  `WORKER_DEP_MISMATCH`, …) is classified by the table.
+  `INIT_FAILED`, `CAPABILITY_MISSING`, `WRITE_FILES_FAILED`, …) is
+  classified by the table.
 - Every other death is `other`, or `oom` when its message says so.
 - A death while booting carries the boot `stage`. Booting lasts until the
   relay's `arm()` resolves, so a death during the replay and the arm carries
@@ -661,8 +674,9 @@ overrides routed through `parseBootParams` / `validateBootOverrides`.
 - `/workers/*.js` names are stable. A new worker is a new name.
 - **One revision for the three scripts.** `lean.worker.js`, `lsp-frames.js`
   and `lsp-front-door.js` carry the same `REVISION`. `lean.worker.js`
-  refuses a sibling of another revision (`WORKER_DEP_MISMATCH`, a death the
-  page can turn into a reload prompt) instead of running mixed versions.
+  refuses a sibling of another revision (`WORKER_DEP_MISMATCH`, a death
+  whose cause is `stale`, §7.2: offer a reload) instead of running mixed
+  versions.
   The front door loads lazily, so this check catches a deploy that lands
   between the two loads. A front door that cannot be loaded at that point
   (not served, or the link dropped) is `WORKER_DEP_MISSING`, unrecoverable
@@ -1085,3 +1099,16 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
     fifth argument).
   - `LspRelay.clientPort` and `LspRelay.unload()` named as contract members
     (§7.9, with `status()`, `rearm()` and `restart()`); no behaviour change.
+  - **A new `FailureKind`, `stale`** (§7.2): a `WORKER_DEP_MISMATCH` death
+    (the site was deployed under the page) was `other` with that code and
+    is now `stale` with the same code, from `failureKindOf`,
+    `failureCauseOf` and `deathCause` alike; the refusal's uncaught error
+    event, which carries its words but no code, is `stale` too (it was
+    `WORKER_SCRIPT_LOAD_FAILED` before the hello, `other` after). Migration:
+    a `switch` over `FailureKind` gains a case; code keyed on
+    `cause.code === "WORKER_DEP_MISMATCH"` keeps working, while code that
+    asserted `kind: "other"` for it must expect `stale`.
+    `WORKER_DEP_MISSING` is unchanged (`WORKER_SCRIPT_LOAD_FAILED`).
+    `WORKER_DEP_MISMATCH` is exported. The stock page shows a standing
+    Reload button for it; the page API's `death` event and a halted boot's
+    `boot.error` carry it. `EMBED_API_REVISION` → `1.0.0-pre.4`.
