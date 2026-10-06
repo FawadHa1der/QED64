@@ -59,7 +59,14 @@ Conventions:
 - **Every `path` is relative to the origin root.** The origin root is also the
   R2 bucket root and `public/` in git. For example, `runtime/chunks/lean.wasm.5500c87f….part-000`
   is served at `/runtime/chunks/…`, stored under the R2 key `runtime/chunks/…`,
-  and `gitBlob` is git's blob id of `public/<path>`.
+  and `gitBlob` is git's blob id of `public/<path>`. Under decision 3
+  (docs/DEPLOY.md, "The toolchain release prefix") the served path is
+  unchanged but the R2 key of a runtime or profile path (everything under
+  `runtime/` and `profiles/` except `profiles/index.json`) is
+  `lean4-wasm64/<release id>/<path>`, the toolchain release's prefix, with
+  the id from `toolchain/lean4-wasm64-release.json`; snapshots and
+  `profiles/index.json` stay at the bucket root. B2c changes the bundle to
+  say so.
 - **Field names tell you the digest format.** Fields named `sha256` hold bare
   hex. `digest` and `contentDigest` keep the `sha256:` prefix, which matches
   `pack.mjs` and the indexes. `contentDigest` is the profile manifest's own
