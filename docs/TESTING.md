@@ -12,6 +12,31 @@
 | Consumer (G2) | `npm run test:consumer` | the packed tarball alone suffices: `npm pack` into a temp dir, every `exports` key resolved by Node's resolver from a temp consumer whose `node_modules/qed64` is the extracted package (paths outside `exports` refused), `qed64/edge` and the olean reader loaded, and `tests/consumer/fixture/` (a page on `qed64/embed`, the headless boot of docs/EMBEDDING.md §6.1, a Worker on `qed64/edge`) type-checked and built with the repo's tsc and vite; nothing written in the repo or its node_modules (`--work <dir>` outside the repo, `--keep`) |
 | Live browser | manual / e2e spec | the full product loop (see docs/ARCHITECTURE.md for the current live-verified numbers) |
 
+## Environment: where the lanes find the runtime and the snapshots
+
+Every lane that needs a built artifact takes it from a flag, else from the
+variable below, else (deprecated for one cycle, with one stderr WARNING) from
+this checkout's old default; with none of them a tool exits 2 naming the flag
+and the variable, and an integration test skips naming the variable
+(docs/CLI-CONTRACT.md "Path resolution"). Nothing falls back to another
+project's checkout. From a worktree without build outputs, point the
+variables at the main checkout's.
+
+| Variable | Used by | Deprecated default (this checkout) |
+|---|---|---|
+| `QED64_LEAN_ARTIFACT` | `npm run test:integration` (all three files), node-runner, snapshot-probe, persistent-probe, bake-snapshot, `gate.mjs`, the compiler battery, resident-probe | `pipeline/toolchain/work/build/stage1` (when it has `bin/lean.js`; `gate.mjs`: the cwd) |
+| `QED64_INIT_SNAP` | `tests/integration/fileworker-exit.test.ts` | `work/snapshot/init.snap` |
+| `QED64_MATHLIB_SNAP` | the compiler battery (`--snap`; `run.mjs --snap` forwards) | `work/snapshot/mathlib.snap` |
+| `QED64_LIB_TREE` | the compiler battery (`--lib`: the tree the snapshot was baked from), snapshot-probe | `work/lib-tree-slim` (battery), `work/lib-tree` (snapshot-probe) |
+| `QED64_SNAP_DIR` | resident-probe (`--snap-dir`) | `work/snapshot` |
+| `QED64_WORK` | bake-snapshot and node-runner (`--work`) | `work/snapshot` (bake), `work/runner` (runner) |
+| `QED64_STAGING` | bake-snapshot and chunk-runtime (`--out` = `<it>/<buildId>/{snapshots,runtime}`) | `work/staging/<buildId>/…` |
+| `QED64_SLOW` | `npm run test:integration` | unset: the slow tier is off |
+
+`npm test` itself needs none of them: `tests/unit/tool-paths.test.ts` runs
+the tools from a scratch copy of the checkout, with every variable cleared,
+and never loads a runtime.
+
 ## Adversarial suite (`npm run test:adversarial`, tests/adversarial/)
 
 Harness trust rules (docs/ARCHITECTURE-REEVALUATION-2026-09-02.md C7,
@@ -202,6 +227,17 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   preludes are the current rendering of SPECS.
 - The files lean4game and the showcase vendor one by one must import only
   files they vendor.
+- The path rule (tests/unit/tool-paths.test.ts): each tool, run from a scratch
+  copy of the checkout with the rule's variables cleared, exits 2 with the
+  `no-path` line and its usage line when nothing resolves, honours its
+  variable, and prints exactly one WARNING per deprecated default it uses
+  while still resolving it. Each case stops at a cheap check (a missing lib
+  tree, a foreign index, a missing `--snap`, a `bin/lean.js` that is a
+  directory); the one bake that completes runs a fake node-runner. The
+  `--stack-size` re-exec keeps the PID, the stdio and the exit code, a SIGKILL
+  of that PID leaves nothing behind, and supervised-run's runner is not
+  re-exec'd. No tracked file but the two provenance notes names the sibling
+  codex checkout.
 
 ## Artifact discipline (pipeline/, tests/unit/artifact-discipline.test.ts)
 
@@ -246,11 +282,10 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
 
 - Unit tests execute the REAL worker source (vm sandbox) and the REAL
   published manifests — refactors cannot silently diverge from shipped code.
-- Integration tests skip cleanly when the runtime artifact volume is absent
-  (runtime-smoke and persistent-path print why). Those two also skip, with a
-  printed reason, when the artifact is too old for what they assert (the old
-  codex stage1 fallback, which a checkout without its own stage1 build picks
-  up): runtime-smoke when it predates patch 0020 (that CLI exits on its own and is not the runtime the
+- Integration tests skip cleanly when the runtime artifact is absent, and
+  say which variable to set (`QED64_LEAN_ARTIFACT`, `QED64_INIT_SNAP`; the
+  table above). Those two also skip, with a printed reason, when the
+  artifact is too old for what they assert: runtime-smoke when it predates patch 0020 (that CLI exits on its own and is not the runtime the
   browser runs), and persistent-path's parse-error test when it predates
   patch 0010 (its `wasmCompile` drops parser diagnostics). 0010 changes only
   compiled Lean code, so the check reads the build's

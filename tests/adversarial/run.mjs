@@ -7,6 +7,8 @@
 // the legacy work/adversarial/report.md.
 // Usage: node tests/adversarial/run.mjs [--skip-compiler] [--skip-e2e] [--url <page url>]
 //        [--no-boot] [--skip-pretest] [--cooldown-gb 6]
+//        [--snap <mathlib.snap>] [--artifact <stage1>] [--lib <tree>]   (the battery's pairing,
+//        forwarded; else its QED64_MATHLIB_SNAP / QED64_LEAN_ARTIFACT / QED64_LIB_TREE)
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -58,7 +60,8 @@ console.log(`run dir: ${path.relative(root, dir)} (${pre.buildId}, ${target.mode
 let compilerCode = 0, e2eCode = 0;
 if (!has("--skip-compiler")) {
   console.log("=== compiler battery ===");
-  compilerCode = spawnSync("node", [path.join(root, "tests/adversarial/compiler-battery.mjs"), "--run-dir", dir], { stdio: "inherit", cwd: root }).status ?? 1;
+  const pairing = ["snap", "artifact", "lib"].flatMap((f) => (arg(f, "") ? [`--${f}`, arg(f, "")] : []));
+  compilerCode = spawnSync("node", [path.join(root, "tests/adversarial/compiler-battery.mjs"), "--run-dir", dir, ...pairing], { stdio: "inherit", cwd: root }).status ?? 1;
 }
 if (!has("--skip-e2e")) {
   // Cool-down before the browser lane: stray chrome-headless-shell processes
@@ -89,5 +92,6 @@ const md = lines.join("\n");
 fs.writeFileSync(path.join(dir, "report.md"), md);
 fs.writeFileSync(path.join(root, "work/adversarial/report.md"), md);
 console.log(`\nreport: ${path.relative(root, path.join(dir, "report.md"))} (also work/adversarial/report.md)`);
-// 3 = a lane refused (infra), 1 = product failures, 0 = green.
-process.exit(compilerCode === 3 || e2eCode === 3 ? 3 : compilerCode || e2eCode ? 1 : 0);
+// 3 = a lane refused (infra; the battery's 2 is its usage refusal: no pairing resolved),
+// 1 = product failures, 0 = green.
+process.exit(compilerCode === 3 || compilerCode === 2 || e2eCode === 3 ? 3 : compilerCode || e2eCode ? 1 : 0);

@@ -8,3 +8,9 @@ export type BatteryRow = {
 export function missingInputs(inputs: { snap: string; artifact: string }): string[];
 export function classify(item: BatteryItem, run: { out: string; code: number | null; wallMs: number; budget: number; spawnError?: (Error & { code?: string }) | null }): BatteryRow;
 export function rewriteAliases(src: string): string;
+/** The battery's pairing by the one path rule (docs/CLI-CONTRACT.md "Path resolution"); null only when `io.exit` returns. */
+export function batteryInputs(
+  get?: (flag: string, fallback: string | null) => string | null,
+  base?: string,
+  io?: { err: (s: string) => void; exit: (code: number) => void; environment?: Record<string, string | undefined> },
+): { snap: string; artifact: string; lib: string } | null;

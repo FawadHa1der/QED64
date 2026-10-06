@@ -2,8 +2,10 @@
 // init sequence, resident-environment compile reuse (ms-scale), JSON
 // diagnostics, error-count return values, and survival after failed proofs.
 //
-// The parse-error test also needs toolchain patch 0010; it skips, and says
-// why, on a runtime that predates it (the old codex stage1 fallback). From a
+// The artifact is QED64_LEAN_ARTIFACT, else (deprecated, with a WARNING) this
+// checkout's pipeline/toolchain/work/build/stage1; without either the suite
+// skips and names the variable. The parse-error test also needs toolchain
+// patch 0010; it skips, and says why, on a runtime that predates it. From a
 // worktree without build outputs, point QED64_LEAN_ARTIFACT at the main
 // checkout's pipeline/toolchain/work/build/stage1.
 
@@ -11,15 +13,17 @@ import { describe, expect, test } from "vitest";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { toolPath } from "../../pipeline/toolchain/artifact-paths.mjs";
 
 const root = path.resolve(__dirname, "../..");
-const builtHere = path.join(root, "pipeline/toolchain/work/build/stage1");
-const artifact =
-  process.env.QED64_LEAN_ARTIFACT ||
-  (existsSync(path.join(builtHere, "bin/lean.js"))
-    ? builtHere
-    : path.join(root, "../../wasm64-lean-codex/experiments/lean4-wasm64-build/stage1"));
-const haveArtifact = existsSync(path.join(artifact, "bin/lean.js"));
+const found = toolPath({
+  env: "QED64_LEAN_ARTIFACT",
+  legacy: path.join(root, "pipeline/toolchain/work/build/stage1"),
+  holds: (dir) => existsSync(path.join(dir, "bin/lean.js")),
+});
+if (found?.source === "default") console.warn(`persistent-path: WARNING — the default artifact ${found.path} is deprecated; set QED64_LEAN_ARTIFACT (docs/CLI-CONTRACT.md)`);
+const artifact = found?.path ?? "";
+const haveArtifact = !!found && existsSync(path.join(artifact, "bin/lean.js"));
 
 // Patch 0010 replaces wasmCompile's `Frontend.processCommand` loop with an
 // inlined `Parser.parseCommand` step. It changes compiled Lean code only (no
@@ -44,7 +48,7 @@ function wasmCompileParsesInline(): boolean | null {
 }
 
 const skipReason = !haveArtifact
-  ? `no wasm64 runtime at ${artifact} (set QED64_LEAN_ARTIFACT to a stage1 dir)`
+  ? `no wasm64 runtime ${found ? `at ${artifact}` : "(QED64_LEAN_ARTIFACT is unset and this checkout has no pipeline/toolchain/work/build/stage1)"}: set QED64_LEAN_ARTIFACT to a stage1 dir`
   : null;
 const parseSkipReason =
   skipReason ??

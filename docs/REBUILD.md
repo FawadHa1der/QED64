@@ -183,9 +183,12 @@ touches, in this order:
    which is the set the compiler battery and the Node probes load against the
    SERVED binary; overwriting it unpairs them. Only at promotion time do the
    new raw snapshots replace `work/snapshot/{init,mathlib}.snap`.
-   After the promote, make the toolchain working directory mirror what is
-   served, so the battery and the Node probes (whose defaults are
-   `pipeline/toolchain/work/build/stage1`, `work/snapshot`, `work/lib-tree-slim`)
+   After the promote, either point the battery and the Node probes at the
+   served pairing explicitly (`--artifact/--snap/--lib`, or
+   `QED64_LEAN_ARTIFACT`, `QED64_MATHLIB_SNAP`, `QED64_LIB_TREE`: docs/TESTING.md
+   "Environment"), or make the toolchain working directory mirror what is
+   served, so their deprecated defaults (`pipeline/toolchain/work/build/stage1`,
+   `work/snapshot`, `work/lib-tree-slim`; one WARNING each, gone next cycle)
    test the served pairing: install the artifact's `bin/`, `lib/lean` and
    `lib/temp` into `pipeline/toolchain/work/build/stage1` **with
    `bin/package.json` = `{ "type": "commonjs" }`** (the glue's pthread workers

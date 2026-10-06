@@ -17,11 +17,34 @@
 // its first compile line without a wasm panic. An infra-only battery exits 3
 // (refused), never 1 (product failure).
 // Usage: node tests/adversarial/compiler-battery.mjs [--corpus <file>] [--jobs 3] [--run-dir <dir>]
+//          [--snap <mathlib.snap>] [--artifact <stage1>] [--lib <tree>]
+// The pairing under test: each flag, else QED64_MATHLIB_SNAP / QED64_LEAN_ARTIFACT /
+// QED64_LIB_TREE, else (deprecated, one WARNING each) this checkout's
+// work/snapshot/mathlib.snap, pipeline/toolchain/work/build/stage1 and
+// work/lib-tree-slim; a deprecated default that is absent exits 2 with the usage
+// line (docs/CLI-CONTRACT.md "Path resolution"). An explicit input that is missing
+// is still the all-infra refusal below (exit 3).
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveToolPath } from "../../pipeline/toolchain/artifact-paths.mjs";
 import { arg, root, teeLog } from "./harness.mjs";
+
+const USAGE = "compiler-battery.mjs [--corpus <file>] [--jobs 3] [--run-dir <dir>] [--snap <mathlib.snap>] [--artifact <stage1>] [--lib <tree>]";
+
+/** The battery's pairing (snapshot, runtime, olean tree) by the one path
+ * rule; `io` and `base` are the tests' (a scratch checkout root). */
+export function batteryInputs(get = arg, base = root, io = undefined) {
+  const one = (flag, placeholder, env, rel, holds) => resolveToolPath({
+    tool: "compiler-battery", flag, placeholder, value: get(flag, null), env,
+    legacy: path.join(base, rel), legacyLabel: `${rel} under the repo root`, holds, usage: USAGE,
+  }, io)?.path;
+  const snap = one("snap", "<file>", "QED64_MATHLIB_SNAP", "work/snapshot/mathlib.snap", fs.existsSync);
+  const artifact = snap && one("artifact", "<dir>", "QED64_LEAN_ARTIFACT", "pipeline/toolchain/work/build/stage1", (d) => fs.existsSync(path.join(d, "bin/lean.wasm")));
+  const lib = artifact && one("lib", "<tree>", "QED64_LIB_TREE", "work/lib-tree-slim", fs.existsSync);
+  return lib ? { snap, artifact, lib } : null;
+}
 
 /** The probe's inputs that must exist before a single row can be a verdict:
  * returns the missing paths (empty = all present). */
@@ -90,10 +113,8 @@ export function rewriteAliases(src) {
 async function main() {
   const corpusPath = arg("corpus", path.join(root, "tests/adversarial/corpus.json"));
   const jobs = Number(arg("jobs", "3"));
-  const snap = arg("snap", path.join(root, "work/snapshot/mathlib.snap"));
-  const artifact = arg("artifact", path.join(root, "pipeline/toolchain/work/build/stage1"));
-  // The olean tree the snapshot was baked from (a staged pairing brings its own).
-  const lib = arg("lib", path.join(root, "work/lib-tree-slim"));
+  // The olean tree is the one the snapshot was baked from (a staged pairing brings its own).
+  const { snap, artifact, lib } = batteryInputs();
   const dir = arg("run-dir", "");
   if (dir) { fs.mkdirSync(dir, { recursive: true }); teeLog(dir, "compiler.log"); }
 
