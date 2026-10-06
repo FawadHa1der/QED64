@@ -441,6 +441,15 @@ The package:
   and build.
 
 Notes for consumers:
+- **Copied workers go stale on a pin bump.** A consumer that copies
+  closure.json `workers` into its own public directory (lean4game's
+  `scripts/stage-workers.sh`, §6.1 step 3) must re-stage them after every
+  pin bump. Run the copy before every build and dev start, not once after an
+  install: installing the new pin leaves the old copies in place, and a plain
+  build serves them (§6.1 step 3 has a `prebuild` example). Scripts from two
+  pins of different `REVISION`s are refused at run time as
+  `WORKER_DEP_MISMATCH`, kind `stale`. A whole set from the previous pin is
+  not refused.
 - The embed closure is TypeScript source with **relative imports only** (no
   bare specifiers, no `node:`). A bundler transpiles it (Vite does; `tsc`
   needs `moduleResolution: "bundler"`).
@@ -520,12 +529,17 @@ code block below, extracted verbatim from the packed `docs/EMBEDDING.md`.
 
    In production your host sends the same two headers on the HTML (with
    `qed64/edge`: `createWorker` does, docs/DEPLOY.md).
-3. **The workers at `/workers/`.** Copy closure.json's `workers` (all five:
-   `lean.worker.js` loads its siblings from its own directory, §6) to the
-   `serveAs` paths, on every install and re-pin:
+3. **The workers at `/workers/`, re-staged before every build.** Copy
+   closure.json's `workers` (all five: `lean.worker.js` loads its siblings
+   from its own directory, §6) to the `serveAs` paths. The copies in your
+   public directory are generated files (gitignore them): installing a new
+   pin does not refresh them, and a build serves whatever they hold.
+   lean4game found exactly that: after a pin bump a plain build shipped the
+   previous `lean.worker.js` beside the new library. So stage them as a step
+   of every build and every dev start, not once after an install:
 
    ```js
-   // scripts/stage-qed64-workers.mjs (run after npm install)
+   // scripts/stage-qed64-workers.mjs: the prebuild/predev step below
    import fs from "node:fs";
    import path from "node:path";
    import { createRequire } from "node:module";
@@ -540,8 +554,32 @@ code block below, extracted verbatim from the packed `docs/EMBEDDING.md`.
    }
    ```
 
-   The worker revision is checked at run time: a mixed set dies with
-   `WORKER_DEP_MISMATCH` (§7.7).
+   ```json
+   {
+     "scripts": {
+       "stage:qed64": "node scripts/stage-qed64-workers.mjs",
+       "predev": "npm run stage:qed64",
+       "prebuild": "npm run stage:qed64",
+       "dev": "vite",
+       "build": "vite build"
+     }
+   }
+   ```
+
+   npm runs `prebuild` before `npm run build` and `predev` before `npm run
+   dev`. A pipeline that calls `vite build` directly runs the staging script
+   first itself. (These hooks belong in your package. QED64's own
+   `package.json` has no `build` or `prepare` script, §6, because npm would
+   then build QED64 as a git dependency.)
+
+   The worker revision is checked at run time, so a mixed set (scripts from
+   two pins, of different `REVISION`s) is refused: the session dies with
+   `WORKER_DEP_MISMATCH`, cause kind `stale` (§7.2, §7.7), and the page
+   should offer a reload. A whole set left from the previous pin carries one
+   revision, so it is not refused. It runs, and you are serving the previous
+   pin's workers under the new library, which only re-staging prevents.
+   `npm run test:consumer` runs this script, from the packed copy of this
+   document, over a stale set in a scratch consumer.
 4. **The artifacts at `/runtime/`, `/profiles/` and `/snapshots/`,** on the
    page's origin (§4 "Page-tier facts"; an off-origin source is refused, §11):
    the runtime manifest and its chunks, the profile index and packs, the
@@ -1423,3 +1461,10 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
     `buildIdOfArtifact` (run on a stand-in `lean.wasm`); every path
     closure.json lists is in the tarball; and the fixture's built page still
     sets `globalThis.Qed64Memory64` (it fails under `"sideEffects": false`).
+  - docs only, after lean4game's bump found a plain build serving the
+    previous pin's `lean.worker.js`: §6 and §6.1 step 3 say that copied
+    workers are re-staged before every build and dev start (a `prebuild` /
+    `predev` example), and what the run-time check does and does not catch
+    (`WORKER_DEP_MISMATCH`, kind `stale`, for scripts of two revisions; not
+    for a whole set from the previous pin). G2 runs step 3's script from the
+    packed document over a stale set.

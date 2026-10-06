@@ -24,7 +24,8 @@
 //      tsc and built with the repo's vite (`vite build --config`), the built
 //      page still carries the probe script (package.json `sideEffects` keeps
 //      client.ts's side-effect import), and the built worker answered one
-//      request.
+//      request; §6.1 step 3's staging script, also verbatim from the packed
+//      document, re-staged a stale workers dir to exactly the closure's set.
 // Nothing is written under this repo (git status is compared before and
 // after) or under any node_modules of it (checked: no qed64 entry, no new
 // .vite-temp file).
@@ -241,6 +242,35 @@ const builtWorker = (await import(pathToFileURL(path.join(dist, "worker.js")).hr
 const answer = await builtWorker.fetch(new Request("https://consumer.example/"), { ROOT_REDIRECT: "/showcase/" });
 if (answer.status !== 302 || answer.headers.get("location") !== "https://consumer.example/showcase/") fail(`the built worker answered ${answer.status} ${answer.headers.get("location")}`);
 ok(`vite build: ${built.join(", ")}; the built worker.js answered / with 302 → /showcase/`);
+
+// §6.1 step 3: the staging script, verbatim from the packed EMBEDDING.md, run over a stale set (the
+// previous pin's lean.worker.js and a worker the closure no longer lists) leaves exactly the closure's
+// workers, byte for byte the package's; the package.json block wires it as prebuild and predev.
+{
+  const step3 = sec61.slice(sec61.indexOf("3. **The workers at `/workers/`"), sec61.indexOf("4. **The artifacts at"));
+  const blocks = [...step3.matchAll(/\n {3}```(js|json)\n([\s\S]*?)\n {3}```\n/g)].map((m) => ({ lang: m[1], body: m[2].replace(/^ {3}/gm, "") }));
+  const script = blocks.find((b) => b.lang === "js")?.body;
+  const hooks = blocks.find((b) => b.lang === "json")?.body;
+  if (!script || !script.startsWith("// scripts/stage-qed64-workers.mjs")) fail("docs/EMBEDDING.md §6.1 step 3: no ```js block for scripts/stage-qed64-workers.mjs");
+  let scripts;
+  try { scripts = JSON.parse(hooks).scripts; } catch { fail("docs/EMBEDDING.md §6.1 step 3: no ```json block with package.json scripts"); }
+  if (scripts["stage:qed64"] !== "node scripts/stage-qed64-workers.mjs" || scripts.prebuild !== "npm run stage:qed64" || scripts.predev !== "npm run stage:qed64") fail(`docs/EMBEDDING.md §6.1 step 3: the scripts block does not stage before build and dev: ${JSON.stringify(scripts)}`);
+  fs.mkdirSync(path.join(consumer, "scripts"));
+  fs.writeFileSync(path.join(consumer, "scripts/stage-qed64-workers.mjs"), script + "\n");
+  // Its own cwd (public/ there is not the fixture's Vite publicDir, which would copy it into dist).
+  const site = path.join(run, "staged-site");
+  fs.mkdirSync(path.join(site, "public/workers"), { recursive: true });
+  fs.writeFileSync(path.join(site, "public/workers/lean.worker.js"), "// the previous pin's lean.worker.js\n");
+  fs.writeFileSync(path.join(site, "public/workers/dropped.worker.js"), "// a worker the closure no longer lists\n");
+  sh(process.execPath, [path.join(consumer, "scripts/stage-qed64-workers.mjs")], { cwd: site });
+  const staged = fs.readdirSync(path.join(site, "public/workers")).sort();
+  const want = closure.workers.map((w) => w.serveAs.slice("/workers/".length)).sort();
+  if (JSON.stringify(staged) !== JSON.stringify(want)) fail(`§6.1 step 3's script staged ${staged.join(", ")}, closure.json workers are ${want.join(", ")}`);
+  for (const w of closure.workers) {
+    if (!fs.readFileSync(path.join(site, "public", w.serveAs)).equals(fs.readFileSync(path.join(pkgDir, w.path)))) fail(`§6.1 step 3's script staged a ${w.serveAs} that is not the package's ${w.path}`);
+  }
+  ok(`§6.1 step 3 (from the tarball's EMBEDDING.md) re-stages a stale set: exactly ${want.length} workers, each the package's bytes; prebuild and predev run it`);
+}
 
 // Nothing moved in the repo or its node_modules.
 const after = { git: gitStatus(), modules: JSON.stringify(guard()) };
