@@ -298,7 +298,7 @@ export async function fetchArtifacts({ out, manifests, only = GROUPS, release, o
   let toRelease = null;
   if (releaseSrc) {
     let rj;
-    try { rj = await releaseSrc.json("release.json"); } catch (e) { throw new FetchFailure(`release.json: ${e.message}`); }
+    try { rj = await releaseSrc.json("release.json"); } catch (e) { throw e instanceof FetchFailure ? e : new FetchFailure(`release.json: ${e.message}`); }
     toRelease = releaseResolver(rj, plan, only);
   }
 

@@ -258,6 +258,8 @@ describe("fetchArtifacts", () => {
       [(r) => { r.runtime.buildId = "wasm64-0000000000000000"; }, `release lean-test carries runtime wasm64-0000000000000000; the tracked manifests pin ${buildId}`],
       [(r) => { r.schema = "lean4-wasm64.release/v0"; }, 'release.json schema is "lean4-wasm64.release/v0", not lean4-wasm64.release/v1'],
     ];
+    const none = await run({ out: outDir(), manifests: manifestsDir(), only: ["runtime"], release: `${base}/no-release` });
+    expect([none.code, none.message]).toEqual([1, `release.json: HTTP 404 from ${base}/no-release/release.json`]);
     for (const [edit, message] of cases) {
       const out = outDir();
       const r = await run({ out, manifests: manifestsDir(), only: ["runtime", "profiles"], release: releaseDir(release(edit)) });
