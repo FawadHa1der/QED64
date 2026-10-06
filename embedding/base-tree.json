@@ -1,0 +1,115 @@
+{
+  "schema": "qed64.base-tree/v1",
+  "releaseId": "lean-v4.34.0-a8817d0",
+  "releaseDigest": "sha256:39f028762e8d48bdf5080d98f3d3c6d7eff8de7853aaac303cd3804174a98de5",
+  "runtime": "wasm64-3ab1c6a9da03bc29",
+  "packs": [
+    {
+      "id": "lean-core",
+      "release": "lean-core-4.34.0-wasm64-36a96239e08fd2e0",
+      "rawSha256": "sha256:1c5c75db4e883f026f88ff6538c285467332cf2677d795d2e91a50f4dd1e22a3"
+    },
+    {
+      "id": "mathlib-essential",
+      "release": "mathlib-essential-5ed2965-wasm64-36a96239e08fd2e0",
+      "rawSha256": "sha256:eeab078f1c0d4d021d178a9bd1eaad9391b7ba02c7a3f5415413fde11a248b4c"
+    }
+  ],
+  "slim": true,
+  "umbrella": [
+    {
+      "path": "QED64/Essential.olean",
+      "sha256": "69c5894a3029b26d548c5b094a733c18f88048dad28c3724523e19b690bcbea2",
+      "bytes": 396664
+    },
+    {
+      "path": "QED64/Essential.olean.server",
+      "sha256": "1f224293183d4785009d5bf1fecef989a70086d667b0ee530996f07cd0934e4a",
+      "bytes": 96
+    }
+  ],
+  "umbrellaSource": "reused from /Users/fawadhaider/code/wasm64-lean-fable/qed64/work/lib-tree",
+  "initLib": "lean-lib",
+  "digestRule": "sha256 over the lines \"<relpath>\\0<sha256 hex>\\n\" of every file, relpath /-separated, sorted by byte order",
+  "trees": {
+    "core-lib-slim": {
+      "slim": true,
+      "packs": [
+        {
+          "id": "lean-lib",
+          "release": "lean-lib-4.34.0-wasm64-3ab1c6a9da03bc29",
+          "rawSha256": "sha256:01240fbda16d01f994ae3720373b6039b726c29c9f9ce831e8b1eb53a28c6346"
+        }
+      ],
+      "umbrella": [],
+      "files": 10074,
+      "bytes": 765013032,
+      "digest": "sha256:87095940c92db02fd4a7403b66fc37b086c116d0f3cc5b8f0806c718d7359860"
+    },
+    "lib-tree-slim": {
+      "slim": true,
+      "packs": [
+        {
+          "id": "lean-core",
+          "release": "lean-core-4.34.0-wasm64-36a96239e08fd2e0",
+          "rawSha256": "sha256:1c5c75db4e883f026f88ff6538c285467332cf2677d795d2e91a50f4dd1e22a3"
+        },
+        {
+          "id": "mathlib-essential",
+          "release": "mathlib-essential-5ed2965-wasm64-36a96239e08fd2e0",
+          "rawSha256": "sha256:eeab078f1c0d4d021d178a9bd1eaad9391b7ba02c7a3f5415413fde11a248b4c"
+        }
+      ],
+      "umbrella": [
+        {
+          "path": "QED64/Essential.olean",
+          "sha256": "69c5894a3029b26d548c5b094a733c18f88048dad28c3724523e19b690bcbea2",
+          "bytes": 396664
+        },
+        {
+          "path": "QED64/Essential.olean.server",
+          "sha256": "1f224293183d4785009d5bf1fecef989a70086d667b0ee530996f07cd0934e4a",
+          "bytes": 96
+        }
+      ],
+      "files": 20014,
+      "bytes": 1540647112,
+      "digest": "sha256:8c247f413e97e1b36341d9fa6774f19171dc89486ebd922bc98690e63ddd3d23"
+    },
+    "lib-tree": {
+      "slim": false,
+      "packs": [
+        {
+          "id": "lean-core",
+          "release": "lean-core-4.34.0-wasm64-36a96239e08fd2e0",
+          "rawSha256": "sha256:1c5c75db4e883f026f88ff6538c285467332cf2677d795d2e91a50f4dd1e22a3"
+        },
+        {
+          "id": "mathlib-essential",
+          "release": "mathlib-essential-5ed2965-wasm64-36a96239e08fd2e0",
+          "rawSha256": "sha256:eeab078f1c0d4d021d178a9bd1eaad9391b7ba02c7a3f5415413fde11a248b4c"
+        }
+      ],
+      "umbrella": [
+        {
+          "path": "QED64/Essential.olean",
+          "sha256": "69c5894a3029b26d548c5b094a733c18f88048dad28c3724523e19b690bcbea2",
+          "bytes": 396664
+        },
+        {
+          "path": "QED64/Essential.olean.private",
+          "sha256": "0a14fc33338f286cbbfbcf6552fc34417c3e8cb4f9889eb3134cc19f106d9913",
+          "bytes": 96
+        },
+        {
+          "path": "QED64/Essential.olean.server",
+          "sha256": "1f224293183d4785009d5bf1fecef989a70086d667b0ee530996f07cd0934e4a",
+          "bytes": 96
+        }
+      ],
+      "files": 25018,
+      "bytes": 3953723984,
+      "digest": "sha256:57adeb5f0d3e82e3bd94fb70a583135cf8f018ea139c6b5d7c1cc80400e1302e"
+    }
+  }
+}
