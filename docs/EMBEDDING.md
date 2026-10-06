@@ -1008,3 +1008,8 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
     `files` and listed as closure.json `infra`; `createWorker` gains
     `assetHeadLength` (a HEAD on a static asset carries the GET's
     `Content-Length`; hardened default on, `QED64_LEGACY` off).
+  - every Tier 1/2 CLI of docs/CLI-CONTRACT.md ships (`cli.mjs` and its
+    types, `supervised-run.mjs` added to `files` and closure.json
+    `pipeline`); preflight moved to `pipeline/release/preflight.mjs` (shim at
+    `tests/adversarial/preflight.mjs`) and ships with
+    `pipeline/release/page-target.mjs`.

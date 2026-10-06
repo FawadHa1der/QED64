@@ -17,7 +17,7 @@ URL=$(tests/adversarial/resident-url.sh 5184)
 echo "resident url: $URL"
 RUN=$(node tests/adversarial/harness.mjs run-dir --url "$URL")
 echo "run dir: $RUN"
-echo "=== preflight ==="; node tests/adversarial/preflight.mjs --url "$URL" --run-dir "$RUN" || { echo "GATE-REFUSED: preflight (exit $?)"; exit 3; }
+echo "=== preflight ==="; node pipeline/release/preflight.mjs --url "$URL" --run-dir "$RUN" || { echo "GATE-REFUSED: preflight (exit $?)"; exit 3; }
 # --kill-strays: the preflight's own boot-smoke browser is the usual "stray" (a
 # refusal here skipped every resident lane on 2026-09-03); the memory floor is
 # an argument so a busy machine can still run with a lower bar.

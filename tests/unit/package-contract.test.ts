@@ -9,6 +9,7 @@
 //     inside its own list; lean.worker.js's importScripts targets and the
 //     workers the page spawns ship beside it, and WORKER_URLS is that list;
 //   * the edge-worker library (`qed64/edge`, closure.infra) imports nothing;
+//   * every Tier 1/2 pipeline tool (pipeline/snapshot/cli.mjs SPECS) ships;
 //   * `exports` targets exist, and `npm pack` ships the closure and nothing
 //     beyond the `files` allowlist (plus npm's own README/LICENSE/package.json).
 import { execFileSync } from "node:child_process";
@@ -16,6 +17,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { WORKER_URLS } from "../../frontend/src/embed/urls";
+import { SPECS } from "../../pipeline/snapshot/cli.mjs";
 
 const root = path.resolve(__dirname, "../..");
 const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
@@ -118,9 +120,17 @@ describe("embedding/closure.json", () => {
 
   it("the pipeline imports only relative paths (inside the list) and node: built-ins", () => {
     const listed = new Set(closure.pipeline);
+    // The one bare specifier: preflight's boot smoke imports the CALLER's
+    // playwright, dynamically and only when it runs (not with --no-boot).
+    const OPTIONAL_PEERS: Record<string, string[]> = { "pipeline/release/preflight.mjs": ["playwright"] };
     for (const f of closure.pipeline.filter((p) => /\.m?js$/.test(p))) {
-      for (const s of specifiers(read(f))) {
-        if (s.startsWith("node:")) continue;
+      const source = read(f);
+      for (const peer of OPTIONAL_PEERS[f] ?? []) {
+        expect(source.match(/\bimport\s*\(\s*["']([^"']+)["']\s*\)/g), `${f} imports ${peer} dynamically, once`).toEqual([`import("${peer}")`]);
+        expect(source, `${f} imports ${peer} statically`).not.toMatch(new RegExp(`from\\s*["']${peer}["']`));
+      }
+      for (const s of specifiers(source)) {
+        if (s.startsWith("node:") || (OPTIONAL_PEERS[f] ?? []).includes(s)) continue;
         expect(s.startsWith("./") || s.startsWith("../"), `${f} imports ${s}`).toBe(true);
         const r = resolveRel(f, s);
         expect(r !== null && listed.has(r), `${f}: ${s} → ${r}`).toBe(true);
@@ -137,6 +147,17 @@ describe("embedding/closure.json", () => {
     for (const f of closure.infra) {
       expect(specifiers(read(f)), f).toEqual([]);
       expect(read(f), f).not.toMatch(/\brequire\s*\(|["']node:/);
+    }
+  });
+
+  it("every Tier 1/2 pipeline tool ships with what it imports (cli.mjs SPECS)", () => {
+    const listed = new Set(closure.pipeline);
+    const files = new Set(pkg.files as string[]);
+    const tools = Object.entries(SPECS).filter(([, s]) => s.tier === 1 || s.tier === 2);
+    expect(tools.length).toBeGreaterThanOrEqual(10);
+    for (const f of [...tools.map(([, s]) => s.script), "pipeline/snapshot/cli.mjs", "pipeline/snapshot/cli.d.mts", "pipeline/snapshot/supervised-run.mjs", "pipeline/snapshot/snapshot-probe.mjs"]) {
+      expect(listed.has(f), `${f} is not in closure.pipeline`).toBe(true);
+      expect(files.has(f), `${f} is not in package.json files`).toBe(true);
     }
   });
 

@@ -11,7 +11,7 @@ import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { arg, coolDown, has, resolveTarget, root, runDir, strayBrowsers, teeLog } from "./harness.mjs";
-import { runPreflight } from "./preflight.mjs";
+import { runPreflight } from "../../pipeline/release/preflight.mjs";
 
 fs.mkdirSync(path.join(root, "work/adversarial"), { recursive: true });
 const refuse = (why) => { console.error(`run: REFUSED — ${why}`); process.exit(3); };

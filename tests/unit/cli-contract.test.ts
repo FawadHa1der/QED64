@@ -224,7 +224,7 @@ describe("SPECS", () => {
         expect(source).not.toMatch(/cli\.mjs["']/);
       } else {
         expect(begins, tool).toBe(0);
-        expect(source).toMatch(/import \{ parseCli \} from "[./]+(pipeline\/snapshot\/)?cli\.mjs";/);
+        expect(source).toMatch(/import \{ parseCli \} from "(\.\/|(\.\.\/)+(pipeline\/)?snapshot\/)cli\.mjs";/);
         expect(source).toContain(`parseCli(${JSON.stringify(tool)})`);
       }
     }
@@ -333,6 +333,24 @@ describe("the argument grammar (cliContract, the one implementation)", () => {
 });
 
 describe("the real scripts", () => {
+  test("tests/adversarial/preflight.mjs (moved 2026-10-06) is a shim: the same stdout, exit code and run dir, plus one stderr deprecation WARNING", () => {
+    const outputs = ["pipeline/release/preflight.mjs", "tests/adversarial/preflight.mjs"].map((script) => {
+      const d = sandbox("preflight-shim");
+      const r = run(script, ["--url", "http://127.0.0.1:9/", "--no-boot", "--run-dir", path.join(d, "run")], d);
+      const json = JSON.parse(fs.readFileSync(path.join(d, "run/preflight.json"), "utf8"));
+      return { ...r, json };
+    });
+    const [moved, shim] = outputs as [typeof outputs[0], typeof outputs[0]];
+    expect(moved.status).toBe(3);
+    expect(moved.stdout).toMatch(/^PREFLIGHT REFUSED: /m);
+    expect([shim.status, shim.stdout, shim.json]).toEqual([moved.status, moved.stdout, moved.json]);
+    expect(moved.stderr).toBe("");
+    expect(shim.stderr).toBe("preflight: WARNING — tests/adversarial/preflight.mjs is deprecated; use pipeline/release/preflight.mjs (docs/CLI-CONTRACT.md)\n");
+    expect(reservedHit(shim.stderr)).toBeNull();
+    const help = run("tests/adversarial/preflight.mjs", ["--help"], tmp);
+    expect([help.status, help.stdout]).toEqual([0, `${formatHelp("preflight")}\n`]);
+  });
+
   for (const tool of Object.keys(ARGS)) {
     const spec = SPECS[tool]!;
     test(`${tool}: --help and -h exit 0 with the help (synopsis first), before any side effect`, () => {

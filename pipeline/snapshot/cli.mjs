@@ -11,7 +11,7 @@
 //
 // Two ways a script binds to it (SPEC.binding):
 //   "import" — the script imports parseCli from this module (supervised-run,
-//              preflight: no downstream copies them without this file);
+//              preflight: both ship in the package beside this file);
 //   "inline" — the script carries a generated prelude (renderPrelude) between
 //              `// <cli-contract>` and `// </cli-contract>`: the same
 //              cliContract source, the compact spec and the help text, so it
@@ -303,7 +303,7 @@ export const SPECS = {
   },
 
   preflight: {
-    script: "tests/adversarial/preflight.mjs",
+    script: "pipeline/release/preflight.mjs",
     npm: null,
     tier: 1,
     binding: "import",

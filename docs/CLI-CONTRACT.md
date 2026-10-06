@@ -34,7 +34,7 @@ node pipeline/snapshot/cli.mjs --write-preludes  # regenerate the inline prelude
 | [bake-snapshot](#bake-snapshot) | `pipeline/snapshot/bake-snapshot.mjs` | `bake:snapshot` | 1 | inline prelude |
 | [snapshot-probe](#snapshot-probe) | `pipeline/snapshot/snapshot-probe.mjs` | — | 1 | inline prelude |
 | [supervised-run](#supervised-run) | `pipeline/snapshot/supervised-run.mjs` | — | 1 | imports `cli.mjs` |
-| [preflight](#preflight) | `tests/adversarial/preflight.mjs` | — | 1 | imports `cli.mjs` |
+| [preflight](#preflight) | `pipeline/release/preflight.mjs` (shim at `tests/adversarial/preflight.mjs`) | — | 1 | imports `cli.mjs` |
 | [olean-imports --audit](#olean-imports---audit) | `pipeline/artifacts/olean-imports.mjs` | — | 1 | inline prelude (inside the main-module check) |
 | [node-runner](#node-runner) | `pipeline/snapshot/node-runner.mjs` | `runner` | 2 | inline prelude |
 | [persistent-probe](#persistent-probe) | `pipeline/snapshot/persistent-probe.mjs` | — | 2 | inline prelude |
@@ -128,7 +128,10 @@ legacy parser reads it unchanged and sees only the first value.
 
 Only supervised-run and preflight import `parseCli` at run time. No downstream
 copies either of them without `cli.mjs`: the showcase gets `cli.mjs` with the
-directory, and preflight runs in place from the QED64 checkout.
+directory, and preflight runs in place from the QED64 checkout or the
+installed package (`cli.mjs`, `supervised-run.mjs` and `preflight.mjs` are in
+`files` and in closure.json's `pipeline` list, with every Tier 1/2 tool;
+`tests/unit/package-contract.test.ts` checks it).
 
 After you edit SPECS, run `node pipeline/snapshot/cli.mjs --write-preludes`.
 The unit test fails on drift. It also fails when a file downstream vendors one
@@ -410,8 +413,18 @@ usage: supervised-run.mjs --target <file> [--quiet-ms n] [--stable-ms n] [--give
 
 ### preflight
 
-**Tier 1.** `node tests/adversarial/preflight.mjs …`. It runs in place from
-the QED64 checkout, including when the showcase calls it.
+**Tier 1.** `node pipeline/release/preflight.mjs …`. It runs in place from
+the QED64 checkout or from the installed package, including when the showcase
+calls it. It needs the caller's `playwright` only for the boot smoke (a
+dynamic import, not taken with `--no-boot`). As a module it exports
+`runPreflight(target, opts)`, `bootSmoke(url, budgetMs)` and `main()`; the
+target comes from `resolveTarget(url)` in `pipeline/release/page-target.mjs`.
+
+**Moved on 2026-10-06** from `tests/adversarial/preflight.mjs`. The old path is
+a shim with the same flags, output and exit codes that also prints
+`preflight: WARNING — tests/adversarial/preflight.mjs is deprecated; use
+pipeline/release/preflight.mjs (docs/CLI-CONTRACT.md)` on stderr before
+anything else. It goes after both consumers re-pin past it.
 
 ```
 usage: preflight.mjs [--url <page url>] [--no-boot] [--boot-budget-ms 180000] [--run-dir <dir>]
@@ -454,10 +467,11 @@ usage: preflight.mjs [--url <page url>] [--no-boot] [--boot-budget-ms 180000] [-
 
 **Consumers:**
 
-- `tests/adversarial/run.mjs` imports `runPreflight`.
-- `tests/adversarial/resident-gate.sh` passes `--url --run-dir`.
-- The showcase's `scripts/preflight-overlays.sh` passes `--url [--no-boot]`.
-- The showcase's `tests/experiments/x1-preflight.mjs`.
+- `tests/adversarial/run.mjs` imports `runPreflight` (from the new path).
+- `tests/adversarial/resident-gate.sh` passes `--url --run-dir` (the new path).
+- The showcase's `scripts/preflight-overlays.sh` passes `--url [--no-boot]`
+  (old path, through the shim, until it re-pins).
+- The showcase's `tests/experiments/x1-preflight.mjs` (old path, likewise).
 
 ### olean-imports --audit
 
@@ -756,6 +770,7 @@ usage: unpack.mjs --manifest <file> --out <dir>
 | 1 | 2026-10-04 | node-runner creates `--work` only after the artifact checks pass, so a class-2 refusal leaves the filesystem as it was. | fix |
 | 1 | 2026-10-04 | `bake-snapshot --roots/--label/--initial-bytes` write the overlay fields of docs/EMBEDDING.md §8 into the entry (only when given); a malformed value exits 2 before anything is written. | additive |
 | 1 | 2026-10-05 | Tier 3: `pipeline/snapshot/header-switch-probe.mjs` is deleted; its Mathlib probe, two-snapshot seeding and ACT4 headerless switch live in `resident-probe.mjs` behind `--mathlib`, `--snapshots <a,b>` and `--act4 [--act4-ms <ms>]`. No consumer named it (lean4game's sync list and the showcase's pin script checked). | tier 3, no promise |
+| 1 | 2026-10-06 | preflight moved from `tests/adversarial/preflight.mjs` to `pipeline/release/preflight.mjs` (same flags, output and exit codes), shim at the old path: it runs the moved script after a stderr deprecation WARNING. Its two harness helpers (`resolveTarget`, `fetchJson`) moved to `pipeline/release/page-target.mjs` (the harness re-exports them). It ships in the package with `cli.mjs`, `cli.d.mts` and `supervised-run.mjs`, so every Tier 1/2 tool is in `files` and closure.json `pipeline`. | moved, shim at the old path |
 
 ## Open decisions
 

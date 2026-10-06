@@ -21,7 +21,8 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   (the root `tsc` does not cover `frontend/`) and refuse on failure; `npm
   test` skips it with a printed notice when `frontend/node_modules` is absent
   (a fresh clone — run `npm --prefix frontend ci`), `run.mjs` never skips. tests/unit/lean4monaco-fixes.test.ts likewise skips its installed-file suites with a printed notice when frontend/node_modules is absent, except under CI (`CI` set); .github/workflows/ci.yml installs the frontend before `vitest run tests/unit`.
-- **Preflight** (`preflight.mjs --url <page url> [--no-boot]`): for the
+- **Preflight** (`pipeline/release/preflight.mjs --url <page url> [--no-boot]`;
+  `tests/adversarial/preflight.mjs` is a deprecated shim to it): for the
   pairing the URL will boot (`?runtime=`, `?snapshots=` exactly as
   qed64-boot.ts reads them; the page has one transport, so `mode` in every
   report is the constant `resident`) it verifies the manifest is JSON with chunks,
