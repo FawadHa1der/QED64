@@ -11,8 +11,9 @@
 //      the olean reader and closure.json are loaded for real;
 //      the shipped CLIs (preflight, olean-imports, cli.mjs) run --help
 //      through the symlink and print their usage line;
-//   4. tests/consumer/fixture/ (index.html + main.ts on qed64/embed, worker.ts
-//      on qed64/edge) copied into the consumer, type-checked with the repo's
+//   4. tests/consumer/fixture/ (index.html + main.ts on qed64/embed,
+//      headless.ts = docs/EMBEDDING.md §6.1's headless boot on qed64/embed,
+//      worker.ts on qed64/edge) copied into the consumer, type-checked with the repo's
 //      tsc and built with the repo's vite (`vite build --config`), and the
 //      built worker answered one request.
 // Nothing is written under this repo (git status is compared before and
@@ -162,12 +163,12 @@ ok("the shipped CLIs run through the node_modules/qed64 symlink: preflight, olea
 const fixture = path.join(root, "tests/consumer/fixture");
 for (const f of fs.readdirSync(fixture)) fs.copyFileSync(path.join(fixture, f), path.join(consumer, f));
 sh(process.execPath, [path.join(root, "node_modules/typescript/bin/tsc"), "-p", path.join(consumer, "tsconfig.json")], { cwd: consumer });
-ok("tsc -p the fixture: main.ts (qed64/embed, TypeScript source) and worker.ts (qed64/edge, edge-worker.d.ts) type-check");
+ok("tsc -p the fixture: main.ts and headless.ts (qed64/embed, TypeScript source) and worker.ts (qed64/edge, edge-worker.d.ts) type-check");
 sh(process.execPath, [path.join(root, "node_modules/vite/bin/vite.js"), "build", "--config", path.join(consumer, "vite.config.mjs")], { cwd: consumer });
 const dist = path.join(consumer, "dist");
 const built = fs.readdirSync(dist, { recursive: true }).map(String).sort();
 const text = (f) => fs.readFileSync(path.join(dist, f), "utf8");
-if (!built.includes("index.html") || !built.includes("index.js") || !built.includes("worker.js")) fail(`vite build wrote ${built.join(", ")}`);
+if (!["index.html", "index.js", "headless.js", "worker.js"].every((f) => built.includes(f))) fail(`vite build wrote ${built.join(", ")}`);
 if (!text("index.js").includes("/workers/lean.worker.js") || !text("index.js").includes("qed64/embed ")) fail("the built page does not carry qed64/embed (WORKER_URLS missing from index.js)");
 // Every module vite bundled came from the extracted package, never from this repo.
 for (const f of built.filter((f) => f.endsWith(".js"))) if (text(f).includes(root)) fail(`${f} names a path inside the repository`);

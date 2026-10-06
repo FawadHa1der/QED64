@@ -12,7 +12,10 @@ QED64 is consumed in two ways, and this document is the contract for both:
 | Tier | Who | What they use | Where |
 |------|-----|---------------|-------|
 | **Page API** | an embedder of the QED64 *page*. The widgets showcase frames QED64's own `dist/` on its origin. | `globalThis.qed64.api`, boot parameters, embed mode, the dist layout | §2 – §5 |
-| **Library** | an embedder of QED64's *modules*. lean4game builds its own page on the runtime. | the npm package's `qed64/embed`, `qed64/workers/*`, `qed64/pipeline/*` | §6 – §8 |
+| **Library** | an embedder of QED64's *modules*. lean4game builds its own page on the runtime. | the npm package's `qed64/embed`, `qed64/edge`, `qed64/workers/*`, `qed64/pipeline/*` | §6 – §8 |
+
+§6 says how each of the two consumers holds QED64 today, and §6.1 is the
+recipe for a new one (a Vite page with or without the editor).
 
 Everything not named here is internal and may change in any commit (§9).
 
@@ -362,6 +365,13 @@ Page-tier facts (stable, for preflights and deploy tools):
 
 ## 5. Hosting facts, and what v1.1 adds
 
+The page tier's consumer today is the widgets showcase (§6 has the whole
+picture). It builds QED64's shell from the QED64 sources it pins (`npm run
+build:site` in its submodule), serves that `dist/` at its origin root, and
+frames it as `/?embed=1&snapshots=snapshots/<overlay>#code=…`, driving it only
+through the page API (§2) and reading `dist/qed64-build.json` (§4). A new
+page-tier embedder does the same: §6.1 (b).
+
 These hold already:
 - **Cross-origin isolation.** QED64 needs `crossOriginIsolated`. The top
   document must send COOP `same-origin` and COEP `require-corp`.
@@ -389,9 +399,19 @@ v1.1 adds:
 
 ## 6. The library: the `qed64` npm package
 
-lean4game depends on QED64 as an npm **git dependency** pinned by a full SHA:
-`"qed64": "github:FawadHa1der/QED64#<40-hex>"`. npm then fetches the codeload
-tarball, with no git or SSH needed, and honours `files`.
+The two consumers hold QED64 in two different ways (checked 2026-10-06 in
+their repositories):
+
+| | lean4game (library tier) | the widgets showcase (page tier, and the tools) |
+|---|---|---|
+| holds QED64 as | an npm **git dependency** pinned by a full SHA: `"qed64": "github:FawadHa1der/QED64#<40-hex>"` in `client/package.json` (its `qed64-dep` branch). npm fetches the codeload tarball, with no git or SSH needed, and honours `files`. | a **git submodule**, `deps/qed64`, checked out at the pinned commit (`pins/<id>/QED64.lock.json`); a pin under test is a worktree of that submodule |
+| imports | `qed64/embed` only: every runtime name it uses is in §7.0 (`tests/unit/embed-barrel.test.ts` pins the list). Its tsconfig maps `qed64/embed` to closure.json `entry`, and `scripts/stage-workers.sh` checks that mapping against the installed package. | nothing from `qed64/embed`. Its Cloudflare Worker reuses QED64's edge code: `qed64/edge` (§6 exports, docs/DEPLOY.md "Using qed64/edge in your own Worker") was cut for it; today the Worker imports `isImmutable` from the submodule's `infra/worker.js`. |
+| workers | `scripts/stage-workers.sh` copies closure.json `workers` into `client/public/workers/` (exactly that set) and compares `runtime.minKernelPatch` with its own kernel pin | the shell's `dist/workers/` |
+| editor | its own page: lean4monaco's client, behind its translation layer, on `LspRelay.clientPort` (§7.9) | QED64's own page in an iframe, `?embed=1` (§3) |
+| pipeline CLIs (docs/CLI-CONTRACT.md) | `wasm/build-from-source.sh` runs bake-snapshot, snapshot-probe, pack, unpack, inspect and chunk-runtime from (a copy of) `node_modules/qed64` | bake-snapshot, snapshot-probe, supervised-run, preflight and olean-imports, from the submodule |
+| Vite | a COOP/COEP middleware, `optimizeDeps.exclude: ["qed64"]`, `__QED64_BUILD_ID__` defined from its runtime manifest | — (it builds QED64's own `frontend/`) |
+
+The package:
 
 `package.json` (pinned by `tests/unit/package-contract.test.ts`):
 - `"license": "MIT"`, `"sideEffects": false`, zero runtime dependencies.
@@ -409,7 +429,7 @@ tarball, with no git or SSH needed, and honours `files`.
   - `"./embedding/closure.json"`;
   - `"./package.json"`.
 - `files`: exactly the closure below, plus the license, README and this
-  document. 50 files, about 194 kB packed. `npm run test:consumer`
+  document. 50 files, about 199 kB packed. `npm run test:consumer`
   (tests/consumer/check-consumer.mjs) proves the packed files alone resolve
   and build.
 
@@ -435,6 +455,144 @@ Notes for consumers:
 - `runtime.minKernelPatch`: `"0032"`, the oldest kernel patch level these
   workers drive correctly. Compare it against your own KERNEL-PIN;
 - `workerProtocol`: §7.7.
+
+### 6.1 Minimal Vite consumer
+
+`tests/consumer/fixture/` is the runnable form of this section: `npm run
+test:consumer` packs QED64, installs the tarball into a scratch consumer and
+type-checks and builds the fixture with Vite against it (`main.ts`: the
+capability check; `headless.ts`: the boot below; `worker.ts`: a Worker on
+`qed64/edge`).
+
+**Both shapes need the same four things.**
+
+1. **The dependency.** In `package.json`:
+   `"qed64": "github:FawadHa1der/QED64#<40-hex>"` (a pushed commit: §1,
+   principle 6).
+   TypeScript needs `"moduleResolution": "bundler"`; the `exports` map then
+   gives `qed64/embed` its types (the closure is `.ts` source).
+2. **Cross-origin isolation and Vite's pre-bundler.** The top document must
+   be `crossOriginIsolated` (§5), in development too:
+
+   ```js
+   // vite.config.js
+   const isolate = (_req, res, next) => {
+     res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+     res.setHeader("Cross-Origin-Embedder-Policy", "require-corp");
+     next();
+   };
+   export default {
+     plugins: [{
+       name: "cross-origin-isolation",
+       configureServer: (server) => { server.middlewares.use(isolate); },
+       configurePreviewServer: (server) => { server.middlewares.use(isolate); },
+     }],
+     optimizeDeps: { exclude: ["qed64"] },   // serve the closure as source modules, as lean4game does
+     // optional: define: { __QED64_BUILD_ID__: JSON.stringify("<runtime buildId>") } makes the boot ask for
+     // /runtime/runtime-manifest.<buildId>.json first (docs/DEPLOY.md "Atomic promotes"); without it the
+     // boot reads the mutable /runtime/runtime-manifest.json.
+   };
+   ```
+
+   In production your host sends the same two headers on the HTML (with
+   `qed64/edge`: `createWorker` does, docs/DEPLOY.md).
+3. **The workers at `/workers/`.** Copy closure.json's `workers` (all four:
+   `lean.worker.js` loads its siblings from its own directory, §6) to the
+   `serveAs` paths, on every install and re-pin:
+
+   ```js
+   // scripts/stage-qed64-workers.mjs (run after npm install)
+   import fs from "node:fs";
+   import path from "node:path";
+   import { createRequire } from "node:module";
+   const pkg = path.dirname(createRequire(import.meta.url).resolve("qed64/package.json"));
+   const closure = JSON.parse(fs.readFileSync(path.join(pkg, "embedding/closure.json"), "utf8"));
+   if (closure.schema !== "qed64.closure/v1") throw new Error(`closure schema ${closure.schema}`);
+   fs.rmSync("public/workers", { recursive: true, force: true });   // exactly the closure's set
+   for (const { path: from, serveAs } of closure.workers) {
+     if (!serveAs.startsWith("/workers/")) throw new Error(`unexpected serveAs ${serveAs}`);
+     fs.mkdirSync(path.dirname(`public${serveAs}`), { recursive: true });
+     fs.copyFileSync(path.join(pkg, from), `public${serveAs}`);
+   }
+   ```
+
+   The worker revision is checked at run time: a mixed set dies with
+   `WORKER_DEP_MISMATCH` (§7.7).
+4. **The artifacts at `/runtime/`, `/profiles/` and `/snapshots/`,** on the
+   page's origin (§4 "Page-tier facts"; an off-origin source is refused, §11):
+   the runtime manifest and its chunks, the profile index and packs, the
+   snapshot index and its `.snapz` regions, served without
+   `Content-Encoding` and with `404` for anything missing (§5). The
+   snapshots are binary-paired to the runtime: serve them as one set
+   (docs/DEPLOY.md "Consistency rule"). In development, put them in Vite's
+   `publicDir` (and add them to `server.watch.ignored`; they are gigabytes);
+   in production, docs/DEPLOY.md is the layout QED64 itself serves (R2 behind
+   `qed64/edge`, same origin). A page whose environment is all snapshot (a
+   game) boots with `profiles: "none"`: no pack is installed, and a missing
+   `/profiles/index.json` counts as an empty one (§7.6).
+
+**(a) Without the editor: drive a session headlessly.** Your code is the
+language client. It boots a `ResidentSession` behind an `LspRelay` and
+speaks JSON-RPC on `relay.clientPort` (§7.9). From
+`tests/consumer/fixture/headless.ts`:
+
+```ts
+import { LspRelay, MEMORY64_PROBE, ResidentSession, installArtifacts, makeEditorPolicy, type StatusSink } from "qed64/embed";
+
+if (!crossOriginIsolated || !WebAssembly.validate(MEMORY64_PROBE)) throw new Error("needs COOP/COEP and Memory64");
+const ui: StatusSink = {   // progress as data (§7.1)
+  busy: (label, info) => console.log("busy", label, info?.stage),
+  progress: (label, info) => console.log(label, info?.loaded, info?.total),
+  idle: (label) => console.log("idle", label),
+};
+const artifacts = await installArtifacts(ui, { overrides: "none" });   // manifest, snapshot index, core pack
+const policy = makeEditorPolicy(artifacts.snapshots);                    // snapshots and memory per header
+let current = "import Mathlib\n\nexample : 2 + 2 = 4 := by norm_num\n";   // what a (re)boot serves
+const relay = new LspRelay(
+  (opts) => new ResidentSession({ artifacts, ui, policy, headerText: current }, opts ?? {}),
+  { status: (s) => console.log(s.relay, s.phase, s.lastDeath?.cause?.kind ?? "") },   // deaths, §7.2
+  () => new Promise((r) => setTimeout(r, 1500)),
+);
+addEventListener("pagehide", () => relay.unload(), { once: true });
+
+const port = relay.clientPort, uri = "file:///project/Probe.lean";
+port.onmessage = (e) => { if (e.data.method === "textDocument/publishDiagnostics") console.log(e.data.params.diagnostics); };
+port.postMessage({ jsonrpc: "2.0", id: 0, method: "initialize", params: { processId: null, rootUri: null, capabilities: {} } });
+port.postMessage({ jsonrpc: "2.0", method: "initialized", params: {} });
+port.postMessage({ jsonrpc: "2.0", method: "textDocument/didOpen", params: { textDocument: { uri, languageId: "lean4", version: 1, text: current } } });
+// an edit: update `current`, then a full-text didChange (coalesced, §7.8)
+```
+
+The relay keeps the document across reboots and replays it, so the port is
+the only connection you make (§7.9). A page that wants files beside the
+document, or one step before the loop opens, passes `files` /
+`beforeArm` in the `ResidentSession` host (§7.3).
+
+**(b) With the editor.** Two ways:
+- **QED64's own page in an iframe** (page tier). Build QED64's shell
+  (`npm run build:site` in a QED64 checkout at the pinned commit; it writes
+  `dist/` and `dist/qed64-build.json`), serve it at your origin root beside
+  the artifacts above, and frame `/?embed=1` (§3). Drive it through
+  `globalThis.qed64.api` (§2): `setDocument`, `settled`, the `boot`,
+  `diagnostics` and `death` events. Same origin only in v1 (§1.5). This is
+  the widgets showcase's shape.
+- **Your own page with lean4monaco** (library tier). Boot exactly as in (a),
+  then hand `relay.clientPort` to the language client instead of posting
+  on it yourself. With lean4monaco, the `WorkerDirect` connection the stock
+  page uses (`frontend/src/main.ts`):
+
+  ```ts
+  await leanMonaco.start({
+    websocket: { $type: "WorkerDirect", worker: { postMessage() {} }, messagePort: relay.clientPort } as unknown as { url: string },
+    // ...your vscode settings
+  });
+  ```
+
+  lean4game does this behind a translation layer of its own
+  (`GameTranslation.attachServer(relay.clientPort)`). The InfoView's static
+  files (`@leanprover/infoview/dist`, lean4monaco's `webview.js`) are
+  lean4monaco's to serve: copy them as QED64's `frontend/vite.config.ts`
+  and lean4game's `client/vite.config.ts` do.
 
 ---
 
@@ -1151,3 +1309,9 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   - `dist/qed64-build.json` gains `embedApiRevision` (the barrel's
     `EMBED_API_REVISION`; an additive key: `qed64.build/v1` readers ignore
     it). `EMBED_API_REVISION` → `1.0.0-pre.5`.
+  - docs only: §5 and §6 describe the two consumers as they hold QED64
+    (lean4game: the git dependency and `qed64/embed`; the showcase: the
+    submodule, the framed shell, the CLIs and the edge code), and §6.1 is a
+    minimal Vite consumer with and without the editor, whose headless boot
+    is `tests/consumer/fixture/headless.ts`, type-checked and built against
+    the packed tarball by `npm run test:consumer` (G2).
