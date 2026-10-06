@@ -58,8 +58,13 @@ output so `runtime/`, `snapshots/` and `index.json` move together, exactly
 like the local promote. A toolchain release is adopted with
 `pipeline/release/adopt-release.sh` (docs/REBUILD.md §3), which bakes against
 the release's runtime, stages the pairing under `work/staging/<buildId>/`
-and promotes it into an ISOLATED served tree (`--public`; never a checkout's
-`public/`); that tree is the promote output to upload from. The digest-named chunk files make mixed CDN caches
+and promotes it into an ISOLATED served tree (`--public`; never this
+checkout's or main's `public/`). `scripts/upload-artifacts.sh` reads only
+its own checkout's `public/`, so make that tree another worktree's own real
+`public/` (`--public <qed64-wt-a3>/public`) and upload from that worktree,
+or promote the same staging into the uploading checkout's real `public/`
+first (`promote-staging.mjs --staging work/staging/<buildId> --public
+<checkout>/public`) and upload there. The digest-named chunk files make mixed CDN caches
 harmless; the mutable files (`runtime-manifest.json`, `snapshots/index.json`)
 are served `must-revalidate`.
 
@@ -91,7 +96,9 @@ Promote checklist, in order:
 1. Commit the new `public/runtime/runtime-manifest.json` (paired with the
    rebaked snapshots) — the shell build reads its `buildId`.
 2. `scripts/upload-artifacts.sh` — additive; invisible to deployed shells
-   until a shell that pins the new buildId ships.
+   until a shell that pins the new buildId ships. It uploads its own
+   checkout's `public/`: after an adoption, the checkout whose `public/` is
+   the isolated tree, or one the staging was promoted into (above).
 3. Push `main` — CI deploys the shell, which asks for the runtime it was
    built against and finds it already in R2. No window.
 

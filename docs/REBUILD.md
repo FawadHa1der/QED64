@@ -94,7 +94,9 @@ only as a process (`node <tools>/cli.mjs …`; `<tools>` is `--tools`, else
 `work/adopt/<id>/` (`$W`), `work/staging/<buildId>/` and `--public`:
 
 ```sh
-# fill an isolated served tree with the tracked manifests and their bytes first
+# fill an isolated served tree with the tracked manifests and their bytes first; the model is
+# another worktree's own real (non-symlinked) public/, e.g. <qed64-wt-a3>/public: its checkout
+# can then run the resident gate and the upload against exactly that tree
 npm run -s fetch:artifacts -- --out <tree> --with-manifests --release <the SERVED release dir|url>
 pipeline/release/adopt-release.sh --id <lean-vX.Y.Z-hash> --digest sha256:<hex> \
   (--from https://github.com/FawadHa1der/lean4/releases/download/<id>/ | --from-dir <release dir>) \
@@ -114,8 +116,17 @@ fetching and writing nothing):
    `runtime.minKernelPatch` (NNNN, then an optional suffix), and the runtime
    is not the one `public/runtime/runtime-manifest.json` serves (a rehearsal
    passes `--allow-served`, into an isolated tree only). `--public` must not
-   be (or lie in) this checkout's or the main checkout's `public/` or the
-   release dir, and must hold no symlink leaving it.
+   be (or lie in) this checkout's or the main checkout's `public/`, the
+   release dir or `work/adopt`, `work/staging`; it must hold no symlink
+   leaving it, and it must be filled: the three mutable manifests and every
+   profile manifest its `profiles/index.json` lists (dry run too), and, in a
+   real run before the fetch, a clean `verify-release.mjs --public` (the
+   promote demands the same, hours later). `--umbrella` must not lie in
+   `work/adopt` or `work/staging` (a rerun deletes the trees it reads). `$W`
+   and the staging dir must be real directories with no symlink three
+   levels down (a rerun's `rm -rf`, unpacks and copies would follow it).
+   With `--from <URL>` the record is fetched first, and an id or digest
+   mismatch is a one-line refusal before `$W/logs` exists.
 3. **artifact-lib**: `lean-lib` (the runtime's own `lib/lean`, the tree the
    release gate passed on) unpacked to `$W/artifact/lib/lean`. It has no
    `.ilean` files, so the persistent-path test's patch-0010 check is skipped
@@ -165,17 +176,25 @@ fetching and writing nothing):
     checks it against the runtime's `sourceRevision` and buildId), comment
     lines naming the release id and digest, `kernel.patch`, the buildId, the
     raw snapshot sizes and the pack raw digests.
-13. **next**: the operator's landing steps, printed and not performed: copy
+13. **next**: the operator's landing steps, printed and not performed. For a
+    packs change it starts with step 0, the SLIM-BAKE AUDIT (required at
+    every Mathlib pin: §3b step 3). Then: copy
     `$W/release/release.json` to `toolchain/lean4-wasm64-release.json`,
     `$W/KERNEL-PIN` to `pipeline/toolchain/KERNEL-PIN`, and the three tracked
     manifests from the isolated tree into `public/`; `npm install
     --package-lock-only -D <release tgz URL>` once published; the wrangler
-    variable (plan B2b); the user uploads the snapshots
-    (`scripts/upload-artifacts.sh`), then pushes and deploys.
+    variable (plan B2b); the user uploads, then pushes and deploys.
+    `scripts/upload-artifacts.sh` takes no tree argument and reads only its
+    own checkout's `public/`, so it runs either in the checkout whose own
+    `public/` IS the isolated tree (`cd <that worktree> &&
+    scripts/upload-artifacts.sh`; the script prints that when `--public` is
+    `<checkout>/public`), or in a checkout whose real `public/` first got
+    the same staging promoted into it (`promote-staging.mjs --staging
+    work/staging/$BID --public <checkout>/public`: verified, additive).
 
 Disk: the script refuses with less than 12 GB free under `work/` (16 GB with
-the fat tree; `QED64_ADOPT_IGNORE_DISK=1` overrides); the measured need is
-6-9 GB. Without `--keep`, the release's chunks and pack parts under
+the fat tree; `QED64_ADOPT_IGNORE_DISK=1` overrides; in a fresh clone
+without `work/` it measures the checkout); the measured need is 6-9 GB. Without `--keep`, the release's chunks and pack parts under
 `$W/release` are removed after a successful run (they are staged and
 promoted by then); the trees, `$W/artifact` and `$W/snapshot` stay.
 
@@ -201,12 +220,22 @@ digests, then by tree digest):
   tree digest differs. A runtime release changes this tree anyway (it is
   the new runtime's own library).
 
-**Test before landing.** The isolated tree is a served layout: serve it,
-or copy its runtime manifests, chunks and snapshots additively into a test
-tree, and run `tests/adversarial/resident-gate.sh` (preflight, e2e,
-latency, compiler battery: `--artifact $W/artifact --snap
-$W/snapshot/mathlib.snap --lib $W/lib-tree-slim`) plus the two crash
-gauntlets against `tests/adversarial/resident-url.sh`. One gate at a time:
+**Test before landing.** `tests/adversarial/resident-gate.sh` (preflight,
+e2e, latency, compiler battery) takes no arguments and serves only its own
+checkout's `public/` (vite's `publicDir` is `../public`). Run it from the
+checkout whose own real (non-symlinked) `public/` IS the isolated tree
+(`--public <qed64-wt-a3>/public`, the model above), and hand the battery the
+new pairing by environment, with the absolute `$W` of the adoption:
+
+```sh
+cd <qed64-wt-a3> && QED64_BATTERY_ARGS="--artifact $W/artifact --snap $W/snapshot/mathlib.snap --lib $W/lib-tree-slim" \
+  tests/adversarial/resident-gate.sh
+```
+
+(or `QED64_LEAN_ARTIFACT`, `QED64_MATHLIB_SNAP`, `QED64_LIB_TREE`). Without
+them the battery falls back to the deprecated stage1 + `work/snapshot`,
+the runtime being replaced, and passes against it. Then the two crash
+gauntlets against `tests/adversarial/resident-url.sh` in that checkout. One gate at a time:
 two concurrent runs kill each other's browsers. The kernel commit must be on
 `origin/qed64-wasm64` first.
 
@@ -251,7 +280,13 @@ touches, in this order:
    `work/lib-tree`, and a regenerated + recompiled `QED64/Essential` umbrella
    (its module list is the essential manifest's).
 3. Snapshots: both bakes as above; the KERNEL-PIN sizes will legitimately
-   change — record the new ones.
+   change — record the new ones. Both are baked from slim trees (no
+   `*.olean.private`), proved harmless at one Mathlib pin only: the
+   SLIM-BAKE AUDIT adopt-release prints as landing step 0 (the umbrella
+   import log, the `import all` audit, and a fat-versus-slim differential
+   bake compared with `snapshot-probe.mjs`) is required at every new pin and
+   recorded in docs/SERVER-SLIM-REBAKE.md; if the messages differ, ship
+   the fat bake.
 4. Page: the import-completion list and the covered-module set read the
    manifests, so they follow; the compiler battery's golden messages and the
    e2e corpus may need re-goldening where upstream changed message text.
