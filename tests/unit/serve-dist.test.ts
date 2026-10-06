@@ -197,7 +197,11 @@ describe.each(["legacy", "hardened"] as const)("serve-dist, edge=%s", (edge) => 
       isolated(artifact);
       expect(artifact.headers["content-type"]).toBe("text/plain;charset=UTF-8");
       expect(artifact.headers["content-length"]).toBe("9");
-      expect(artifact.headers["cache-control"]).toBe(edge === "legacy" ? IMMUTABLE : "no-store");
+      // a release-mapped miss is never cached, in either mode (the shipped worker's toolchain release)
+      expect(artifact.headers["cache-control"]).toBe("no-store");
+      // a site-owned miss keeps legacy's path rule (errorCacheControl null), no-store when hardened
+      const snapshot = await ask(port, "GET", "/snapshots/missing.dca2763359db27e7.snapz");
+      expect([snapshot.status, snapshot.headers["cache-control"]]).toEqual([404, edge === "legacy" ? IMMUTABLE : "no-store"]);
       expect((await ask(port, "GET", "/runtime/")).status).toBe(404);
       expect((await ask(port, "GET", "/runtime/chunks")).status).toBe(404); // a directory is no R2 object
       expect((await ask(port, "GET", "/favicon.ico")).status).toBe(404);

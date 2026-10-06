@@ -12,10 +12,12 @@
  * or imports it from the package as `qed64/edge` (docs/DEPLOY.md, "Using
  * qed64/edge in your own Worker"; package.json exports, closure.json infra).
  *
- * QED64's own infra/worker.js is `createWorker(QED64_LEGACY)`, which
- * reproduces the pre-library worker byte for byte (status, headers, body,
- * and every binding call); tests/unit/edge-worker.test.ts runs a request
- * matrix through both. The hardened defaults (ranges, metadata HEAD, 405,
+ * `createWorker(QED64_LEGACY)` reproduces the pre-library QED64 worker byte
+ * for byte (status, headers, body, and every binding call);
+ * tests/unit/edge-worker.test.ts runs a request matrix through both. QED64's
+ * own infra/worker.js is QED64_LEGACY plus its toolchain release
+ * (`release`, `releaseFallback`), identical to it on site-owned paths and
+ * assets. The hardened defaults (ranges, metadata HEAD, 405,
  * traversal refusal, explicit Content-Length, asset HEAD Content-Length,
  * no-store errors) come from the lean4game and widgets-showcase forks of that
  * worker; each one is a switch, and QED64_LEGACY sets every switch to the old
