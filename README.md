@@ -177,8 +177,9 @@ node --stack-size=8192 pipeline/snapshot/snapshot-probe.mjs --artifact $ART --li
 
 ## Provenance and trust
 
-The runtime (`wasm64-7a2879deebfbc2c7`, Lean `4.33.0-pre`, clean-room build of
-`cauli/lean4@5732b84` + the 17-patch series in `pipeline/toolchain/patches/`)
+The runtime (the release pinned in `toolchain/lean4-wasm64-release.json`: built
+from the fork FawadHa1der/lean4 `qed64-wasm64` at its `kernel.commit`, patch series
+in the fork's `wasm64-build/PATCHES.md`, level `kernel.patch`; docs/REBUILD.md §1)
 and both profile packs are consumed here **by digest**: every chunk
 and transport part is SHA-256-pinned in a manifest, `promote:staging` refuses
 unverified bytes (as the retired `sync:artifacts` copy did before 2026-10),

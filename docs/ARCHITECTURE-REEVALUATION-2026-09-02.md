@@ -1,6 +1,8 @@
 # QED64 architecture re-evaluation — 2026-09-02
 
 > **Historical since 2026-09-04:** the pump transport was removed at the page level (shim, umbrella rewrite, batch app, pump worker ops, pump test lanes); the living description of what shipped is docs/ARCHITECTURE.md "Transport". This document is kept as the reasoning trail and is not updated.
+>
+> **Retired 2026-10 (plan B1):** the in-repo toolchain lane this document cites (`pipeline/toolchain/{setup-source.sh,build.sh,finish.sh,README.md,gen-exports.py}`, `pipeline/toolchain/patches/`) moved to the fork FawadHa1der/lean4 `qed64-wasm64` `wasm64-build/`; see docs/REBUILD.md §1.
 
 *Produced by a 12-agent read-only review (five dimensions, one adversarial refuter per dimension, a completeness critic, and a synthesis), run while the full test pyramid executed; incident evidence from the same day. Appendix B lists every finding that survived refutation.*
 
