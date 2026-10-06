@@ -33,7 +33,7 @@ export type { InstallProgress, InstalledProfile, ProfileIndex, ProfileIndexEntry
 
 // boot
 export { installArtifacts, ensureProfile, loadSnapshotByName, overridesOf, resolveRuntimeManifest, fetchSnapshotIndexFor } from "../qed64-boot";
-export type { InstallOptions, ProgressInfo, Qed64Artifacts, Qed64Session, StatusSink } from "../qed64-boot";
+export type { InstallOptions, LoadSnapshotOptions, ProgressInfo, Qed64Artifacts, Qed64Session, StatusSink } from "../qed64-boot";
 
 // the raw snapshot region cache (docs/EMBEDDING.md §7.4)
 export { PREFETCH_SILENCE_MS, SNAPSHOT_CACHE_DIR, isCacheKeyOf, isRawCached, prefetchRaw, rawRegionName, removeRawRegion } from "./raw-cache";

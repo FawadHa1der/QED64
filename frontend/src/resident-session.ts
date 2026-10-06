@@ -76,6 +76,11 @@ export interface ResidentHost {
    * it waits). `{ minFreeWorkers: 0 }` disables the hold,
    * `{ maxInFlightRequests: 0 }` the cap. */
   editBackPressure?: Pick<BackPressureOptions, "minFreeWorkers" | "maxHoldMs" | "pressureMemoryMs" | "maxInFlightRequests">;
+  /** How long each boot's snapshot load waits for ANOTHER tab that is writing
+   * the same raw region (its Web Lock; the prefetch's `onBusy: "wait"` bound,
+   * docs/EMBEDDING.md §7.3, §7.4) before this session's Lean worker streams
+   * the region itself. Default PREFETCH_SILENCE_MS (3 min); 0 does not wait. */
+  busyWaitMs?: number;
 }
 
 /** One file for the worker's filesystem (`LeanSession.writeFiles`). */
@@ -176,6 +181,7 @@ export class ResidentSession implements RelaySession {
   // GameSession declares `files`, which made the base write them a second time).
   readonly #files: ResidentHost["files"];
   readonly #beforeArm: ResidentHost["beforeArm"];
+  readonly #busyWaitMs: ResidentHost["busyWaitMs"];
   readonly #edits: EditCoalescer<JsonRpcMessage>;
   /** The initial commit: requested (clamped to the ladder) until boot, then
    * the one the worker made — its per-rung clamp can commit less. */
@@ -187,6 +193,7 @@ export class ResidentSession implements RelaySession {
     this.ui = host.ui;
     this.#files = host.files;
     this.#beforeArm = host.beforeArm;
+    this.#busyWaitMs = host.busyWaitMs;
     this.#edits = createEditCoalescer<JsonRpcMessage>({
       forward: (m, replay) => this.lean.lsp(m, replay),
       // A superseded or cancelled request's answer takes the worker's own path to the relay (which drops its pending entry and forwards it).
@@ -334,7 +341,7 @@ export class ResidentSession implements RelaySession {
     this.#bootStage = "snapshot";
     for (const name of this.snapshots) {
       this.#loading = name;
-      const ok = await loadSnapshotByName(a, qs, name, ui);
+      const ok = await loadSnapshotByName(a, qs, name, ui, this.#busyWaitMs !== undefined ? { busyWaitMs: this.#busyWaitMs } : {});
       this.#loading = null;
       if (!ok) {
         throw Object.assign(new Error(`snapshot '${name}' failed to load`), {

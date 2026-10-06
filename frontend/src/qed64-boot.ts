@@ -197,12 +197,21 @@ export async function ensureProfile(
 // lock, cleanup); re-exported here for existing importers.
 export { PREFETCH_SILENCE_MS, prefetchRaw, type PrefetchRawOptions, type PrefetchRawResult } from "./embed/raw-cache";
 
-async function ensureRawSnapshotCached(entry: SnapshotEntry, name: string, ui: StatusSink): Promise<void> {
+/** Options of `loadSnapshotByName` (docs/EMBEDDING.md §7.3, §7.4). */
+export interface LoadSnapshotOptions {
+  /** How long the load waits for ANOTHER tab writing the same raw region
+   * (the prefetch's `onBusy: "wait"` bound, `busyWaitMs`; default
+   * PREFETCH_SILENCE_MS) before the Lean worker streams the region itself. */
+  busyWaitMs?: number;
+}
+
+async function ensureRawSnapshotCached(entry: SnapshotEntry, name: string, ui: StatusSink, opts: LoadSnapshotOptions): Promise<void> {
   const gib = (entry.bytes / 1073741824).toFixed(1);
   // "wait": another tab writing this region finishes it for us; streaming it
   // here instead would put the ~4.6 GB-heavier path into this Lean worker.
   const r = await prefetchRaw(entry, {
     onBusy: "wait",
+    ...(opts.busyWaitMs !== undefined ? { busyWaitMs: opts.busyWaitMs } : {}),
     onBusyWait: () => ui.progress(`waiting for another tab to finish preparing the ${name} environment`, { phase: "snapshot", stage: "snapshot", subject: name, step: "download" }),
     onProgress: (p) => ui.progress(`preparing the ${name} environment (${gib} GiB — one-time)`,
       { phase: "snapshot", loaded: p.loaded, total: p.total, unit: "bytes", stage: "snapshot", subject: name, step: p.step }),
@@ -216,6 +225,7 @@ export async function loadSnapshotByName(
   qs: Qed64Session,
   name: string,
   ui: StatusSink,
+  opts: LoadSnapshotOptions = {},
 ): Promise<boolean> {
   if (qs.loadedSnapshots.has(name)) return true;
   const entry = artifacts.snapshots?.snapshots.find((s) => s.name === name);
@@ -223,7 +233,7 @@ export async function loadSnapshotByName(
     qs.lastFailure = { kind: "missing", stage: "snapshot", subject: name, code: "SNAPSHOT_NOT_IN_INDEX", message: `snapshot '${name}' is not in the snapshot index` };
     return false;
   }
-  await ensureRawSnapshotCached(entry, name, ui);
+  await ensureRawSnapshotCached(entry, name, ui, opts);
   const gib = (entry.bytes / 1073741824).toFixed(1);
   ui.busy(`loading the ${entryLabel(entry)} environment (${gib} GiB unpacked — cached in your browser after the first visit)`,
     { stage: "snapshot", subject: name, step: "load" });

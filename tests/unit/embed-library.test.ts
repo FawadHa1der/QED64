@@ -7,7 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deathCause, failureCauseOf, failureKindOf, stageOfWorkerPhase } from "../../frontend/src/embed/failure";
 import { runtimeUrls } from "../../frontend/src/embed/urls";
-import { prefetchRaw, type ProgressInfo, type Qed64Artifacts, type StatusSink } from "../../frontend/src/qed64-boot";
+import { PREFETCH_SILENCE_MS, prefetchRaw, type ProgressInfo, type Qed64Artifacts, type StatusSink } from "../../frontend/src/qed64-boot";
 import { LspRelay, type RestartOptions } from "../../frontend/src/lsp-relay";
 import { ResidentSession, type ResidentHost, type SessionFile } from "../../frontend/src/resident-session";
 import type { ReadyInfo, RuntimeManifest } from "../../src/runtime/client";
@@ -262,6 +262,37 @@ describe("ResidentSession.start(): stages, files, beforeArm, causes", () => {
     await again.s.start();
     expect(again.order).toEqual(["boot", "snapshot:init.snap", "snapshot:mathlib.snap", "files:2", "beforeArm"]);
     expect(hooked).toEqual([first.s.lean, again.s.lean]);
+  });
+
+  // lean4game QD-API-1: the boot's wait for another tab writing the same raw region was PREFETCH_SILENCE_MS with
+  // no way for a host to set it; ResidentHost.busyWaitMs is that bound (loadSnapshotByName → prefetchRaw "wait").
+  it("busyWaitMs bounds each boot's wait for another tab writing the region, then the worker streams it; default PREFETCH_SILENCE_MS", async () => {
+    vi.useFakeTimers();
+    try {
+      // OPFS without the region, and another tab holding its writer lock for good (Web Locks grant a task later).
+      const dir = { getFileHandle: async () => { throw new Error("NotFoundError"); } };
+      const locks = {
+        request: (_name: string, opts: { ifAvailable?: boolean; signal?: AbortSignal }, cb: (lock: null) => unknown) => opts.ifAvailable
+          ? new Promise((resolve) => setTimeout(() => resolve(cb(null)), 0))
+          : new Promise((_resolve, reject) => opts.signal?.addEventListener("abort", () => reject(opts.signal?.reason), { once: true })),
+      };
+      vi.stubGlobal("navigator", { storage: { getDirectory: async () => ({ getDirectoryHandle: async () => dir }) }, locks });
+      const set = session({ busyWaitMs: 500 }, { snapshots: ["init"] });
+      const started = set.s.start();
+      await vi.advanceTimersByTimeAsync(499);
+      expect(set.order).toEqual(["boot"]); // waiting for the other tab
+      expect(calls).toContainEqual(expect.objectContaining({ kind: "progress", label: expect.stringMatching(/waiting for another tab/), info: expect.objectContaining({ stage: "snapshot", subject: "init" }) }));
+      await vi.advanceTimersByTimeAsync(1);
+      await started;
+      expect(set.order).toEqual(["boot", "snapshot:init.snap"]); // gave up waiting: the worker streams it
+      const unset = session({}, { snapshots: ["init"] });
+      const defaulted = unset.s.start();
+      await vi.advanceTimersByTimeAsync(PREFETCH_SILENCE_MS - 1);
+      expect(unset.order).toEqual(["boot"]);
+      await vi.advanceTimersByTimeAsync(1);
+      await defaulted;
+      expect(unset.order).toEqual(["boot", "snapshot:init.snap"]);
+    } finally { vi.useRealTimers(); }
   });
 
   it("no files and no hook: nothing is written", async () => {

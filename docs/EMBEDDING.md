@@ -553,6 +553,8 @@ interface ResidentHost {
   artifacts; ui; policy?; headerText;                     // unchanged
   files?: SessionFile[] | (() => SessionFile[] | Promise<SessionFile[]>);
   beforeArm?(session: LeanSession): Promise<void>;
+  busyWaitMs?: number;                                    // §7.4; default PREFETCH_SILENCE_MS
+  editCoalesceMs?; editBackPressure?;                     // §7.8
 }
 type SessionFile = { path: string; text: string } | { path: string; bytes: Uint8Array };
 ```
@@ -567,6 +569,17 @@ classified at `stage: "files"` (a `files()` fetch that fails is `network`; an
 are ECMAScript-private (`#`), so a subclass can keep its own `files` or
 `beforeArm` (lean4game's `GameSession`) with no TS2415 collision and no
 second write.
+
+**`busyWaitMs`.** Each boot loads its snapshots through `loadSnapshotByName`,
+which first prefetches the raw region with `onBusy: "wait"` (§7.4). While
+ANOTHER tab holds that region's writer lock, the boot waits for it at most
+`busyWaitMs` (default `PREFETCH_SILENCE_MS`, 3 min; 0 does not wait), then
+re-probes the cache, and if the region is still missing the session's Lean
+worker streams it itself (the heavier path the prefetch exists to avoid, so a
+short bound trades memory for latency). The bound is counted from the lock
+request; the other tab's progress does not extend it. `loadSnapshotByName`
+takes the same option as its fifth argument (`LoadSnapshotOptions`). The
+member is ECMAScript-private in `ResidentSession`, like `files`.
 
 ### 7.4 The raw snapshot cache
 
@@ -591,7 +604,7 @@ function prefetchRaw(entry, opts?: { onProgress?; signal?; silenceMs?; workerUrl
   starts waiting, waits up to its own `busyWaitMs` (default
   `PREFETCH_SILENCE_MS`), then re-probes `.raw`. The lock request is
   withdrawn when the last waiting caller leaves. `loadSnapshotByName` uses
-  `"wait"`.
+  `"wait"`, with `ResidentHost.busyWaitMs` (§7.3) as its `busyWaitMs`.
 - **It needs the raw size.** The prefetch worker refuses a message without a
   positive `rawBytes` (the entry's `bytes`) with `error` (`corrupt`). Its
   compressed-only mode, which fetched without the redirect and HTML
@@ -1026,3 +1039,9 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
     (`qed64/edge`) type-checked and built with Vite against it; the
     shipped CLIs (preflight, olean-imports, `cli.mjs`) run `--help` through
     the consumer's `node_modules/qed64` symlink.
+- **lean4game's contract additions (plan step A2b, 2026-10-06):**
+  - `ResidentHost.busyWaitMs` (§7.3): the bound on each boot's wait for
+    another tab writing the same raw region, passed to the prefetch as its
+    `busyWaitMs` (default unchanged, `PREFETCH_SILENCE_MS`);
+    `loadSnapshotByName` gains the same option (`LoadSnapshotOptions`, a
+    fifth argument).
