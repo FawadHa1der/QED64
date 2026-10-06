@@ -443,6 +443,8 @@ usage: snapshot-probe.mjs (--snap <file> | --fresh-import --lib <tree>) (--probe
 | 2 | Usage: no snapshot source, or no probe; or no `--artifact` / `--lib`, its variable unset and no deprecated default (`no-path`). |
 | 3 | The wasm runtime aborted (the legacy overload). |
 
+Known limitation (docs/HARDENING.md #61, the kernel's patch 0037): `lean_wasm_compile` drops the messages of a declaration elaborated with `Elab.async=true`, so a wrong proof under `set_option Elab.async true` (or inside a command whose scope turns it on, like lean4game's `Runner`) gives `errors=0` and `SNAPSHOT PROBE PASS`. Plain top-level declarations and nested `elabCommand` without `Elab.async` are reported correctly.
+
 **Side effects:**
 
 1. `mkdtemp <os.tmpdir()>/qed64-snap-probe-*`.

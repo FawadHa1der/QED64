@@ -522,6 +522,24 @@ Owner: the kernel session (the pthread stack size and the stack guard under Emsc
 
 Rule: a guard that measures its own stack must be told the real size of the stack it runs on. When a platform's thread stack is smaller than the native one the guard was tuned for, the platform's limit (here V8's RangeError) becomes the user-visible failure, and it kills the process instead of producing a diagnostic.
 
+### 61. The one-shot compile drops a declaration's messages under `Elab.async` (open, the kernel's: patch 0037)
+
+Reported 2026-10-06 by lean4game: `pipeline/snapshot/snapshot-probe.mjs` printed `errors=0 … SNAPSHOT PROBE PASS` for a level whose proof was wrong (`exact <unknown identifier>`, or an unsolved goal) when the proof ran inside GameServer's `Runner` command; native `lean` reports the error, and so does the in-browser FileWorker (it reports the snapshot tree), so live play was never affected.
+
+Root cause, isolated on QED64's runtime (wasm64-3ab1c6a9, kernel 0035b, mathlib.snap, `snapshot-probe.mjs --dump-messages`): `lean_wasm_compile` (the kernel's `wasmCompile` in `Lean/Shell.lean`) collects each command's own message log and never waits for the command's snapshot tasks. A declaration elaborated with `Elab.async=true` reports its errors through those tasks, so they are dropped:
+
+| Probe (after `import QED64.Essential`) | Expected | `lean_wasm_compile` |
+|---|---|---|
+| `theorem bad : 1 = 2 := by exact foo`; also rfl on `1 = 2`, an unsolved goal | FAIL | FAIL (errors=1-2) |
+| the same theorem through an `elab` command's `elabCommand`, plain or under `withScope` | FAIL | FAIL |
+| `set_option Elab.async true in` + a wrong proof (unknown identifier, unsolved goal) | FAIL | **PASS, errors=0**; only the linter's "this tactic is never executed" |
+| `elabCommand` under `withScope (… opts := opts.setBool `Elab.async true)` (lean4game's `Runner` shape: it swaps in the level's stored scope) | FAIL | **PASS, errors=0** |
+| `set_option Elab.async true in` + a correct proof | PASS | PASS |
+
+Who is affected: only the one-shot compile path, that is `snapshot-probe.mjs`, the compiler battery (`tests/adversarial/compiler-battery.mjs`) and lean4game's `--verify-snapshots`. QED64's own probes are header-only (`import QED64.Essential`, `#check`) and its battery cases are plain top-level declarations, so no QED64 verdict was wrong; a probe or battery case that turns `Elab.async` on is judged wrongly until the fix. lean4game cross-checks its Runner probe natively meanwhile.
+
+Owner: the kernel session (patch 0037: after each command, wait for its snapshot tasks and report their diagnostics, as the native frontend walks the snapshot tree; a gate probe with the async wrong-proof shapes, plain and nested, plus the valid case). QED64's part, at the adoption of the release carrying 0037: add the async wrong-proof shapes to the compiler battery as must-error cases.
+
 ### 62. An unpaired snapshot was refused only after the runtime started and the snapshot downloaded (fixed)
 
 Reported 2026-10-06 by the widgets showcase (C9 on pin bf9d947): the stock page with `?snapshots=<dir>`, an overlay index whose entries say `runtime: wasm64-0000000000000000`. The boot failed as it should (`lastDeath.reason` `bootFailed`, cause kind `unpaired`), but late, and on a loaded host the renderer did not survive it. Their trace: `runtime-initialized` at 2048 MiB at 7.5 s, `bootFailed` at 8.1 s, renderer crash at 12.2 s, during the second start. On the previous pin the same test halted at 16-18 s without a crash.
