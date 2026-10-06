@@ -1023,4 +1023,6 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
     worker's copy to it); `EMBED_API_REVISION` → `1.0.0-pre.3`.
   - `npm run test:consumer` (G2): every export resolved from the packed
     tarball by Node, and a fixture page (`qed64/embed`) and Worker
-    (`qed64/edge`) type-checked and built with Vite against it.
+    (`qed64/edge`) type-checked and built with Vite against it; the
+    shipped CLIs (preflight, olean-imports, `cli.mjs`) run `--help` through
+    the consumer's `node_modules/qed64` symlink.

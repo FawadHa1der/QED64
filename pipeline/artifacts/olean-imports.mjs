@@ -27,6 +27,7 @@
 //               node pipeline/artifacts/olean-imports.mjs --entries <olean file>
 //               one line, `entries of <file>: <JSON of oleanExtEntryCounts>`.
 
+import { Buffer } from "node:buffer";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -37,8 +38,12 @@ const MAX_NAME_DEPTH = 64;
 
 /** A reader over one compacted region: pointer → offset (bounds-checked),
  * object tags and field counts, Names, strings and arrays. Throws on anything
- * it does not understand; the exported functions turn that into null. */
-function regionReader(bytes) {
+ * it does not understand; the exported functions turn that into null. Takes
+ * any Uint8Array (a Buffer, or e.g. the bytes of a fetch() response): the
+ * reads below are Buffer methods, so a plain Uint8Array is viewed as a Buffer
+ * over the same memory (no copy). */
+function regionReader(input) {
+  const bytes = Buffer.isBuffer(input) ? input : Buffer.from(input.buffer, input.byteOffset, input.byteLength);
   if (bytes.length < 96 || bytes.toString("latin1", 0, 5) !== "olean") return null;
   const base = bytes.readBigUInt64LE(80);
   const at = (pointer) => {
@@ -75,7 +80,8 @@ function regionReader(bytes) {
     if (offset + 24 + 8 * count > bytes.length) throw new RangeError("array outside the region");
     return Array.from({ length: count }, (_, i) => bytes.readBigUInt64LE(offset + 24 + 8 * i));
   };
-  return { at, tagOf, objsOf, field, nameOf, arrayItems, root: at(bytes.readBigUInt64LE(88)) };
+  const byteAt = (offset) => bytes.readUInt8(offset);
+  return { at, tagOf, objsOf, field, byteAt, nameOf, arrayItems, root: at(bytes.readBigUInt64LE(88)) };
 }
 
 export function oleanImportEntries(bytes) {
@@ -89,9 +95,9 @@ export function oleanImportEntries(bytes) {
       if (r.objsOf(entry) !== 1) throw new TypeError("expected an Import");
       return {
         module: r.nameOf(r.field(entry, 0)),
-        importAll: bytes.readUInt8(entry + 16) !== 0,
-        isExported: bytes.readUInt8(entry + 17) !== 0,
-        isMeta: bytes.readUInt8(entry + 18) !== 0,
+        importAll: r.byteAt(entry + 16) !== 0,
+        isExported: r.byteAt(entry + 17) !== 0,
+        isMeta: r.byteAt(entry + 18) !== 0,
       };
     });
   } catch {
@@ -137,7 +143,14 @@ function walkOleans(dir, out = []) {
   return out;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// Run as a CLI only when this file is the main module. Compare realpaths: through a symlinked
+// install (file: dependency, npm link, workspace, pnpm) Node loads the main module by its realpath
+// while process.argv[1] keeps the symlink path, so a plain path compare would skip main() and exit 0.
+const invokedDirectly = (() => {
+  try { return !!process.argv[1] && fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url)); }
+  catch { return false; }
+})();
+if (invokedDirectly) {
   // <cli-contract> generated from SPECS["olean-imports"] in pipeline/snapshot/cli.mjs. Do not edit:
   // `node pipeline/snapshot/cli.mjs --write-preludes` rewrites it and tests/unit/cli-contract.test.ts
   // fails on drift. Inline, not imported, because downstream vendors this file without cli.mjs.

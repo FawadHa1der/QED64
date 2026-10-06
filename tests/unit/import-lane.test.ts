@@ -150,6 +150,19 @@ describe("olean-imports.mjs", () => {
     const prelude = oleanExtEntryCounts(fs.readFileSync(path.join(fixture, "Prelude.olean")))!;
     expect([prelude.constNames, Object.keys(prelude.entries).length, prelude.entries["Lean.IR.declMapExt"]]).toEqual([2204, 56, 890]);
     for (const n of [...Object.values(core.entries), ...Object.values(prelude.entries)]) expect(Number.isInteger(n) && n >= 0).toBe(true);
+    // any Uint8Array, not only a Buffer (the .d.mts types take Uint8Array): a plain copy, and a
+    // view at a nonzero offset into a larger ArrayBuffer (as a fetch() body sliced out of a pack)
+    const coreBuf = fs.readFileSync(path.join(fixture, "Core.olean"));
+    const plain = new Uint8Array(coreBuf);
+    expect(Buffer.isBuffer(plain)).toBe(false);
+    expect(oleanExtEntryCounts(plain)).toEqual(core);
+    const padded = new Uint8Array(coreBuf.length + 24);
+    padded.set(coreBuf, 16);
+    const view = new Uint8Array(padded.buffer, 16, coreBuf.length);
+    expect(oleanExtEntryCounts(view)).toEqual(core);
+    expect(oleanImportEntries(view)).toEqual(oleanImportEntries(coreBuf));
+    expect(oleanImports(plain)).toEqual(oleanImports(coreBuf));
+    expect(oleanImports(new Uint8Array(bytes))).toEqual(["Init"]);
     // null for what it does not understand: box-0 fields (no ModuleData arrays), junk, a cut region, a wild root
     expect(oleanExtEntryCounts(makeOlean([{ module: "A" }]))).toBeNull();
     expect(oleanExtEntryCounts(Buffer.from("not an olean at all"))).toBeNull();

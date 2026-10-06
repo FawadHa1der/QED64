@@ -9,6 +9,8 @@
 //      closure.json lists under it), each target inside the extracted
 //      package; a path outside `exports` must be refused; qed64/edge,
 //      the olean reader and closure.json are loaded for real;
+//      the shipped CLIs (preflight, olean-imports, cli.mjs) run --help
+//      through the symlink and print their usage line;
 //   4. tests/consumer/fixture/ (index.html + main.ts on qed64/embed, worker.ts
 //      on qed64/edge) copied into the consumer, type-checked with the repo's
 //      tsc and built with the repo's vite (`vite build --config`), and the
@@ -147,6 +149,14 @@ if (!loaded.olean.includes("oleanExtEntryCounts")) fail("qed64/pipeline/artifact
 if (loaded.closureSchema !== "qed64.closure/v1") fail(`closure.json schema ${loaded.closureSchema}`);
 if (JSON.stringify(loaded.redirect) !== JSON.stringify([302, "https://consumer.example/showcase/", "require-corp"])) fail(`qed64/edge worker answered ${JSON.stringify(loaded.redirect)}`);
 ok(`loaded from the tarball: qed64/edge (${loaded.edge.length} exports, a worker answered 302 with COEP), olean-imports, closure.json`);
+// The shipped CLIs run through the symlink (Node loads the main module by its realpath while
+// argv[1] keeps the symlink path; a main guard that compares plain paths prints nothing, exit 0).
+for (const cli of ["pipeline/release/preflight.mjs", "pipeline/artifacts/olean-imports.mjs", "pipeline/snapshot/cli.mjs"]) {
+  const via = `node_modules/qed64/${cli}`;
+  const help = sh(process.execPath, [via, "--help"], { cwd: consumer });
+  if (!help.startsWith(`usage: ${path.basename(cli)} `)) fail(`node ${via} --help (through the symlink) printed ${JSON.stringify(help.slice(0, 120))}, not its usage line`);
+}
+ok("the shipped CLIs run through the node_modules/qed64 symlink: preflight, olean-imports, cli.mjs --help print their usage, exit 0");
 
 // 4. the fixture: typecheck and build against the tarball only
 const fixture = path.join(root, "tests/consumer/fixture");

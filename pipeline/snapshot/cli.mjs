@@ -636,7 +636,14 @@ export function specsJson() {
   return { contractVersion: CONTRACT_VERSION, exitClasses: EXIT_CLASSES, reservedOutput: RESERVED_OUTPUT, env: ENV, specs, diagnostic: DIAGNOSTIC };
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// Run as a CLI only when this file is the main module. Compare realpaths: through a symlinked
+// install (file: dependency, npm link, workspace, pnpm) Node loads the main module by its realpath
+// while process.argv[1] keeps the symlink path, so a plain path compare would skip main() and exit 0.
+const invokedDirectly = (() => {
+  try { return !!process.argv[1] && fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url)); }
+  catch { return false; }
+})();
+if (invokedDirectly) {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
   const [cmd, tool] = process.argv.slice(2);
   const usage = "usage: cli.mjs (--print-specs | --help [<tool>] | --check-preludes | --write-preludes)";
