@@ -11,10 +11,10 @@
 
 /** Semver of the library contract (docs/EMBEDDING.md §7): minor = additive.
  * "-pre" until the contract's review is settled. */
-export const EMBED_API_REVISION = "1.0.0-pre.2";
+export const EMBED_API_REVISION = "1.0.0-pre.3";
 
 // runtime
-export { LeanSession, PROTOCOL, probeMemory64, memoryCandidates } from "../../../src/runtime/client";
+export { LeanSession, PROTOCOL, MEMORY64_PROBE, probeMemory64, memoryCandidates } from "../../../src/runtime/client";
 export type {
   BootConfig, Capabilities, CompileResult, DeathFacts, Diagnostic, HeaderStatus, JsonRpcMessage, LibraryPack, MemoryTelemetry,
   ProgressEvent, ReadyInfo, RuntimeManifest, WorkerError, WorkerPhase, WorkerStatus,

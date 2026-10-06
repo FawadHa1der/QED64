@@ -442,8 +442,11 @@ Notes for consumers:
 
 ### 7.0 Exports
 
-- **runtime:** `LeanSession`, `PROTOCOL`, `probeMemory64`, `memoryCandidates`,
-  and the types.
+- **runtime:** `LeanSession`, `PROTOCOL`, `probeMemory64`, `MEMORY64_PROBE`
+  (the 13 probe bytes `probeMemory64` and the worker validate; a fixed-shape
+  `Uint8Array`, read-only by convention: refuse an incapable browser before
+  loading anything with `WebAssembly.validate(MEMORY64_PROBE)`),
+  `memoryCandidates`, and the types.
 - **snapshots:**
   - the index: `loadSnapshotIndex` (throws, naming the fault),
     `fetchSnapshotIndex` (null on any fault) and `snapshotCacheKey`;
@@ -1013,3 +1016,6 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
     `pipeline`); preflight moved to `pipeline/release/preflight.mjs` (shim at
     `tests/adversarial/preflight.mjs`) and ships with
     `pipeline/release/page-target.mjs`.
+  - `MEMORY64_PROBE` exported (from `src/runtime/client.ts`, re-exported by
+    `qed64/embed`; `probeMemory64` validates it; a unit test pins the
+    worker's copy to it); `EMBED_API_REVISION` → `1.0.0-pre.3`.

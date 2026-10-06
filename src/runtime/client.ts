@@ -472,12 +472,24 @@ export class LeanSession {
   }
 }
 
-/** Fast local probe (mirrors the worker's, callable before any Worker spawn). */
+/** The Memory64 probe module: the wasm header and one memory section whose
+ * limits flags are 0x04 (memory64), minimum 0. `WebAssembly.validate` accepts
+ * it exactly when the engine speaks Memory64. public/workers/lean.worker.js
+ * carries the same 13 bytes as its own MEMORY64_PROBE (a plain script cannot
+ * import this module); tests/unit/memory64-probe.test.ts parses the worker
+ * and pins the two equal. Fixed shape: non-extensible and of fixed length (a
+ * typed array with elements cannot be frozen), so treat the bytes as
+ * read-only and `.slice()` a copy before changing anything. */
+export const MEMORY64_PROBE = Object.preventExtensions(Uint8Array.of(
+  0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+  0x05, 0x03, 0x01, 0x04, 0x00, // memory section: flags 0x04 (memory64), min 0
+));
+
+/** Fast local probe (the worker's, callable before any Worker spawn):
+ * validates MEMORY64_PROBE. */
 export function probeMemory64(): boolean {
   try {
-    return WebAssembly.validate(
-      new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x05, 0x03, 0x01, 0x04, 0x00]),
-    );
+    return WebAssembly.validate(MEMORY64_PROBE);
   } catch {
     return false;
   }
