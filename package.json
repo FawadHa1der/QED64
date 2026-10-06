@@ -10,8 +10,8 @@
   "description": "QED64 \u2014 a Lean 4 web editor running the real compiler client-side on WebAssembly Memory64, with Mathlib profiles.",
   "exports": {
     "./embed": {
-      "types": "./frontend/src/embed/index.ts",
-      "default": "./frontend/src/embed/index.ts"
+      "types": "./lib/index.ts",
+      "default": "./lib/index.ts"
     },
     "./edge": {
       "types": "./infra/edge-worker.d.ts",
@@ -27,13 +27,7 @@
     "README.md",
     "docs/EMBEDDING.md",
     "embedding/closure.json",
-    "frontend/src/embed/",
-    "frontend/src/qed64-boot.ts",
-    "frontend/src/resident-session.ts",
-    "frontend/src/lsp-relay.ts",
-    "src/install/profiles.ts",
-    "src/runtime/client.ts",
-    "src/runtime/snapshots.ts",
+    "lib/",
     "infra/edge-worker.js",
     "infra/edge-worker.d.ts",
     "public/workers/lean.worker.js",

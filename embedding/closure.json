@@ -1,20 +1,20 @@
 {
   "schema": "qed64.closure/v1",
-  "doc": "docs/EMBEDDING.md §6: the files an embedder of the qed64 package needs. embed = the TypeScript closure of the `qed64/embed` entry (relative imports only); workers = plain scripts served at serveAs (lean.worker.js importScripts lsp-frames.js, memory64-probe.js and lsp-front-door.js from its own directory; the embed closure's src/runtime/client.ts also imports memory64-probe.js, for its side effect, the one source of the Memory64 probe bytes); pipeline = the from-source lane scripts and every Tier 1/2 CLI of docs/CLI-CONTRACT.md (relative and node: imports only, except preflight.mjs, whose boot smoke imports the caller's playwright when it runs); pipelineData = files the pipeline reads at run time, at the same relative paths; infra = the edge-worker library `qed64/edge` (one dependency-free ES module plus its types, docs/DEPLOY.md).",
-  "entry": "frontend/src/embed/index.ts",
+  "doc": "docs/EMBEDDING.md §6: the files an embedder of the qed64 package needs. embed = the TypeScript closure of the `qed64/embed` entry (relative imports only); workers = plain scripts served at serveAs (lean.worker.js importScripts lsp-frames.js, memory64-probe.js and lsp-front-door.js from its own directory; the embed closure's lib/client.ts also imports memory64-probe.js, for its side effect, the one source of the Memory64 probe bytes); pipeline = the from-source lane scripts and every Tier 1/2 CLI of docs/CLI-CONTRACT.md (relative and node: imports only, except preflight.mjs, whose boot smoke imports the caller's playwright when it runs); pipelineData = files the pipeline reads at run time, at the same relative paths; infra = the edge-worker library `qed64/edge` (one dependency-free ES module plus its types, docs/DEPLOY.md).",
+  "entry": "lib/index.ts",
   "embed": [
-    "frontend/src/embed/index.ts",
-    "frontend/src/embed/params.ts",
-    "frontend/src/embed/failure.ts",
-    "frontend/src/qed64-boot.ts",
-    "frontend/src/embed/raw-cache.ts",
-    "frontend/src/embed/urls.ts",
-    "frontend/src/resident-session.ts",
-    "frontend/src/embed/edit-coalescer.ts",
-    "frontend/src/lsp-relay.ts",
-    "src/install/profiles.ts",
-    "src/runtime/client.ts",
-    "src/runtime/snapshots.ts"
+    "lib/index.ts",
+    "lib/params.ts",
+    "lib/failure.ts",
+    "lib/qed64-boot.ts",
+    "lib/raw-cache.ts",
+    "lib/urls.ts",
+    "lib/resident-session.ts",
+    "lib/edit-coalescer.ts",
+    "lib/lsp-relay.ts",
+    "lib/profiles.ts",
+    "lib/client.ts",
+    "lib/snapshots.ts"
   ],
   "workers": [
     {
