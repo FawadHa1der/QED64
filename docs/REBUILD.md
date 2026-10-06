@@ -19,6 +19,7 @@ every downstream artifact is a deterministic function of those.
 
 | Thing | Lives in | Committed? |
 |---|---|---|
+| The toolchain release QED64 serves and tests against | `toolchain/lean4-wasm64-release.json` (a byte copy of that release's `release.json`, schema `lean4-wasm64.release/v1`) | yes |
 | The kernel commit to build | `pipeline/toolchain/KERNEL-PIN` (40-hex commit + the paired runtime id and raw snapshot sizes) | yes |
 | Patch series | `pipeline/toolchain/patches/0001–0033` + `PATCHES.md` — **provenance only, never applied**; the branch is the truth | yes |
 | Build environment (emsdk 6.0.5, cmake, ccache) | `docker-wasm64/` in the kernel tree | yes (in the kernel repo) |
