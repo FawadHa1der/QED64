@@ -444,7 +444,11 @@ Notes for consumers:
   uses parameter properties. A Node test runner needs a transpile hook.
 - The pipeline scripts imported through the package resolve a relative
   `--work` or `--out` against the **package root**, which is inside
-  `node_modules`. Run them from a copy, or pass absolute paths.
+  `node_modules`. Run them from a copy, or pass absolute paths. Every path a
+  tool needs comes from its flag, else its variable (`QED64_LEAN_ARTIFACT`,
+  `QED64_WORK`, `QED64_STAGING`, `QED64_LIB_TREE`), else a deprecated default
+  under that root with one WARNING, else exit 2 (docs/CLI-CONTRACT.md "Path
+  resolution"); pass them all and nothing lands in the package.
 - The page-API setup (`globalThis.qed64.api`, the `qed64:*` events, `#code=`,
   the buffer) lives only in site modules that are not in the package.
 
@@ -1336,3 +1340,10 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
     the fixture; §6.1 step 1 gives the `paths` alternative to
     `moduleResolution: "bundler"`; §7.0 names `installArtifacts` as the
     wrapper of the profile index and boot packs.
+- **Explicit pipeline paths (plan step A3a, 2026-10-06):** no library change:
+  `qed64/embed`, the workers and `EMBED_API_REVISION` are untouched. §6's note
+  on the pipeline scripts names the path rule of docs/CLI-CONTRACT.md
+  (contract 2): flag, variable, a deprecated default with one WARNING, else
+  exit 2; the sibling-checkout fallback is gone, and
+  `pipeline/toolchain/artifact-paths.mjs`, already in `files` and closure.json
+  `pipeline`, now also carries the rule and the `--stack-size` re-exec.
