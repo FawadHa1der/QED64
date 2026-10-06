@@ -94,7 +94,7 @@ describe("runtimeUrls", () => {
     expect(runtimeUrls(m)).toEqual({
       manifests: ["/runtime/runtime-manifest.wasm64-3ab1c6a9da03bc29.json", "/runtime/runtime-manifest.json"],
       chunks: ["/runtime/chunks/lean.js.a.part-000", "/runtime/chunks/lean.js.a.part-001", "/runtime/chunks/lean.wasm.b.part-000"],
-      workers: ["/workers/lean.worker.js", "/workers/lsp-frames.js", "/workers/lsp-front-door.js", "/workers/snapshot-prefetch.worker.js"],
+      workers: ["/workers/lean.worker.js", "/workers/lsp-frames.js", "/workers/lsp-front-door.js", "/workers/memory64-probe.js", "/workers/snapshot-prefetch.worker.js"],
     });
   });
 });

@@ -88,10 +88,10 @@ beforeAll(() => {
   sandbox.addEventListener = (type: string, fn: (e: { data: unknown }) => void) => { listeners[type] = fn; };
   sandbox.crossOriginIsolated = true;
   vm.createContext(sandbox);
-  // The worker imports the decoder (and, lazily, the front door) with
-  // importScripts (absent here) — load both into the sandbox first, exactly
-  // as the browser would.
-  for (const name of ["lsp-frames.js", "lsp-front-door.js"]) {
+  // The worker imports the decoder and the Memory64 probe (and, lazily, the
+  // front door) with importScripts (absent here) — load all three into the
+  // sandbox first, exactly as the browser would.
+  for (const name of ["lsp-frames.js", "memory64-probe.js", "lsp-front-door.js"]) {
     vm.runInContext(readFileSync(path.join(workers, name), "utf8"), sandbox, { filename: name });
   }
   vm.runInContext(readFileSync(path.join(workers, "lean.worker.js"), "utf8"), sandbox, { filename: "lean.worker.js" });

@@ -417,7 +417,11 @@ their repositories):
 The package:
 
 `package.json` (pinned by `tests/unit/package-contract.test.ts`):
-- `"license": "MIT"`, `"sideEffects": false`, zero runtime dependencies.
+- `"license": "MIT"`, zero runtime dependencies, and `"sideEffects":
+  ["./public/workers/memory64-probe.js"]`: every module is side-effect free
+  except the probe script, which `src/runtime/client.ts` imports for its side
+  effect (§7.0). Under `"sideEffects": false` Vite drops that import, and the
+  built page throws reading the probe at load.
 - **No script npm treats as "prepare me".** pacote runs `npm install
   --include=dev` in a temporary clone of a git dependency whose root
   `package.json` has `workspaces`, or any of `build`, `prepare`, `prepack`,
@@ -432,7 +436,7 @@ The package:
   - `"./embedding/closure.json"`;
   - `"./package.json"`.
 - `files`: exactly the closure below, plus the license, README and this
-  document. 53 files, about 220 kB packed. `npm run test:consumer`
+  document. 54 files, about 220 kB packed. `npm run test:consumer`
   (tests/consumer/check-consumer.mjs) proves the packed files alone resolve
   and build.
 
@@ -461,8 +465,10 @@ Notes for consumers:
 `embedding/closure.json` (schema `qed64.closure/v1`) lists:
 - `embed`: the TS closure of `qed64/embed`;
 - `workers`: `{path, serveAs}`. `lean.worker.js` `importScripts`
-  `lsp-frames.js` and `lsp-front-door.js` from its own directory, so all
-  four ship together;
+  `lsp-frames.js`, `memory64-probe.js` and `lsp-front-door.js` from its own
+  directory, so all five ship together. `memory64-probe.js` is also in the
+  embed closure's reach: `src/runtime/client.ts` imports it for its side
+  effect (it publishes `globalThis.Qed64Memory64`, the probe of §7.0);
 - `infra`: the edge-worker library behind `qed64/edge`;
 - `pipeline` and `pipelineData`;
 - `runtime.minKernelPatch`: `"0032"`, the oldest kernel patch level these
@@ -514,7 +520,7 @@ code block below, extracted verbatim from the packed `docs/EMBEDDING.md`.
 
    In production your host sends the same two headers on the HTML (with
    `qed64/edge`: `createWorker` does, docs/DEPLOY.md).
-3. **The workers at `/workers/`.** Copy closure.json's `workers` (all four:
+3. **The workers at `/workers/`.** Copy closure.json's `workers` (all five:
    `lean.worker.js` loads its siblings from its own directory, §6) to the
    `serveAs` paths, on every install and re-pin:
 
@@ -630,7 +636,12 @@ library contract a dist was built from without opening the bundle.
   (the 13 probe bytes `probeMemory64` and the worker validate; a fixed-shape
   `Uint8Array`, read-only by convention: refuse an incapable browser before
   loading anything with `WebAssembly.validate(MEMORY64_PROBE)`), and the
-  types.
+  types. Both come from one file, `public/workers/memory64-probe.js`: a
+  classic script that publishes `globalThis.Qed64Memory64 = { MEMORY64_PROBE,
+  probeMemory64, REVISION }` (frozen). `lean.worker.js` `importScripts` it
+  for its capabilities report, and `src/runtime/client.ts` imports it for its
+  side effect and re-exports the two members, so a page's check is the
+  worker's, byte for byte.
 - **snapshots:**
   - the index: `loadSnapshotIndex` (throws, naming the fault),
     `fetchSnapshotIndex` (null on any fault) and `snapshotCacheKey`;
@@ -846,7 +857,7 @@ internal re-export, §7.0.)
 - `manifests`: the immutable manifest, then the mutable one;
 - `chunks`: every chunk URL of `lean.js` and `lean.wasm`, deduplicated, in
   order;
-- `workers`: the four worker scripts.
+- `workers`: the five worker scripts (`WORKER_URLS`).
 
 ### 7.6 Installing artifacts
 
@@ -868,11 +879,26 @@ itself; `parseBootParams` is an internal re-export, §7.0).
 ### 7.7 Workers: compatibility across deploys
 
 - `/workers/*.js` names are stable. A new worker is a new name.
-- **One revision for the three scripts.** `lean.worker.js`, `lsp-frames.js`
-  and `lsp-front-door.js` carry the same `REVISION`. `lean.worker.js`
-  refuses a sibling of another revision (`WORKER_DEP_MISMATCH`, a death
-  whose cause is `stale`, §7.2: offer a reload) instead of running mixed
-  versions.
+- **One revision for the four scripts.** `lean.worker.js`, `lsp-frames.js`,
+  `lsp-front-door.js` and `memory64-probe.js` carry the same `REVISION`.
+  `lean.worker.js` refuses a sibling of another revision
+  (`WORKER_DEP_MISMATCH`, a death whose cause is `stale`, §7.2: offer a
+  reload) instead of running mixed versions. It loads `lsp-frames.js` and
+  `memory64-probe.js` eagerly, so one that is not served is
+  `WORKER_DEP_MISSING` at script load, before the hello.
+- **What changes the revision.** It names the interface between the
+  scripts, and it changes when a pairing of two versions would misbehave.
+  `memory64-probe.js` (2026-10-06, plan step A3c) left it at `"1"`: the
+  probe's bytes and check moved out of `lean.worker.js` unchanged, the three
+  older scripts talk to each other exactly as before, and the page sees the
+  same `capabilities()` reply, messages and `PROTOCOL`. Every mix stays
+  safe. An older `lean.worker.js` beside the new set never loads the probe
+  and keeps its own copy. A newer one beside an older set finds no
+  `memory64-probe.js` and dies `WORKER_DEP_MISSING`: a named cause, not a
+  hang or a wrong answer. The page bundles its own copy of the file, so it
+  never pairs with a served one. A bump here would only have refused the
+  harmless pairing of a new `lean.worker.js` with an old `lsp-frames.js` or
+  front door.
   The front door loads lazily, so this check catches a deploy that lands
   between the two loads. A front door that cannot be loaded at that point
   (not served, or the link dropped) is `WORKER_DEP_MISSING`, unrecoverable
@@ -1168,6 +1194,10 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
 **lean4game (library tier):**
 - Delete the vendored copies and `sync-qed64.sh`. Import from `qed64/embed`,
   and stage the workers from `closure.json`.
+- Until then, a `sync-qed64.sh` pin at or after plan step A3c must vendor
+  `public/workers/memory64-probe.js` with the other worker scripts:
+  `lean.worker.js` loads it eagerly and dies `WORKER_DEP_MISSING` without it.
+  Staging from `closure.json` picks it up with no change.
 - Route URL overrides through `validateBootOverrides` (lean4game keeps its
   own parser; `parseBootParams` is internal since `1.0.0-pre.5`) and boot
   with `installArtifacts(ui, {overrides, profiles: "none"})` or the exported
@@ -1369,3 +1399,18 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
     (it was an uncaught rejection, exit 1); `pipeline/release/preflight.d.mts`
     (shipped) types `runPreflight`, `bootSmoke` and `main`
     (docs/CLI-CONTRACT.md changelog). No library change.
+  - **One source for the Memory64 probe** (§7.0): `public/workers/memory64-probe.js`,
+    a classic script carrying the workers' `REVISION`, publishes
+    `globalThis.Qed64Memory64`. `lean.worker.js` `importScripts` it eagerly
+    (beside `lsp-frames.js`; a copy of another revision is
+    `WORKER_DEP_MISMATCH`, a missing one `WORKER_DEP_MISSING`) and drops its
+    own literal; `src/runtime/client.ts` imports it for its side effect and
+    re-exports `MEMORY64_PROBE` and `probeMemory64` from it (same bytes,
+    same check, no API change). The file is in `files`, closure.json
+    `workers` (`/workers/memory64-probe.js`) and `WORKER_URLS`, so
+    `runtimeUrls().workers` has five entries. `package.json` `sideEffects`
+    becomes `["./public/workers/memory64-probe.js"]` (it was `false`, under
+    which a bundler drops the import). The worker protocol revision stays
+    `"1"` (§7.7 "What changes the revision"). A consumer that copies
+    closure.json `workers` needs no change; one that lists the scripts by
+    name adds the file (§10). `EMBED_API_REVISION` → `1.0.0-pre.6`.
