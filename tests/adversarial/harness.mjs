@@ -62,8 +62,10 @@ export function runDir(buildId, mode, explicit = arg("run-dir", "")) {
 /** Mirror console.log/console.error into <dir>/<name> (append). */
 export function teeLog(dir, name) {
   const file = path.join(dir, name);
-  const out = fs.createWriteStream(file, { flags: "a" });
-  const wrap = (orig) => (...a) => { const line = a.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" "); out.write(line + "\n"); orig(...a); };
+  // Synchronous appends: a line printed just before process.exit (a refusal) still lands
+  // (a write stream had not even opened the file by then, so the log was lost).
+  const fd = fs.openSync(file, "a");
+  const wrap = (orig) => (...a) => { const line = a.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" "); fs.writeSync(fd, line + "\n"); orig(...a); };
   console.log = wrap(console.log.bind(console));
   console.error = wrap(console.error.bind(console));
   return file;
@@ -119,6 +121,41 @@ export async function coolDown({ minFreeGB = Number(arg("cooldown-gb", "6")), ma
     log(`cool-down: ${gb} GB reclaimable, waiting for ${minFreeGB} …`);
     await new Promise((r) => setTimeout(r, 5000));
   }
+}
+
+/** The battery's argv as run.mjs starts it: the run dir, then each of
+ * --snap/--artifact/--lib that run.mjs itself was given (else the battery's
+ * own variables and deprecated defaults apply). */
+export function batteryArgv(dir, get = arg) {
+  return ["--run-dir", dir, ...["snap", "artifact", "lib"].flatMap((f) => (get(f, "") ? [`--${f}`, get(f, "")] : []))];
+}
+
+/** run.mjs's exit code: 3 = a lane refused (infra; the battery's 2 is its
+ * path-rule refusal: no pairing resolved), 1 = product failures, 0 = green. */
+export function suiteExitCode(compilerCode, e2eCode) {
+  return compilerCode === 3 || compilerCode === 2 || e2eCode === 3 ? 3 : compilerCode || e2eCode ? 1 : 0;
+}
+
+/** The merged report's lane sections. A lane that ran (code non-null) yet left
+ * no report is one REFUSED line, never silently absent; a battery report that
+ * carries `refused` (its path-rule exit 2) says so above its infra rows. */
+export function laneSections(lanes) {
+  const lines = [];
+  for (const { name, report: lane, code, log } of lanes) {
+    if (!lane) {
+      if (code !== null && code !== undefined && code !== 0) lines.push(`## ${name}: ${code === 2 || code === 3 ? "REFUSED" : "NO REPORT"} (exit ${code}: no ${name}-report.json was written; see ${log})`, "");
+      continue;
+    }
+    const by = (o) => lane.results.filter((r) => (r.outcome ?? (r.pass ? "pass" : "fail")) === o).length;
+    lines.push(`## ${lane.lane}: ${by("pass")}/${lane.total} passed (fail ${by("fail")}, infra ${by("infra")}, aborted ${by("aborted")})`, "");
+    if (lane.refused) lines.push(`**REFUSED (exit ${code ?? "?"}):** ${lane.refused}`, "");
+    for (const r of lane.results.filter((x) => (x.outcome ?? (x.pass ? "pass" : "fail")) !== "pass")) {
+      const o = (r.outcome ?? "fail").toUpperCase();
+      lines.push(`- **${o}** \`${r.name}\` [${r.category}] — ${r.detail ?? (r.failures || []).join("; ")}${r.screenshot ? ` (screenshot: ${r.screenshot})` : ""}`);
+    }
+    lines.push("");
+  }
+  return lines;
 }
 
 // CLI entry (shell callers).

@@ -24,7 +24,7 @@ variables at the main checkout's.
 
 | Variable | Used by | Deprecated default (this checkout) |
 |---|---|---|
-| `QED64_LEAN_ARTIFACT` | `npm run test:integration` (all three files), node-runner, snapshot-probe, persistent-probe, bake-snapshot, `gate.mjs`, the compiler battery, resident-probe | `pipeline/toolchain/work/build/stage1` (when it has `bin/lean.js`; `gate.mjs`: the cwd) |
+| `QED64_LEAN_ARTIFACT` | `npm run test:integration` (all three files), node-runner, snapshot-probe, persistent-probe, bake-snapshot, `gate.mjs`, the compiler battery, resident-probe | `pipeline/toolchain/work/build/stage1` when it has `bin/lean.js` (node-runner, snapshot-probe, persistent-probe, resident-probe) or `bin/lean.wasm` (bake-snapshot, the compiler battery); `gate.mjs`: the cwd when it has `bin/lean.js` |
 | `QED64_INIT_SNAP` | `tests/integration/fileworker-exit.test.ts` | `work/snapshot/init.snap` |
 | `QED64_MATHLIB_SNAP` | the compiler battery (`--snap`; `run.mjs --snap` forwards) | `work/snapshot/mathlib.snap` |
 | `QED64_LIB_TREE` | the compiler battery (`--lib`: the tree the snapshot was baked from), snapshot-probe | `work/lib-tree-slim` (battery), `work/lib-tree` (snapshot-probe) |
@@ -69,6 +69,14 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   "No directory 'X' or file 'X.olean'", which is the verdict the four
   `mustError` header items depend on (`classify` in compiler-battery.mjs,
   pinned by tests/unit/adversarial-harness.test.ts). Infra-only → exit 3.
+  When no pairing resolves at all (no flag, no variable, no deprecated
+  default) the battery exits 2, but first writes compiler.log in `--run-dir`
+  and a fresh all-infra `compiler-report.json` (work/adversarial/ and the run
+  dir) whose `refused` field and rows carry the `no-path` line; `run.mjs`
+  counts that 2 as a refusal (exit 3) and its report.md shows the lane with a
+  `REFUSED` line. A lane that ran and wrote no report at all is a `REFUSED` /
+  `NO REPORT` line, never silently left out (tests/unit/tool-paths.test.ts,
+  tests/unit/adversarial-harness.test.ts).
   In e2e, `infra` means the page never became interactive within
   `--boot-budget-ms`; a page that is interactive but slow to settle under
   machine load is logged and judged by its scenario.

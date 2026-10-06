@@ -5,7 +5,7 @@ import { describe, expect, test } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { MODE, onlyMatches, resolveTarget, settleClass, settleClassFromPhase } from "../../tests/adversarial/harness.mjs";
+import { MODE, batteryArgv, laneSections, onlyMatches, resolveTarget, settleClass, settleClassFromPhase, suiteExitCode } from "../../tests/adversarial/harness.mjs";
 import { classify, missingInputs } from "../../tests/adversarial/compiler-battery.mjs";
 
 describe("onlyMatches", () => {
@@ -127,5 +127,46 @@ describe("corpus", () => {
       if (it.expect.terminal) expect(["ready", "headerUnresolvable", "halted"]).toContain(it.expect.terminal);
     }
     expect(actionItems.find((it: { name: string }) => it.name === "unresolvable-import-composition").expect.terminal).toBe("headerUnresolvable");
+  });
+});
+
+describe("run.mjs: the battery's argv, the merged report's lanes, the suite's exit code", () => {
+  test("--snap/--artifact/--lib given to run.mjs are forwarded after --run-dir; absent ones are not", () => {
+    const given: Record<string, string> = { snap: "/p/m.snap", lib: "/p/slim" };
+    expect(batteryArgv("/run", (f: string, d: string) => given[f] ?? d)).toEqual(["--run-dir", "/run", "--snap", "/p/m.snap", "--lib", "/p/slim"]);
+    expect(batteryArgv("/run", (_f: string, d: string) => d)).toEqual(["--run-dir", "/run"]);
+  });
+  test("the battery's 2 (path-rule refusal) and any lane's 3 are refusals (3); other failures 1; green 0", () => {
+    expect(suiteExitCode(2, 0)).toBe(3);
+    expect(suiteExitCode(2, 1)).toBe(3);
+    expect(suiteExitCode(3, 0)).toBe(3);
+    expect(suiteExitCode(0, 3)).toBe(3);
+    expect(suiteExitCode(1, 0)).toBe(1);
+    expect(suiteExitCode(0, 1)).toBe(1);
+    expect(suiteExitCode(0, 0)).toBe(0);
+  });
+  test("a lane that ran and left no report is a REFUSED / NO REPORT line, never silently absent; a lane that did not run is absent", () => {
+    expect(laneSections([{ name: "compiler", report: null, code: 2, log: "compiler.log" }])[0])
+      .toBe("## compiler: REFUSED (exit 2: no compiler-report.json was written; see compiler.log)");
+    expect(laneSections([{ name: "e2e", report: null, code: 1, log: "run.log" }])[0]).toBe("## e2e: NO REPORT (exit 1: no e2e-report.json was written; see run.log)");
+    expect(laneSections([{ name: "compiler", report: null, code: null, log: "x" }, { name: "e2e", report: null, code: 0, log: "x" }])).toEqual([]);
+  });
+  test("the battery's refusal report: the tally, the REFUSED reason, one INFRA row per item", () => {
+    const why = "compiler-battery: no --snap given and QED64_MATHLIB_SNAP is unset — pass --snap <file> or set QED64_MATHLIB_SNAP";
+    const report = { lane: "compiler", total: 2, failed: 2, infra: 2, refused: why,
+      results: ["a", "b"].map((name) => ({ name, category: "c", outcome: "infra", pass: false, failures: [`infra: ${why}`] })) };
+    expect(laneSections([{ name: "compiler", report, code: 2, log: "compiler.log" }])).toEqual([
+      "## compiler: 0/2 passed (fail 0, infra 2, aborted 0)", "",
+      `**REFUSED (exit 2):** ${why}`, "",
+      `- **INFRA** \`a\` [c] — infra: ${why}`,
+      `- **INFRA** \`b\` [c] — infra: ${why}`, "",
+    ]);
+  });
+  test("run.mjs builds its argv, report and exit code from these helpers", () => {
+    const src = fs.readFileSync(path.resolve(__dirname, "../../tests/adversarial/run.mjs"), "utf8");
+    expect(src).toContain("...batteryArgv(dir)");
+    expect(src).toContain("laneSections([");
+    expect(src).toContain("process.exit(suiteExitCode(");
+    expect(src).not.toContain("filter(Boolean)");
   });
 });

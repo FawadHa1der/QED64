@@ -9,7 +9,10 @@
 // case is chosen to stop at a cheap existence check: a missing lib tree, a
 // foreign index, a missing --snap, a bin/lean.js that is a directory. The one
 // bake that runs to completion runs a FAKE node-runner (a script that writes
-// the .snap and exits). Every child has a SIGKILL timeout.
+// the .snap and exits); gate's deprecated-default case runs a fake node-runner
+// and persistent-probe likewise. Every child has a SIGKILL timeout: spawnSync's,
+// or (the one async spawn) a timer and a finally that kill it, and the scratch
+// tool's --hang mode exits by itself after 25 s whatever the test did.
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -49,7 +52,7 @@ const TOOLS: Record<string, string[]> = {
   "bake-snapshot": ["pipeline/snapshot/bake-snapshot.mjs"],
   "chunk-runtime": ["pipeline/toolchain/chunk-runtime.mjs"],
   gate: ["pipeline/toolchain/gate.mjs"],
-  "resident-probe": ["pipeline/snapshot/resident-probe.mjs", "public/workers/lsp-frames.js"],
+  "resident-probe": ["pipeline/snapshot/resident-probe.mjs", "public/workers/lsp-frames.js", "public/workers/lean.worker.js"],
 };
 const toolCheckout = (tool: string) => checkout([...TOOLS[tool]!, "pipeline/toolchain/artifact-paths.mjs"]);
 
@@ -347,6 +350,106 @@ describe("the tools in a scratch checkout: a deprecated default prints exactly o
   });
 });
 
+describe("gate and resident-probe: the deprecated defaults and QED64_SNAP_DIR", () => {
+  // gate's deprecated default is the cwd; resolving it IS passing gate's own lean.js check, so the
+  // next step is the runner: here a fake node-runner and persistent-probe that record their argv.
+  const FAKE_RECORDER = (code: number) => `import fs from "node:fs";
+fs.appendFileSync(process.env.FAKE_RECORD, JSON.stringify(process.argv.slice(2)) + "\\n");
+process.exit(${code});
+`;
+  test("gate run from a stage1 dir: exactly one WARNING naming the current directory, then its runs use that dir", () => {
+    const probes = ["is-module.lean", "private-default.lean", "rpc-attr.lean", "module-file.lean"].map((f) => `tests/adversarial/kernel-probes/${f}`);
+    const s = checkout([...TOOLS.gate!, "pipeline/toolchain/artifact-paths.mjs", ...probes]);
+    fs.mkdirSync(path.join(s, "pipeline/snapshot"), { recursive: true });
+    fs.writeFileSync(path.join(s, "pipeline/snapshot/node-runner.mjs"), FAKE_RECORDER(0));
+    fs.writeFileSync(path.join(s, "pipeline/snapshot/persistent-probe.mjs"), FAKE_RECORDER(1));
+    const stage = fakeStage1(path.join(s, "stage1"));
+    const record = path.join(s, "record.jsonl");
+    const r = run(s, "pipeline/toolchain/gate.mjs", [], { FAKE_RECORD: record }, stage);
+    expect(r.status, r.stderr).toBe(1);
+    expect(r.lines).toEqual([`gate: WARNING — the default --artifact the current directory (${stage}) is deprecated; use --artifact <dir> or set QED64_LEAN_ARTIFACT (docs/CLI-CONTRACT.md)`]);
+    expect(r.lines[0]).toMatch(DEPRECATED);
+    expect(r.stdout.trimEnd().split("\n").at(-1)).toMatch(/^GATE FAILED \(\d+\)$/);
+    const runs = fs.readFileSync(record, "utf8").trim().split("\n").map((l) => JSON.parse(l) as string[]);
+    expect(runs).toHaveLength(5); // four node-runner runs, one persistent-probe
+    for (const argv of runs) expect(argv[argv.indexOf("--artifact") + 1]).toBe(stage);
+  });
+
+  // resident-probe resolves --snap-dir after its lean.js check; a bin/lean.js that is a directory
+  // then stops it at the read (EISDIR, exit 1) before anything is evaluated.
+  const residentStage = (s: string) => fakeStage1(path.join(s, "art/stage1"), { jsIsDir: true });
+  test("resident-probe: QED64_SNAP_DIR is honoured (silent), then the unreadable lean.js stops it", () => {
+    const s = toolCheckout("resident-probe");
+    const r = run(s, "pipeline/snapshot/resident-probe.mjs", ["--artifact", residentStage(s)], { QED64_SNAP_DIR: path.join(s, "env-snaps") });
+    expect(r.status, r.stderr).toBe(1);
+    expect(r.stderr).toContain("EISDIR");
+    expect(r.stderr).not.toMatch(/WARNING|no --\S+ given/);
+  });
+  test("resident-probe: the checkout's work/snapshot is the deprecated --snap-dir (exactly one WARNING)", () => {
+    const s = toolCheckout("resident-probe");
+    fs.mkdirSync(path.join(s, "work/snapshot"), { recursive: true });
+    const r = run(s, "pipeline/snapshot/resident-probe.mjs", ["--artifact", residentStage(s)]);
+    expect(r.status, r.stderr).toBe(1);
+    expect(r.lines.filter((l) => l.includes("WARNING"))).toEqual([
+      `resident-probe: WARNING — the default --snap-dir work/snapshot under the repo root (${path.join(s, "work/snapshot")}) is deprecated; use --snap-dir <dir> or set QED64_SNAP_DIR (docs/CLI-CONTRACT.md)`,
+    ]);
+    expect(r.stderr).toContain("EISDIR");
+  });
+  test("resident-probe: no --snap-dir, QED64_SNAP_DIR unset, no work/snapshot: exit 2 naming the variable, nothing created", () => {
+    const s = toolCheckout("resident-probe");
+    const art = residentStage(s);
+    const before = tree(s);
+    const r = run(s, "pipeline/snapshot/resident-probe.mjs", ["--artifact", art]);
+    expect(r.status, r.stderr).toBe(2);
+    expect(r.lines).toEqual([
+      `resident-probe: no --snap-dir given and QED64_SNAP_DIR is unset; the deprecated default ${path.join(s, "work/snapshot")} is absent — pass --snap-dir <dir> or set QED64_SNAP_DIR`,
+      "usage: resident-probe.mjs [--artifact <stage1>] [--lib <tree>] [--budget-ms 180000] [--snap-dir <dir>] [--snapshots init,mathlib] [--mathlib] [--act2 | --act4 [--act4-ms 500]]",
+    ]);
+    expect(r.lines[0]).toMatch(NO_PATH);
+    expect(tree(s)).toEqual(before);
+  });
+});
+
+describe("compiler-battery's CLI refusal leaves a record (no stale or missing report)", () => {
+  const BATTERY = ["tests/adversarial/compiler-battery.mjs", "tests/adversarial/harness.mjs", "pipeline/release/page-target.mjs", "pipeline/toolchain/artifact-paths.mjs"];
+  function batteryCheckout() {
+    const s = checkout(BATTERY);
+    const corpus = path.join(s, "corpus.json");
+    fs.writeFileSync(corpus, JSON.stringify({ items: ["one", "two"].map((name) => ({ name, category: "c", source: "#check 1", expect: {} })) }));
+    // A previous run's report, which a refusal must replace, never leave standing.
+    fs.mkdirSync(path.join(s, "work/adversarial"), { recursive: true });
+    fs.writeFileSync(path.join(s, "work/adversarial/compiler-report.json"), JSON.stringify({ lane: "compiler", total: 120, failed: 2, infra: 0, results: [] }));
+    return { s, corpus, runDir: path.join(s, "runs/r1") };
+  }
+  const readJson = (f: string) => JSON.parse(fs.readFileSync(f, "utf8"));
+
+  test("nothing resolves: exit 2, the no-path line in compiler.log, a fresh all-infra report in work/adversarial/ and the run dir, nothing spawned", () => {
+    const { s, corpus, runDir } = batteryCheckout();
+    const r = run(s, "tests/adversarial/compiler-battery.mjs", ["--corpus", corpus, "--run-dir", runDir]);
+    expect(r.status, r.stderr).toBe(2);
+    const why = `compiler-battery: no --snap given and QED64_MATHLIB_SNAP is unset; the deprecated default ${path.join(s, "work/snapshot/mathlib.snap")} is absent — pass --snap <file> or set QED64_MATHLIB_SNAP`;
+    const usage = "usage: compiler-battery.mjs [--corpus <file>] [--jobs 3] [--run-dir <dir>] [--snap <mathlib.snap>] [--artifact <stage1>] [--lib <tree>]";
+    expect(r.lines).toEqual([why, usage, `compiler battery: REFUSED — ${why}`]);
+    expect(r.lines[0]).toMatch(NO_PATH);
+    expect(fs.readFileSync(path.join(runDir, "compiler.log"), "utf8").split("\n").filter(Boolean)).toEqual(r.lines);
+    const report = readJson(path.join(s, "work/adversarial/compiler-report.json"));
+    expect(readJson(path.join(runDir, "compiler-report.json"))).toEqual(report);
+    expect(report).toEqual({ lane: "compiler", total: 2, failed: 2, infra: 2, refused: why,
+      results: ["one", "two"].map((name) => ({ name, category: "c", wallMs: 0, outcome: "infra", pass: false, failures: [`infra: ${why}`] })) });
+    // no probe scratch dir (work/adv-*) was made
+    expect(fs.readdirSync(path.join(s, "work"))).toEqual(["adversarial"]);
+  });
+
+  test("the snapshot resolves by its variable but no runtime does: the refusal names --artifact / QED64_LEAN_ARTIFACT", () => {
+    const { s, corpus, runDir } = batteryCheckout();
+    const r = run(s, "tests/adversarial/compiler-battery.mjs", ["--corpus", corpus, "--run-dir", runDir], { QED64_MATHLIB_SNAP: path.join(s, "m.snap") });
+    expect(r.status, r.stderr).toBe(2);
+    const report = readJson(path.join(runDir, "compiler-report.json"));
+    expect(report.refused).toBe(`compiler-battery: no --artifact given and QED64_LEAN_ARTIFACT is unset; the deprecated default ${legacyStage1(s)} is absent — pass --artifact <dir> or set QED64_LEAN_ARTIFACT`);
+    expect([report.total, report.infra]).toEqual([2, 2]);
+  });
+});
+
 describe("bake-snapshot end to end with a FAKE runner (no wasm): --work's rule and --allow-legacy-imports", () => {
   // The fake stands where node-runner.mjs is: it records how it was started and writes the raw .snap.
   const FAKE_RUNNER = `import fs from "node:fs";
@@ -409,7 +512,8 @@ const target = process.argv.indexOf("--target");
 if (target > 0) fs.writeFileSync(process.argv[target + 1], "the job's output");
 process.stdout.write(JSON.stringify(self) + "\\n");
 process.stderr.write("to stderr\\n");
-if (process.argv.includes("--hang")) setInterval(() => {}, 1000); else process.exit(7);
+// --hang: alive until killed, but never longer than 25 s, whatever the test did.
+if (process.argv.includes("--hang")) { setInterval(() => {}, 1000); setTimeout(() => process.exit(9), 25_000); } else process.exit(7);
 `);
     return f;
   }
@@ -436,13 +540,22 @@ if (process.argv.includes("--hang")) setInterval(() => {}, 1000); else process.e
   test("a SIGKILL of the PID the parent spawned kills the re-exec'd tool: nothing is orphaned (gate's timeout, bake-snapshot's reap)", async () => {
     const tool = scratchTool();
     const child = spawn(process.execPath, [tool, "--hang"], { stdio: ["ignore", "pipe", "pipe"] });
-    const line = await new Promise<string>((resolve) => { let b = ""; child.stdout.on("data", (d) => { b += d; if (b.includes("\n")) resolve(b); }); });
-    const self = JSON.parse(line);
-    expect([self.pid, self.execArgv]).toEqual([child.pid, ["--stack-size=8192"]]);
     const exited = new Promise<NodeJS.Signals | null>((resolve) => child.on("exit", (_c, sig) => resolve(sig)));
-    child.kill("SIGKILL");
-    expect(await exited).toBe("SIGKILL");
-    expect(dead(self.pid)).toBe(true);
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      const line = await Promise.race([
+        new Promise<string>((resolve) => { let b = ""; child.stdout.on("data", (d) => { b += d; if (b.includes("\n")) resolve(b); }); }),
+        new Promise<string>((_, reject) => { timer = setTimeout(() => { child.kill("SIGKILL"); reject(new Error("no first line from the --hang tool in 10 s")); }, 10_000); }),
+      ]);
+      const self = JSON.parse(line);
+      expect([self.pid, self.execArgv]).toEqual([child.pid, ["--stack-size=8192"]]);
+      child.kill("SIGKILL");
+      expect(await exited).toBe("SIGKILL");
+      expect(dead(self.pid)).toBe(true);
+    } finally {
+      clearTimeout(timer);
+      child.kill("SIGKILL"); // harmless when it is already dead
+    }
     // spawnSync's timeout path, as pipeline/toolchain/gate.mjs runs node-runner without the flag
     const record = path.join(path.dirname(tool), "sync.json");
     const r = spawnSync(process.execPath, [tool, "--hang", "--record", record], { timeout: 3000, killSignal: "SIGKILL", encoding: "utf8" });
