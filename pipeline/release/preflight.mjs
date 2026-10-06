@@ -14,7 +14,8 @@
 //   5. the profile index names a core profile (boot needs it);
 //   6. one boot smoke in headless Chromium: the pill reaches `ready` within
 //      the budget (skip with --no-boot for fetch-only checks).
-// Exit 3 with one line `PREFLIGHT REFUSED: <reason>` on any failure.
+// Exit 3 with one line `PREFLIGHT REFUSED: <reason>` on any failure (a
+// multi-line cause, such as Playwright's launch error, is folded to one line).
 //
 // Usage: node pipeline/release/preflight.mjs --url <page url> [--no-boot]
 //        [--boot-budget-ms 180000] [--run-dir <dir>]
@@ -29,6 +30,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseCli } from "../snapshot/cli.mjs";
 import { fetchJson, resolveTarget } from "./page-target.mjs";
+
+/** One stdout line: a reason folds newlines and Playwright's box drawing
+ * (`browserType.launch` errors are multi-line) into single spaces. */
+const oneLine = (x) => String(x).replace(/[\u2500-\u257f]+/g, " ").replace(/\s+/g, " ").trim();
 
 const isHtml = (r, text = "") => /text\/html/i.test(r.headers.get("content-type") ?? "") || /^\s*<!doctype html/i.test(text);
 
@@ -56,7 +61,7 @@ export async function runPreflight(target, { boot = true, bootBudgetMs = 180000,
   const checks = [];
   const ok = (what) => { checks.push({ ok: true, what }); log(`ok    ${what}`); };
   const warn = (what) => { checks.push({ ok: true, warn: true, what }); log(`warn  ${what}`); };
-  const refuse = (reason, buildId = null) => { checks.push({ ok: false, what: reason }); log(`FAIL  ${reason}`); return { ok: false, reason, buildId, mode: target.mode, checks }; };
+  const refuse = (why, buildId = null) => { const reason = oneLine(why); checks.push({ ok: false, what: reason }); log(`FAIL  ${reason}`); return { ok: false, reason, buildId, mode: target.mode, checks }; };
   let manifest;
   try {
     manifest = await fetchJson(target.manifestUrl);
@@ -116,11 +121,15 @@ export async function runPreflight(target, { boot = true, bootBudgetMs = 180000,
   return { ok: true, reason: null, buildId, mode: target.mode, checks };
 }
 
-/** Why the caller's playwright could not be imported, as one refusal reason. */
+/** Why the caller's playwright could not be imported, as one refusal reason.
+ * "Not resolvable" only when the missing module is playwright itself; a
+ * missing dependency of it (`require('playwright-core')` in its index.js, a
+ * partial install) is named, not blamed on playwright. */
 function playwrightImportFault(e) {
   const code = e?.code ?? e?.name ?? "unknown";
-  if (code === "ERR_MODULE_NOT_FOUND" || code === "MODULE_NOT_FOUND") return `playwright not resolvable from the caller (${code})`;
-  return `playwright could not be imported (${code}): ${String(e?.message ?? e).split("\n")[0].slice(0, 160)}`;
+  const first = String(e?.message ?? e).split("\n")[0];
+  if ((code === "ERR_MODULE_NOT_FOUND" || code === "MODULE_NOT_FOUND") && /Cannot find (?:package|module) 'playwright'/.test(first)) return `playwright not resolvable from the caller (${code})`;
+  return `playwright could not be imported (${code}): ${oneLine(first).slice(0, 160)}`;
 }
 
 /** One headless page must reach the `ready` pill within the budget. The
@@ -140,8 +149,8 @@ export async function bootSmoke(url, budgetMs, { importPlaywright = () => import
     }
     browser = await chromium.launch({ args: ["--enable-features=SharedArrayBuffer"] });
     const page = await browser.newPage();
-    page.on("console", (m) => { tail.push(m.text().slice(0, 200)); if (tail.length > 20) tail.shift(); });
-    page.on("pageerror", (e) => tail.push(`PAGEERROR: ${e.message.slice(0, 200)}`));
+    page.on("console", (m) => { tail.push(oneLine(m.text()).slice(0, 200)); if (tail.length > 20) tail.shift(); });
+    page.on("pageerror", (e) => tail.push(`PAGEERROR: ${oneLine(e.message).slice(0, 200)}`));
     let crashed = false;
     page.on("crash", () => { crashed = true; });
     const t0 = Date.now();
@@ -160,7 +169,7 @@ export async function bootSmoke(url, budgetMs, { importPlaywright = () => import
       await new Promise((res) => setTimeout(res, 1000));
     }
   } catch (e) {
-    return { ok: false, reason: `${String(e).slice(0, 160)}; console tail: ${tail.slice(-5).join(" | ")}` };
+    return { ok: false, reason: `${oneLine(e).slice(0, 160)}; console tail: ${tail.slice(-5).join(" | ")}` };
   } finally {
     if (browser !== null) await browser.close().catch(() => {});
   }
@@ -177,7 +186,7 @@ export async function main() {
   const result = await runPreflight(target, { boot: !cli.values["no-boot"], bootBudgetMs: Number(arg("boot-budget-ms", "180000")) });
   const dir = arg("run-dir", "");
   if (dir) { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(path.join(dir, "preflight.json"), JSON.stringify({ target, ...result }, null, 2)); }
-  if (!result.ok) { console.log(`PREFLIGHT REFUSED: ${result.reason}`); process.exit(3); }
+  if (!result.ok) { console.log(`PREFLIGHT REFUSED: ${oneLine(result.reason)}`); process.exit(3); }
   console.log(`PREFLIGHT OK buildId=${result.buildId} mode=${result.mode} snapshots=${target.snapshotsDir}`);
 }
 

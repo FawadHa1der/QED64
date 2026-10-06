@@ -27,8 +27,11 @@ export interface PlaywrightLike {
 export interface BootSmokeOptions {
   /** Replaces `import("playwright")`, which resolves from preflight.mjs's own
    * location (the caller's install). A rejection with code
-   * `ERR_MODULE_NOT_FOUND` is the reason `playwright not resolvable from the
-   * caller (ERR_MODULE_NOT_FOUND)`. */
+   * `ERR_MODULE_NOT_FOUND` (or `MODULE_NOT_FOUND`) whose message names
+   * `'playwright'` itself is the reason `playwright not resolvable from the
+   * caller (<code>)`; any other rejection, a missing `playwright-core`
+   * included, is `playwright could not be imported (<code>): <its first
+   * message line>`. Every reason is one line. */
   importPlaywright?: () => Promise<PlaywrightLike>;
 }
 
