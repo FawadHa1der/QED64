@@ -461,7 +461,7 @@ const a = process.argv.slice(2);
 const work = a[a.indexOf("--work") + 1];
 const save = a.find((x) => x.startsWith("--incr-header-save=")).split("=")[1].replace(/^\\/work\\//, "");
 fs.writeFileSync(path.join(work, save), "a raw region");
-fs.writeFileSync(path.join(work, "runner.json"), JSON.stringify({ argv: a, execArgv: process.execArgv, allow: process.env.QED64_ALLOW_LEGACY_IMPORTS ?? null }));
+fs.writeFileSync(path.join(work, "runner.json"), JSON.stringify({ argv: a, execArgv: process.execArgv, execPath: process.execPath, allow: process.env.QED64_ALLOW_LEGACY_IMPORTS ?? null }));
 `;
   function bakeCheckout() {
     const s = toolCheckout("bake-snapshot");
@@ -469,7 +469,7 @@ fs.writeFileSync(path.join(work, "runner.json"), JSON.stringify({ argv: a, execA
     const art = fakeStage1(path.join(s, "art/stage1"), { wasm: true });
     return { s, art };
   }
-  const recorded = (work: string) => JSON.parse(fs.readFileSync(path.join(work, "runner.json"), "utf8")) as { argv: string[]; execArgv: string[]; allow: string | null };
+  const recorded = (work: string) => JSON.parse(fs.readFileSync(path.join(work, "runner.json"), "utf8")) as { argv: string[]; execArgv: string[]; execPath: string; allow: string | null };
 
   test("the default --work: one WARNING, the bake completes there; the runner starts with --stack-size=8192 and no legacy-imports gate", () => {
     const { s, art } = bakeCheckout();
@@ -513,6 +513,16 @@ fs.writeFileSync(path.join(work, "runner.json"), JSON.stringify({ argv: a, execA
     const b = run(s, "pipeline/snapshot/bake-snapshot.mjs", ["--artifact", art, "--out", path.join(s, "out2"), "--work", w2], { QED64_RUNNER: other });
     expect([b.status, b.stderr]).toEqual([0, ""]);
     expect(JSON.parse(fs.readFileSync(path.join(w2, "other.json"), "utf8")).execArgv).toEqual(["--stack-size=8192"]);
+    // The runner is spawned with the bake's own Node, not PATH's: with a PATH whose `node` exits 99
+    // (and nothing else on it), the bake still completes and the runner ran under process.execPath.
+    const fakeBin = path.join(s, "fake-bin");
+    fs.mkdirSync(fakeBin);
+    fs.writeFileSync(path.join(fakeBin, "node"), "#!/bin/sh\nexit 99\n", { mode: 0o755 });
+    const w4 = path.join(s, "w4");
+    const d = run(s, "pipeline/snapshot/bake-snapshot.mjs", ["--artifact", art, "--out", path.join(s, "out4"), "--work", w4], { PATH: fakeBin });
+    expect([d.status, d.stderr]).toEqual([0, ""]);
+    expect(recorded(w4).execPath).toBe(process.execPath);
+    expect(recorded(w4).execArgv).toEqual(["--stack-size=8192"]);
     const w3 = path.join(s, "w3");
     fs.mkdirSync(w3);
     fs.writeFileSync(path.join(w3, "init.snap"), "the paired raw snapshot");
