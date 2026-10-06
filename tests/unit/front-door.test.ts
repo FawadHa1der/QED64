@@ -567,6 +567,11 @@ describe("front door: a lazy load that fails is a structured death (docs/EMBEDDI
     const w = host((src) => { const older = src.replace(/REVISION: "1" \}/, 'REVISION: "0" }'); expect(older).not.toBe(src); return older; });
     expect(() => w.deliver({ protocol: 1, type: "lsp", msg: initialize(1) })).not.toThrow();
     expect(w.posted.filter((m) => m.type === "error").map((m) => m.error)).toEqual([expect.objectContaining({ code: "WORKER_DEP_MISMATCH", recoverable: false })]);
+    // What the page makes of the real refusal: stale, by its posted code and by its words alone on the same
+    // throw's uncaught error event (which can arrive first, before the hello) — ties STALE_MESSAGE to checkSibling.
+    const e = w.posted.find((m) => m.type === "error")!.error!;
+    expect(deathCause(e.code, e.message, { errorCode: e.code })).toMatchObject({ kind: "stale", code: "WORKER_DEP_MISMATCH" });
+    expect(deathCause("crash", `Uncaught Error: ${e.message}`, { beforeHello: true })).toMatchObject({ kind: "stale", code: "WORKER_DEP_MISMATCH" });
     expect(() => w.deliver({ protocol: 1, type: "lsp", msg: initialize(2) })).not.toThrow();
     expect(w.posted.filter((m) => m.type === "error")).toHaveLength(1);
     expect(w.posted.filter((m) => m.type === "event" && m.kind === "lsp")).toEqual([]); // the mismatched machine never answered initialize

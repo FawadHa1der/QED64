@@ -1104,7 +1104,11 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
     is now `stale` with the same code, from `failureKindOf`,
     `failureCauseOf` and `deathCause` alike; the refusal's uncaught error
     event, which carries its words but no code, is `stale` too (it was
-    `WORKER_SCRIPT_LOAD_FAILED` before the hello, `other` after). Migration:
+    `WORKER_SCRIPT_LOAD_FAILED` before the hello, `other` after). A `stale`
+    cause's `code` is always `"WORKER_DEP_MISMATCH"`: `failureCauseOf` sets
+    it, as `deathCause` does, also for a value that carries the words under
+    another code (a `WORKER_CRASHED` rejection when that event reaches
+    `LeanSession` first) or none. Migration:
     a `switch` over `FailureKind` gains a case; code keyed on
     `cause.code === "WORKER_DEP_MISMATCH"` keeps working, while code that
     asserted `kind: "other"` for it must expect `stale`.

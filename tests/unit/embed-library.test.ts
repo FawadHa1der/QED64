@@ -58,6 +58,12 @@ describe("failureKindOf: the worker's real messages", () => {
       .toEqual({ kind: "stale", stage: "files", code: "WORKER_DEP_MISMATCH", message: mismatch });
     expect(deathCause("crash", `Uncaught Error: ${mismatch}`, { beforeHello: true })).toMatchObject({ kind: "stale", code: "WORKER_DEP_MISMATCH" });
     expect(failureCauseOf(Object.assign(new Error(mismatch), { code: "WORKER_DEP_MISMATCH" }))).toEqual({ kind: "stale", code: "WORKER_DEP_MISMATCH", message: mismatch });
+    // The same refusal's uncaught error event can reach LeanSession first: it rejects with WORKER_CRASHED, or a
+    // page error carries the words alone. Its cause is still stale with WORKER_DEP_MISMATCH (§7.2: always that code).
+    const crashed = `Worker crashed: Uncaught Error: ${mismatch}`;
+    expect(failureCauseOf(Object.assign(new Error(crashed), { code: "WORKER_CRASHED" }))).toEqual({ kind: "stale", code: "WORKER_DEP_MISMATCH", message: crashed });
+    expect(failureCauseOf(new Error(crashed))).toEqual({ kind: "stale", code: "WORKER_DEP_MISMATCH", message: crashed });
+    expect(failureCauseOf(Object.assign(new Error("x"), { cause: { kind: "stale", code: "WORKER_CRASHED", message: "x" } }))).toMatchObject({ kind: "stale", code: "WORKER_DEP_MISMATCH" });
     expect(deathCause("RUNTIME_FETCH_FAILED", "lean.wasm chunk 3: HTTP 404", { errorCode: "RUNTIME_FETCH_FAILED" }, { stage: "runtime" }))
       .toEqual({ kind: "missing", httpStatus: 404, stage: "runtime", code: "RUNTIME_FETCH_FAILED", message: "lean.wasm chunk 3: HTTP 404" });
     expect(deathCause("RUNTIME_FETCH_FAILED", "lean.wasm chunk 3 failed SHA-256 verification.", { errorCode: "RUNTIME_FETCH_FAILED" })).toMatchObject({ kind: "corrupt" });

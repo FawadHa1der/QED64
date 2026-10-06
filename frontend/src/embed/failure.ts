@@ -78,17 +78,22 @@ export function httpStatusOf(message: string): number | undefined {
  * already classified it, else classified from its worker error `code` and
  * message (the worker's messages name the HTTP status, the allocation, the
  * runtime pairing and the chunk verification, so the page classifies — the
- * same table for every worker version). */
+ * same table for every worker version). A `stale` cause's code is always
+ * WORKER_DEP_MISMATCH, whatever code the thrown value carried. */
 export function failureCauseOf(err: unknown, at: { stage?: BootStage; subject?: string } = {}): FailureCause {
   const e = err as { message?: unknown; code?: unknown; cause?: unknown } | null;
   const own = (e?.cause ?? null) as Partial<FailureCause> | null;
   if (own && typeof own === "object" && typeof own.kind === "string") {
-    return { ...at, ...own, kind: own.kind as FailureKind, message: String(own.message ?? e?.message ?? err) };
+    return { ...at, ...own, kind: own.kind as FailureKind, ...(own.kind === "stale" ? { code: WORKER_DEP_MISMATCH } : {}), message: String(own.message ?? e?.message ?? err) };
   }
   const message = String(e?.message ?? err);
   const code = typeof e?.code === "string" ? e.code : undefined;
   const httpStatus = httpStatusOf(message);
-  return { kind: failureKindOf(code, message), ...at, ...(code ? { code } : {}), ...(httpStatus ? { httpStatus } : {}), message };
+  const kind = failureKindOf(code, message);
+  // A stale cause always carries WORKER_DEP_MISMATCH (§7.2), as deathCause's
+  // does: the refusal's words can reach the page under WORKER_CRASHED or no code.
+  const causeCode = kind === "stale" ? WORKER_DEP_MISMATCH : code;
+  return { kind, ...at, ...(causeCode ? { code: causeCode } : {}), ...(httpStatus ? { httpStatus } : {}), message };
 }
 
 /** The script-load code: the worker (or a script it imports) never ran. It
