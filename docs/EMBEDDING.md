@@ -429,7 +429,7 @@ The package:
   - `"./embedding/closure.json"`;
   - `"./package.json"`.
 - `files`: exactly the closure below, plus the license, README and this
-  document. 50 files, about 199 kB packed. `npm run test:consumer`
+  document. 50 files, about 200 kB packed. `npm run test:consumer`
   (tests/consumer/check-consumer.mjs) proves the packed files alone resolve
   and build.
 
