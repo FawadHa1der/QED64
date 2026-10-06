@@ -16,7 +16,7 @@
 
 /** Semver of the library contract (docs/EMBEDDING.md §7): minor = additive.
  * "-pre" until the contract's review is settled. */
-export const EMBED_API_REVISION = "1.0.0-pre.5";
+export const EMBED_API_REVISION = "1.0.0-pre.6";
 
 // runtime
 export { LeanSession, PROTOCOL, MEMORY64_PROBE, probeMemory64 } from "../../../src/runtime/client";

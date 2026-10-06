@@ -423,16 +423,17 @@ describe("front door: worker host wiring (lean.worker.js)", () => {
     hooks = (sandbox as { __qed64TestExports?: Hooks }).__qed64TestExports!;
     deliver = (data) => listeners.message!({ data });
   });
-  it("imports only lsp-frames.js at script load; the front door loads lazily on the first `lsp` (a compile-only consumer never loads it)", () => {
-    // lean4game vendors lean.worker.js + snapshot-prefetch.worker.js + lsp-frames.js
-    // as a fixed closure: an unconditional import of lsp-front-door.js would throw
-    // before {type:"boot"} and hang every session of a closure that lacks it.
-    expect(imported).toEqual(["lsp-frames.js"]);
+  it("imports only lsp-frames.js and memory64-probe.js at script load; the front door loads lazily on the first `lsp` (a compile-only consumer never loads it)", () => {
+    // lean4game's wasm64-port vendors the worker scripts by name as a fixed closure:
+    // an unconditional import of lsp-front-door.js would throw before {type:"boot"}
+    // and hang every session of a closure that lacks it.
+    const eager = ["lsp-frames.js", "memory64-probe.js"];
+    expect(imported).toEqual(eager);
     expect(posted.filter((m) => m.type === "boot")).toHaveLength(1);
     // A plain request is dispatched without the front door.
     deliver({ protocol: 1, requestId: "c1", type: "capabilities" });
     expect(posted.find((m) => m.requestId === "c1")).toMatchObject({ type: "result" });
-    expect(imported).toEqual(["lsp-frames.js"]);
+    expect(imported).toEqual(eager);
     // The deleted pump-transport requests are unknown to the dispatcher, never silently accepted — and refused
     // RECOVERABLY (docs/EMBEDDING.md §7.7: a page newer or older than its worker must not die on every reboot).
     for (const type of ["lsp-init", "lsp-send", "lsp-threads", "lsp-resident-init", "lsp-resident-send"]) {
@@ -444,7 +445,7 @@ describe("front door: worker host wiring (lean.worker.js)", () => {
     const cases = [...readFileSync(path.resolve(__dirname, "../../public/workers/lean.worker.js"), "utf8").matchAll(/^    case "([A-Za-z-]+)":/gm)].map((m) => m[1]);
     expect(new Set(caps.result.requests)).toEqual(new Set([...cases, "lsp"]));
     expect(caps.result.protocolRevision).toBe("1");
-    expect(imported).toEqual(["lsp-frames.js"]);
+    expect(imported).toEqual(eager);
   });
   it("dispatches `lsp` without a requestId while a snapshot loads: answers initialize as an `lsp` event, queues the rest, reports status once per change, and does NOT open the loop", () => {
     posted.length = 0;
@@ -452,7 +453,7 @@ describe("front door: worker host wiring (lean.worker.js)", () => {
     // owns the runtime (`state === "compiling"`) — the ordering that broke the boot.
     hooks.frontDoor.host({ state: "compiling" });
     deliver({ protocol: 1, type: "lsp", msg: initialize(11) });
-    expect(imported).toEqual(["lsp-frames.js", "lsp-front-door.js"]);
+    expect(imported).toEqual(["lsp-frames.js", "memory64-probe.js", "lsp-front-door.js"]);
     deliver({ protocol: 1, type: "lsp", msg: didOpen(1, "A") });
     deliver({ protocol: 1, type: "lsp", msg: didOpen(1, "A") }); // no status change → no second status event
     const lsp = posted.filter((m) => m.type === "event" && m.kind === "lsp");

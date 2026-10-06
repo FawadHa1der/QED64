@@ -12,6 +12,72 @@
 | Consumer (G2) | `npm run test:consumer` | the packed tarball alone suffices: `npm pack` into a temp dir, every `exports` key resolved by Node's resolver from a temp consumer whose `node_modules/qed64` is the extracted package (paths outside `exports` refused), `qed64/edge` and the olean reader loaded, and `tests/consumer/fixture/` (a page on `qed64/embed`, the headless boot of docs/EMBEDDING.md §6.1, a Worker on `qed64/edge`) type-checked and built with the repo's tsc and vite; nothing written in the repo or its node_modules (`--work <dir>` outside the repo, `--keep`) |
 | Live browser | manual / e2e spec | the full product loop (see docs/ARCHITECTURE.md for the current live-verified numbers) |
 
+## Environment: where the lanes find the runtime and the snapshots
+
+Every lane that needs a built artifact takes it from a flag, else from the
+variable below, else (deprecated for one cycle, with one stderr WARNING) from
+this checkout's old default; with none of them a tool exits 2 naming the flag
+and the variable, and an integration test skips naming the variable
+(docs/CLI-CONTRACT.md "Path resolution"). Nothing falls back to another
+project's checkout. From a worktree without build outputs, point the
+variables at the main checkout's.
+
+| Variable | Used by | Deprecated default (this checkout) |
+|---|---|---|
+| `QED64_LEAN_ARTIFACT` | `npm run test:integration` (all three files), node-runner, snapshot-probe, persistent-probe, bake-snapshot, `gate.mjs`, the compiler battery, resident-probe | `pipeline/toolchain/work/build/stage1` when it has `bin/lean.js` (node-runner, snapshot-probe, persistent-probe, resident-probe) or `bin/lean.wasm` (bake-snapshot, the compiler battery); `gate.mjs`: the cwd when it has `bin/lean.js` |
+| `QED64_INIT_SNAP` | `tests/integration/fileworker-exit.test.ts` | `work/snapshot/init.snap` |
+| `QED64_MATHLIB_SNAP` | the compiler battery (`--snap`; `run.mjs --snap` forwards) | `work/snapshot/mathlib.snap` |
+| `QED64_LIB_TREE` | the compiler battery (`--lib`: the tree the snapshot was baked from), snapshot-probe | `work/lib-tree-slim` (battery), `work/lib-tree` (snapshot-probe) |
+| `QED64_SNAP_DIR` | resident-probe (`--snap-dir`) | `work/snapshot` |
+| `QED64_WORK` | bake-snapshot and node-runner (`--work`) | `work/snapshot` (bake), `work/runner` (runner) |
+| `QED64_STAGING` | bake-snapshot and chunk-runtime (`--out` = `<it>/<buildId>/{snapshots,runtime}`) | `work/staging/<buildId>/…` |
+| `QED64_SLOW` | `npm run test:integration` | unset: the slow tier is off |
+
+`npm test` itself needs none of them: `tests/unit/tool-paths.test.ts` runs
+the tools from a scratch copy of the checkout, with every variable cleared,
+and never loads a runtime.
+
+The browser lanes need none of them either: they read the **served tree**
+under `public/` (the tracked manifests plus the bytes they pin), which `npm
+run fetch:artifacts` fills (docs/CLI-CONTRACT.md "fetch-artifacts"). What the
+variables name is different: build outputs (a stage1 dir, raw `.snap`
+regions, the olean trees they were baked from) that no served file contains
+and fetch:artifacts does not produce.
+
+## A fresh clone
+
+A fresh clone runs G1 after `npm run fetch:artifacts`, in two halves:
+
+1. **The page lanes, from the clone alone.**
+   ```sh
+   npm ci && npm --prefix frontend ci && npx playwright install chromium
+   npm run fetch:artifacts          # public/: runtime chunks, profile parts, snapshots (~1.6 GB), verified
+   npm test                         # G0's unit suite
+   npm run test:adversarial -- --skip-compiler   # preflight, cool-down, e2e (23/23)
+   ```
+   and the page lanes below against a dev server on the same tree (page-api,
+   infoview-actions, liveness-faults, reload-storm stock and embedded,
+   edit-storm against `npm run build:site` + `npm run preview:prod`). A
+   second `fetch:artifacts` downloads nothing (every file present with its
+   digest is skipped); a file that fails its digest is never renamed into
+   place, so a half-finished run is resumed by running it again.
+2. **The Node lanes, with the paired build outputs.** The compiler battery
+   (`npm run test:adversarial` without `--skip-compiler`) and the integration
+   tier (`npm run test:integration`) load the runtime under Node from a stage1
+   dir and raw snapshots, which a clone does not have and fetch:artifacts does
+   not produce: set `QED64_LEAN_ARTIFACT`, `QED64_MATHLIB_SNAP`,
+   `QED64_LIB_TREE` and `QED64_INIT_SNAP` (the table above) to a pairing built
+   per docs/REBUILD.md, or to another checkout's. Without them the battery
+   refuses (exit 2, the `no-path` line, a REFUSED row in report.md) and the
+   integration tests skip naming the variable; nothing falls back to an
+   owner-only directory.
+
+`fetch:artifacts --origin <url>` takes the bytes from another deployment
+(a local `npm run preview:prod`, a staging Worker); `--release <dir|url>`
+takes the runtime and the profile packs from a Lean fork release in the
+served layout (its `release.json` is checked too), and the snapshots, which
+the site owns, still from `--origin`.
+
 ## Adversarial suite (`npm run test:adversarial`, tests/adversarial/)
 
 Harness trust rules (docs/ARCHITECTURE-REEVALUATION-2026-09-02.md C7,
@@ -44,6 +110,14 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   "No directory 'X' or file 'X.olean'", which is the verdict the four
   `mustError` header items depend on (`classify` in compiler-battery.mjs,
   pinned by tests/unit/adversarial-harness.test.ts). Infra-only → exit 3.
+  When no pairing resolves at all (no flag, no variable, no deprecated
+  default) the battery exits 2, but first writes compiler.log in `--run-dir`
+  and a fresh all-infra `compiler-report.json` (work/adversarial/ and the run
+  dir) whose `refused` field and rows carry the `no-path` line; `run.mjs`
+  counts that 2 as a refusal (exit 3) and its report.md shows the lane with a
+  `REFUSED` line. A lane that ran and wrote no report at all is a `REFUSED` /
+  `NO REPORT` line, never silently left out (tests/unit/tool-paths.test.ts,
+  tests/unit/adversarial-harness.test.ts).
   In e2e, `infra` means the page never became interactive within
   `--boot-budget-ms`; a page that is interactive but slow to settle under
   machine load is logged and judged by its scenario.
@@ -89,7 +163,17 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   machine it may be a sibling worktree's or an interactive session's live
   e2e, not a leak) and waits until free+inactive memory is above
   `--cooldown-gb` (6 GB). `--kill-strays` opts into SIGKILL for unattended
-  re-runs. Every probe closes its browser in `finally`.
+  re-runs. Every probe closes its browser in `finally`. The memory reading is
+  macOS `vm_stat` (free + inactive + speculative pages), else Linux
+  `/proc/meminfo` (`MemAvailable`; `MemFree + Buffers + Cached` on kernels
+  without it), else `os.freemem()` (free pages only, so it waits longer, never
+  shorter); the first line after the stray check names the source
+  (`cool-down: memory from …`). With no reading at all it prints
+  `cool-down: REFUSED — no memory reading (<what each probe said>)`. Exit
+  codes of `harness.mjs cooldown`: 0 fit to start a browser, 3 refused (a
+  stray browser, memory not back within `--cooldown-max-s`, or no reading),
+  2 usage. The parsers are unit-tested on a captured `vm_stat` and on
+  `/proc/meminfo` samples (`tests/unit/adversarial-harness.test.ts`).
 - **Latency.** `editing-latency.mjs` measures header gestures from
   `qed64.status()` facts only: `switchAdmitMs` = header edit → the first
   status change after it (the front door admits the didChange: the document
@@ -202,6 +286,17 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   preludes are the current rendering of SPECS.
 - The files lean4game and the showcase vendor one by one must import only
   files they vendor.
+- The path rule (tests/unit/tool-paths.test.ts): each tool, run from a scratch
+  copy of the checkout with the rule's variables cleared, exits 2 with the
+  `no-path` line and its usage line when nothing resolves, honours its
+  variable, and prints exactly one WARNING per deprecated default it uses
+  while still resolving it. Each case stops at a cheap check (a missing lib
+  tree, a foreign index, a missing `--snap`, a `bin/lean.js` that is a
+  directory); the one bake that completes runs a fake node-runner. The
+  `--stack-size` re-exec keeps the PID, the stdio and the exit code, a SIGKILL
+  of that PID leaves nothing behind, and supervised-run's runner is not
+  re-exec'd. No tracked file but the two provenance notes names the sibling
+  codex checkout.
 
 ## Artifact discipline (pipeline/, tests/unit/artifact-discipline.test.ts)
 
@@ -246,11 +341,10 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
 
 - Unit tests execute the REAL worker source (vm sandbox) and the REAL
   published manifests — refactors cannot silently diverge from shipped code.
-- Integration tests skip cleanly when the runtime artifact volume is absent
-  (runtime-smoke and persistent-path print why). Those two also skip, with a
-  printed reason, when the artifact is too old for what they assert (the old
-  codex stage1 fallback, which a checkout without its own stage1 build picks
-  up): runtime-smoke when it predates patch 0020 (that CLI exits on its own and is not the runtime the
+- Integration tests skip cleanly when the runtime artifact is absent, and
+  say which variable to set (`QED64_LEAN_ARTIFACT`, `QED64_INIT_SNAP`; the
+  table above). Those two also skip, with a printed reason, when the
+  artifact is too old for what they assert: runtime-smoke when it predates patch 0020 (that CLI exits on its own and is not the runtime the
   browser runs), and persistent-path's parse-error test when it predates
   patch 0010 (its `wasmCompile` drops parser diagnostics). 0010 changes only
   compiled Lean code, so the check reads the build's

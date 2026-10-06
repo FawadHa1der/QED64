@@ -81,6 +81,7 @@ const ARGS: Record<string, (d: string) => [string[], string[]]> = {
   "snapshot-probe": (d) => [["--snap", path.join(d, "work/init.snap"), "--probe", "#check 1", "--artifact", missing, "--lib", path.join(d, "lib"), "--budget-ms", "1000"], []],
   "persistent-probe": () => [["--artifact", missing], []],
   preflight: (d) => [["--url", "http://127.0.0.1:9/", "--no-boot", "--run-dir", path.join(d, "run")], []],
+  "fetch-artifacts": (d) => [["--out", path.join(d, "out"), "--manifests", d, "--origin", "http://127.0.0.1:9/", "--only", "runtime", "--with-manifests"], []],
   "olean-imports": (d) => [["--audit", path.join(d, "lib")], []],
   "chunk-runtime": (d) => [["--bin", path.join(d, "bin"), "--out", path.join(d, "out"), "--revision", "test"], []],
   pack: (d) => [["--lib", path.join(d, "lib"), "--id", "x", "--out", path.join(d, "out"), "--no-imports"], []],
@@ -201,7 +202,7 @@ describe("SPECS", () => {
     const r = spawnSync("node", [cliScript, "--print-specs"], { encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL" });
     expect(r.status).toBe(0);
     const json = JSON.parse(r.stdout) as { contractVersion: number; specs: Record<string, { synopsis: string; markers: { regex: string; example: string }[] }>; env: object; exitClasses: object };
-    expect(json.contractVersion).toBe(1);
+    expect(json.contractVersion).toBe(2); // 2: the path rule of 2026-10-06 (the sibling-checkout fallback deleted)
     expect(Object.keys(json.specs).sort()).toEqual([...TOOLS].sort());
     expect(Object.keys(json.exitClasses)).toEqual(["0", "1", "2", "3"]);
     for (const tool of TOOLS) {
@@ -225,7 +226,7 @@ describe("SPECS", () => {
       } else {
         expect(begins, tool).toBe(0);
         expect(source).toMatch(/import \{ parseCli \} from "(\.\/|(\.\.\/)+(pipeline\/)?snapshot\/)cli\.mjs";/);
-        expect(source).toContain(`parseCli(${JSON.stringify(tool)})`);
+        expect(source).toMatch(new RegExp(`parseCli\\(${JSON.stringify(tool)}[,)]`));
       }
     }
   });

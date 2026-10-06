@@ -17,11 +17,37 @@
 // its first compile line without a wasm panic. An infra-only battery exits 3
 // (refused), never 1 (product failure).
 // Usage: node tests/adversarial/compiler-battery.mjs [--corpus <file>] [--jobs 3] [--run-dir <dir>]
+//          [--snap <mathlib.snap>] [--artifact <stage1>] [--lib <tree>]
+// The pairing under test: each flag, else QED64_MATHLIB_SNAP / QED64_LEAN_ARTIFACT /
+// QED64_LIB_TREE, else (deprecated, one WARNING each) this checkout's
+// work/snapshot/mathlib.snap, pipeline/toolchain/work/build/stage1 and
+// work/lib-tree-slim; a deprecated default that is absent exits 2 with the usage
+// line (docs/CLI-CONTRACT.md "Path resolution"). That refusal still leaves a
+// record: compiler.log in --run-dir and a fresh all-infra compiler-report.json
+// (work/adversarial/ and the run dir) whose rows carry the no-path line, so no
+// reader sees an older run's tally as this one's. An explicit input that is
+// missing is still the all-infra refusal below (exit 3).
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveToolPath } from "../../pipeline/toolchain/artifact-paths.mjs";
 import { arg, root, teeLog } from "./harness.mjs";
+
+const USAGE = "compiler-battery.mjs [--corpus <file>] [--jobs 3] [--run-dir <dir>] [--snap <mathlib.snap>] [--artifact <stage1>] [--lib <tree>]";
+
+/** The battery's pairing (snapshot, runtime, olean tree) by the one path
+ * rule; `io` and `base` are the tests' (a scratch checkout root). */
+export function batteryInputs(get = arg, base = root, io = undefined) {
+  const one = (flag, placeholder, env, rel, holds) => resolveToolPath({
+    tool: "compiler-battery", flag, placeholder, value: get(flag, null), env,
+    legacy: path.join(base, rel), legacyLabel: `${rel} under the repo root`, holds, usage: USAGE,
+  }, io)?.path;
+  const snap = one("snap", "<file>", "QED64_MATHLIB_SNAP", "work/snapshot/mathlib.snap", fs.existsSync);
+  const artifact = snap && one("artifact", "<dir>", "QED64_LEAN_ARTIFACT", "pipeline/toolchain/work/build/stage1", (d) => fs.existsSync(path.join(d, "bin/lean.wasm")));
+  const lib = artifact && one("lib", "<tree>", "QED64_LIB_TREE", "work/lib-tree-slim", fs.existsSync);
+  return lib ? { snap, artifact, lib } : null;
+}
 
 /** The probe's inputs that must exist before a single row can be a verdict:
  * returns the missing paths (empty = all present). */
@@ -87,18 +113,40 @@ export function rewriteAliases(src) {
   }).join("\n");
 }
 
+/** One all-infra row per corpus item (nothing was spawned): `why` is the reason. */
+const infraRows = (corpus, why) => corpus.map((item) => ({ name: item.name, category: item.category, wallMs: 0, outcome: "infra", pass: false, failures: [why] }));
+
+/** The report, written fresh to work/adversarial/ and (with --run-dir) the run dir. */
+function writeReport(dir, results, extra = {}) {
+  const failed = results.filter((r) => r.outcome !== "pass");
+  const infra = results.filter((r) => r.outcome === "infra").length;
+  const text = JSON.stringify({ lane: "compiler", total: results.length, failed: failed.length, infra, ...extra, results }, null, 2);
+  fs.mkdirSync(path.join(root, "work/adversarial"), { recursive: true });
+  fs.writeFileSync(path.join(root, "work/adversarial/compiler-report.json"), text);
+  if (dir) fs.writeFileSync(path.join(dir, "compiler-report.json"), text);
+  return { failed: failed.length, infra };
+}
+
 async function main() {
-  const corpusPath = arg("corpus", path.join(root, "tests/adversarial/corpus.json"));
-  const jobs = Number(arg("jobs", "3"));
-  const snap = arg("snap", path.join(root, "work/snapshot/mathlib.snap"));
-  const artifact = arg("artifact", path.join(root, "pipeline/toolchain/work/build/stage1"));
-  // The olean tree the snapshot was baked from (a staged pairing brings its own).
-  const lib = arg("lib", path.join(root, "work/lib-tree-slim"));
+  // The run dir and its log first: every line below, a refusal's included, reaches compiler.log.
   const dir = arg("run-dir", "");
   if (dir) { fs.mkdirSync(dir, { recursive: true }); teeLog(dir, "compiler.log"); }
-
+  const corpusPath = arg("corpus", path.join(root, "tests/adversarial/corpus.json"));
+  const jobs = Number(arg("jobs", "3"));
   const corpus = JSON.parse(fs.readFileSync(corpusPath, "utf8")).items
     .filter((it) => typeof it.source === "string" && it.source.length > 0 && !(it.actions && it.actions.length));
+  // The olean tree is the one the snapshot was baked from (a staged pairing brings its own).
+  // No pairing resolved: the rule's exit 2, after a fresh all-infra report naming why.
+  const said = [];
+  let refusal = null;
+  const inputs = batteryInputs(arg, root, { err: (l) => { said.push(l); console.error(l); }, exit: (c) => { refusal = c; }, environment: process.env });
+  if (!inputs) {
+    const why = said.find((l) => / no --\S+ given /.test(l)) ?? "no pairing resolved";
+    writeReport(dir, infraRows(corpus, `infra: ${why}`), { refused: why });
+    console.error(`compiler battery: REFUSED — ${why}`);
+    process.exit(refusal ?? 2);
+  }
+  const { snap, artifact, lib } = inputs;
   fs.mkdirSync(path.join(root, "work"), { recursive: true });
   const scratch = fs.mkdtempSync(path.join(root, "work/adv-"));
 
@@ -131,7 +179,7 @@ async function main() {
   // verdict, so every item is one `infra` row and nothing is spawned.
   const missing = missingInputs({ snap, artifact });
   if (missing.length) {
-    for (const item of corpus) results.push({ name: item.name, category: item.category, wallMs: 0, outcome: "infra", pass: false, failures: [`infra: missing ${missing.join(", ")}`] });
+    results.push(...infraRows(corpus, `infra: missing ${missing.join(", ")}`));
     console.error(`compiler battery: REFUSED — missing ${missing.join(", ")}`);
   } else {
     const queue = [...corpus];
@@ -147,16 +195,10 @@ async function main() {
     await Promise.all(Array.from({ length: jobs }, workerLoop));
   }
   fs.rmSync(scratch, { recursive: true, force: true });
-  const failed = results.filter((r) => r.outcome !== "pass");
-  const infra = results.filter((r) => r.outcome === "infra").length;
-  const report = { lane: "compiler", total: results.length, failed: failed.length, infra, results };
-  fs.mkdirSync(path.join(root, "work/adversarial"), { recursive: true });
-  const text = JSON.stringify(report, null, 2);
-  fs.writeFileSync(path.join(root, "work/adversarial/compiler-report.json"), text);
-  if (dir) fs.writeFileSync(path.join(dir, "compiler-report.json"), text);
-  console.log(`\ncompiler battery: ${results.length - failed.length}/${results.length} passed${infra ? ` (${infra} infra)` : ""}`);
+  const { failed, infra } = writeReport(dir, results);
+  console.log(`\ncompiler battery: ${results.length - failed}/${results.length} passed${infra ? ` (${infra} infra)` : ""}`);
   // Product failures → 1; infra-only failures → 3 (the run is not a verdict).
-  process.exit(failed.length === 0 ? 0 : failed.length === infra ? 3 : 1);
+  process.exit(failed === 0 ? 0 : failed === infra ? 3 : 1);
 }
 
 // Only the CLI runs the battery; vitest imports the classifier.

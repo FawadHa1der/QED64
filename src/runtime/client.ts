@@ -7,6 +7,12 @@
 // session — Worker teardown is the only reliable way to reclaim the resident
 // Lean environment.
 
+// Publishes globalThis.Qed64Memory64: the Memory64 probe bytes and their check,
+// one file shared with the worker (it importScripts the same script), as
+// pipeline/snapshot/resident-probe.mjs imports lsp-frames.js. package.json
+// `sideEffects` names the file, so a bundler keeps this import.
+import "../../public/workers/memory64-probe.js";
+
 export const PROTOCOL = 1;
 
 export interface Diagnostic {
@@ -472,28 +478,27 @@ export class LeanSession {
   }
 }
 
+/** What public/workers/memory64-probe.js publishes on globalThis. */
+interface Memory64Probe {
+  readonly MEMORY64_PROBE: Uint8Array<ArrayBuffer>;
+  probeMemory64(): boolean;
+  readonly REVISION: string;
+}
+const memory64Probe = (globalThis as unknown as { Qed64Memory64: Memory64Probe }).Qed64Memory64;
+
 /** The Memory64 probe module: the wasm header and one memory section whose
  * limits flags are 0x04 (memory64), minimum 0. `WebAssembly.validate` accepts
- * it exactly when the engine speaks Memory64. public/workers/lean.worker.js
- * carries the same 13 bytes as its own MEMORY64_PROBE (a plain script cannot
- * import this module); tests/unit/memory64-probe.test.ts parses the worker
- * and pins the two equal. Fixed shape: non-extensible and of fixed length (a
- * typed array with elements cannot be frozen), so treat the bytes as
- * read-only and `.slice()` a copy before changing anything. */
-export const MEMORY64_PROBE = Object.preventExtensions(Uint8Array.of(
-  0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
-  0x05, 0x03, 0x01, 0x04, 0x00, // memory section: flags 0x04 (memory64), min 0
-));
+ * it exactly when the engine speaks Memory64. One source: these are the bytes
+ * of public/workers/memory64-probe.js, the file public/workers/lean.worker.js
+ * loads for its capabilities report, so a page's check is the worker's.
+ * Fixed shape: non-extensible and of fixed length (a typed array with
+ * elements cannot be frozen), so treat the bytes as read-only and `.slice()`
+ * a copy before changing anything. */
+export const MEMORY64_PROBE: Uint8Array<ArrayBuffer> = memory64Probe.MEMORY64_PROBE;
 
 /** Fast local probe (the worker's, callable before any Worker spawn):
  * validates MEMORY64_PROBE. */
-export function probeMemory64(): boolean {
-  try {
-    return WebAssembly.validate(MEMORY64_PROBE);
-  } catch {
-    return false;
-  }
-}
+export const probeMemory64: () => boolean = memory64Probe.probeMemory64;
 
 /** Memory-maximum candidates, largest first, tuned by device memory.
  * The maximum is ADDRESS-SPACE RESERVATION, not commit: browser64's

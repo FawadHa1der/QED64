@@ -14,7 +14,8 @@
 //   5. the profile index names a core profile (boot needs it);
 //   6. one boot smoke in headless Chromium: the pill reaches `ready` within
 //      the budget (skip with --no-boot for fetch-only checks).
-// Exit 3 with one line `PREFLIGHT REFUSED: <reason>` on any failure.
+// Exit 3 with one line `PREFLIGHT REFUSED: <reason>` on any failure (a
+// multi-line cause, such as Playwright's launch error, is folded to one line).
 //
 // Usage: node pipeline/release/preflight.mjs --url <page url> [--no-boot]
 //        [--boot-budget-ms 180000] [--run-dir <dir>]
@@ -22,12 +23,17 @@
 // pipeline/snapshot/cli.mjs and docs/CLI-CONTRACT.md). Moved from
 // tests/adversarial/preflight.mjs on 2026-10-06 so it ships in the package;
 // that path is a shim for one deprecation cycle. The boot smoke imports
-// `playwright` (the caller's install) only when it runs.
+// `playwright` (the caller's install) only when it runs; one that does not
+// resolve is a refusal (exit 3), not a crash. Types: preflight.d.mts.
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseCli } from "../snapshot/cli.mjs";
 import { fetchJson, resolveTarget } from "./page-target.mjs";
+
+/** One stdout line: a reason folds newlines and Playwright's box drawing
+ * (`browserType.launch` errors are multi-line) into single spaces. */
+const oneLine = (x) => String(x).replace(/[\u2500-\u257f]+/g, " ").replace(/\s+/g, " ").trim();
 
 const isHtml = (r, text = "") => /text\/html/i.test(r.headers.get("content-type") ?? "") || /^\s*<!doctype html/i.test(text);
 
@@ -49,12 +55,13 @@ async function probeFile(url) {
   return { bytes, type: r.headers.get("content-type") ?? "" };
 }
 
-/** Run the checks; returns {ok, reason, buildId, mode, checks}. Never throws. */
-export async function runPreflight(target, { boot = true, bootBudgetMs = 180000, log = console.log } = {}) {
+/** Run the checks; returns {ok, reason, buildId, mode, checks}. Never throws.
+ * `importPlaywright` is passed to bootSmoke. */
+export async function runPreflight(target, { boot = true, bootBudgetMs = 180000, log = console.log, importPlaywright } = {}) {
   const checks = [];
   const ok = (what) => { checks.push({ ok: true, what }); log(`ok    ${what}`); };
   const warn = (what) => { checks.push({ ok: true, warn: true, what }); log(`warn  ${what}`); };
-  const refuse = (reason, buildId = null) => { checks.push({ ok: false, what: reason }); log(`FAIL  ${reason}`); return { ok: false, reason, buildId, mode: target.mode, checks }; };
+  const refuse = (why, buildId = null) => { const reason = oneLine(why); checks.push({ ok: false, what: reason }); log(`FAIL  ${reason}`); return { ok: false, reason, buildId, mode: target.mode, checks }; };
   let manifest;
   try {
     manifest = await fetchJson(target.manifestUrl);
@@ -105,7 +112,7 @@ export async function runPreflight(target, { boot = true, bootBudgetMs = 180000,
   } catch (e) { return refuse(`profile index: ${e.message}`, buildId); }
 
   if (boot) {
-    const r = await bootSmoke(target.url, bootBudgetMs);
+    const r = await bootSmoke(target.url, bootBudgetMs, { importPlaywright });
     if (!r.ok) return refuse(`boot smoke: ${r.reason}`, buildId);
     ok(`boot smoke: ready in ${r.ms} ms`);
   } else {
@@ -114,16 +121,36 @@ export async function runPreflight(target, { boot = true, bootBudgetMs = 180000,
   return { ok: true, reason: null, buildId, mode: target.mode, checks };
 }
 
+/** Why the caller's playwright could not be imported, as one refusal reason.
+ * "Not resolvable" only when the missing module is playwright itself; a
+ * missing dependency of it (`require('playwright-core')` in its index.js, a
+ * partial install) is named, not blamed on playwright. */
+function playwrightImportFault(e) {
+  const code = e?.code ?? e?.name ?? "unknown";
+  const first = String(e?.message ?? e).split("\n")[0];
+  if ((code === "ERR_MODULE_NOT_FOUND" || code === "MODULE_NOT_FOUND") && /Cannot find (?:package|module) 'playwright'/.test(first)) return `playwright not resolvable from the caller (${code})`;
+  return `playwright could not be imported (${code}): ${oneLine(first).slice(0, 160)}`;
+}
+
 /** One headless page must reach the `ready` pill within the budget. The
- * browser is closed in `finally` whatever happens (HARDENING #34). */
-export async function bootSmoke(url, budgetMs) {
-  const { chromium } = await import("playwright");
-  const browser = await chromium.launch({ args: ["--enable-features=SharedArrayBuffer"] });
+ * browser is closed in `finally` whatever happens (HARDENING #34). Never
+ * throws: a playwright that does not resolve from this file (the caller's
+ * install), or a Chromium that does not launch, is `{ok: false, reason}`.
+ * `importPlaywright` replaces the import (tests). */
+export async function bootSmoke(url, budgetMs, { importPlaywright = () => import("playwright") } = {}) {
   const tail = [];
+  let browser = null;
   try {
+    let chromium;
+    try {
+      ({ chromium } = await importPlaywright());
+    } catch (e) {
+      return { ok: false, reason: playwrightImportFault(e) };
+    }
+    browser = await chromium.launch({ args: ["--enable-features=SharedArrayBuffer"] });
     const page = await browser.newPage();
-    page.on("console", (m) => { tail.push(m.text().slice(0, 200)); if (tail.length > 20) tail.shift(); });
-    page.on("pageerror", (e) => tail.push(`PAGEERROR: ${e.message.slice(0, 200)}`));
+    page.on("console", (m) => { tail.push(oneLine(m.text()).slice(0, 200)); if (tail.length > 20) tail.shift(); });
+    page.on("pageerror", (e) => tail.push(`PAGEERROR: ${oneLine(e.message).slice(0, 200)}`));
     let crashed = false;
     page.on("crash", () => { crashed = true; });
     const t0 = Date.now();
@@ -142,9 +169,9 @@ export async function bootSmoke(url, budgetMs) {
       await new Promise((res) => setTimeout(res, 1000));
     }
   } catch (e) {
-    return { ok: false, reason: `${String(e).slice(0, 160)}; console tail: ${tail.slice(-5).join(" | ")}` };
+    return { ok: false, reason: `${oneLine(e).slice(0, 160)}; console tail: ${tail.slice(-5).join(" | ")}` };
   } finally {
-    await browser.close().catch(() => {});
+    if (browser !== null) await browser.close().catch(() => {});
   }
 }
 

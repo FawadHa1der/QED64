@@ -8,6 +8,9 @@
 // surfaces an error diagnostic without killing the runtime.
 //
 // Usage: node pipeline/snapshot/persistent-probe.mjs [--artifact <dir>]
+// --artifact, else $QED64_LEAN_ARTIFACT, else (deprecated, one WARNING) this
+// checkout's pipeline/toolchain/work/build/stage1, else exit 2. Started without
+// --stack-size, it re-execs itself with --stack-size=8192 (same PID).
 // (--help; the contract is docs/CLI-CONTRACT.md)
 
 import fs from "node:fs";
@@ -15,6 +18,11 @@ import path from "node:path";
 import vm from "node:vm";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { ensureStackSize, resolveToolPath } from "../toolchain/artifact-paths.mjs";
+
+// First, before the contract prints anything: replaces this process (same PID) when
+// started without --stack-size, so every line below is printed once.
+ensureStackSize("persistent-probe");
 
 // <cli-contract> generated from SPECS["persistent-probe"] in pipeline/snapshot/cli.mjs. Do not edit:
 // `node pipeline/snapshot/cli.mjs --write-preludes` rewrites it and tests/unit/cli-contract.test.ts
@@ -31,15 +39,16 @@ import { fileURLToPath } from "node:url";
     "run as: node --stack-size=8192 pipeline/snapshot/persistent-probe.mjs",
     "",
     "flags:",
-    "  --artifact <dir>  stage1 dir; its lib/lean is mounted at /lib/lean (default: $QED64_LEAN_ARTIFACT, else pipeline/toolchain/work/build/stage1 when it has bin/lean.js, else ../../wasm64-lean-codex/experiments/lean4-wasm64-build/stage1, both relative to the repo root)",
+    "  --artifact <dir>  stage1 dir; its lib/lean is mounted at /lib/lean (default: $QED64_LEAN_ARTIFACT, else (deprecated, one WARNING) pipeline/toolchain/work/build/stage1 under the repo root when it has bin/lean.js; nothing else: exit 2)",
     "  -h, --help        print this help and exit 0, before any side effect",
     "",
     "environment:",
-    "  QED64_LEAN_ARTIFACT  stage1 artifact dir (bin/lean.js, bin/lean.wasm, lib/lean) used when --artifact is absent",
+    "  QED64_LEAN_ARTIFACT  stage1 artifact dir (bin/lean.js, bin/lean.wasm, lib/lean) used when --artifact is absent (empty = unset)",
     "",
     "exit codes:",
     "  0  PERSISTENT PROBE PASS",
     "  1  PERSISTENT PROBE FAIL, or the artifact is unreadable (an unhandled ENOENT before the runtime starts)",
+    "  2  no --artifact, QED64_LEAN_ARTIFACT unset and no deprecated default (nothing booted)",
     "  3  the wasm runtime aborted (legacy overload of class 3)",
     "",
     "tier 2 (internal-stable). Contract: docs/CLI-CONTRACT.md",
@@ -92,13 +101,11 @@ function arg(name, fallback) {
   const i = process.argv.indexOf(`--${name}`);
   return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : fallback;
 }
-const builtHere = path.join(repoRoot, "pipeline/toolchain/work/build/stage1");
-const artifactDir = path.resolve(
-  arg("artifact", process.env.QED64_LEAN_ARTIFACT ||
-    (fs.existsSync(path.join(builtHere, "bin/lean.js"))
-      ? builtHere
-      : path.join(repoRoot, "../../wasm64-lean-codex/experiments/lean4-wasm64-build/stage1"))),
-);
+const artifactDir = resolveToolPath({
+  tool: "persistent-probe", flag: "artifact", placeholder: "<dir>", value: arg("artifact", null), env: "QED64_LEAN_ARTIFACT",
+  legacy: path.join(repoRoot, "pipeline/toolchain/work/build/stage1"), legacyLabel: "pipeline/toolchain/work/build/stage1 under the repo root",
+  holds: (dir) => fs.existsSync(path.join(dir, "bin/lean.js")), needs: "bin/lean.js", usage: "persistent-probe.mjs [--artifact <dir>]",
+}).path;
 const leanJs = path.join(artifactDir, "bin/lean.js");
 const libLean = path.join(artifactDir, "lib/lean");
 

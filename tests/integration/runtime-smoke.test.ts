@@ -13,11 +13,13 @@
 // kept-alive runner once the target is written and the output has gone quiet.
 // `status` below is that verdict: 0 done, 1 failed.
 //
-// The artifact tree defaults to the pinned wasm64 build; skip everything
-// gracefully when it is not present (e.g. CI without the toolchain volume), or
-// when it predates 0020: such a runtime exits on its own, is not the one the
-// browser runs, and once let these tests pass while the served one timed out.
-// From a worktree without build outputs, point QED64_LEAN_ARTIFACT at the main
+// The artifact tree is QED64_LEAN_ARTIFACT, else (deprecated, with a WARNING)
+// this checkout's pipeline/toolchain/work/build/stage1 (docs/CLI-CONTRACT.md
+// "Path resolution"); skip everything gracefully, naming the variable, when
+// neither holds a runtime (e.g. CI without the toolchain volume), or when it
+// predates 0020: such a runtime exits on its own, is not the one the browser
+// runs, and once let these tests pass while the served one timed out. From a
+// worktree without build outputs, point QED64_LEAN_ARTIFACT at the main
 // checkout's pipeline/toolchain/work/build/stage1.
 //
 // Each run is one heavy wasm process; run this suite under the host's browser
@@ -30,16 +32,18 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { toolPath } from "../../pipeline/toolchain/artifact-paths.mjs";
 
 const root = path.resolve(__dirname, "../..");
 const supervisor = path.join(root, "pipeline/snapshot/supervised-run.mjs");
-const builtHere = path.join(root, "pipeline/toolchain/work/build/stage1");
-const artifact =
-  process.env.QED64_LEAN_ARTIFACT ||
-  (existsSync(path.join(builtHere, "bin/lean.js"))
-    ? builtHere
-    : path.join(root, "../../wasm64-lean-codex/experiments/lean4-wasm64-build/stage1"));
-const haveArtifact = existsSync(path.join(artifact, "bin/lean.js"));
+const found = toolPath({
+  env: "QED64_LEAN_ARTIFACT",
+  legacy: path.join(root, "pipeline/toolchain/work/build/stage1"),
+  holds: (dir) => existsSync(path.join(dir, "bin/lean.js")),
+});
+if (found?.source === "default") console.warn(`runtime-smoke: WARNING — the default artifact ${found.path} is deprecated; set QED64_LEAN_ARTIFACT (docs/CLI-CONTRACT.md)`);
+const artifact = found?.path ?? "";
+const haveArtifact = !!found && existsSync(path.join(artifact, "bin/lean.js"));
 // Patch 0020 makes the glue's checkMailbox hold a runtime keepalive across the
 // mailbox service; that keepalive is what keeps the CLI alive after main.
 const keptAlive =
@@ -50,7 +54,7 @@ const keptAlive =
 const slow = process.env.QED64_SLOW === "1";
 
 const skipReason = !haveArtifact
-  ? `no wasm64 runtime at ${artifact} (set QED64_LEAN_ARTIFACT to a stage1 dir)`
+  ? `no wasm64 runtime ${found ? `at ${artifact}` : "(QED64_LEAN_ARTIFACT is unset and this checkout has no pipeline/toolchain/work/build/stage1)"}: set QED64_LEAN_ARTIFACT to a stage1 dir`
   : !keptAlive
     ? `${artifact} predates toolchain patch 0020 (its CLI exits after main), so it is not ` +
       "the runtime the browser runs; set QED64_LEAN_ARTIFACT to the paired stage1 " +

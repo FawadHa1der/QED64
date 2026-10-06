@@ -58,7 +58,9 @@ describe("package.json", () => {
     // these scripts — QED64's devDependencies are ~300 MB.
     for (const s of ["build", "prepare", "prepack", "preinstall", "install", "postinstall"]) expect(pkg.scripts?.[s], `scripts.${s}`).toBeUndefined();
     expect(pkg.workspaces).toBeUndefined();
-    expect(pkg.sideEffects).toBe(false);
+    // Side-effect free except the one module the embed closure imports for its side effect (the
+    // embed closure test below pins that list); with `false` a bundler drops that import.
+    expect(pkg.sideEffects).toEqual(["./public/workers/memory64-probe.js"]);
     expect(Object.keys(pkg.dependencies ?? {})).toEqual([]);
     expect(Object.keys(pkg.optionalDependencies ?? {})).toEqual([]);
     expect(Object.keys(pkg.peerDependencies ?? {})).toEqual([]);
@@ -88,20 +90,36 @@ describe("embedding/closure.json", () => {
 
   it("the embed closure imports relative paths only and is self-contained", () => {
     const listed = new Set(closure.embed);
+    const workerFiles = new Set(closure.workers.map((w) => w.path));
     const reached = new Set<string>();
+    const sideEffectImports = new Set<string>();
     const queue = [closure.entry];
     while (queue.length) {
       const f = queue.pop()!;
       if (reached.has(f)) continue;
       reached.add(f);
+      const code = read(f).replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+      const bare = new Set([...code.matchAll(/(?:^|[;\s])import\s*["']([^"']+)["']/g)].map((m) => m[1]!));
       for (const s of specifiers(read(f))) {
         expect(s.startsWith("./") || s.startsWith("../"), `${f} imports ${s}`).toBe(true);
         const r = resolveRel(f, s);
         expect(r, `${f}: ${s} does not resolve`).not.toBeNull();
+        if (bare.has(s)) sideEffectImports.add(r!);
+        // A worker script the library imports for its side effect (memory64-probe.js publishes
+        // globalThis.Qed64Memory64): shipped as a worker, imports nothing itself.
+        if (workerFiles.has(r!)) {
+          expect(bare.has(s), `${f} imports bindings from the classic script ${r}`).toBe(true);
+          expect(specifiers(read(r!)), r!).toEqual([]);
+          continue;
+        }
         expect(listed.has(r!), `${f} reaches ${r}, which closure.embed does not list`).toBe(true);
         queue.push(r!);
       }
     }
+    // Every side-effect-only import targets a module package.json `sideEffects` names: under a
+    // side-effect-free package a bundler (Vite/Rollup, webpack) drops such an import.
+    expect([...sideEffectImports].sort()).toEqual(["public/workers/memory64-probe.js"]);
+    expect([...sideEffectImports].map((f) => `./${f}`).sort()).toEqual([...(pkg.sideEffects as string[])].sort());
     // Everything listed is reachable from the entry (no dead weight), and the
     // embed directory has no module outside the list.
     expect([...reached].sort()).toEqual([...listed].sort());
@@ -182,9 +200,13 @@ describe("embedding/closure.json", () => {
 
 describe("the worker protocol ledger (docs/EMBEDDING.md §7.7)", () => {
   const c = closure as unknown as { runtime: { minKernelPatch: string }; workerProtocol: { revision: string; protocol: number; requests: string[]; deprecated: unknown[] } };
-  it("the three worker scripts carry the ledger's revision", () => {
+  it("the four worker scripts carry the ledger's revision", () => {
     expect(read("public/workers/lean.worker.js")).toContain(`const WORKER_REVISION = "${c.workerProtocol.revision}";`);
-    for (const f of ["public/workers/lsp-frames.js", "public/workers/lsp-front-door.js"]) expect(read(f), f).toContain(`REVISION: "${c.workerProtocol.revision}"`);
+    const siblings = ["public/workers/lsp-frames.js", "public/workers/lsp-front-door.js", "public/workers/memory64-probe.js"];
+    for (const f of siblings) expect(read(f), f).toContain(`REVISION: "${c.workerProtocol.revision}"`);
+    // ...and those are every shipped worker but lean.worker.js and the prefetch worker (a page-spawned
+    // worker of its own, which lean.worker.js never loads).
+    expect(closure.workers.map((w) => w.path).filter((p) => !siblings.includes(p)).sort()).toEqual(["public/workers/lean.worker.js", "public/workers/snapshot-prefetch.worker.js"]);
   });
   it("lists exactly the requests the worker answers, and the page protocol number", () => {
     const src = read("public/workers/lean.worker.js");

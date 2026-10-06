@@ -31,12 +31,26 @@ mounted read-only from verified, content-addressed packs.
 ## Quick start
 
 ```sh
-npm install && npm --prefix frontend ci
-# place the served runtime, profile packs and snapshots under public/ (their
-# digests are pinned by the tracked manifests; docs/REBUILD.md "Trusted artifacts")
-npm run verify:release   # recompute every digest the browser will trust
-npm run dev              # http://localhost:5184 (COOP/COEP set by Vite)
+git clone https://github.com/FawadHa1der/QED64 && cd QED64
+npm ci && npm --prefix frontend ci
+npm run fetch:artifacts   # the runtime, profile packs and snapshots into public/ (~1.6 GB), each verified
+npm test                  # the unit suite (needs no artifacts)
+npm run dev               # http://localhost:5184 (COOP/COEP set by Vite)
+npm run test:adversarial -- --skip-compiler   # the browser suite: preflight, then the e2e lane
 ```
+
+The tracked manifests (`public/runtime/runtime-manifest.json`,
+`public/profiles/*.json`, `public/snapshots/index.json`) pin every byte by
+SHA-256; the bytes themselves are not in git. `fetch:artifacts` downloads
+exactly what they name from the live site (`--origin <url>` for another
+deployment, `--release <dir|url>` for the runtime and packs of a Lean fork
+release), checks each file's digest and size before it is renamed into
+place, and skips files already there with the right digest
+(docs/CLI-CONTRACT.md "fetch-artifacts"). `npm run verify:release` re-derives
+the raw pack digests on top. The browser suite needs a Chromium for
+Playwright (`npx playwright install chromium`); its other
+lanes, and the compiler battery that needs Node-side build outputs, are in
+docs/TESTING.md "A fresh clone".
 
 First visit installs the Lean core profile (~120 MB download → 389 MB in OPFS),
 boots the runtime and loads the baked environment the opened document needs
@@ -85,10 +99,10 @@ docs/CLI-CONTRACT.md.
 | `frontend/` | the deployed shell: lean4monaco (Monaco + the vscode-lean4 InfoView) over the in-browser LSP — page (`main.ts`), relay, session adapter, import completion |
 | `src/` | shared runtime code: worker RPC client (`runtime/`), OPFS installer (`install/`) |
 | `public/workers/lean.worker.js` | the Lean worker: verified runtime materialization, Memory64 heap, WORKERFS mounts, persistent compile loop |
-| `public/runtime`, `public/profiles` | content-addressed artifacts (synced, never committed) |
-| `pipeline/release` | `import-packs` / `promote-staging` (stage and publish a runtime pairing), `verify-release` (out-of-band digest audit) |
+| `public/runtime`, `public/profiles` | content-addressed artifacts: the manifests are tracked, the bytes are fetched (`npm run fetch:artifacts`), never committed |
+| `pipeline/release` | `fetch-artifacts` (fill `public/` with the pinned bytes), `import-packs` / `promote-staging` (stage and publish a runtime pairing), `verify-release` (out-of-band digest audit) |
 | `pipeline/artifacts` | deterministic packer + deep inspector for profile packs |
-| `public/snapshots` | baked environment snapshots + `index.json` (baked per runtime, never committed) |
+| `public/snapshots` | baked environment snapshots + `index.json` (baked per runtime; the index is tracked, the `.snapz` files are fetched, never committed) |
 | `pipeline/snapshot` | Node runner for the wasm64 binary + `--incr-header-save` snapshot baking (`--lib` mounts an unpacked olean tree; upserts the snapshot index); `cli.mjs` is the pipeline CLI contract (every tool's `--help`, flags, exit codes, stable output: docs/CLI-CONTRACT.md) |
 | `pipeline/toolchain` | pinned toolchain build recipe and the wasm64 patch contract |
 | `tests/` | unit suite (pure logic + real-manifest invariants) and integration suite (the real runtime under Node) |
@@ -109,14 +123,26 @@ ships. The integration suite runs the exact runtime bytes the browser executes.
 
 Snapshots are binary-paired (their relocations are keyed to the producing
 binary's function table), so bake them with the exact runtime you ship. The
-bake gzips to `public/snapshots/<name>.snapz` and upserts `index.json`
-with the probe's ordered import list — which is what the app matches
-against, exactly. Two snapshots ship: `init` (no imports, loaded at boot)
+bake stages under `work/staging/<buildId>/snapshots` (it refuses any `--out`
+inside `public/`): it gzips to `<name>.snapz` there and upserts that
+directory's `index.json` with the probe's ordered import list — which is what
+the app matches against, exactly. `npm run promote:staging -- --staging
+work/staging/<buildId>` publishes the staged set into `public/`. Two snapshots ship: `init` (no imports, loaded at boot)
 and `mathlib` (the `QED64.Essential` umbrella that serves every Mathlib
 import combination via the header rewrite — see docs/ARCHITECTURE.md).
 
+Every path below is passed explicitly. Each tool also reads the variables in
+docs/TESTING.md "Environment" (`QED64_LEAN_ARTIFACT`, `QED64_WORK`,
+`QED64_STAGING`, `QED64_LIB_TREE`); with neither a flag nor a variable it
+falls back to the old repo-relative default with a deprecation WARNING, and on
+a fresh clone, where those defaults do not exist, it exits 2 naming the flag
+and the variable (docs/CLI-CONTRACT.md "Path resolution"). `<buildId>` is
+`wasm64-` plus the first 16 hex digits of the SHA-256 of `bin/lean.wasm`.
+
 ```sh
-npm run bake:snapshot   # the init (no-import) snapshot
+ART=pipeline/toolchain/work/build/stage1   # the runtime you ship
+ID=wasm64-$(shasum -a 256 $ART/bin/lean.wasm | cut -c1-16)
+npm run bake:snapshot -- --name init --artifact $ART --work work/snapshot --out work/staging/$ID/snapshots   # the init (no-import) snapshot
 ```
 
 The mathlib umbrella: reconstruct the olean tree from the verified profile
@@ -129,9 +155,9 @@ bake exits 0 even when the examples stop compiling against the umbrella
 node pipeline/artifacts/unpack.mjs --manifest public/profiles/lean-core.manifest.json --out work/lib-tree
 node pipeline/artifacts/unpack.mjs --manifest public/profiles/mathlib-essential.manifest.json --out work/lib-tree
 # Essential.lean = `import <M>` for every module in the essential manifest
-node --stack-size=8192 pipeline/snapshot/node-runner.mjs --work work/umbrella --lib work/lib-tree -- -o /work/Essential.olean /work/Essential.lean
+node --stack-size=8192 pipeline/snapshot/node-runner.mjs --artifact $ART --work work/umbrella --lib work/lib-tree -- -o /work/Essential.olean /work/Essential.lean
 cp work/umbrella/Essential.olean* work/lib-tree/QED64/
-npm run bake:snapshot -- --name mathlib --lib work/lib-tree --probe 'import QED64.Essential
+npm run bake:snapshot -- --name mathlib --artifact $ART --work work/snapshot --out work/staging/$ID/snapshots --lib work/lib-tree --probe 'import QED64.Essential
 <the bundled Mathlib examples>'
 ```
 
@@ -146,7 +172,7 @@ exact path — and asserts the follow-up compile is an env-cache hit rather
 than a silent re-import:
 
 ```sh
-node --stack-size=8192 pipeline/snapshot/snapshot-probe.mjs --snap work/snapshot/mathlib.snap --probe-file example.lean
+node --stack-size=8192 pipeline/snapshot/snapshot-probe.mjs --artifact $ART --lib work/lib-tree --snap work/snapshot/mathlib.snap --probe-file example.lean
 ```
 
 ## Provenance and trust

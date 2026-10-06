@@ -166,7 +166,7 @@ echo "                cp $UMB/Essential.olean* $LIBTREE/QED64/"
 echo "  audit         node pipeline/artifacts/olean-imports.mjs --audit $LIBTREE"
 echo "  profiles      node pipeline/release/stage-profiles.mjs --packs $PACKS --build-id $ID --lean-version ${LEANVER:-?} → $STAGING/profiles"
 echo "  stage         QED64_ARTIFACT=$ART QED64_LIB_TREE=$LIBTREE QED64_SLIM=$SCRATCH/slim QED64_SNAP_WORK=$SCRATCH/snapshot QED64_LEAN_VERSION=${LEANVER:-?} pipeline/release/bump-chain.sh stage-artifact"
-echo "                node pipeline/toolchain/chunk-runtime.mjs --bin $ART/bin --lean-version ${LEANVER:-?} --revision 'qed64-wasm64@${SHORT:-?} (upstream v${LEANVER:-?})'   # restamp: stage-artifact's default names the SERVED fork checkout"
+echo "                node pipeline/toolchain/chunk-runtime.mjs --bin $ART/bin --lean-version ${LEANVER:-?} --revision 'qed64-wasm64@${SHORT:-?} (upstream v${LEANVER:-?})' --out $STAGING/runtime   # restamp: stage-artifact's default names the SERVED fork checkout"
 echo "  next          print the operator's steps (slim-bake audit, dev test, pyramid, KERNEL-PIN, one-step promote)"
 echo
 
@@ -293,7 +293,7 @@ if want stage; then
   # SERVED fork checkout (pipeline/toolchain/work/lean4) — the wrong commit for a
   # runtime built elsewhere. Same bytes, same chunks; only the manifest's
   # sourceRevision (shown in the page's build info) is restamped.
-  node pipeline/toolchain/chunk-runtime.mjs --bin "$ART/bin" --lean-version "$LEANVER" --revision "qed64-wasm64@$(echo "$COMMIT" | cut -c1-9) (upstream v$LEANVER)" > "$LOGS/chunk-restamp.log" 2>&1 || { tail -5 "$LOGS/chunk-restamp.log"; fail "restamping the staged runtime manifest ($LOGS/chunk-restamp.log)"; }
+  node pipeline/toolchain/chunk-runtime.mjs --bin "$ART/bin" --lean-version "$LEANVER" --revision "qed64-wasm64@$(echo "$COMMIT" | cut -c1-9) (upstream v$LEANVER)" --out "$STAGING/runtime" > "$LOGS/chunk-restamp.log" 2>&1 || { tail -5 "$LOGS/chunk-restamp.log"; fail "restamping the staged runtime manifest ($LOGS/chunk-restamp.log)"; }
   node -e '
     const fs = require("fs"); const [dir, id, ver] = process.argv.slice(1);
     const rt = JSON.parse(fs.readFileSync(`${dir}/runtime/runtime-manifest.json`, "utf8"));

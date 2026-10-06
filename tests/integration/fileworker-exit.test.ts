@@ -10,20 +10,30 @@
 // QED64_SLOW=1 adds the long controls (an idle session's stall is caught only
 // after the next edit, as "wedged"; an exit from an elaboration task is never
 // caught) and the batch-path probe.
-// From a worktree without build outputs, point QED64_LEAN_ARTIFACT (the stage1
-// tree) and QED64_INIT_SNAP (its init.snap) at the main checkout's.
+// The inputs are QED64_LEAN_ARTIFACT (the stage1 tree) and QED64_INIT_SNAP (its
+// init.snap), else (deprecated, with a WARNING) this checkout's
+// pipeline/toolchain/work/build/stage1 and work/snapshot/init.snap; without
+// them the suite skips and names the variables. From a worktree without
+// build outputs, point both at the main checkout's.
 
 import { describe, expect, test } from "vitest";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { toolPath } from "../../pipeline/toolchain/artifact-paths.mjs";
 
 const root = path.resolve(__dirname, "../..");
 const probe = path.join(root, "pipeline/snapshot/fileworker-exit-probe.mjs");
-const artifact = process.env.QED64_LEAN_ARTIFACT || path.join(root, "pipeline/toolchain/work/build/stage1");
-const snap = process.env.QED64_INIT_SNAP || path.join(root, "work/snapshot/init.snap");
-const ready = existsSync(path.join(artifact, "bin/lean.js")) && existsSync(snap);
+const input = (env: string, rel: string, holds: (p: string) => boolean) => {
+  const found = toolPath({ env, legacy: path.join(root, rel), holds });
+  if (found?.source === "default") console.warn(`fileworker-exit: WARNING — the default ${rel} is deprecated; set ${env} (docs/CLI-CONTRACT.md)`);
+  return found?.path ?? "";
+};
+const artifact = input("QED64_LEAN_ARTIFACT", "pipeline/toolchain/work/build/stage1", (d) => existsSync(path.join(d, "bin/lean.js")));
+const snap = input("QED64_INIT_SNAP", "work/snapshot/init.snap", existsSync);
+const ready = !!artifact && !!snap && existsSync(path.join(artifact, "bin/lean.js")) && existsSync(snap);
+if (!ready) console.warn("fileworker-exit: skipped — set QED64_LEAN_ARTIFACT (a stage1 dir) and QED64_INIT_SNAP (its init.snap)");
 const slow = process.env.QED64_SLOW === "1";
 const describeIf = ready ? describe : describe.skip;
 const TIMEOUT = 40 * 60_000; // a run is ~1 min; the rest is the probe's wait (≤ 20 min) for the heavy slot

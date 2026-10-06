@@ -23,11 +23,6 @@
 const PROTOCOL = 1;
 const PAGE = 65536;
 
-const MEMORY64_PROBE = new Uint8Array([
-  0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
-  0x05, 0x03, 0x01, 0x04, 0x00, // memory section: flags 0x04 (memory64), min 0
-]);
-
 let state = "idle"; // idle → booting → ready → compiling | exhausted | dead
 let M = null; // the live Emscripten module (window.Module is the glue's)
 // Emscripten reads print/printErr ONCE at startup; route through this sink so
@@ -53,18 +48,22 @@ let sink = null;
 // ---------------------------------------------------------------------------
 // The decoder is shared with Node's resident-probe (one parser, not two that
 // drift — architecture review A1). Absent only under the vitest vm harness,
-// which loads lsp-frames.js into the sandbox itself.
+// which loads lsp-frames.js into the sandbox itself. memory64-probe.js
+// (globalThis.Qed64Memory64) is loaded the same way, eagerly: it is the one
+// source of the Memory64 probe bytes, shared with the page library
+// (src/runtime/client.ts imports the same file), and capabilities() needs it.
 //
 // lsp-front-door.js is deliberately NOT loaded here: it is imported lazily by
 // `frontDoorApply` on the first `lsp`/`lsp-arm` message. A consumer that only
 // ever compiles (batch `compile` + `write-files`, the shape lean4game vendors
 // as a fixed closure — sync-qed64.sh PATHS + stage-game-assets.sh copy
-// lean.worker.js, snapshot-prefetch.worker.js and lsp-frames.js by name)
-// never loads it; an unconditional import of a file such a closure lacks
-// would throw at script load, never post {type:"boot"}, and hang every
-// session (review fix 3).
+// the worker scripts by name) never loads it; an unconditional import of a
+// file such a closure lacks would throw at script load, never post
+// {type:"boot"}, and hang every session (review fix 3). The two eager loads
+// below post WORKER_DEP_MISSING before they throw, so a closure without one
+// of them dies with a named cause instead of hanging.
 // The worker-script set's interface revision (docs/EMBEDDING.md §7.7): the
-// three scripts are served by stable names and cached independently, so a
+// four scripts are served by stable names and cached independently, so a
 // deploy between this script's load and a sibling's can pair two versions; a
 // sibling of another revision is refused (WORKER_DEP_MISMATCH), never run.
 const WORKER_REVISION = "1";
@@ -74,14 +73,18 @@ function checkSibling(name, mod) {
   fail(undefined, error, "WORKER_DEP_MISMATCH", false);
   throw error;
 }
-if (typeof importScripts === "function") {
+function loadSibling(name, load, published) {
   try {
-    importScripts("lsp-frames.js");
+    load();
   } catch (error) {
-    fail(undefined, new Error(`lean.worker.js needs lsp-frames.js served beside it: ${error && error.message ? error.message : error}`), "WORKER_DEP_MISSING", false);
+    fail(undefined, new Error(`lean.worker.js needs ${name} served beside it: ${error && error.message ? error.message : error}`), "WORKER_DEP_MISSING", false);
     throw error;
   }
-  checkSibling("lsp-frames.js", globalThis.Qed64LspFrames);
+  checkSibling(name, published());
+}
+if (typeof importScripts === "function") {
+  loadSibling("lsp-frames.js", () => importScripts("lsp-frames.js"), () => globalThis.Qed64LspFrames);
+  loadSibling("memory64-probe.js", () => importScripts("memory64-probe.js"), () => globalThis.Qed64Memory64);
 }
 let lspMode = false;
 let lspFrames = null; // Qed64LspFrames.LspFrameDecoder, created by installStdoutTap
@@ -914,10 +917,8 @@ function mkLeanString(text) {
 const WORKER_REQUESTS = Object.freeze(["capabilities", "boot", "compile", "loadSnapshot", "telemetry", "lsp-arm", "write-files", "dispose", "lsp"]);
 
 function capabilities() {
-  const memory64 =
-    typeof WebAssembly === "object" &&
-    typeof BigInt === "function" &&
-    WebAssembly.validate(MEMORY64_PROBE);
+  // The probe bytes and their check are memory64-probe.js's (one source with the page library).
+  const memory64 = typeof BigInt === "function" && Qed64Memory64.probeMemory64();
   // What boot actually needs is a working SHARED Memory64 — probe by
   // construction. crossOriginIsolated is normally its precondition, but
   // proxied environments (cypress strips COOP/COEP) can still grant SAB via

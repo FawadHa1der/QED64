@@ -43,14 +43,14 @@ case "${1:-}" in
     ID=$(id); echo "buildId=$ID"
     stage "gate";   node --stack-size=8192 pipeline/toolchain/gate.mjs --artifact "$ART" > work/gate-bump.log 2>&1 || { grep -E "^(FAIL| ok)" work/gate-bump.log; fail "gate"; }
     grep -E "^(FAIL| ok)" work/gate-bump.log
-    stage "chunk";  node pipeline/toolchain/chunk-runtime.mjs --bin "$ART/bin" ${LEANVER:+--lean-version "$LEANVER"} > work/chunk-bump.log 2>&1 || fail "chunk (work/chunk-bump.log)"
+    stage "chunk";  node pipeline/toolchain/chunk-runtime.mjs --bin "$ART/bin" ${LEANVER:+--lean-version "$LEANVER"} --out "work/staging/$ID/runtime" > work/chunk-bump.log 2>&1 || fail "chunk (work/chunk-bump.log)"
     stage "slim trees"
     mkdir -p "$SLIM"; ABS() { (cd "$1" && pwd); }
     rsync -a --delete --exclude='*.olean.private' --link-dest="$(ABS "$LIBTREE")" "$LIBTREE/" "$SLIM/lib-tree-slim/" || fail "rsync lib-tree-slim"
     rsync -a --delete --exclude='*.olean.private' --link-dest="$(ABS "$ART/lib/lean")" "$ART/lib/lean/" "$SLIM/core-lib-slim/" || fail "rsync core-lib-slim"
     rm -f "work/staging/$ID/snapshots/"*.snapz "work/staging/$ID/snapshots/index.json"
-    stage "bake init";    npm run bake:snapshot -- --name init    --lib "$SLIM/core-lib-slim" --reserve 1073741824 --artifact "$ART" --work "$SNAPWORK" > work/bake-bump-init.log 2>&1 || fail "bake init (work/bake-bump-init.log)"
-    stage "bake mathlib"; npm run bake:snapshot -- --name mathlib --lib "$SLIM/lib-tree-slim" --reserve 3221225472 --probe 'import QED64.Essential' --artifact "$ART" --work "$SNAPWORK" > work/bake-bump-mathlib.log 2>&1 || fail "bake mathlib (work/bake-bump-mathlib.log)"
+    stage "bake init";    npm run bake:snapshot -- --name init    --lib "$SLIM/core-lib-slim" --reserve 1073741824 --artifact "$ART" --work "$SNAPWORK" --out "work/staging/$ID/snapshots" > work/bake-bump-init.log 2>&1 || fail "bake init (work/bake-bump-init.log)"
+    stage "bake mathlib"; npm run bake:snapshot -- --name mathlib --lib "$SLIM/lib-tree-slim" --reserve 3221225472 --probe 'import QED64.Essential' --artifact "$ART" --work "$SNAPWORK" --out "work/staging/$ID/snapshots" > work/bake-bump-mathlib.log 2>&1 || fail "bake mathlib (work/bake-bump-mathlib.log)"
     grep -hE "^baked" work/bake-bump-init.log work/bake-bump-mathlib.log | cut -c1-200
     echo "BUMP-STAGED $ID — next: symlink, pyramid, KERNEL-PIN, then '$0 promote'";;
   promote)

@@ -54,12 +54,18 @@ seed ∪ (wanted ∩ defined) by `pipeline/toolchain/gen-exports.py`; run it wit
 stale. Then chunk it for serving:
 
 ```sh
+ID=wasm64-$(shasum -a 256 pipeline/toolchain/work/build/stage1/bin/lean.wasm | cut -c1-16)   # the buildId, as bump-chain.sh computes it
 node pipeline/toolchain/chunk-runtime.mjs --bin pipeline/toolchain/work/build/stage1/bin \
+  --out work/staging/$ID/runtime \
   --lean-version <the Lean version of the pin> \
   --revision $(git -C pipeline/toolchain/work/lean4 rev-parse --short HEAD)
 ```
 
-The default `--out` is `work/staging/<buildId>/runtime`; keep it. NEVER pass
+Stage under `work/staging/<buildId>/runtime`: pass that `--out` (as above and
+in `pipeline/release/bump-chain.sh`), or set `QED64_STAGING=work/staging`
+(the tool appends `<buildId>/runtime`). Leaving both out still stages there,
+with a deprecation WARNING, and exits 2 from the next contract on
+(docs/CLI-CONTRACT.md "Path resolution"). NEVER pass
 `--out public/runtime` (it destroyed the served chunks once — only
 `promote-staging.mjs` writes there, additively). `--lean-version` defaults to
 `4.33.0-pre` with a loud warning: pass the real one after a version import
@@ -81,9 +87,11 @@ is enforced by the SHA-256 manifests instead). Two options:
 
 - **Trusted artifacts**: obtain the packs whose digests match the committed
   manifests (`public/profiles/*.manifest.json`) from an existing deployment
-  or release, and `npm run verify:release`. (Until 2026-10 `npm run
-  sync:artifacts` automated this copy from the owner's sibling checkout;
-  it was removed with that dependency.) The manifests in git are the
+  or release, and `npm run verify:release`. `npm run fetch:artifacts` does
+  this (from the live site, `--origin <url>` for another deployment, or
+  `--release <dir|url>` for a Lean fork release; docs/CLI-CONTRACT.md
+  "fetch-artifacts"). (Until 2026-10 `npm run sync:artifacts` copied them
+  from the owner's sibling checkout; it was removed with that dependency.) The manifests in git are the
   trust anchor — bytes from anywhere are fine if the digests match.
 - **Full rebuild**: build the same fork **natively** (`make -C build/release`
   inside `work/lean4`, standard Lean build), then build Mathlib at the
@@ -105,12 +113,19 @@ from the new stage1 on every bump:
 rsync -a --delete --exclude='*.olean.private' --link-dest=$PWD/work/lib-tree work/lib-tree/ work/lib-tree-slim/
 rsync -a --delete --exclude='*.olean.private' --link-dest=$PWD/pipeline/toolchain/work/build/stage1/lib/lean \
   pipeline/toolchain/work/build/stage1/lib/lean/ work/core-lib-slim/
-npm run bake:snapshot -- --name init    --lib work/core-lib-slim --reserve 1073741824 --artifact pipeline/toolchain/work/build/stage1
-npm run bake:snapshot -- --name mathlib --lib work/lib-tree-slim --reserve 3221225472 --probe 'import QED64.Essential' --artifact pipeline/toolchain/work/build/stage1
+npm run bake:snapshot -- --name init    --lib work/core-lib-slim --reserve 1073741824 --artifact pipeline/toolchain/work/build/stage1 \
+  --work work/snapshot --out work/staging/$ID/snapshots
+npm run bake:snapshot -- --name mathlib --lib work/lib-tree-slim --reserve 3221225472 --probe 'import QED64.Essential' --artifact pipeline/toolchain/work/build/stage1 \
+  --work work/snapshot --out work/staging/$ID/snapshots
 ```
 
-Both land in `work/staging/<buildId>/snapshots` (the bake refuses foreign
-siblings). The raw sizes recorded in KERNEL-PIN are the check: for an
+`$ID` is the buildId of § 2. Both land in `work/staging/<buildId>/snapshots`
+(the bake refuses foreign siblings); the raw `.snap` files go to `--work`,
+here `work/snapshot`, the set paired to the served runtime, so only a bake of
+the served runtime may name it (bump-chain.sh's `QED64_SNAP_WORK`, below).
+Both paths are explicit, as in bump-chain.sh: without `--work`/`--out` (or
+`QED64_WORK`/`QED64_STAGING`) the bake falls back to the same places with one
+deprecation WARNING each, and exits 2 from the next contract on. The raw sizes recorded in KERNEL-PIN are the check: for an
 unchanged library a bake within a few percent of them is the right bake; a
 full-tree bake is 2.5x larger (HARDENING #48). Snapshots MUST be re-baked
 after every compiler rebuild.
@@ -183,9 +198,12 @@ touches, in this order:
    which is the set the compiler battery and the Node probes load against the
    SERVED binary; overwriting it unpairs them. Only at promotion time do the
    new raw snapshots replace `work/snapshot/{init,mathlib}.snap`.
-   After the promote, make the toolchain working directory mirror what is
-   served, so the battery and the Node probes (whose defaults are
-   `pipeline/toolchain/work/build/stage1`, `work/snapshot`, `work/lib-tree-slim`)
+   After the promote, either point the battery and the Node probes at the
+   served pairing explicitly (`--artifact/--snap/--lib`, or
+   `QED64_LEAN_ARTIFACT`, `QED64_MATHLIB_SNAP`, `QED64_LIB_TREE`: docs/TESTING.md
+   "Environment"), or make the toolchain working directory mirror what is
+   served, so their deprecated defaults (`pipeline/toolchain/work/build/stage1`,
+   `work/snapshot`, `work/lib-tree-slim`; one WARNING each, gone next cycle)
    test the served pairing: install the artifact's `bin/`, `lib/lean` and
    `lib/temp` into `pipeline/toolchain/work/build/stage1` **with
    `bin/package.json` = `{ "type": "commonjs" }`** (the glue's pthread workers

@@ -10,6 +10,9 @@
 //          --snap public/snapshots/mathlib-reals.snap \
 //          --probe-file <lean file with the matching imports> \
 //          [--lib <olean tree>] [--artifact <dir>] [--budget-ms 90000]
+// --artifact / --lib: else $QED64_LEAN_ARTIFACT / $QED64_LIB_TREE, else the
+// deprecated repo-relative default with one WARNING, else exit 2. Started
+// without --stack-size, it re-execs itself with --stack-size=8192 (same PID).
 // (--help lists every flag; the contract is docs/CLI-CONTRACT.md)
 
 import fs from "node:fs";
@@ -18,6 +21,11 @@ import path from "node:path";
 import vm from "node:vm";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { ensureStackSize, resolveToolPath } from "../toolchain/artifact-paths.mjs";
+
+// First, before the contract prints anything: replaces this process (same PID) when
+// started without --stack-size, so every line below is printed once.
+ensureStackSize("snapshot-probe");
 
 // <cli-contract> generated from SPECS["snapshot-probe"] in pipeline/snapshot/cli.mjs. Do not edit:
 // `node pipeline/snapshot/cli.mjs --write-preludes` rewrites it and tests/unit/cli-contract.test.ts
@@ -38,8 +46,8 @@ import { fileURLToPath } from "node:url";
     "  --fresh-import       no snapshot: import the probe's header from --lib (the slim-bake differential audit) [one of --snap, --fresh-import is required]",
     "  --probe-file <file>  the Lean file to compile after the load [one of --probe-file, --probe is required]",
     "  --probe <source>     the probe text inline (read only when --probe-file is absent) [one of --probe-file, --probe is required]",
-    "  --lib <tree>         olean tree mounted at /lib/lean (default: work/lib-tree under the repo root)",
-    "  --artifact <dir>     stage1 dir holding bin/lean.js + bin/lean.wasm (default: $QED64_LEAN_ARTIFACT, else pipeline/toolchain/work/build/stage1)",
+    "  --lib <tree>         olean tree mounted at /lib/lean (default: $QED64_LIB_TREE, else (deprecated, one WARNING) work/lib-tree under the repo root when it exists; nothing else: exit 2)",
+    "  --artifact <dir>     stage1 dir holding bin/lean.js + bin/lean.wasm (default: $QED64_LEAN_ARTIFACT, else (deprecated, one WARNING) pipeline/toolchain/work/build/stage1 under the repo root when it has bin/lean.js; nothing else: exit 2)",
     "  --budget-ms <ms>     compile budget; slower means the load seeded the wrong env-cache key (default: 90000)",
     "  --via-mem            stream the snapshot into a wasm-malloc'd buffer (lean_wasm_load_snapshot_mem, the browser's path)",
     "  --via-memfs          copy the snapshot into MEMFS in 64 MiB chunks before loading",
@@ -49,13 +57,14 @@ import { fileURLToPath } from "node:url";
     "  -h, --help           print this help and exit 0, before any side effect",
     "",
     "environment:",
-    "  QED64_LEAN_ARTIFACT  stage1 artifact dir (bin/lean.js, bin/lean.wasm, lib/lean) used when --artifact is absent",
+    "  QED64_LEAN_ARTIFACT  stage1 artifact dir (bin/lean.js, bin/lean.wasm, lib/lean) used when --artifact is absent (empty = unset)",
+    "  QED64_LIB_TREE       the olean tree mounted at /lib/lean (the tree the probed snapshot was baked from) used when --lib is absent",
     "  QED64_PROFILE_INIT   when set, forwarded into the wasm environment to profile the [init] replay",
     "",
     "exit codes:",
     "  0  SNAPSHOT PROBE PASS",
     "  1  SNAPSHOT PROBE FAIL (load failed, the probe has errors or blew the budget), or a crash before the runtime started (an unreadable --probe-file, a missing lean.js)",
-    "  2  usage: no snapshot source or no probe",
+    "  2  usage: no snapshot source or no probe; or no --artifact / --lib, its variable unset and no deprecated default",
     "  3  the wasm runtime aborted (legacy overload of class 3)",
     "",
     "tier 1 (downstream-stable). Contract: docs/CLI-CONTRACT.md",
@@ -108,14 +117,9 @@ function arg(name, fallback) {
   const i = process.argv.indexOf(`--${name}`);
   return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : fallback;
 }
-const builtHere = path.join(repoRoot, "pipeline/toolchain/work/build/stage1");
-const artifactDir = path.resolve(
-  arg("artifact", process.env.QED64_LEAN_ARTIFACT || builtHere),
-);
 const snapHost = path.resolve(arg("snap", ""));
 const probeFile = arg("probe-file", "");
 const probeSource = probeFile ? fs.readFileSync(path.resolve(probeFile), "utf8") : arg("probe", "");
-const libDir = path.resolve(arg("lib", path.join(repoRoot, "work/lib-tree")));
 const budgetMs = Number(arg("budget-ms", "90000"));
 // Optional host dir NODEFS-mounted at /workspace (the worker cwd) — game
 // probes need `.lake/gamedata/*.json` visible to GameServer's Runner.
@@ -139,16 +143,28 @@ if ((!snapHost && !freshImport) || !probeSource) {
   console.error("usage: snapshot-probe.mjs (--snap <file> | --fresh-import --lib <tree>) (--probe-file <file> | --probe <source>)");
   process.exit(2);
 }
+// After the usage check, before any side effect (the scratch dir below).
+const USAGE = "snapshot-probe.mjs (--snap <file> | --fresh-import --lib <tree>) (--probe-file <file> | --probe <source>)";
+const artifactDir = resolveToolPath({
+  tool: "snapshot-probe", flag: "artifact", placeholder: "<dir>", value: arg("artifact", null), env: "QED64_LEAN_ARTIFACT",
+  legacy: path.join(repoRoot, "pipeline/toolchain/work/build/stage1"), legacyLabel: "pipeline/toolchain/work/build/stage1 under the repo root",
+  holds: (dir) => fs.existsSync(path.join(dir, "bin/lean.js")), needs: "bin/lean.js", usage: USAGE,
+}).path;
+const libDir = resolveToolPath({
+  tool: "snapshot-probe", flag: "lib", placeholder: "<tree>", value: arg("lib", null), env: "QED64_LIB_TREE",
+  legacy: path.join(repoRoot, "work/lib-tree"), legacyLabel: "work/lib-tree under the repo root", holds: fs.existsSync, usage: USAGE,
+}).path;
 const leanJs = path.join(artifactDir, "bin/lean.js");
 
 // The runtime expects a .deps sidecar next to the snapshot (the worker writes
 // "[]"); stage both into a scratch dir so the real snapshot dir stays clean.
+// Removed on every exit, a failed link included (an unreadable or cross-device --snap).
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "qed64-snap-probe-"));
+process.on("exit", () => fs.rmSync(scratch, { recursive: true, force: true }));
 if (!freshImport) {
   fs.linkSync(snapHost, path.join(scratch, "probe.snap"));
   fs.writeFileSync(path.join(scratch, "probe.snap.deps"), "[]");
 }
-process.on("exit", () => fs.rmSync(scratch, { recursive: true, force: true }));
 
 const asPtr = (v) => (typeof v === "bigint" ? v : BigInt(Math.trunc(v)));
 const asNum = (v) => (typeof v === "bigint" ? Number(v) : v);

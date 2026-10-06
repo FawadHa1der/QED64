@@ -856,4 +856,43 @@ describe("the showcase's worker as createWorker options", () => {
     expect((await showcase.fetch(req(OVERLAY, { method: "HEAD" }), own)).status).toBe(404);
     expect(own.ARTIFACTS.calls).toEqual([{ op: "head", key: OVERLAY.slice(1) }]);
   });
+
+  // docs/DEPLOY.md "What changes against a hand-rolled worker": the five places this configuration
+  // answers differently from the showcase's own worker, each pinned on the library's side.
+  test("the five differences from the hand-rolled worker: statusText, no-store errors, a HEAD 404's Content-Type, the asset-HEAD GET without Range, an invalid R2_PREFIX", async () => {
+    // 1. statusText is dropped (the fake assets binding sets "OK").
+    const asset = await showcase.fetch(req("/showcase/"), env());
+    expect([asset.status, asset.statusText]).toEqual([200, ""]);
+    // 2. no-store on every status >= 400, also on a digest-named path the cache rule calls immutable.
+    const missing = `/snapshots/widgets8/widgets.${"f".repeat(16)}.snapz`;
+    expect(isImmutable(missing)).toBe(true);
+    const errors: [string, RequestInit | undefined, Partial<ShowcaseEnv> | undefined, number][] = [
+      [missing, undefined, undefined, 404],
+      [missing, { method: "HEAD" }, undefined, 404],
+      ["/nope.js", undefined, undefined, 404],
+      [OVERLAY, { method: "DELETE" }, undefined, 405],
+      [OVERLAY, { headers: { range: "bytes=5000-" } }, undefined, 416],
+      [OVERLAY, undefined, { R2_PREFIX: "qed64-showcase" }, 500],
+    ];
+    for (const [p, init, vars, status] of errors) {
+      const r = await showcase.fetch(req(p, init), vars === undefined ? env() : env(vars));
+      expect([r.status, r.headers.get("cache-control")], `${init?.method ?? "GET"} ${p}`).toEqual([status, "no-store"]);
+    }
+    // 3. a HEAD 404 is the same `not found` response as a GET 404, so it carries text/plain.
+    const head404 = await showcase.fetch(req(missing, { method: "HEAD" }), env());
+    expect([head404.status, head404.headers.get("content-type")]).toEqual([404, "text/plain;charset=UTF-8"]);
+    const get404 = await showcase.fetch(req(missing), env());
+    expect([get404.status, get404.headers.get("content-type"), await get404.text()]).toEqual([404, "text/plain;charset=UTF-8", "not found"]);
+    // 4. the GET that measures an asset HEAD carries no Range or If-Range: the HEAD gets the full length.
+    const seen: Request[] = [];
+    const spy = { fetch: async (q: Request) => { seen.push(q); return fakeAssets(FILES).fetch(q); } };
+    const head = await showcase.fetch(req("/showcase/", { method: "HEAD", headers: { range: "bytes=0-3", "if-range": '"a-22"' } }), { ...env(), ASSETS: spy } as unknown as ShowcaseEnv);
+    expect(head.headers.get("content-length")).toBe(String("<!doctype html>gallery".length));
+    expect(seen.map((q) => [q.method, q.headers.get("range"), q.headers.get("if-range")])).toEqual([["HEAD", "bytes=0-3", '"a-22"'], ["GET", null, null]]);
+    // 5. an R2_PREFIX that is not `name/` segments answers 500 no-store and never reaches R2.
+    const e = env({ R2_PREFIX: "qed64-showcase", ROOT_REDIRECT: "/showcase/" });
+    const bad = await showcase.fetch(req("/snapshots/widgets8/index.json"), e);
+    expect([bad.status, bad.headers.get("cache-control"), await bad.text()]).toEqual([500, "no-store", "artifact prefix misconfigured"]);
+    expect(e.ARTIFACTS.calls).toEqual([]);
+  });
 });

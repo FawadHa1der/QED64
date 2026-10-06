@@ -10,7 +10,10 @@
 //   node pipeline/snapshot/resident-probe.mjs [--artifact <stage1>] [--lib <tree>] [--budget-ms 180000]
 //                                             [--snap-dir <dir>] [--snapshots init,mathlib] [--mathlib] [--act2 | --act4 [--act4-ms 500]]
 //
-//   --snap-dir   the directory holding <name>.snap (default: work/snapshot in this checkout)
+//   --artifact   the stage1 dir (else $QED64_LEAN_ARTIFACT, else the deprecated
+//                pipeline/toolchain/work/build/stage1 of this checkout, one WARNING)
+//   --snap-dir   the directory holding <name>.snap (else $QED64_SNAP_DIR, else the
+//                deprecated work/snapshot of this checkout, one WARNING)
 //   --snapshots  the <name>.snap files seeded into the env cache
 //                before --worker starts (default: init; mathlib adds the
 //                umbrella env the Mathlib probe needs — 1.1 GB raw)
@@ -36,10 +39,16 @@ import vm from "node:vm";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import "../../public/workers/lsp-frames.js"; // publishes globalThis.Qed64LspFrames
+import { resolveToolPath } from "../toolchain/artifact-paths.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const arg = (n, d) => { const i = process.argv.indexOf(`--${n}`); return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : d; };
-const artifactDir = path.resolve(arg("artifact", path.join(repoRoot, "pipeline/toolchain/work/build/stage1")));
+const USAGE = "resident-probe.mjs [--artifact <stage1>] [--lib <tree>] [--budget-ms 180000] [--snap-dir <dir>] [--snapshots init,mathlib] [--mathlib] [--act2 | --act4 [--act4-ms 500]]";
+const artifactDir = resolveToolPath({
+  tool: "resident-probe", flag: "artifact", placeholder: "<dir>", value: arg("artifact", null), env: "QED64_LEAN_ARTIFACT",
+  legacy: path.join(repoRoot, "pipeline/toolchain/work/build/stage1"), legacyLabel: "pipeline/toolchain/work/build/stage1 under the repo root",
+  holds: (dir) => fs.existsSync(path.join(dir, "bin/lean.js")), needs: "bin/lean.js", usage: USAGE,
+}).path;
 const libLean = path.resolve(arg("lib", path.join(artifactDir, "lib/lean")));
 const budgetMs = Number(arg("budget-ms", "180000"));
 const leanJs = path.join(artifactDir, "bin/lean.js");
@@ -52,7 +61,10 @@ const ACT4_MS = Number(arg("act4-ms", process.env.ACT4_MS || "500"));
 if (MATHLIB && ACT2) { console.error("error: --act2 needs the Init probe's deliberate error; it cannot judge --mathlib (use --mathlib --act4 for a Mathlib header switch)"); process.exit(2); }
 if (ACT2 && ACT4) { console.error("error: --act2 and --act4 are separate experiments; pass one"); process.exit(2); }
 const SNAPSHOTS = arg("snapshots", MATHLIB ? "init,mathlib" : "init").split(",").map((s) => s.trim()).filter(Boolean);
-const SNAP_DIR = path.resolve(arg("snap-dir", path.join(repoRoot, "work/snapshot")));
+const SNAP_DIR = resolveToolPath({
+  tool: "resident-probe", flag: "snap-dir", placeholder: "<dir>", value: arg("snap-dir", null), env: "QED64_SNAP_DIR",
+  legacy: path.join(repoRoot, "work/snapshot"), legacyLabel: "work/snapshot under the repo root", holds: fs.existsSync, usage: USAGE,
+}).path;
 
 const PROBE = (MATHLIB ? [
   "import Mathlib.Data.Real.Basic",

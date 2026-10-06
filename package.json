@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "license": "MIT",
-  "sideEffects": false,
+  "sideEffects": [
+    "./public/workers/memory64-probe.js"
+  ],
   "type": "module",
   "description": "QED64 \u2014 a Lean 4 web editor running the real compiler client-side on WebAssembly Memory64, with Mathlib profiles.",
   "exports": {
@@ -37,6 +39,7 @@
     "public/workers/lean.worker.js",
     "public/workers/lsp-frames.js",
     "public/workers/lsp-front-door.js",
+    "public/workers/memory64-probe.js",
     "public/workers/snapshot-prefetch.worker.js",
     "pipeline/toolchain/artifact-paths.mjs",
     "pipeline/toolchain/artifact-paths.d.mts",
@@ -58,6 +61,9 @@
     "pipeline/release/page-target.mjs",
     "pipeline/release/page-target.d.mts",
     "pipeline/release/preflight.mjs",
+    "pipeline/release/preflight.d.mts",
+    "pipeline/release/fetch-artifacts.mjs",
+    "pipeline/release/fetch-artifacts.d.mts",
     "pipeline/release/verify-release.mjs",
     "tests/adversarial/kernel-probes/is-module.lean",
     "tests/adversarial/kernel-probes/module-file.lean",
@@ -78,6 +84,7 @@
     "inspect:pack": "node pipeline/artifacts/inspect.mjs",
     "verify:release": "node pipeline/release/verify-release.mjs",
     "promote:staging": "node pipeline/release/promote-staging.mjs",
+    "fetch:artifacts": "node pipeline/release/fetch-artifacts.mjs",
     "build:site": "npm --prefix frontend run build",
     "typecheck:site": "npm --prefix frontend exec -- tsc -p frontend --noEmit",
     "preview:prod": "node scripts/serve-dist.mjs",

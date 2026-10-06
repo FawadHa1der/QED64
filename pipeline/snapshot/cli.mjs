@@ -11,7 +11,7 @@
 //
 // Two ways a script binds to it (SPEC.binding):
 //   "import" — the script imports parseCli from this module (supervised-run,
-//              preflight: both ship in the package beside this file);
+//              preflight, fetch-artifacts: they ship in the package beside this file);
 //   "inline" — the script carries a generated prelude (renderPrelude) between
 //              `// <cli-contract>` and `// </cli-contract>`: the same
 //              cliContract source, the compact spec and the help text, so it
@@ -30,7 +30,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** Bumped on a breaking change to the contract (docs/CLI-CONTRACT.md "Stability"). */
-export const CONTRACT_VERSION = 1;
+export const CONTRACT_VERSION = 2;
 
 /** Substrings new output (any line a pipeline run can print, help and
  * warnings included) must not contain: downstream log judges match them
@@ -70,8 +70,20 @@ export const EXIT_CLASSES = {
 /** Environment variables the Tier 1/2 tools read. */
 export const ENV = {
   QED64_LEAN_ARTIFACT: {
-    doc: "stage1 artifact dir (bin/lean.js, bin/lean.wasm, lib/lean) used when --artifact is absent",
+    doc: "stage1 artifact dir (bin/lean.js, bin/lean.wasm, lib/lean) used when --artifact is absent (empty = unset)",
     readBy: ["bake-snapshot", "node-runner", "snapshot-probe", "persistent-probe"],
+  },
+  QED64_WORK: {
+    doc: "the dir mounted at /work (bake-snapshot: where <name>.snap lands) used when --work is absent",
+    readBy: ["bake-snapshot", "node-runner"],
+  },
+  QED64_STAGING: {
+    doc: "the staging root used when --out is absent: --out is <QED64_STAGING>/<buildId>/{snapshots,runtime}",
+    readBy: ["bake-snapshot", "chunk-runtime"],
+  },
+  QED64_LIB_TREE: {
+    doc: "the olean tree mounted at /lib/lean (the tree the probed snapshot was baked from) used when --lib is absent",
+    readBy: ["snapshot-probe"],
   },
   LEAN_COMPACTOR_RESERVE: {
     doc: "bytes the compactor reserves up front for a whole-environment save (toolchain patch 0011)",
@@ -79,8 +91,9 @@ export const ENV = {
     setBy: ["bake-snapshot"],
   },
   QED64_ALLOW_LEGACY_IMPORTS: {
-    doc: "when set, lets the exported-level env cache load legacy non-module packages (patch 0030; the lean4game bakes)",
+    doc: "when set (non-empty), lets the exported-level env cache load legacy non-module packages (patch 0030; the lean4game bakes); bake-snapshot --allow-legacy-imports sets it to 1 for its runner",
     readBy: ["node-runner"],
+    setBy: ["bake-snapshot"],
   },
   QED64_PROFILE_INIT: {
     doc: "when set, forwarded into the wasm environment to profile the [init] replay",
@@ -88,8 +101,25 @@ export const ENV = {
   },
 };
 
-const ARTIFACT_DEFAULT = "$QED64_LEAN_ARTIFACT, else pipeline/toolchain/work/build/stage1";
-const SIBLING_STAGE1 = "../../wasm64-lean-codex/experiments/lean4-wasm64-build/stage1";
+/** "flag, else variable, else the deprecated repo-relative default" (docs/CLI-CONTRACT.md "Path resolution"). */
+const viaEnv = (env, legacy) => `$${env}, else (deprecated, one WARNING) ${legacy}`;
+const ARTIFACT_DEFAULT = viaEnv("QED64_LEAN_ARTIFACT", "pipeline/toolchain/work/build/stage1 under the repo root when it has bin/lean.js; nothing else: exit 2");
+
+/** The two stderr lines of the one path-resolution rule (resolveToolPath in
+ * pipeline/toolchain/artifact-paths.mjs), as markers of each tool that uses it. */
+function pathMarkers(tool, { flag, placeholder, env, legacyLabel, legacy, needs }) {
+  return [
+    { id: "deprecated-default", stream: "stderr", source: "pipeline/toolchain/artifact-paths.mjs",
+      template: ["${o.tool}: WARNING — the default --${o.flag} ${o.legacyLabel} (${r.path}) is deprecated; use --${o.flag} ${o.placeholder} or set ${o.env} (docs/CLI-CONTRACT.md)"],
+      regex: /^(\S+): WARNING — the default --(\S+) (.+) \((.+)\) is deprecated; use --\S+ \S+ or set (\w+) \(docs\/CLI-CONTRACT\.md\)$/,
+      example: `${tool}: WARNING — the default --${flag} ${legacyLabel} (${legacy}) is deprecated; use --${flag} ${placeholder} or set ${env} (docs/CLI-CONTRACT.md)` },
+    { id: "no-path", stream: "stderr", source: "pipeline/toolchain/artifact-paths.mjs", prefix: true,
+      template: ["${o.tool}: no --${o.flag} given and ${o.env} is unset"],
+      regex: /^(\S+): no --(\S+) given and (\w+) is unset(; the deprecated default (.+) (has no \S+|is absent))? — pass --\S+ \S+ or set \w+$/,
+      example: `${tool}: no --${flag} given and ${env} is unset; the deprecated default ${legacy} ${needs ? `has no ${needs}` : "is absent"} — pass --${flag} ${placeholder} or set ${env}` },
+  ];
+}
+const ARTIFACT_PATH = { flag: "artifact", placeholder: "<dir>", env: "QED64_LEAN_ARTIFACT", legacyLabel: "pipeline/toolchain/work/build/stage1 under the repo root", legacy: "/repo/pipeline/toolchain/work/build/stage1", needs: "bin/lean.js" };
 
 /**
  * The contract, one entry per tool. Flags: `value` present = takes a value
@@ -107,25 +137,26 @@ export const SPECS = {
     tier: 1,
     binding: "inline",
     node: "node",
-    synopsis: "bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--roots <A,B,…>] [--label <text>] [--initial-bytes <bytes>]",
+    synopsis: "bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--roots <A,B,…>] [--label <text>] [--initial-bytes <bytes>] [--allow-legacy-imports]",
     summary: "Bake an environment snapshot with the exact wasm64 runtime under Node (the runner is supervised and reaped), gzip it content-addressed into the staging dir and upsert its index entry.",
     flags: [
       { name: "name", value: "<name>", default: "init", doc: "snapshot name: <work>/<name>.snap, <name>.<digest16>.snapz and the index entry" },
       { name: "probe", value: "<lean source>", default: "#check (2 + 2 : Nat)", doc: "the baked file; its import lines become the entry's imports (the env-cache key)" },
-      { name: "artifact", value: "<dir>", default: ARTIFACT_DEFAULT, doc: "stage1 dir whose bin/lean.wasm bakes and is stamped as `runtime`; always passed to the runner" },
+      { name: "artifact", value: "<dir>", default: ARTIFACT_DEFAULT.replace("bin/lean.js", "bin/lean.wasm"), doc: "stage1 dir whose bin/lean.wasm bakes and is stamped as `runtime`; always passed to the runner" },
       { name: "lib", value: "<olean tree>", default: "the runner's <artifact>/lib/lean", doc: "olean tree mounted at /lib/lean" },
       { name: "reserve", value: "<bytes>", default: "3758096384 (3.5 GiB)", doc: "compactor buffer reserved up front (LEAN_COMPACTOR_RESERVE for the runner)" },
-      { name: "work", value: "<dir>", default: "work/snapshot under the repo root: the PAIRED set the probes load", doc: "raw .snap + probe.lean; <work>/<name>.snap is deleted when the bake starts" },
-      { name: "out", value: "<dir>", default: "work/staging/<buildId>/snapshots under the repo root", doc: "staged .snapz + index.json; refused inside public/" },
+      { name: "work", value: "<dir>", default: viaEnv("QED64_WORK", "work/snapshot under the repo root: the PAIRED set the probes load"), doc: "raw .snap + probe.lean; <work>/<name>.snap is deleted when the bake starts; a relative --work resolves against the repo root" },
+      { name: "out", value: "<dir>", default: viaEnv("QED64_STAGING", "work/staging/<buildId>/snapshots under the repo root") + "; with QED64_STAGING, <QED64_STAGING>/<buildId>/snapshots", doc: "staged .snapz + index.json; refused inside public/; a relative --out resolves against the repo root" },
       { name: "roots", value: "<A,B,…>", default: "none (the legacy rule: an entry named mathlib serves the umbrella roots)", doc: "module roots the entry serves (docs/EMBEDDING.md §8): the page boots and widens to it for a header naming one" },
       { name: "label", value: "<text>", default: "none", doc: "the entry's human name for the page's pill and boot card" },
       { name: "initial-bytes", value: "<bytes>", default: "none (2 GiB with a non-base entry)", doc: "initial Memory64 commit when the entry is loaded" },
+      { name: "allow-legacy-imports", doc: "let the runner's env cache load legacy non-module packages (patch 0030): sets QED64_ALLOW_LEGACY_IMPORTS=1 for the runner; an inherited QED64_ALLOW_LEGACY_IMPORTS does the same" },
     ],
-    env: ["QED64_LEAN_ARTIFACT", "LEAN_COMPACTOR_RESERVE", "QED64_ALLOW_LEGACY_IMPORTS", "QED64_PROFILE_INIT"],
+    env: ["QED64_LEAN_ARTIFACT", "QED64_WORK", "QED64_STAGING", "LEAN_COMPACTOR_RESERVE", "QED64_ALLOW_LEGACY_IMPORTS", "QED64_PROFILE_INIT"],
     exits: {
       0: "baked and the index upserted (also when the wedged runner was reaped); NOT a verdict on the probe's Lean messages",
       1: "the runner exited non-zero, or no .snap was produced",
-      2: "refused before the runner: no lean.wasm under the artifact, --out inside public/, an index paired with another runtime or with none, a malformed --roots or --initial-bytes",
+      2: "refused before the runner: no --artifact, QED64_LEAN_ARTIFACT or deprecated default; no lean.wasm under the artifact, --out inside public/, an index paired with another runtime or with none, a malformed --roots or --initial-bytes",
     },
     markers: [
       { id: "baking", stream: "stdout", template: ["baking ${name}.snap for runtime ${buildId} (probe: ${JSON.stringify(probe)}; compactor reserve ${(Number(reserve) / 1024 ** 3).toFixed(1)} GiB) → ${out}"],
@@ -157,6 +188,7 @@ export const SPECS = {
         template: ["bake-snapshot: ${indexPath} holds entries with no runtime pairing (${unpaired.map((s) => s.name).join(\", \")}) — rebake "],
         regex: /^bake-snapshot: (.+) holds entries with no runtime pairing \((.*)\) — rebake /,
         example: "bake-snapshot: /repo/out/index.json holds entries with no runtime pairing (mathlib) — rebake --name mathlib against this runtime first, or bake into an empty --out (promote refuses an unpaired index)" },
+      ...pathMarkers("bake-snapshot", { ...ARTIFACT_PATH, needs: "bin/lean.wasm" }),
     ],
   },
 
@@ -169,16 +201,16 @@ export const SPECS = {
     synopsis: "node-runner.mjs [--artifact <dir>] [--work <dir>] [--lib <dir>] [--] <lean args...>",
     summary: "Run the wasm64 Lean CLI under Node with the host filesystem mounted (NODEFS): --work at /work (the cwd), the library tree at /lib/lean. Since patches 0020/0031 the CLI does its work and then never exits: callers judge it by output (supervised-run) or reap it.",
     flags: [
-      { name: "artifact", value: "<dir>", default: `$QED64_LEAN_ARTIFACT, else pipeline/toolchain/work/build/stage1 when it has bin/lean.js, else ${SIBLING_STAGE1}, both relative to the repo root`, doc: "stage1 dir holding bin/lean.js, bin/lean.wasm and lib/lean" },
-      { name: "work", value: "<dir>", default: "work/runner under the repo root", doc: "host dir mounted read-write at /work, Lean's cwd; created when absent" },
+      { name: "artifact", value: "<dir>", default: ARTIFACT_DEFAULT, doc: "stage1 dir holding bin/lean.js, bin/lean.wasm and lib/lean" },
+      { name: "work", value: "<dir>", default: viaEnv("QED64_WORK", "work/runner under the repo root"), doc: "host dir mounted read-write at /work, Lean's cwd; created when absent" },
       { name: "lib", value: "<dir>", default: "<artifact>/lib/lean", doc: "olean tree mounted at /lib/lean, e.g. an unpacked profile pack for bakes" },
     ],
     passthrough: { mode: "implicit", required: false, doc: "Lean's own arguments: everything after --, or from the first token that is not a runner flag (`-- --help` asks Lean, whose process then never exits)" },
-    env: ["QED64_LEAN_ARTIFACT", "LEAN_COMPACTOR_RESERVE", "QED64_ALLOW_LEGACY_IMPORTS", "QED64_PROFILE_INIT"],
+    env: ["QED64_LEAN_ARTIFACT", "QED64_WORK", "LEAN_COMPACTOR_RESERVE", "QED64_ALLOW_LEGACY_IMPORTS", "QED64_PROFILE_INIT"],
     exits: {
       0: "Lean exited 0 (rare since patch 0031: the process normally stays alive after main returns)",
       1: "Lean's own non-zero exit code, passed through when the process does exit",
-      2: "lean.js or the library tree not found",
+      2: "lean.js or the library tree not found, or no --artifact, QED64_LEAN_ARTIFACT or deprecated default",
       3: "the wasm runtime aborted (legacy overload of class 3)",
     },
     markers: [
@@ -187,6 +219,7 @@ export const SPECS = {
         regex: /^error: (.+) not found — pass --artifact or set QED64_LEAN_ARTIFACT$/,
         example: "error: /tmp/missing/bin/lean.js not found — pass --artifact or set QED64_LEAN_ARTIFACT" },
       { id: "no-lib", stream: "stderr", template: ["error: ${libLean} not found"], regex: /^error: (.+) not found$/, example: "error: /tmp/stage1/lib/lean not found" },
+      ...pathMarkers("node-runner", ARTIFACT_PATH),
     ],
   },
 
@@ -242,7 +275,7 @@ export const SPECS = {
       { name: "fresh-import", doc: "no snapshot: import the probe's header from --lib (the slim-bake differential audit)" },
       { name: "probe-file", value: "<file>", doc: "the Lean file to compile after the load" },
       { name: "probe", value: "<source>", doc: "the probe text inline (read only when --probe-file is absent)" },
-      { name: "lib", value: "<tree>", default: "work/lib-tree under the repo root", doc: "olean tree mounted at /lib/lean" },
+      { name: "lib", value: "<tree>", default: viaEnv("QED64_LIB_TREE", "work/lib-tree under the repo root when it exists; nothing else: exit 2"), doc: "olean tree mounted at /lib/lean" },
       { name: "artifact", value: "<dir>", default: ARTIFACT_DEFAULT, doc: "stage1 dir holding bin/lean.js + bin/lean.wasm" },
       { name: "budget-ms", value: "<ms>", default: "90000", doc: "compile budget; slower means the load seeded the wrong env-cache key" },
       { name: "via-mem", doc: "stream the snapshot into a wasm-malloc'd buffer (lean_wasm_load_snapshot_mem, the browser's path)" },
@@ -252,11 +285,11 @@ export const SPECS = {
       { name: "dump-messages", doc: "echo every line Lean prints on stdout as `[lean:stdout] <line>`" },
     ],
     required: [["snap", "fresh-import"], ["probe-file", "probe"]],
-    env: ["QED64_LEAN_ARTIFACT", "QED64_PROFILE_INIT"],
+    env: ["QED64_LEAN_ARTIFACT", "QED64_LIB_TREE", "QED64_PROFILE_INIT"],
     exits: {
       0: "SNAPSHOT PROBE PASS",
       1: "SNAPSHOT PROBE FAIL (load failed, the probe has errors or blew the budget), or a crash before the runtime started (an unreadable --probe-file, a missing lean.js)",
-      2: "usage: no snapshot source or no probe",
+      2: "usage: no snapshot source or no probe; or no --artifact / --lib, its variable unset and no deprecated default",
       3: "the wasm runtime aborted (legacy overload of class 3)",
     },
     markers: [
@@ -271,6 +304,7 @@ export const SPECS = {
       { id: "lean-stdout", stream: "stdout", template: ["[lean:stdout] ${v}"], regex: /^\[lean:stdout\] (.*)$/,
         example: '[lean:stdout] {"severity":"information","pos":{"line":3,"column":0},"data":"64"}' },
       { id: "abort", stream: "stderr", template: ["ABORT:"], prefix: true, regex: /^ABORT: (.*)$/, example: "ABORT: RuntimeError: memory access out of bounds" },
+      ...pathMarkers("snapshot-probe", ARTIFACT_PATH),
     ],
   },
 
@@ -283,12 +317,13 @@ export const SPECS = {
     synopsis: "persistent-probe.mjs [--artifact <dir>]",
     summary: "Drive the persistent runtime path under Node (noInitialRun, manual init, repeated lean_wasm_compile): a good compile, a resident recompile, an error that does not kill the runtime, and survival after it.",
     flags: [
-      { name: "artifact", value: "<dir>", default: `$QED64_LEAN_ARTIFACT, else pipeline/toolchain/work/build/stage1 when it has bin/lean.js, else ${SIBLING_STAGE1}, both relative to the repo root`, doc: "stage1 dir; its lib/lean is mounted at /lib/lean" },
+      { name: "artifact", value: "<dir>", default: ARTIFACT_DEFAULT, doc: "stage1 dir; its lib/lean is mounted at /lib/lean" },
     ],
     env: ["QED64_LEAN_ARTIFACT"],
     exits: {
       0: "PERSISTENT PROBE PASS",
       1: "PERSISTENT PROBE FAIL, or the artifact is unreadable (an unhandled ENOENT before the runtime starts)",
+      2: "no --artifact, QED64_LEAN_ARTIFACT unset and no deprecated default (nothing booted)",
       3: "the wasm runtime aborted (legacy overload of class 3)",
     },
     markers: [
@@ -299,6 +334,7 @@ export const SPECS = {
       { id: "parse-fixed", stream: "stdout", template: ["parse errors reported (${rg.errors.length}) — runtime defect is FIXED; update the app verdict copy"],
         regex: /runtime defect is FIXED/, example: "parse errors reported (1) — runtime defect is FIXED; update the app verdict copy" },
       { id: "abort", stream: "stderr", template: ["ABORT:"], prefix: true, regex: /^ABORT: (.*)$/, example: "ABORT: RuntimeError: unreachable" },
+      ...pathMarkers("persistent-probe", ARTIFACT_PATH),
     ],
   },
 
@@ -331,6 +367,56 @@ export const SPECS = {
         example: "PREFLIGHT REFUSED: runtime manifest: http://localhost:5187/runtime/runtime-manifest.json: HTTP 404" },
       { id: "ok", stream: "stdout", template: ["PREFLIGHT OK buildId=${result.buildId} mode=${result.mode} snapshots=${target.snapshotsDir}"],
         regex: /^PREFLIGHT OK buildId=(\S+) mode=(\S+) snapshots=(\S+)$/, example: "PREFLIGHT OK buildId=wasm64-0123456789abcdef mode=resident snapshots=snapshots" },
+    ],
+  },
+
+  "fetch-artifacts": {
+    script: "pipeline/release/fetch-artifacts.mjs",
+    npm: "fetch:artifacts",
+    tier: 1,
+    binding: "import",
+    node: "node",
+    synopsis: "fetch-artifacts.mjs [--out <dir>] [--manifests <dir>] [--release <dir|url>] [--origin <url|dir>] [--only runtime,profiles,snapshots] [--with-manifests]",
+    summary: "Fill a public/-shaped tree with every binary the tracked manifests name (runtime chunks, profile pack parts, snapshot .snapz), each verified by sha256 and size and written by temp file + rename; files already present with the pinned digest are skipped. Runtime and profiles come from --release when given, everything else from --origin; snapshots are site-owned and never come from a release.",
+    flags: [
+      { name: "out", value: "<dir>", default: "this checkout's public/ (refused when that is inside node_modules)", doc: "the tree to fill; nothing is written outside it" },
+      { name: "manifests", value: "<dir>", default: "this checkout's public/", doc: "the tree holding the tracked manifests (runtime/runtime-manifest.json, profiles/index.json and its manifests, snapshots/index.json); an installed package has none" },
+      { name: "release", value: "<dir|url>", doc: "a fork release in the served layout (release.json, lean4-wasm64.release/v1): /runtime/* and /profiles/* come from it, each also checked against its files[] sha256 and bytes" },
+      { name: "origin", value: "<url|dir>", default: "https://qed64.fawadworkaddress.workers.dev/", doc: "a QED64 site (or a served tree on disk): everything --release does not provide" },
+      { name: "only", value: "<groups>", default: "runtime,profiles,snapshots", doc: "a comma list of runtime, profiles, snapshots" },
+      { name: "with-manifests", doc: "also write the tracked manifests themselves into --out (for a tree that is not this checkout's public/)" },
+    ],
+    env: [],
+    exits: {
+      0: "FETCH OK: every file the manifests name is in --out with its pinned digest",
+      1: "FETCH FAILED: a fetch failed (an HTTP status, the network), a size or digest mismatch (the temp file is deleted), parts that do not assemble to their whole-file pin, or a release that does not list or pin a file as the manifests do",
+      2: "FETCH FAILED, refused before any write: a malformed --only, a tracked manifest missing or malformed, a manifest URL outside its directory, a target outside --out (a symlink out of the tree), or the default --out inside node_modules",
+      130: "FETCH FAILED interrupted (SIGINT): the run stopped and deleted its temp files",
+      143: "FETCH FAILED interrupted (SIGTERM): the run stopped and deleted its temp files",
+    },
+    markers: [
+      { id: "plan", stream: "stderr", template: ["${TOOL}: ${group}: ${g.length} files, ${g.reduce((s, j) => s + j.bytes, 0)} bytes from ${from}"],
+        regex: /^fetch-artifacts: (runtime|profiles|snapshots): (\d+) files, (\d+) bytes from (.+)$/,
+        example: "fetch-artifacts: runtime: 10 files, 158847486 bytes from https://qed64.fawadworkaddress.workers.dev/" },
+      { id: "fetched", stream: "stderr", template: ["${TOOL}: fetched ${j.rel} (${j.bytes} bytes)"],
+        regex: /^fetch-artifacts: fetched (\S+) \((\d+) bytes\)$/, example: "fetch-artifacts: fetched runtime/chunks/lean.wasm.5500c87fb8f37d2e273a.part-000 (16777216 bytes)" },
+      { id: "present", stream: "stderr", template: ["${TOOL}: present ${j.rel} (${j.bytes} bytes, verified)"],
+        regex: /^fetch-artifacts: present (\S+) \((\d+) bytes, verified\)$/, example: "fetch-artifacts: present snapshots/init.b6d945e398b4d55e.snapz (32643656 bytes, verified)" },
+      { id: "replacing", stream: "stderr", template: ["${TOOL}: replacing ${j.rel}: the file there does not match its pin"],
+        regex: /^fetch-artifacts: replacing (\S+): /, example: "fetch-artifacts: replacing profiles/lean-core.pack.gzip.bc2709bea0127940a05b.part-000: the file there does not match its pin" },
+      { id: "verified", stream: "stderr", template: ["${TOOL}: verified ${w.label} (${w.bytes} bytes, sha256 ${got.slice(0, 16)}…, ${w.rels.length} parts)"],
+        regex: /^fetch-artifacts: verified (.+) \((\d+) bytes, sha256 ([0-9a-f]{16})…, (\d+) parts\)$/,
+        example: "fetch-artifacts: verified runtime lean.wasm (109875453 bytes, sha256 3ab1c6a9da03bc29…, 7 parts)" },
+      { id: "removed", stream: "stderr", template: ["${TOOL}: removed ${path.relative(outRoot, r.file)}, a temp file left by process ${r.pid}"],
+        regex: /^fetch-artifacts: removed (\S+), a temp file left by process (\d+)$/,
+        example: "fetch-artifacts: removed snapshots/.mathlib.0b7f0c1b2a3d4e5f.snapz.69478-1295a546.tmp, a temp file left by process 69478" },
+      { id: "wrote", stream: "stderr", template: ["${TOOL}: wrote ${c.rel} (${c.bytes} bytes, the tracked ${c.from ?? c.rel})"],
+        regex: /^fetch-artifacts: wrote (\S+) \((\d+) bytes, the tracked (\S+)\)$/,
+        example: "fetch-artifacts: wrote runtime/runtime-manifest.wasm64-3ab1c6a9da03bc29.json (2858 bytes, the tracked runtime/runtime-manifest.json)" },
+      { id: "ok", stream: "stdout", template: ["FETCH OK ${stats.files} files, ${stats.bytes} bytes (${stats.fetched} fetched, ${stats.present} already present)"],
+        regex: /^FETCH OK (\d+) files, (\d+) bytes \((\d+) fetched, (\d+) already present\)$/, example: "FETCH OK 139 files, 1260153706 bytes (139 fetched, 0 already present)" },
+      { id: "failed", stream: "stdout", template: ["FETCH FAILED ${oneLine(e.message)}"], regex: /^FETCH FAILED (.*)$/,
+        example: "FETCH FAILED snapshots/init.b6d945e398b4d55e.snapz: HTTP 404 from https://qed64.fawadworkaddress.workers.dev/snapshots/init.b6d945e398b4d55e.snapz" },
     ],
   },
 
@@ -378,12 +464,12 @@ export const SPECS = {
     flags: [
       { name: "bin", value: "<dir>", doc: "dir holding lean.js + lean.wasm" },
       { name: "lean-version", value: "<x.y.z>", default: "4.33.0-pre, with a WARNING on stderr", doc: "the manifest's leanVersion; promote pairs packs against it" },
-      { name: "revision", value: "<string>", default: "qed64-wasm64@<HEAD of pipeline/toolchain/work/lean4> (base <upstream-base>), else unspecified", doc: "the manifest's sourceRevision" },
+      { name: "revision", value: "<string>", default: "qed64-wasm64@<HEAD of pipeline/toolchain/work/lean4, relative to the cwd> (base <upstream-base>), else unspecified; git runs only when --revision is absent", doc: "the manifest's sourceRevision" },
       { name: "upstream-base", value: "<sha|tag>", default: "5732b84", doc: "the upstream base named in the default --revision" },
-      { name: "out", value: "<dir>", default: "work/staging/<buildId>/runtime under the repo root", doc: "staging dir; refused inside public/" },
+      { name: "out", value: "<dir>", default: viaEnv("QED64_STAGING", "work/staging/<buildId>/runtime under the repo root") + "; with QED64_STAGING, <QED64_STAGING>/<buildId>/runtime", doc: "staging dir; refused inside public/; a relative --out resolves against the repo root" },
     ],
     required: [["bin"]],
-    env: [],
+    env: ["QED64_STAGING"],
     exits: {
       0: "chunked",
       1: "a crash (lean.js or lean.wasm unreadable under --bin)",
@@ -400,6 +486,7 @@ export const SPECS = {
         template: ["${who}: refusing --out ${target}: it resolves inside public/. "],
         regex: /^(bake-snapshot|chunk-runtime): refusing --out (.+): it resolves inside public\/\. /,
         example: "chunk-runtime: refusing --out /repo/public/runtime: it resolves inside public/. Producers stage under work/staging/<buildId>/; use `npm run promote:staging` to publish (HARDENING #32)." },
+      pathMarkers("chunk-runtime", { flag: "out", placeholder: "<dir>", env: "QED64_STAGING", legacyLabel: "work/staging/<buildId>/runtime under the repo root", legacy: "/repo/work/staging/wasm64-36a96239e08fd2e0/runtime" })[0],
     ],
   },
 

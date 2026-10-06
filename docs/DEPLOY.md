@@ -245,12 +245,45 @@ What each need of that worker maps to:
 - **A single Range on `.snapz`.** `ranges` (on by default) covers every
   artifact path. See the table above for 206, If-Range and 416.
 
-Every hardened switch is on by default, so the example needs no others. The
-showcase's own worker also keeps an upstream `statusText`; this library drops
-it, as QED64's worker always has. `isImmutable`, `artifactKey`, `parseRange`,
-`resolveRange` and `withIsolationHeaders` are exported for tests and extra
-routes. `tests/unit/edge-worker.test.ts` ("the showcase's worker as
-createWorker options") runs this exact configuration against fake bindings.
+Every hardened switch is on by default, so the example needs no others.
+
+**What changes against a hand-rolled worker.** Moving from a worker of your
+own, such as the showcase's `infra/worker.js` (2026-10-05), to these options
+changes five things. Each is deliberate:
+
+- **`statusText` is dropped**, as QED64's worker always has (HTTP/2 and
+  later carry none). The showcase's worker keeps the upstream one.
+- **Every status ≥ 400 is `Cache-Control: no-store`** (`errorCacheControl`):
+  404, 405, 416 and 500 alike. The hand-rolled worker sends no-store on a 416
+  only and gives every other error the path rule, so a 404 for a digest-named
+  path (an overlay `.snapz` asked for before its upload landed) is cached for
+  a year as `immutable`.
+- **A HEAD 404 carries `Content-Type: text/plain;charset=UTF-8`.** The
+  library answers every miss with the same `not found` response, GET or HEAD
+  (the runtime sends no body for a HEAD). The hand-rolled worker answers an
+  artifact HEAD miss with `new Response(null, { status: 404 })`, which has no
+  `Content-Type`. Only a check that compares headers sees it; the status is
+  404 in both.
+- **The asset-HEAD length GET drops `Range` and `If-Range`** (HEAD ignores
+  them), so a HEAD that carries a `Range` still gets the asset's full
+  `Content-Length`. The hand-rolled worker forwards every header to that GET:
+  when the binding answers it 206, the HEAD goes out without a length.
+- **An invalid `R2_PREFIX` answers 500 no-store** and never reaches R2
+  (`r2Prefix` must be `name/` segments, see the options table). The
+  hand-rolled worker prepends whatever the variable holds: `qed64-showcase`
+  without its slash reads keys like `qed64-showcasesnapshots/index.json`, and
+  every artifact is a 404.
+
+The library's `artifactKey` also refuses a backslash, a control character and
+a `%2e` segment. A real request never carries one, because URL parsing folds
+them away first, so only an extra route that passes raw strings can tell the
+two workers apart there.
+
+`isImmutable`, `artifactKey`, `parseRange`, `resolveRange` and
+`withIsolationHeaders` are exported for tests and extra routes.
+`tests/unit/edge-worker.test.ts` ("the showcase's worker as createWorker
+options") runs this exact configuration against fake bindings, and pins each
+of the five differences.
 
 QED64's own `infra/worker.js` stays `createWorker(QED64_LEGACY)`. Moving the
 live site to the hardened defaults is a separate decision (plan step A4).

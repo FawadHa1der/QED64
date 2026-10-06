@@ -7,10 +7,12 @@
 // the legacy work/adversarial/report.md.
 // Usage: node tests/adversarial/run.mjs [--skip-compiler] [--skip-e2e] [--url <page url>]
 //        [--no-boot] [--skip-pretest] [--cooldown-gb 6]
+//        [--snap <mathlib.snap>] [--artifact <stage1>] [--lib <tree>]   (the battery's pairing,
+//        forwarded; else its QED64_MATHLIB_SNAP / QED64_LEAN_ARTIFACT / QED64_LIB_TREE)
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { arg, coolDown, has, resolveTarget, root, runDir, strayBrowsers, teeLog } from "./harness.mjs";
+import { arg, batteryArgv, coolDown, has, laneSections, resolveTarget, root, runDir, strayBrowsers, suiteExitCode, teeLog } from "./harness.mjs";
 import { runPreflight } from "../../pipeline/release/preflight.mjs";
 
 fs.mkdirSync(path.join(root, "work/adversarial"), { recursive: true });
@@ -55,10 +57,10 @@ if (!pre.ok) {
 }
 console.log(`run dir: ${path.relative(root, dir)} (${pre.buildId}, ${target.mode})`);
 
-let compilerCode = 0, e2eCode = 0;
+let compilerCode = null, e2eCode = null; // null: the lane did not run
 if (!has("--skip-compiler")) {
   console.log("=== compiler battery ===");
-  compilerCode = spawnSync("node", [path.join(root, "tests/adversarial/compiler-battery.mjs"), "--run-dir", dir], { stdio: "inherit", cwd: root }).status ?? 1;
+  compilerCode = spawnSync("node", [path.join(root, "tests/adversarial/compiler-battery.mjs"), ...batteryArgv(dir)], { stdio: "inherit", cwd: root }).status ?? 1;
 }
 if (!has("--skip-e2e")) {
   // Cool-down before the browser lane: stray chrome-headless-shell processes
@@ -76,18 +78,13 @@ stopVite();
 const load = (f) => { try { return JSON.parse(fs.readFileSync(path.join(dir, f), "utf8")); } catch { return null; } };
 const comp = load("compiler-report.json"), e2e = load("e2e-report.json");
 const lines = [`# Adversarial suite report`, "", `run: ${path.relative(root, dir)} — runtime ${pre.buildId} (${target.mode}) — ${url}`, ""];
-for (const lane of [comp, e2e].filter(Boolean)) {
-  const by = (o) => lane.results.filter((r) => (r.outcome ?? (r.pass ? "pass" : "fail")) === o).length;
-  lines.push(`## ${lane.lane}: ${by("pass")}/${lane.total} passed (fail ${by("fail")}, infra ${by("infra")}, aborted ${by("aborted")})`, "");
-  for (const r of lane.results.filter((x) => (x.outcome ?? (x.pass ? "pass" : "fail")) !== "pass")) {
-    const o = (r.outcome ?? "fail").toUpperCase();
-    lines.push(`- **${o}** \`${r.name}\` [${r.category}] — ${r.detail ?? (r.failures || []).join("; ")}${r.screenshot ? ` (screenshot: ${r.screenshot})` : ""}`);
-  }
-  lines.push("");
-}
+lines.push(...laneSections([
+  { name: "compiler", report: comp, code: compilerCode, log: "compiler.log / run.log" },
+  { name: "e2e", report: e2e, code: e2eCode, log: "run.log" },
+]));
 const md = lines.join("\n");
 fs.writeFileSync(path.join(dir, "report.md"), md);
 fs.writeFileSync(path.join(root, "work/adversarial/report.md"), md);
 console.log(`\nreport: ${path.relative(root, path.join(dir, "report.md"))} (also work/adversarial/report.md)`);
-// 3 = a lane refused (infra), 1 = product failures, 0 = green.
-process.exit(compilerCode === 3 || e2eCode === 3 ? 3 : compilerCode || e2eCode ? 1 : 0);
+// 3 = a lane refused (the battery's 2 included), 1 = product failures, 0 = green.
+process.exit(suiteExitCode(compilerCode ?? 0, e2eCode ?? 0));
