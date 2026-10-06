@@ -141,12 +141,12 @@ from Cloudflare's own, etag values, and lengths of files the two builds
 differ in).
 
 `QED64_EDGE` picks the worker: `legacy` (the default) is `infra/worker.js`,
-`createWorker(QED64_LEGACY)`, what is deployed; `hardened` is
-`createWorker({})`, the defaults of "Legacy vs hardened" below, which the live
+`createWorker({...QED64_LEGACY, release, releaseFallback: true})`, what is deployed; `hardened` is
+`createWorker({ release, releaseFallback: true })`, the defaults of "Legacy vs hardened" below, which the live
 site has **not** adopted. Use it to preview and test that switch locally
 (Range 206/416, metadata HEAD with `Content-Length`, 405, no-store errors)
-before deciding on it (the hardened mode carries no release: its keys are
-the root ones). Any other value exits 2 with the usage line before
+before deciding on it (both modes route the same pinned release, so the
+only difference is the hardened switches). Any other value exits 2 with the usage line before
 listening. The startup line names the mode and the release: `prod preview:
 http://localhost:5185 (<dist> + public artifacts) edge=legacy
 release=lean-v4.34.0-a8817d0`, plus ` releaseDir=<dir>` when set.

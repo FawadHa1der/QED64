@@ -435,9 +435,9 @@ describe("ARTIFACTS: lean4-wasm64/<id>/ keys", () => {
     expect((await b.head(RK("profiles/index.json")))?.size).toBe(ARTIFACTS["profiles/index.json"]!.bytes.length);
   });
 
-  test("over HTTP (legacy = the shipped worker): the release dir answers, a file only under public/ comes through the fallback, a miss is no-store", async () => {
+  test.each(["legacy", "hardened"] as const)("over HTTP (edge=%s; both route the pinned release): the release dir answers, a file only under public/ comes through the fallback, a miss is no-store", async (edge) => {
     // a pinned manifest present only in public/ (the root): the Worker's one-cycle fallback finds it
-    const server = createDistServer({ dist: distDir, publicDir, edge: "legacy", releaseDir });
+    const server = createDistServer({ dist: distDir, publicDir, edge, releaseDir });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     try {
       const port = (server.address() as AddressInfo).port;

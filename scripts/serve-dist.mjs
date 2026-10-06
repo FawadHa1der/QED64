@@ -70,8 +70,9 @@
 // with curl on 2026-10-06; tests/unit/serve-dist.test.ts pins them.
 //
 // QED64_EDGE=legacy (default) runs infra/worker.js exactly, what the live site
-// runs (createWorker(QED64_LEGACY)); QED64_EDGE=hardened runs createWorker({}),
-// the hardened defaults (ranges, metadata HEAD, 405, no-store errors), which
+// runs (createWorker({...QED64_LEGACY, release, releaseFallback: true}));
+// QED64_EDGE=hardened runs createWorker({ release, releaseFallback: true }), the
+// hardened defaults (ranges, metadata HEAD, 405, no-store errors), which
 // the live site has NOT adopted: preview and test them here. Any other value
 // exits 2 with the usage line, before listening.
 //
@@ -85,8 +86,9 @@
 // QED64_RELEASE_DIR=<dir> serves the toolchain release's files from a release
 // directory (above). A QED64_RELEASE_DIR that is not a served-layout release
 // directory of the pinned id exits 2 with the usage line, before listening.
-// The hardened mode (createWorker({})) carries no release: its keys are the
-// root ones.
+// The hardened mode is what infra/worker.js would be with the hardened
+// defaults: createWorker({ release, releaseFallback: true }) on the same pinned
+// record, so it previews exactly what adopting them would ship.
 //
 // Tests import createDistServer (tests/unit/serve-dist.test.ts); it listens
 // only when run as the main module.
@@ -113,7 +115,7 @@ export const RELEASE_ID = pinnedRelease.id;
 /** The edge modes: the worker each one runs. */
 export const EDGE_MODES = Object.freeze({
   legacy: () => legacyWorker,
-  hardened: () => createWorker({}),
+  hardened: () => createWorker({ release: pinnedRelease, releaseFallback: true }),
 });
 
 // Workers static assets' content types, as the live site sends them (checked
