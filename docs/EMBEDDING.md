@@ -432,7 +432,7 @@ The package:
   - `"./embedding/closure.json"`;
   - `"./package.json"`.
 - `files`: exactly the closure below, plus the license, README and this
-  document. 52 files, about 220 kB packed. `npm run test:consumer`
+  document. 53 files, about 220 kB packed. `npm run test:consumer`
   (tests/consumer/check-consumer.mjs) proves the packed files alone resolve
   and build.
 
@@ -1361,3 +1361,11 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   (§6's note: the manifests themselves are not in the package, so a consumer
   passes `--manifests`). G2 runs its `--help` through the package symlink and
   checks that refusal.
+- **The A2 follow-ups both consumers asked for (plan step A3c, 2026-10-06):**
+  - `pipeline/release/preflight.mjs` refuses instead of crashing when its
+    boot smoke cannot start: a `playwright` that does not resolve from the
+    package (the caller's install) is `PREFLIGHT REFUSED: boot smoke:
+    playwright not resolvable from the caller (ERR_MODULE_NOT_FOUND)`, exit 3
+    (it was an uncaught rejection, exit 1); `pipeline/release/preflight.d.mts`
+    (shipped) types `runPreflight`, `bootSmoke` and `main`
+    (docs/CLI-CONTRACT.md changelog). No library change.

@@ -22,7 +22,8 @@
 // pipeline/snapshot/cli.mjs and docs/CLI-CONTRACT.md). Moved from
 // tests/adversarial/preflight.mjs on 2026-10-06 so it ships in the package;
 // that path is a shim for one deprecation cycle. The boot smoke imports
-// `playwright` (the caller's install) only when it runs.
+// `playwright` (the caller's install) only when it runs; one that does not
+// resolve is a refusal (exit 3), not a crash. Types: preflight.d.mts.
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -49,8 +50,9 @@ async function probeFile(url) {
   return { bytes, type: r.headers.get("content-type") ?? "" };
 }
 
-/** Run the checks; returns {ok, reason, buildId, mode, checks}. Never throws. */
-export async function runPreflight(target, { boot = true, bootBudgetMs = 180000, log = console.log } = {}) {
+/** Run the checks; returns {ok, reason, buildId, mode, checks}. Never throws.
+ * `importPlaywright` is passed to bootSmoke. */
+export async function runPreflight(target, { boot = true, bootBudgetMs = 180000, log = console.log, importPlaywright } = {}) {
   const checks = [];
   const ok = (what) => { checks.push({ ok: true, what }); log(`ok    ${what}`); };
   const warn = (what) => { checks.push({ ok: true, warn: true, what }); log(`warn  ${what}`); };
@@ -105,7 +107,7 @@ export async function runPreflight(target, { boot = true, bootBudgetMs = 180000,
   } catch (e) { return refuse(`profile index: ${e.message}`, buildId); }
 
   if (boot) {
-    const r = await bootSmoke(target.url, bootBudgetMs);
+    const r = await bootSmoke(target.url, bootBudgetMs, { importPlaywright });
     if (!r.ok) return refuse(`boot smoke: ${r.reason}`, buildId);
     ok(`boot smoke: ready in ${r.ms} ms`);
   } else {
@@ -114,13 +116,29 @@ export async function runPreflight(target, { boot = true, bootBudgetMs = 180000,
   return { ok: true, reason: null, buildId, mode: target.mode, checks };
 }
 
+/** Why the caller's playwright could not be imported, as one refusal reason. */
+function playwrightImportFault(e) {
+  const code = e?.code ?? e?.name ?? "unknown";
+  if (code === "ERR_MODULE_NOT_FOUND" || code === "MODULE_NOT_FOUND") return `playwright not resolvable from the caller (${code})`;
+  return `playwright could not be imported (${code}): ${String(e?.message ?? e).split("\n")[0].slice(0, 160)}`;
+}
+
 /** One headless page must reach the `ready` pill within the budget. The
- * browser is closed in `finally` whatever happens (HARDENING #34). */
-export async function bootSmoke(url, budgetMs) {
-  const { chromium } = await import("playwright");
-  const browser = await chromium.launch({ args: ["--enable-features=SharedArrayBuffer"] });
+ * browser is closed in `finally` whatever happens (HARDENING #34). Never
+ * throws: a playwright that does not resolve from this file (the caller's
+ * install), or a Chromium that does not launch, is `{ok: false, reason}`.
+ * `importPlaywright` replaces the import (tests). */
+export async function bootSmoke(url, budgetMs, { importPlaywright = () => import("playwright") } = {}) {
   const tail = [];
+  let browser = null;
   try {
+    let chromium;
+    try {
+      ({ chromium } = await importPlaywright());
+    } catch (e) {
+      return { ok: false, reason: playwrightImportFault(e) };
+    }
+    browser = await chromium.launch({ args: ["--enable-features=SharedArrayBuffer"] });
     const page = await browser.newPage();
     page.on("console", (m) => { tail.push(m.text().slice(0, 200)); if (tail.length > 20) tail.shift(); });
     page.on("pageerror", (e) => tail.push(`PAGEERROR: ${e.message.slice(0, 200)}`));
@@ -144,7 +162,7 @@ export async function bootSmoke(url, budgetMs) {
   } catch (e) {
     return { ok: false, reason: `${String(e).slice(0, 160)}; console tail: ${tail.slice(-5).join(" | ")}` };
   } finally {
-    await browser.close().catch(() => {});
+    if (browser !== null) await browser.close().catch(() => {});
   }
 }
 

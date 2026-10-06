@@ -58,6 +58,7 @@
     "pipeline/release/page-target.mjs",
     "pipeline/release/page-target.d.mts",
     "pipeline/release/preflight.mjs",
+    "pipeline/release/preflight.d.mts",
     "pipeline/release/fetch-artifacts.mjs",
     "pipeline/release/fetch-artifacts.d.mts",
     "pipeline/release/verify-release.mjs",

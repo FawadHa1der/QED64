@@ -521,9 +521,16 @@ usage: supervised-run.mjs --target <file> [--quiet-ms n] [--stable-ms n] [--give
 **Tier 1.** `node pipeline/release/preflight.mjs …`. It runs in place from
 the QED64 checkout or from the installed package, including when the showcase
 calls it. It needs the caller's `playwright` only for the boot smoke (a
-dynamic import, not taken with `--no-boot`). As a module it exports
-`runPreflight(target, opts)`, `bootSmoke(url, budgetMs)` and `main()`; the
-target comes from `resolveTarget(url)` in `pipeline/release/page-target.mjs`.
+dynamic import, not taken with `--no-boot`). It resolves from the script's own
+location, so an installed package finds the consumer's playwright; one that
+does not resolve is the refusal `PREFLIGHT REFUSED: boot smoke: playwright not
+resolvable from the caller (ERR_MODULE_NOT_FOUND)` with exit 3 (install
+playwright beside the caller, or pass `--no-boot`), and so is a Chromium that
+does not launch. As a module it exports `runPreflight(target, opts)`,
+`bootSmoke(url, budgetMs, opts)` and `main()`, typed in
+`pipeline/release/preflight.d.mts` (shipped); `opts.importPlaywright` replaces
+the import. The target comes from `resolveTarget(url)` in
+`pipeline/release/page-target.mjs`.
 
 **Moved on 2026-10-06** from `tests/adversarial/preflight.mjs`. The old path is
 a shim with the same flags, output and exit codes that also prints
@@ -559,7 +566,7 @@ usage: preflight.mjs [--url <page url>] [--no-boot] [--boot-budget-ms 180000] [-
 |---|---|
 | 0 | `PREFLIGHT OK`. |
 | 1 | A crash, for example a `--url` that is not a URL. |
-| 3 | `PREFLIGHT REFUSED`: the lane must not run. |
+| 3 | `PREFLIGHT REFUSED`: the lane must not run (a failed check, or a boot smoke that cannot start: playwright not resolvable, Chromium not launching). |
 
 **Side effects:**
 
@@ -1043,6 +1050,7 @@ before it judges Lean's output.
 | 2 | 2026-10-06 | A3 review fixes. The compiler battery's path-rule refusal (exit 2) leaves a record: compiler.log in `--run-dir` and a fresh all-infra `compiler-report.json` in `work/adversarial/` and the run dir, with a `refused` field naming the `no-path` line, written before the exit (its pairing is a harness input, not a pipeline output; the five tools' "exit 2 before any side effect" is unchanged). Before, it exited 2 with nothing written, so `run.mjs`'s report.md dropped the lane and `resident-gate.sh` printed the previous run's tally. `run.mjs` shows a lane that ran and wrote no report as a `REFUSED`/`NO REPORT` line; `resident-gate.sh` removes the old report before the battery. The harness's `teeLog` appends synchronously, so lines printed just before an exit reach the log. README "Baking snapshots" and docs/REBUILD.md §2/§3 pass `--artifact`/`--work`/`--out`/`--lib` explicitly instead of relying on the deprecated defaults. | fix, no flag or tool-output change |
 | 2 | 2026-10-06 | Plan step A3b: **fetch-artifacts**, a new Tier 1 tool (`pipeline/release/fetch-artifacts.mjs`, `npm run fetch:artifacts`, Node built-ins only, in `files` and closure.json `pipeline` with its `.d.mts`): fills a `public/`-shaped tree with every runtime chunk, profile pack part and snapshot `.snapz` the tracked manifests name, from a fork release (`--release`, checked against its `files[]` too) and a QED64 origin (`--origin`), each verified by sha256 and size and written by temp file + rename; one stdout line `FETCH OK …` / `FETCH FAILED …`. It replaces the retired `sync:artifacts`. The import-bound check in `tests/unit/cli-contract.test.ts` accepts `parseCli("<tool>", …)` with arguments (fetch-artifacts' `main(argv, io)` passes its own). | additive (a new tool) |
 | 2 | 2026-10-06 | A3b review fixes, **fetch-artifacts**. An interrupted run no longer leaves temp files: SIGINT/SIGTERM delete the run's open `.<name>.<pid>-<random>.tmp` files and exit 130/143 with `FETCH FAILED interrupted (<signal>)` (new exit codes); before, Node exited at once and each in-flight temp file (up to four, a `.snapz` one up to 321 MB) stayed, gitignored and never reused. Every run first deletes the temp files a dead process left beside its targets, one new `removed` stderr marker each. The `failed` line is always one line: a newline in a reason (the snippet a JSON parse error quotes, for a release.json that is an HTML page) is folded into a space; before, it split the summary over two stdout lines. The module gains `oneLine`, `sweepStaleTemps`, `fetchArtifacts({ signal })` and `main(argv, io, { repoRoot, handleSignals })`; unit tests cover the default `--out` inside `node_modules` refusal (exit 2), the one-line summary, the stale sweep and SIGINT/SIGTERM as a process. | fix; additive (exit codes, a marker) |
+| 2 | 2026-10-06 | Plan step A3c, **preflight**: a boot smoke that cannot start is the documented refusal. `import("playwright")` and `chromium.launch` moved inside the smoke's `try`, so a playwright that does not resolve from the script (a package installed without the caller's playwright beside it) prints `PREFLIGHT REFUSED: boot smoke: playwright not resolvable from the caller (<code>)` and exits 3, and a Chromium that does not launch refuses with its error; before, both escaped `runPreflight` (documented as never throwing) and the CLI crashed with exit 1 and a stack trace. `bootSmoke(url, budgetMs, { importPlaywright })` and `runPreflight(target, { importPlaywright })` take an injectable importer; `pipeline/release/preflight.d.mts` types `runPreflight`, `bootSmoke` and `main` and ships (in `files` and closure.json `pipeline`). Flags, markers and the other exits are unchanged. | fix (exit 1 → the documented 3); additive (an option, types) |
 
 ## Open decisions
 
