@@ -2,7 +2,7 @@ import { defineConfig } from "vite";
 import { viteStaticCopy } from "vite-plugin-static-copy";
 import { nodePolyfills } from "vite-plugin-node-polyfills";
 import importMetaUrlPlugin from "@codingame/esbuild-import-meta-url-plugin";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 // lean4monaco 1.1.x InfoView wiring fixes (HARDENING #56): page half (transform + dev pre-bundle) and iframe half (copy transform).
 import { lean4monacoFixesEsbuild, lean4monacoFixesVite, webviewCopyTransform } from "./build/lean4monaco-fixes.mjs";
 // dist/qed64-build.json: the shell's identity (docs/EMBEDDING.md §4; embedApiRevision: §7).
@@ -12,6 +12,15 @@ import { buildInfoPlugin } from "./build/build-info.mjs";
 // promotes"): the shell first asks for the immutable, digest-named manifest
 // of this exact build and only falls back to the mutable path, so deploying
 // a new shell never races the mutable manifest switch in R2.
+// The dev server may serve only the repository, but Vite resolves a module to
+// its REAL path: when node_modules is a symlink (a git worktree sharing one
+// install, a pnpm store), lean4monaco's extension files live outside the root
+// and came back 403, so the editor never started and every boot stalled at
+// "starting". Allow where each install really is.
+const realInstalls = ["./node_modules", "../node_modules"].flatMap((rel) => {
+  try { return [realpathSync(new URL(rel, import.meta.url))]; } catch { return []; }
+});
+
 const pairedBuildId = JSON.parse(
   readFileSync(new URL("../public/runtime/runtime-manifest.json", import.meta.url), "utf8"),
 ).buildId as string;
@@ -42,7 +51,7 @@ export default defineConfig(({ command }) => ({
       "Cross-Origin-Opener-Policy": "same-origin",
       "Cross-Origin-Embedder-Policy": "require-corp",
     },
-    fs: { allow: [".."] },
+    fs: { allow: ["..", ...realInstalls] },
     watch: { ignored: ["**/public/profiles/**", "**/public/runtime/**", "**/public/snapshots/**"] },
   },
   optimizeDeps: {
