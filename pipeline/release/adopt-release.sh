@@ -217,6 +217,6 @@ cat <<EOF
  6. USER: the release's owner uploads lean4-wasm64/$ID/ to R2 first; then upload, then push and deploy. scripts/upload-artifacts.sh
     reads only its own checkout's public/ and uploads the site-owned files (the new snapshots, profiles/index.json; runtime/ and
     profiles/ too only with --legacy-root), so they must be there: $UPLOAD
- 7. the release bundle, after the landing commit and npm run build:site (docs/RELEASE-BUNDLE.md; where it is hosted is the user's decision 7):
+ 7. the release bundle, after the landing commit and npm run build:site at it, clean (write-bundle refuses another dist; docs/RELEASE-BUNDLE.md; hosting is the user's decision 7):
     node pipeline/release/write-bundle.mjs --commit <landing commit> --dist dist --umbrella $W/$([ $FAT = 1 ] && echo lib-tree || echo lib-tree-slim) --out <empty dir>
 EOF

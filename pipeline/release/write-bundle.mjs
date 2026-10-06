@@ -25,7 +25,8 @@
 // (decision 10). Not shipped in the package (it needs a QED64 checkout).
 //
 // Exit: 0 written · 1 refused (one line on stderr: anything release-manifest
-// refuses, a shell or umbrella file that does not match, an unwritable --out)
+// refuses, a dist/ whose qed64-build.json is not a clean build of the commit,
+// a shell or umbrella file that does not match, an unwritable --out)
 // · 2 usage, or an --out that exists and is not an empty directory.
 //
 // Usage: node pipeline/release/write-bundle.mjs --help
@@ -182,6 +183,16 @@ export function buildBundle(source, { dist, umbrella }) {
 
   // The shell: every dist file, each the bytes release.json names (re-read here, so compared).
   const shellFiles = new Map(walkFiles(dist).sort(byteOrder).map((rel) => [rel, fs.readFileSync(path.join(dist, rel))]));
+  // ... and built from exactly this commit, clean (frontend/build/build-info.mjs
+  // stamps both): a bundle is a pure function of its commit, so it never ships
+  // a shell another commit or uncommitted edits made.
+  let info = null;
+  try { info = JSON.parse(shellFiles.get(BUILD_INFO_FILE)?.toString("utf8") ?? "null"); } catch { /* refused below */ }
+  if (!info) refuse(`--dist has no readable ${BUILD_INFO_FILE} — rebuild at ${commit.slice(0, 7)} (npm run build:site)`);
+  if (info.commit !== commit || info.dirty !== false) {
+    const built = typeof info.commit === "string" ? info.commit.slice(0, 7) : String(info.commit);
+    refuse(`--dist was built from ${built}${info.dirty === false ? "" : ` (dirty: ${JSON.stringify(info.dirty)})`} — rebuild at ${commit.slice(0, 7)} from a clean checkout`);
+  }
   const named = new Map(manifest.shell.files.map((f) => [f.path, f]));
   for (const [rel, bytes] of shellFiles) {
     if (rel === BUILD_INFO_FILE) continue;

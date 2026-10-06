@@ -1,7 +1,7 @@
 // The release bundle writer (pipeline/release/write-bundle.mjs, plan B2c,
 // docs/RELEASE-BUNDLE.md "The bundle"): byte-identical across runs, tars that
 // list exactly the expected entries with the pinned metadata, and refusals of a
-// tampered umbrella and an occupied --out. The inputs are a temp copy of HEAD's
+// tampered umbrella, a shell not built clean from the commit, and an occupied --out. The inputs are a temp copy of HEAD's
 // tracked manifests whose base-tree.json is re-pointed at a fake umbrella (the
 // real umbrella bytes are not tracked); nothing here writes under the repo.
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
@@ -100,7 +100,18 @@ beforeAll(() => {
     fs.writeFileSync(path.join(dist, p.slice("public/".length)), atHead(p));
   }
   commitTime = Number(git("show", "-s", "--format=%ct", "HEAD").stdout.toString().trim());
+  stamp({});
 });
+
+/** Write dist/qed64-build.json as frontend/build/build-info.mjs does (a clean build of HEAD), with `over` applied. */
+function stamp(over: Record<string, unknown>) {
+  const walk = (rel: string): string[] => fs.readdirSync(path.join(dist, rel), { withFileTypes: true })
+    .flatMap((e) => (e.isDirectory() ? walk(path.posix.join(rel, e.name)) : [path.posix.join(rel, e.name)]));
+  const listing = walk("").filter((r) => r !== "qed64-build.json").sort(byteOrder).map((r) => `${sha(fs.readFileSync(path.join(dist, r)))}  ${r}\n`).join("");
+  const info = { schema: "qed64.build/v1", buildId, leanVersion: null, sourceRevision: null, commit: git("rev-parse", "HEAD").stdout.toString().trim(),
+    dirty: false, shell: `shell-${sha(listing).slice(0, 16)}`, apiRevision: null, embedApiRevision: null, ...over };
+  fs.writeFileSync(path.join(dist, "qed64-build.json"), `${JSON.stringify(info, null, 2)}\n`);
+}
 afterAll(() => { if (tmp) fs.rmSync(tmp, { recursive: true, force: true }); });
 
 describe.skipIf(!hasGit)("write-bundle.mjs", () => {
@@ -145,12 +156,12 @@ describe.skipIf(!hasGit)("write-bundle.mjs", () => {
     };
     const shell = readTar(zlib.gunzipSync(files.get(BUNDLE_FILES.shell)!));
     check(shell);
-    const distFiles = ["assets/index-T3st.js", "favicon.svg", "index.html", ...fs.readdirSync(path.join(dist, "workers")).map((w) => `workers/${w}`)];
+    const distFiles = ["assets/index-T3st.js", "favicon.svg", "index.html", "qed64-build.json", ...fs.readdirSync(path.join(dist, "workers")).map((w) => `workers/${w}`)];
     expect(shell.filter((e) => e.type === "0").map((e) => e.name)).toEqual([...distFiles].sort(byteOrder));
     expect(shell.filter((e) => e.type === "5").map((e) => e.name)).toEqual(["assets/", "workers/"]);
     for (const e of shell.filter((x) => x.type === "0")) expect(e.data.equals(fs.readFileSync(path.join(dist, e.name))), e.name).toBe(true);
     // The listing a downstream recomputes from the extracted tar is the manifest's shell listing.
-    expect(sha(shell.filter((e) => e.type === "0").map((e) => `${sha(e.data)}  ${e.name}\n`).join(""))).toBe(manifest.shell!.listingSha256);
+    expect(sha(shell.filter((e) => e.type === "0" && e.name !== "qed64-build.json").map((e) => `${sha(e.data)}  ${e.name}\n`).join(""))).toBe(manifest.shell!.listingSha256);
 
     const roots = readTar(zlib.gunzipSync(files.get(BUNDLE_FILES.manifests)!));
     check(roots);
@@ -197,10 +208,32 @@ describe.skipIf(!hasGit)("write-bundle.mjs", () => {
     const w = fs.readFileSync(wfile);
     try {
       fs.appendFileSync(wfile, "\n// edited\n");
+      // Unstamped, qed64-build.json's shell id catches it; re-stamped, the workers check does.
+      expect(() => buildBundle(source(), { dist, umbrella })).toThrow(/qed64-build\.json names shell-[0-9a-f]{16}, the tree is shell-[0-9a-f]{16} — files changed after the build/);
+      stamp({});
       expect(() => buildBundle(source(), { dist, umbrella })).toThrow(/differs from .*public\/workers\//);
     } finally {
       fs.writeFileSync(wfile, w);
+      stamp({});
     }
+  });
+
+  test("a dist built from another commit, from a dirty tree, or not stamped is refused", () => {
+    const file = path.join(dist, "qed64-build.json");
+    const original = fs.readFileSync(file);
+    try {
+      stamp({ commit: "0".repeat(40) });
+      expect(() => buildBundle(source(), { dist, umbrella })).toThrow(/^--dist was built from 0000000 — rebuild at [0-9a-f]{7} from a clean checkout$/);
+      stamp({ dirty: true });
+      expect(() => buildBundle(source(), { dist, umbrella })).toThrow(/^--dist was built from [0-9a-f]{7} \(dirty: true\) — rebuild at [0-9a-f]{7} from a clean checkout$/);
+      stamp({ commit: null, dirty: null }); // built outside a git checkout
+      expect(() => buildBundle(source(), { dist, umbrella })).toThrow(/^--dist was built from null \(dirty: null\) — rebuild at /);
+      fs.rmSync(file);
+      expect(() => buildBundle(source(), { dist, umbrella })).toThrow(/^--dist has no readable qed64-build\.json — rebuild at [0-9a-f]{7}/);
+    } finally {
+      fs.writeFileSync(file, original);
+    }
+    expect(buildBundle(source(), { dist, umbrella }).manifest.shell!.shellId).toMatch(/^shell-/);
   });
 
   test("CLI: --help, usage errors (2), an occupied --out (2), a refusal (1, one line, no --out)", () => {
