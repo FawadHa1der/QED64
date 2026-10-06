@@ -254,7 +254,10 @@ Worker routes by the release record (`infra/worker.js`:
   `lean4-wasm64/<id>/` (HOSTING.md's three rclone passes) and confirms it
   complete. (2) QED64 runs `scripts/upload-artifacts.sh`: it refuses unless
   `rclone lsf` lists `lean4-wasm64/<id>/release.json` and the shell's
-  manifest and every snapshot are that release's runtime, then uploads
+  manifest and every snapshot are that release's runtime (an `lsf` that
+  fails for a local reason, such as no `qed64-r2` remote, expired
+  credentials or no network, prints `cannot check R2 (rclone lsf exit N)`
+  instead of the not-in-R2 refusal; both exit 3), then uploads
   `public/snapshots/` and `public/profiles/index.json`. (3) One deploy of
   the shell and the Worker together: the user pushes `main` (CI runs
   `scripts/deploy-app.sh`). The shell and the Worker always ship in the same

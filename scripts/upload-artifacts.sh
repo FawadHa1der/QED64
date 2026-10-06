@@ -77,7 +77,19 @@ RELEASE_ID=$(LEGACY_ROOT=$LEGACY_ROOT node -e '
 ')
 
 # The release must already be in R2: its owner uploads it (a read; DRY_RUN too).
-listed=$(rclone lsf "qed64-r2:$BUCKET/lean4-wasm64/$RELEASE_ID/release.json" 2>/dev/null || true)
+# "Not in R2" is said only when rclone could look: lsf listed nothing, or
+# exited 3/4 (rclone's directory/file not found). Any other failure (no
+# qed64-r2 remote, expired credentials, no network) is a local problem, not
+# the release owner's, and is reported as such.
+lsf_err=$(mktemp "${TMPDIR:-/tmp}/upload-artifacts-lsf.XXXXXX")
+trap 'rm -f "$lsf_err"' EXIT
+lsf_rc=0
+listed=$(rclone lsf "qed64-r2:$BUCKET/lean4-wasm64/$RELEASE_ID/release.json" 2>"$lsf_err") || lsf_rc=$?
+if [ "$lsf_rc" -ne 0 ] && [ "$lsf_rc" -ne 3 ] && [ "$lsf_rc" -ne 4 ]; then
+  first=$(grep -m1 . "$lsf_err" | tr -d '\r' || true)
+  echo "upload-artifacts: cannot check R2 (rclone lsf exit $lsf_rc): ${first:-no error output}" >&2
+  exit 3
+fi
 if [ "$listed" != "release.json" ]; then
   echo "upload-artifacts: REFUSED: the toolchain release $RELEASE_ID is not in R2 (its owner uploads it: lean4-wasm64 formats/HOSTING.md)" >&2
   exit 3

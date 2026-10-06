@@ -4,7 +4,8 @@
 // lean4-wasm64/<id>/, and must already be in R2. The script runs here for
 // real, from a scratch copy of the repository layout under the OS temp dir,
 // with `rclone` replaced by a stub on an explicit PATH that records its argv
-// (and answers `lsf` from STUB_R2_HAS_RELEASE): no network, no credentials.
+// (and answers `lsf` from STUB_R2_HAS_RELEASE, or fails it with STUB_LSF_EXIT
+// and STUB_LSF_STDERR): no network, no credentials.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -47,7 +48,11 @@ describe("scripts/upload-artifacts.sh against a stubbed rclone", () => {
     fs.writeFileSync(path.join(bin, "rclone"), [
       "#!/bin/sh",
       'printf "rclone %s\\n" "$*" >> "$STUB_LOG"',
-      'if [ "$1" = lsf ]; then [ "$STUB_R2_HAS_RELEASE" = 1 ] && echo release.json; exit 0; fi',
+      'if [ "$1" = lsf ]; then',
+      '  [ -n "$STUB_LSF_STDERR" ] && printf "%s\\n" "$STUB_LSF_STDERR" >&2',
+      '  [ -n "$STUB_LSF_EXIT" ] && exit "$STUB_LSF_EXIT"',
+      '  [ "$STUB_R2_HAS_RELEASE" = 1 ] && echo release.json; exit 0',
+      'fi',
       "",
     ].join("\n"), { mode: 0o755 });
     fs.symlinkSync(process.execPath, path.join(bin, "node"));
@@ -57,7 +62,7 @@ describe("scripts/upload-artifacts.sh against a stubbed rclone", () => {
   const run = (args: string[], extra: Record<string, string> = {}) => {
     fs.rmSync(log, { force: true });
     // An explicit environment: the stubs first, then only the system tools; nothing inherited (no credentials).
-    const env = { PATH: `${bin}:/usr/bin:/bin`, STUB_LOG: log, STUB_R2_HAS_RELEASE: "1", HOME: tmp, ...extra };
+    const env = { PATH: `${bin}:/usr/bin:/bin`, STUB_LOG: log, STUB_R2_HAS_RELEASE: "1", HOME: tmp, TMPDIR: tmp, ...extra };
     const r = spawnSync("/bin/bash", [path.join(repo, SCRIPT), ...args], { cwd: elsewhere, env, encoding: "utf8", timeout: 30_000 });
     const argv = fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n") : [];
     return { ...r, argv };
@@ -86,6 +91,30 @@ describe("scripts/upload-artifacts.sh against a stubbed rclone", () => {
     expect(r.stderr.trim().split("\n").filter((l) => !l.startsWith("preflight ok"))).toEqual([
       `upload-artifacts: REFUSED: the toolchain release ${ID} is not in R2 (its owner uploads it: lean4-wasm64 formats/HOSTING.md)`,
     ]);
+  });
+
+  it("an lsf that fails (no remote, credentials, network) is reported as such, not as a missing release; exit 3, no write", () => {
+    layout();
+    const err = 'CRITICAL: Failed to create file system for "qed64-r2:qed64-artifacts/x": didn\'t find section in config file ("qed64-r2")';
+    for (const extra of [{ STUB_LSF_EXIT: "1", STUB_LSF_STDERR: `2026/10/06 12:00:00 ${err}\nsecond line` }, { STUB_LSF_EXIT: "1", STUB_LSF_STDERR: `2026/10/06 ${err}`, DRY_RUN: "1" }]) {
+      const r = run([], extra);
+      expect(r.status).toBe(3);
+      expect(r.argv).toEqual([LSF]);
+      expect(r.stdout).toBe("");
+      expect(r.stderr.trim().split("\n").filter((l) => !l.startsWith("preflight ok"))).toEqual([
+        `upload-artifacts: cannot check R2 (rclone lsf exit 1): ${extra.STUB_LSF_STDERR.split("\n")[0]}`,
+      ]);
+    }
+    const silent = run([], { STUB_LSF_EXIT: "7" });
+    expect([silent.status, silent.stderr]).toEqual([3, expect.stringContaining("upload-artifacts: cannot check R2 (rclone lsf exit 7): no error output")]);
+    // rclone's own "not found" exits (3 directory, 4 file) mean R2 answered: the release is absent
+    for (const code of ["3", "4"]) {
+      const r = run([], { STUB_LSF_EXIT: code, STUB_LSF_STDERR: "ERROR : error listing: directory not found" });
+      expect([r.status, r.argv]).toEqual([3, [LSF]]);
+      expect(r.stderr).toContain(`upload-artifacts: REFUSED: the toolchain release ${ID} is not in R2`);
+      expect(r.stderr).not.toContain("cannot check R2");
+    }
+    expect(fs.readdirSync(tmp).filter((f) => f.startsWith("upload-artifacts-lsf."))).toEqual([]); // its stderr file is removed
   });
 
   it("refuses, exit 3 and no rclone at all, a shell or a snapshot of another runtime than the release's", () => {
