@@ -12,10 +12,12 @@
  * or imports it from the package as `qed64/edge` (docs/DEPLOY.md, "Using
  * qed64/edge in your own Worker"; package.json exports, closure.json infra).
  *
- * QED64's own infra/worker.js is `createWorker(QED64_LEGACY)`, which
- * reproduces the pre-library worker byte for byte (status, headers, body,
- * and every binding call); tests/unit/edge-worker.test.ts runs a request
- * matrix through both. The hardened defaults (ranges, metadata HEAD, 405,
+ * `createWorker(QED64_LEGACY)` reproduces the pre-library QED64 worker byte
+ * for byte (status, headers, body, and every binding call);
+ * tests/unit/edge-worker.test.ts runs a request matrix through both. QED64's
+ * own infra/worker.js is QED64_LEGACY plus its toolchain release
+ * (`release`, `releaseFallback`), identical to it on site-owned paths and
+ * assets. The hardened defaults (ranges, metadata HEAD, 405,
  * traversal refusal, explicit Content-Length, asset HEAD Content-Length,
  * no-store errors) come from the lean4game and widgets-showcase forks of that
  * worker; each one is a switch, and QED64_LEGACY sets every switch to the old
@@ -24,6 +26,23 @@
  * Request order: rootRedirect (bare "/" without a query) → extraRoutes, in
  * order → artifact prefixes (R2) → static assets. See docs/DEPLOY.md,
  * "Reusing the edge worker".
+ *
+ * `release` (a lean4-wasm64.release/v1 record, checked once when the worker
+ * is created) routes the toolchain's own files to the shared R2 prefix
+ * `lean4-wasm64/<release id>/` (hosting.mount: `/runtime/*` onto the
+ * release's `runtime/`, `/profiles/*` onto its `profiles/`) while the site's
+ * own pointers (hosting.siteOwned: `/profiles/index.json`, `/snapshots/*`)
+ * and every other artifact path stay under `r2Prefix`. Always on this one
+ * origin: the browser is never pointed at another (the fork's
+ * formats/HOSTING.md, rule 3). Errors on release-mapped paths are never
+ * cached; `releaseFallback` retries a release-mapped miss once under the
+ * site prefix (one deprecation cycle while the bucket root still holds the
+ * older runtimes).
+ *
+ * An exception thrown while answering (a binding that throws or is missing)
+ * becomes a 500 "internal error" with the isolation headers and
+ * Cache-Control: no-store, logged with console.error, instead of the
+ * runtime's own error page (which carries no COOP/COEP).
  */
 
 const IMMUTABLE = "public, max-age=31536000, immutable";
@@ -167,6 +186,67 @@ function validR2Prefix(prefix) {
   return R2_PREFIX_SHAPE.test(prefix) && !prefix.split("/").some((s) => s === "." || s === "..");
 }
 
+/** The R2 directory every lean4-wasm64 release lives under: `lean4-wasm64/<id>/`. */
+export const RELEASE_R2_ROOT = "lean4-wasm64/";
+const RELEASE_SCHEMA = "lean4-wasm64.release/v1";
+// lean-v<version>[-<suffix>]-<kernel 7 hex>[-r<N>] (the fork's formats/README.md rule 5).
+const RELEASE_ID = /^lean-v\d+\.\d+\.\d+(?:-[0-9a-z.]+)?-[0-9a-f]{7}(?:-r\d+)?$/;
+const MOUNT_DIR = /^[A-Za-z0-9._-]+\/$/;
+
+/** The routing a lean4-wasm64.release/v1 record asks for, checked: `{id,
+ * prefix, mount: [[urlPrefix, releaseDir]] (longest prefix first),
+ * siteOwned: [path]}`, frozen. Throws one TypeError naming the first rule
+ * the record breaks: the schema; the id (lean-v<version>-<kernel7>, never a
+ * run of 16+ hex digits, which the cache rule would read as a digest and
+ * cache a manifest under that prefix for a year: HOSTING.md rule 8);
+ * hosting.layout "served"; every hosting.mount key one of
+ * `artifactPrefixes` and every value one top-level directory ("runtime/");
+ * every hosting.siteOwned entry an exact path or a "/"-ended prefix under
+ * an artifact prefix. Only the fields routing needs are read; the record's
+ * own digest and files are the fork's to check. */
+export function releaseRoutes(record, artifactPrefixes = DEFAULT_ARTIFACT_PREFIXES) {
+  const fail = (why) => {
+    throw new TypeError(`edge-worker: release: ${why}`);
+  };
+  if (record === null || typeof record !== "object" || Array.isArray(record)) fail("must be a lean4-wasm64.release/v1 object or null");
+  if (record.schema !== RELEASE_SCHEMA) fail(`schema ${JSON.stringify(record.schema)} is not "${RELEASE_SCHEMA}"`);
+  const id = record.id;
+  if (typeof id !== "string" || !RELEASE_ID.test(id)) fail(`id ${JSON.stringify(id)} is not lean-v<version>[-<suffix>]-<kernel7>[-r<N>]`);
+  if (/[0-9a-f]{16,}/.test(id)) fail(`id ${JSON.stringify(id)} holds a run of 16+ hex digits (the cache rule would call every manifest under it immutable)`);
+  const h = record.hosting;
+  if (h === null || typeof h !== "object" || Array.isArray(h)) fail("hosting must be an object");
+  if (h.layout !== "served") fail(`hosting.layout ${JSON.stringify(h.layout)} is not "served"`);
+  const m = h.mount;
+  if (m === null || typeof m !== "object" || Array.isArray(m) || Object.keys(m).length === 0) fail("hosting.mount must be a non-empty object {urlPrefix: releaseDir}");
+  const mount = [];
+  for (const [url, dir] of Object.entries(m)) {
+    if (!artifactPrefixes.includes(url)) fail(`hosting.mount key ${JSON.stringify(url)} is not one of the artifact prefixes ${artifactPrefixes.join(" ")}`);
+    if (typeof dir !== "string" || !MOUNT_DIR.test(dir) || dir === "./" || dir === "../") {
+      fail(`hosting.mount ${url} → ${JSON.stringify(dir)} is not one top-level directory ("runtime/")`);
+    }
+    mount.push(Object.freeze([url, dir]));
+  }
+  mount.sort((a, b) => b[0].length - a[0].length);
+  const so = h.siteOwned ?? [];
+  if (!Array.isArray(so)) fail("hosting.siteOwned must be an array of paths");
+  for (const p of so) {
+    const probe = typeof p === "string" && p.endsWith("/") ? p + "x" : p;
+    if (typeof p !== "string" || artifactKey(probe) === null || !artifactPrefixes.some((a) => p.startsWith(a))) {
+      fail(`hosting.siteOwned entry ${JSON.stringify(p)} is not a path (or "/"-ended prefix) under an artifact prefix`);
+    }
+  }
+  return Object.freeze({ id, prefix: `${RELEASE_R2_ROOT}${id}/`, mount: Object.freeze(mount), siteOwned: Object.freeze([...so]) });
+}
+
+/** Where `pathname` lives under `routes` (from releaseRoutes): the
+ * release-relative key ("runtime/x") for a mounted path, or null for a
+ * site path (a siteOwned one, or any path no mount claims). */
+function releaseRel(routes, pathname) {
+  if (routes.siteOwned.some((p) => (p.endsWith("/") ? pathname.startsWith(p) : pathname === p))) return null;
+  for (const [url, dir] of routes.mount) if (pathname.startsWith(url)) return dir + pathname.slice(url.length);
+  return null;
+}
+
 /** The options of the pre-library QED64 worker, exactly. Spread and override
  * to adopt one hardened switch at a time: `{...QED64_LEGACY, ranges: true}`. */
 export const QED64_LEGACY = Object.freeze({
@@ -186,6 +266,8 @@ export const QED64_LEGACY = Object.freeze({
   fullGetLength: false,
   assetHeadLength: false,
   errorCacheControl: null,
+  release: null,
+  releaseFallback: false,
 });
 
 const DEFAULTS = Object.freeze({
@@ -244,6 +326,9 @@ function checkOptions(options) {
     throw new TypeError("edge-worker: artifactMethods must be null or a non-empty array of method names");
   }
   if (o.errorCacheControl !== null && typeof o.errorCacheControl !== "string") throw new TypeError("edge-worker: errorCacheControl must be null or a string");
+  if (typeof o.releaseFallback !== "boolean") throw new TypeError("edge-worker: releaseFallback must be a boolean");
+  if (o.releaseFallback && o.release === null) throw new TypeError("edge-worker: releaseFallback needs a release");
+  const release = o.release === null ? null : releaseRoutes(o.release, o.artifactPrefixes);
 
   return {
     assets: bindingResolver(o.assetsBinding, "assetsBinding"),
@@ -258,6 +343,8 @@ function checkOptions(options) {
     rejectUnsafeKeys: o.rejectUnsafeKeys,
     fullGetLength: o.fullGetLength,
     assetHeadLength: o.assetHeadLength,
+    release,
+    releaseFallback: o.releaseFallback,
     headerOpts: {
       isolation: resolveIsolation(o.isolation),
       isImmutable: o.isImmutable,
@@ -325,13 +412,44 @@ export function createWorker(options = {}) {
     if (typeof prefix !== "string" || !validR2Prefix(prefix)) {
       return done(new Response("artifact prefix misconfigured", { status: 500 }), pathname, "artifact", "no-store");
     }
-    const key = cfg.rejectUnsafeKeys ? artifactKey(pathname, prefix) : prefix + pathname.slice(1);
-    if (key === null) return notFound(pathname, "artifact");
+    // A path the release mounts (hosting.mount, not hosting.siteOwned) is
+    // read from lean4-wasm64/<id>/<dir>/<rest>; every other one from the
+    // site prefix. Release-mapped paths are always refused when unsafe
+    // (whatever rejectUnsafeKeys says: the key lands in a prefix other
+    // sites share) and their errors are never cached: a 404 under a
+    // digest-named URL cached for a year during a deploy-before-upload
+    // window would outlive the upload.
+    const rel = cfg.release === null ? null : releaseRel(cfg.release, pathname);
+    const mapped = rel !== null;
+    const errorCache = mapped ? "no-store" : undefined;
+    const miss = () => (mapped ? done(new Response("not found", { status: 404 }), pathname, "artifact", "no-store") : notFound(pathname, "artifact"));
+    let key;
+    let fallbackKey = null;
+    if (mapped) {
+      if (artifactKey(pathname) === null) return miss();
+      key = cfg.release.prefix + rel;
+      if (cfg.releaseFallback) fallbackKey = prefix + pathname.slice(1);
+    } else {
+      key = cfg.rejectUnsafeKeys ? artifactKey(pathname, prefix) : prefix + pathname.slice(1);
+      if (key === null) return notFound(pathname, "artifact");
+    }
     if (cfg.artifactMethods !== null && !cfg.artifactMethods.includes(request.method)) {
       const allow = cfg.artifactMethods.join(", ");
-      return done(new Response("method not allowed", { status: 405, headers: { allow } }), pathname, "artifact");
+      return done(new Response("method not allowed", { status: 405, headers: { allow } }), pathname, "artifact", errorCache);
     }
     const bucket = resolveBinding(cfg.artifacts, env, "artifacts");
+    // The first lookup of a request that finds nothing may retry once under
+    // the site prefix (releaseFallback); the key that answered is used from
+    // then on, so Range, If-Range and HEAD see one object.
+    const lookup = async (op) => {
+      let found = await op(key);
+      if (found === null && fallbackKey !== null) {
+        key = fallbackKey;
+        found = await op(key);
+      }
+      fallbackKey = null;
+      return found;
+    };
 
     // Range is defined for GET only (HEAD ignores it).
     let spec = cfg.ranges && request.method === "GET" ? parseRange(request.headers.get("range")) : null;
@@ -339,8 +457,8 @@ export function createWorker(options = {}) {
       // Validators and size first: whether the range applies (If-Range) and
       // whether it is satisfiable are decided here, not inferred from how R2
       // reacts to a range it cannot serve.
-      const meta = await bucket.head(key);
-      if (meta === null) return notFound(pathname, "artifact");
+      const meta = await lookup((k) => bucket.head(k));
+      if (meta === null) return miss();
       const ifRange = request.headers.get("if-range");
       if (ifRange !== null && ifRange.trim() !== meta.httpEtag) {
         // The client's partial copy is of another version (or the validator
@@ -358,8 +476,8 @@ export function createWorker(options = {}) {
       // Metadata only: head() answers in tens of milliseconds, while a get()
       // opens the object's body (hundreds of MB for a snapshot) only for the
       // runtime to discard it (lean4game live campaign 2026-10-01).
-      const meta = await bucket.head(key);
-      if (meta === null) return notFound(pathname, "artifact");
+      const meta = await lookup((k) => bucket.head(k));
+      if (meta === null) return miss();
       const headers = new Headers();
       meta.writeHttpMetadata(headers);
       headers.set("etag", meta.httpEtag);
@@ -368,8 +486,8 @@ export function createWorker(options = {}) {
       return done(new Response(null, { headers }), pathname, "artifact");
     }
 
-    const object = spec !== null ? await bucket.get(key, { range: request.headers }) : await bucket.get(key);
-    if (object === null) return notFound(pathname, "artifact");
+    const object = await lookup((k) => (spec !== null ? bucket.get(k, { range: request.headers }) : bucket.get(k)));
+    if (object === null) return miss();
     const headers = new Headers();
     object.writeHttpMetadata(headers);
     headers.set("etag", object.httpEtag);
@@ -428,5 +546,30 @@ export function createWorker(options = {}) {
     return serveAsset(request, env);
   }
 
-  return { fetch: (request, env, ctx) => handle(request, env, ctx) };
+  // A throw anywhere above (a binding that throws or is missing, an extra
+  // route's handler, decorate) answers 500 with the isolation headers and
+  // no-store instead of the runtime's error page, which has no COOP/COEP and
+  // may be cached under the path's rule by nothing but luck. Logged.
+  async function guarded(request, env, ctx) {
+    try {
+      return await handle(request, env, ctx);
+    } catch (err) {
+      let pathname = "/";
+      try {
+        pathname = new URL(request.url).pathname;
+      } catch {
+        // keep "/"
+      }
+      console.error(`edge-worker: ${request.method} ${pathname}: ${err?.stack ?? err}`);
+      const failed = () => new Response("internal error", { status: 500 });
+      try {
+        return done(failed(), pathname, null, "no-store");
+      } catch {
+        // decorate itself threw: the headers without it
+        return finish(failed(), pathname, { ...h, decorate: null }, null, "no-store");
+      }
+    }
+  }
+
+  return { fetch: (request, env, ctx) => guarded(request, env, ctx) };
 }

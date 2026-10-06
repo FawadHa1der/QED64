@@ -4,14 +4,18 @@
 // (a) EQUIVALENCE: QED64's deployed behaviour must not move. A request matrix
 //     runs through the ORIGINAL worker (tests/fixtures/edge-worker/
 //     worker-47f50e8.js, byte-for-byte `git show 47f50e8:infra/worker.js`,
-//     sha256-pinned below), through createWorker(QED64_LEGACY) and through the
-//     shipped infra/worker.js, and every response must agree on status,
-//     statusText, headers and body, and every binding call on its arguments.
+//     sha256-pinned below) and through createWorker(QED64_LEGACY), and every
+//     response must agree on status, statusText, headers and body, and every
+//     binding call on its arguments. The shipped infra/worker.js (QED64_LEGACY +
+//     the toolchain release, decision 3) agrees exactly on site-owned paths and
+//     assets; on /runtime/* and /profiles/<not index.json> it reads
+//     lean4-wasm64/<id>/ first, falls back to the root key on a miss, and its
+//     misses there are no-store ("the shipped worker" below).
 // (b) The hardened defaults other projects get: single-range GETs (If-Range,
 //     416), metadata HEAD, 405 + Allow, traversal refusal, r2Prefix
 //     validation, rootRedirect, extraRoutes + kit, decorate, isolation
 //     overrides, no-store errors.
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -25,10 +29,12 @@ import {
   isImmutable,
   parseRange,
   QED64_LEGACY,
+  RELEASE_R2_ROOT,
+  releaseRoutes,
   resolveRange,
   withIsolationHeaders,
 } from "../../infra/edge-worker.js";
-import type { DecorateInfo, EdgeWorker, EdgeWorkerOptions, ExtraRoute } from "../../infra/edge-worker.js";
+import type { DecorateInfo, EdgeWorker, EdgeWorkerOptions, ExtraRoute, ReleaseRecord } from "../../infra/edge-worker.js";
 
 const root = path.resolve(__dirname, "../..");
 const FIXTURE = path.join(root, "tests/fixtures/edge-worker/worker-47f50e8.js");
@@ -162,6 +168,11 @@ const isolated = (r: Response) => {
 };
 
 // ------------------------------------------------------------------ (a) equivalence
+/** The paths QED64's record (hosting.mount /runtime/ /profiles/, siteOwned /profiles/index.json) gives the release. */
+const releaseMapped = (p: string) => {
+  const { pathname } = new URL(ORIGIN + p);
+  return pathname.startsWith("/runtime/") || (pathname.startsWith("/profiles/") && pathname !== "/profiles/index.json");
+};
 type Case = { method: string; path: string; headers?: Record<string, string>; body?: string };
 const PATHS = [
   "/", "/?snapshots=snapshots/x", "/index.html", "/assets/x.js", "/assets/index-AbCd1234.js", "/assets/missing-AbCd1234.js",
@@ -203,7 +214,8 @@ describe("equivalence: createWorker(QED64_LEGACY) is the pre-library worker, byt
     for (const c of MATRIX) {
       const label = `${c.method} ${c.path}${c.headers ? " " + JSON.stringify(c.headers) : ""}`;
       const results = [];
-      for (const [name, w] of subjects) {
+      // the shipped worker routes release-mapped paths elsewhere: compared below
+      for (const [name, w] of subjects.filter(([n]) => n !== "infra/worker.js" || !releaseMapped(c.path))) {
         const env = makeEnv();
         const init: RequestInit = { method: c.method, headers: c.headers };
         if (c.body !== undefined) init.body = c.body;
@@ -218,7 +230,63 @@ describe("equivalence: createWorker(QED64_LEGACY) is the pre-library worker, byt
         compared++;
       }
     }
-    expect(compared).toBe(MATRIX.length * 2);
+    const mappedCases = MATRIX.filter((c) => releaseMapped(c.path)).length;
+    expect(mappedCases).toBeGreaterThan(20);
+    expect(compared).toBe(MATRIX.length * 2 - mappedCases);
+  });
+
+  test("the shipped worker: release-mapped paths read lean4-wasm64/<id>/ first, fall back to the root key, misses are no-store", async () => {
+    const pinned = JSON.parse(fs.readFileSync(path.join(root, "toolchain/lean4-wasm64-release.json"), "utf8")) as { id: string };
+    const rp = `lean4-wasm64/${pinned.id}/`;
+    const toRelease = (key: string) => rp + key; // runtime/x → lean4-wasm64/<id>/runtime/x (the mounts are identity: /runtime/ → runtime/)
+    // the same objects, the release's at its prefix: what R2 holds once decision 3 is live
+    const moved = Object.fromEntries(Object.entries(OBJECTS).map(([k, v]) => [releaseMapped("/" + k) ? toRelease(k) : k, v]));
+    const noStoreErrors = (snap: Awaited<ReturnType<typeof snapshot>>) =>
+      snap.status < 400 ? snap : { ...snap, headers: snap.headers.map(([k, v]) => [k, k === "cache-control" ? "no-store" : v] as [string, string]) };
+    let compared = 0;
+    for (const c of MATRIX.filter((m) => releaseMapped(m.path))) {
+      const label = `${c.method} ${c.path}${c.headers ? " " + JSON.stringify(c.headers) : ""}`;
+      const init = (): RequestInit => ({ method: c.method, headers: c.headers, ...(c.body !== undefined ? { body: c.body } : {}) });
+      const want = makeEnv();
+      const wantSnap = noStoreErrors(await snapshot(await legacy.fetch(req(c.path, init()), want)));
+      const pathname = new URL(ORIGIN + c.path).pathname;
+      const unsafe = artifactKey(pathname) === null;
+      // (1) the release prefix populated
+      const live = { ASSETS: fakeAssets(FILES), ARTIFACTS: fakeBucket(moved) };
+      const liveSnap = await snapshot(await (shipped as EdgeWorker).fetch(req(c.path, init()), live));
+      // (2) only the root populated (today's bucket): every read falls back
+      const old = makeEnv();
+      const oldSnap = await snapshot(await (shipped as EdgeWorker).fetch(req(c.path, init()), old));
+      if (unsafe) {
+        // refused before R2: the same 404 body, no-store, nothing asked
+        for (const [snap, env] of [[liveSnap, live], [oldSnap, old]] as const) {
+          expect([snap.status, Buffer.from(snap.body, "base64").toString(), env.ARTIFACTS.calls], label).toEqual([404, "not found", []]);
+          expect(snap.headers, label).toContainEqual(["cache-control", "no-store"]);
+        }
+        compared++;
+        continue;
+      }
+      // a release key's object carries the release key's etag (the fake R2 names etags by key)
+      const etagFix = (snap: typeof liveSnap) => ({ ...snap, headers: snap.headers.map(([k, v]) => [k, k === "etag" ? v.replace(rp, "") : v] as [string, string]) });
+      expect(etagFix(liveSnap), `release prefix: ${label}`).toEqual(wantSnap);
+      expect(oldSnap, `root fallback: ${label}`).toEqual(wantSnap);
+      const legacyCalls = want.ARTIFACTS.calls;
+      expect(legacyCalls.length, label).toBe(1);
+      const [call] = legacyCalls;
+      const hit = OBJECTS[call!.key] !== undefined;
+      expect(live.ARTIFACTS.calls, `release prefix calls: ${label}`).toEqual(hit ? [{ ...call, key: toRelease(call!.key) }] : [{ ...call, key: toRelease(call!.key) }, call]);
+      expect(old.ARTIFACTS.calls, `root fallback calls: ${label}`).toEqual([{ ...call, key: toRelease(call!.key) }, call]);
+      compared++;
+    }
+    expect(compared).toBe(MATRIX.filter((m) => releaseMapped(m.path)).length);
+    // what this pins, spelled out
+    const env = makeEnv();
+    const miss = await (shipped as EdgeWorker).fetch(req("/runtime/chunks/nope.part-001"), env);
+    expect([miss.status, miss.headers.get("cache-control")]).toEqual([404, "no-store"]);
+    expect(env.ARTIFACTS.calls.map((c) => c.key)).toEqual([`${rp}runtime/chunks/nope.part-001`, "runtime/chunks/nope.part-001"]);
+    const site = makeEnv();
+    const index = await (shipped as EdgeWorker).fetch(req("/profiles/index.json"), site);
+    expect([index.status, site.ARTIFACTS.calls.map((c) => c.key)]).toEqual([200, ["profiles/index.json"]]);
   });
 
   test("the matrix exercises what it claims (pins the legacy behaviour it preserves)", async () => {
@@ -268,6 +336,7 @@ describe("equivalence: createWorker(QED64_LEGACY) is the pre-library worker, byt
     expect(QED64_LEGACY).toMatchObject({
       artifactHead: "get", ranges: false, artifactMethods: null, rejectUnsafeKeys: false, fullGetLength: false,
       assetHeadLength: false, errorCacheControl: null, r2Prefix: "", rootRedirect: null, decorate: null, isImmutable,
+      release: null, releaseFallback: false,
     });
   });
 
@@ -748,7 +817,7 @@ describe("configuration", () => {
     expect(kitRule).toBe(vite);
   });
 
-  test("bindings: custom env names, functions, artifact prefixes; a missing binding throws", async () => {
+  test("bindings: custom env names, functions, artifact prefixes; a missing binding answers 500 (logged)", async () => {
     const assets = fakeAssets(FILES);
     const bucket = fakeBucket(OBJECTS);
     const w = createWorker({ assetsBinding: "SHELL", artifactsBinding: (env: { STORE: { inner: typeof bucket } }) => env.STORE.inner, artifactPrefixes: ["/data/"] });
@@ -759,8 +828,19 @@ describe("configuration", () => {
     // /snapshots/ is no longer an artifact prefix: it goes to the assets binding
     await w.fetch(req("/snapshots/index.json"), env);
     expect(assets.calls).toEqual(["GET /assets/x.js", "GET /snapshots/index.json"]);
-    await expect(createWorker().fetch(req("/assets/x.js"), {})).rejects.toThrow(/assets binding/);
-    await expect(createWorker().fetch(req(SNAPZ), { ASSETS: assets })).rejects.toThrow(/artifacts binding/);
+    const logged: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => void logged.push(args.join(" ")));
+    try {
+      for (const [r, env, msg] of [[req("/assets/x.js"), {}, /assets binding/], [req(SNAPZ), { ASSETS: assets }, /artifacts binding/]] as const) {
+        logged.length = 0;
+        const out = await createWorker().fetch(r, env);
+        expect([out.status, out.headers.get("cache-control"), await out.text()]).toEqual([500, "no-store", "internal error"]);
+        isolated(out);
+        expect(logged.join("\n")).toMatch(msg);
+      }
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   test("options are checked when the worker is created", () => {
@@ -894,5 +974,383 @@ describe("the showcase's worker as createWorker options", () => {
     const bad = await showcase.fetch(req("/snapshots/widgets8/index.json"), e);
     expect([bad.status, bad.headers.get("cache-control"), await bad.text()]).toEqual([500, "no-store", "artifact prefix misconfigured"]);
     expect(e.ARTIFACTS.calls).toEqual([]);
+  });
+});
+
+// ------------------------------------------------------------------ (c) release: the toolchain's shared R2 prefix
+// `release` (decision 3): /runtime/* and /profiles/<not index.json> are the lean4-wasm64 release's,
+// read from lean4-wasm64/<id>/; the site's pointers stay under r2Prefix. The record is checked once,
+// when the worker is created.
+const RID = "lean-v4.34.0-a8817d0";
+const RP = `lean4-wasm64/${RID}/`;
+const RELEASE: ReleaseRecord = Object.freeze({
+  schema: "lean4-wasm64.release/v1",
+  id: RID,
+  hosting: {
+    layout: "served",
+    mount: { "/runtime/": "runtime/", "/profiles/": "profiles/" },
+    siteOwned: ["/profiles/index.json", "/snapshots/"],
+    crossOriginIsolation: { coop: "same-origin", coep: "require-corp", corp: "same-origin" },
+  },
+  files: [],
+  digest: "sha256:" + "0".repeat(64),
+});
+const withHosting = (hosting: Record<string, unknown>): ReleaseRecord => ({ ...RELEASE, hosting: { ...RELEASE.hosting!, ...hosting } as ReleaseRecord["hosting"] });
+const CHUNK = `/runtime/chunks/lean.wasm.${DIGEST.slice(0, 20)}.part-000`;
+const PACK = "/profiles/lean-core.pack.gzip.1016929d99bb0ba0e148.part-007";
+
+describe("release: the record is checked when the worker is created", () => {
+  const refuse = (opts: EdgeWorkerOptions, msg: RegExp) => {
+    let err: unknown;
+    try {
+      createWorker(opts);
+    } catch (e) {
+      err = e;
+    }
+    expect(err, JSON.stringify(opts)).toBeInstanceOf(TypeError);
+    expect((err as Error).message, JSON.stringify(opts)).toMatch(msg);
+    expect((err as Error).message.split("\n")).toHaveLength(1);
+  };
+
+  test("the published record shape is accepted; RELEASE_R2_ROOT is lean4-wasm64/", () => {
+    expect(RELEASE_R2_ROOT).toBe("lean4-wasm64/");
+    const routes = releaseRoutes(RELEASE);
+    expect(routes).toEqual({ id: RID, prefix: RP, mount: [["/profiles/", "profiles/"], ["/runtime/", "runtime/"]], siteOwned: ["/profiles/index.json", "/snapshots/"] });
+    expect(Object.isFrozen(routes) && Object.isFrozen(routes.mount) && Object.isFrozen(routes.siteOwned)).toBe(true);
+    for (const id of ["lean-v4.34.0-a8817d0", "lean-v4.34.0-41ec565-r2", "lean-v4.35.0-rc1-0123abc", "lean-v4.35.0-rc1.2-0123abc-r10"]) {
+      expect(() => createWorker({ release: { ...RELEASE, id } }), id).not.toThrow();
+    }
+    expect(() => createWorker({ ...QED64_LEGACY, release: RELEASE, releaseFallback: true })).not.toThrow();
+  });
+
+  test("not an object", () => {
+    for (const bad of ["lean-v4.34.0-a8817d0", [RELEASE], 7]) refuse({ release: bad as unknown as ReleaseRecord }, /release: must be a lean4-wasm64\.release\/v1 object or null/);
+  });
+
+  test("schema", () => {
+    refuse({ release: { ...RELEASE, schema: "qed64.release/v1" } }, /release: schema "qed64\.release\/v1" is not "lean4-wasm64\.release\/v1"/);
+  });
+
+  test("id: lean-v<version>-<kernel7>", () => {
+    for (const id of ["v4.34.0-a8817d0", "lean-v4.34-a8817d0", "lean-v4.34.0-a8817d", "lean-v4.34.0-A8817D0", "lean-v4.34.0-a8817d0/", "lean-v4.34.0-a8817d0-r", 7]) {
+      refuse({ release: { ...RELEASE, id } as ReleaseRecord }, /release: id .* is not lean-v<version>/);
+    }
+  });
+
+  test("id: no run of 16+ hex digits (the cache rule would make manifests under it immutable)", () => {
+    const id = "lean-v4.34.0-0123456789abcdef0-a8817d0";
+    expect(isImmutable(`/lean4-wasm64/${id}/runtime/x.json`)).toBe(true);
+    refuse({ release: { ...RELEASE, id } }, /run of 16\+ hex digits/);
+  });
+
+  test('hosting.layout "served"', () => {
+    refuse({ release: { ...RELEASE, hosting: null } }, /release: hosting must be an object/);
+    refuse({ release: withHosting({ layout: "archive" }) }, /release: hosting\.layout "archive" is not "served"/);
+  });
+
+  test("hosting.mount: keys are configured artifact prefixes", () => {
+    refuse({ release: withHosting({ mount: { "/lib/": "lib/" } }) }, /hosting\.mount key "\/lib\/" is not one of the artifact prefixes/);
+    refuse({ release: withHosting({ mount: {} }) }, /hosting\.mount must be a non-empty object/);
+    // against the CONFIGURED prefixes, not the defaults
+    refuse({ artifactPrefixes: ["/data/"], release: RELEASE }, /hosting\.mount key "\/runtime\/" is not one of the artifact prefixes \/data\//);
+  });
+
+  test("hosting.mount: values are one top-level directory", () => {
+    for (const dir of ["runtime", "a/b/", "../", "./", "/runtime/", "", "run time/", 3]) {
+      refuse({ release: withHosting({ mount: { "/runtime/": dir } }) }, /hosting\.mount \/runtime\/ → .* is not one top-level directory/);
+    }
+  });
+
+  test("hosting.siteOwned: exact paths or /-ended prefixes under an artifact prefix", () => {
+    for (const entry of ["/index.json", "profiles/index.json", "/snapshots//x", "/profiles/../index.json", 5]) {
+      refuse({ release: withHosting({ siteOwned: [entry] }) }, /hosting\.siteOwned entry .* is not a path/);
+    }
+    refuse({ release: withHosting({ siteOwned: "/snapshots/" }) }, /hosting\.siteOwned must be an array/);
+    expect(() => createWorker({ release: withHosting({ siteOwned: undefined }) })).not.toThrow();
+  });
+
+  test("releaseFallback: a boolean, and only with a release", () => {
+    refuse({ release: RELEASE, releaseFallback: "yes" as unknown as boolean }, /releaseFallback must be a boolean/);
+    refuse({ releaseFallback: true }, /releaseFallback needs a release/);
+    refuse({ ...QED64_LEGACY, releaseFallback: true }, /releaseFallback needs a release/);
+  });
+});
+
+describe("release: routing", () => {
+  const bucketWith = (keys: string[]) => fakeBucket(Object.fromEntries(keys.map((k) => [k, { bytes: BYTES, contentType: "application/octet-stream" }])));
+  const keysAsked = async (w: EdgeWorker, p: string, init?: RequestInit, keys: string[] = []) => {
+    const env = { ASSETS: fakeAssets(FILES), ARTIFACTS: bucketWith(keys) };
+    const r = await w.fetch(req(p, init), env);
+    return { r, calls: env.ARTIFACTS.calls.map((c) => `${c.op} ${c.key}`) };
+  };
+
+  test("1. siteOwned → r2Prefix; 2. a mount → lean4-wasm64/<id>/<dir><rest>; 3. any other artifact path → r2Prefix", async () => {
+    const w = createWorker({ release: RELEASE, r2Prefix: "site/", artifactPrefixes: [...DEFAULT_ARTIFACT_PREFIXES, "/extra/"] });
+    const table: [string, string][] = [
+      ["/runtime/runtime-manifest.json", `${RP}runtime/runtime-manifest.json`],
+      [`/runtime/runtime-manifest.wasm64-${HEX16}.json`, `${RP}runtime/runtime-manifest.wasm64-${HEX16}.json`],
+      [CHUNK, `${RP}runtime${CHUNK.slice("/runtime".length)}`],
+      ["/profiles/lean-core.manifest.json", `${RP}profiles/lean-core.manifest.json`],
+      [PACK, `${RP}profiles${PACK.slice("/profiles".length)}`],
+      ["/profiles/index.json", "site/profiles/index.json"],
+      ["/profiles/sub/index.json", `${RP}profiles/sub/index.json`], // siteOwned is exact unless it ends in "/"
+      ["/profiles/index.json.gz", `${RP}profiles/index.json.gz`], // ... so an exact entry is not a prefix
+      ["/profiles/index.jsonx", `${RP}profiles/index.jsonx`],
+      ["/snapshots/index.json", "site/snapshots/index.json"],
+      [SNAPZ, `site${SNAPZ}`],
+      ["/extra/x.json", "site/extra/x.json"],
+    ];
+    for (const [p, key] of table) {
+      const { r, calls } = await keysAsked(w, p, undefined, [key]);
+      expect([r.status, calls], p).toEqual([200, [`get ${key}`]]);
+    }
+  });
+
+  test('r2Prefix "" (the bucket root) and (env) => prefix; a "/"-ended siteOwned prefix inside a mount', async () => {
+    const root = createWorker({ release: RELEASE, r2Prefix: "" });
+    expect((await keysAsked(root, "/snapshots/index.json")).calls).toEqual(["get snapshots/index.json"]);
+    expect((await keysAsked(root, "/profiles/index.json")).calls).toEqual(["get profiles/index.json"]);
+    expect((await keysAsked(root, "/runtime/runtime-manifest.json")).calls).toEqual([`get ${RP}runtime/runtime-manifest.json`]);
+    const fromEnv = createWorker<{ P?: string } & FakeEnv>({ release: RELEASE, r2Prefix: (env) => env.P });
+    const env = { ...makeEnv(), P: "game/" };
+    await fromEnv.fetch(req("/snapshots/index.json"), env);
+    await fromEnv.fetch(req("/runtime/runtime-manifest.json"), env);
+    expect(env.ARTIFACTS.calls.map((c) => c.key)).toEqual(["game/snapshots/index.json", `${RP}runtime/runtime-manifest.json`]);
+    const local = createWorker({ release: withHosting({ siteOwned: ["/profiles/index.json", "/snapshots/", "/runtime/local/"] }), r2Prefix: "site/" });
+    expect((await keysAsked(local, "/runtime/local/a.json")).calls).toEqual(["get site/runtime/local/a.json"]);
+    expect((await keysAsked(local, "/runtime/localx.json")).calls).toEqual([`get ${RP}runtime/localx.json`]);
+  });
+
+  test("kit.serveArtifact routes by the pathname it is given", async () => {
+    const w = createWorker({
+      release: RELEASE,
+      r2Prefix: "site/",
+      extraRoutes: [{ prefix: "/game/", handle: (r, _e, _c, kit) => kit.serveArtifact(r, new URL(r.url).pathname.replace(/^\/game\/[^/]+/, "")) }],
+    });
+    expect((await keysAsked(w, "/game/nng/runtime/runtime-manifest.json")).calls).toEqual([`get ${RP}runtime/runtime-manifest.json`]);
+    expect((await keysAsked(w, "/game/nng/snapshots/index.json")).calls).toEqual(["get site/snapshots/index.json"]);
+  });
+
+  test("unsafe release paths: 404 no-store without asking R2, even under QED64_LEGACY (rejectUnsafeKeys false)", async () => {
+    for (const opts of [{ release: RELEASE }, { ...QED64_LEGACY, release: RELEASE, releaseFallback: true }] as EdgeWorkerOptions[]) {
+      const raw: string[] = [];
+      const w = createWorker({ ...opts, extraRoutes: [{ prefix: "/raw/", handle: (r, _e, _c, kit) => kit.serveArtifact(r, raw.shift()) }] });
+      for (const p of ["/runtime/", "/runtime//runtime-manifest.json", "/profiles/a//b.json", "/profiles/x/"]) {
+        const { r, calls } = await keysAsked(w, p);
+        expect([r.status, r.headers.get("cache-control"), await r.text(), calls], p).toEqual([404, "no-store", "not found", []]);
+        isolated(r);
+      }
+      for (const p of ["/runtime/%2e%2e/x.json", "/runtime/a\\b.json", "/profiles/a\u0001.json", "/runtime/./x.json"]) {
+        raw.push(p);
+        const { r, calls } = await keysAsked(w, "/raw/x");
+        expect([r.status, r.headers.get("cache-control"), calls], JSON.stringify(p)).toEqual([404, "no-store", []]);
+      }
+    }
+    // site paths keep rejectUnsafeKeys' answer: legacy reads the key as is
+    const legacyRelease = createWorker({ ...QED64_LEGACY, release: RELEASE });
+    expect((await keysAsked(legacyRelease, "/snapshots//index.json")).calls).toEqual(["get snapshots//index.json"]);
+  });
+});
+
+describe("release: the one-cycle fallback to the site prefix", () => {
+  const ROOT_ONLY = (p: string) => ({ [p.slice(1)]: { bytes: BYTES, contentType: "application/octet-stream" } as Obj });
+  const run = async (w: EdgeWorker, p: string, objects: Record<string, Obj>, init?: RequestInit) => {
+    const env = { ASSETS: fakeAssets(FILES), ARTIFACTS: fakeBucket(objects) };
+    const r = await w.fetch(req(p, init), env);
+    return { r, calls: env.ARTIFACTS.calls };
+  };
+  const hardened = createWorker({ release: RELEASE, releaseFallback: true });
+  const legacyish = createWorker({ ...QED64_LEGACY, release: RELEASE, releaseFallback: true });
+  const releaseKey = `${RP}runtime${CHUNK.slice("/runtime".length)}`;
+  const rootKey = CHUNK.slice(1);
+  const both = { [releaseKey]: { bytes: BYTES }, [rootKey]: { bytes: BYTES.slice(0, 10) } };
+
+  test("GET: a hit never falls back; a miss retries once under the site prefix; both missing → 404 no-store", async () => {
+    for (const w of [hardened, legacyish]) {
+      const hit = await run(w, CHUNK, both);
+      expect([hit.r.status, (await bytesOf(hit.r)).length, hit.calls]).toEqual([200, 1000, [{ op: "get", key: releaseKey, argc: 1 }]]);
+      const fell = await run(w, CHUNK, ROOT_ONLY(CHUNK));
+      expect([fell.r.status, fell.r.headers.get("cache-control"), fell.calls]).toEqual([
+        200, "public, max-age=31536000, immutable", [{ op: "get", key: releaseKey, argc: 1 }, { op: "get", key: rootKey, argc: 1 }],
+      ]);
+      expect(await bytesOf(fell.r)).toEqual(BYTES);
+      const gone = await run(w, CHUNK, {});
+      expect([gone.r.status, gone.r.headers.get("cache-control"), gone.calls.map((c) => c.key)]).toEqual([404, "no-store", [releaseKey, rootKey]]);
+    }
+    // without releaseFallback the miss is final
+    const strict = await run(createWorker({ release: RELEASE }), CHUNK, ROOT_ONLY(CHUNK));
+    expect([strict.r.status, strict.calls.map((c) => c.key)]).toEqual([404, [releaseKey]]);
+  });
+
+  test("HEAD (metadata): head() hit, head() miss → head() at the site key, Content-Length of the object that answered", async () => {
+    const hit = await run(hardened, CHUNK, both, { method: "HEAD" });
+    expect([hit.r.status, hit.r.headers.get("content-length"), hit.calls]).toEqual([200, "1000", [{ op: "head", key: releaseKey }]]);
+    const fell = await run(hardened, CHUNK, ROOT_ONLY(CHUNK), { method: "HEAD" });
+    expect([fell.r.status, fell.r.headers.get("content-length"), fell.calls]).toEqual([200, "1000", [{ op: "head", key: releaseKey }, { op: "head", key: rootKey }]]);
+    const gone = await run(hardened, CHUNK, {}, { method: "HEAD" });
+    expect([gone.r.status, gone.r.headers.get("cache-control"), gone.calls.length]).toEqual([404, "no-store", 2]);
+    // legacy HEAD reads with get(), so its fallback is a get() too
+    const legacyHead = await run(legacyish, CHUNK, ROOT_ONLY(CHUNK), { method: "HEAD" });
+    expect([legacyHead.r.status, legacyHead.calls.map((c) => c.op)]).toEqual([200, ["get", "get"]]);
+  });
+
+  test("Range: the decision head() falls back, the ranged get() reads the key that answered; If-Range and 416 against that object", async () => {
+    const hit = await run(hardened, CHUNK, both, { headers: { range: "bytes=0-9" } });
+    expect([hit.r.status, hit.calls]).toEqual([206, [{ op: "head", key: releaseKey }, { op: "get", key: releaseKey, argc: 2, range: "bytes=0-9" }]]);
+    const fell = await run(hardened, CHUNK, ROOT_ONLY(CHUNK), { headers: { range: "bytes=10-19" } });
+    expect([fell.r.status, fell.r.headers.get("content-range"), fell.calls]).toEqual([
+      206, "bytes 10-19/1000", [{ op: "head", key: releaseKey }, { op: "head", key: rootKey }, { op: "get", key: rootKey, argc: 2, range: "bytes=10-19" }],
+    ]);
+    expect(await bytesOf(fell.r)).toEqual(BYTES.slice(10, 20));
+    const resumed = await run(hardened, CHUNK, ROOT_ONLY(CHUNK), { headers: { range: "bytes=10-", "if-range": `"etag-${rootKey}"` } });
+    expect(resumed.r.status).toBe(206);
+    const stale = await run(hardened, CHUNK, ROOT_ONLY(CHUNK), { headers: { range: "bytes=10-", "if-range": `"etag-${releaseKey}"` } });
+    expect([stale.r.status, stale.calls.map((c) => `${c.op} ${c.key}`)]).toEqual([200, [`head ${releaseKey}`, `head ${rootKey}`, `get ${rootKey}`]]);
+    // 416 is decided on the object found; the fallback is not consulted again
+    const past = await run(hardened, CHUNK, ROOT_ONLY(CHUNK), { headers: { range: "bytes=5000-" } });
+    expect([past.r.status, past.r.headers.get("cache-control"), past.calls.length]).toEqual([416, "no-store", 2]);
+    const pastHit = await run(hardened, CHUNK, both, { headers: { range: "bytes=5000-" } });
+    expect([pastHit.r.status, pastHit.calls.length]).toEqual([416, 1]);
+  });
+
+  test("Range: once head() answered at the release key, a ranged get() that then misses is a 404, never a site-key read", async () => {
+    // The object is removed between head() and get(): the site key holds other bytes, whose size and
+    // etag did not decide If-Range or 416, so it must not be read.
+    const objects = { [releaseKey]: { bytes: BYTES }, [rootKey]: { bytes: BYTES.slice(0, 10) } };
+    const bucket = fakeBucket(objects);
+    const realHead = bucket.head;
+    bucket.head = async (key: string) => {
+      const found = await realHead(key);
+      if (key === releaseKey) delete (objects as Record<string, Obj>)[releaseKey];
+      return found;
+    };
+    const env = { ASSETS: fakeAssets(FILES), ARTIFACTS: bucket };
+    const r = await hardened.fetch(req(CHUNK, { headers: { range: "bytes=0-9" } }), env);
+    expect([r.status, r.headers.get("cache-control"), bucket.calls.map((c) => `${c.op} ${c.key}`)]).toEqual([
+      404, "no-store", [`head ${releaseKey}`, `get ${releaseKey}`],
+    ]);
+    isolated(r);
+  });
+
+  test("405 never looks anything up; site-owned misses never fall back", async () => {
+    const del = await run(hardened, CHUNK, ROOT_ONLY(CHUNK), { method: "DELETE" });
+    expect([del.r.status, del.r.headers.get("cache-control"), del.r.headers.get("allow"), del.calls]).toEqual([405, "no-store", "GET, HEAD", []]);
+    const snap = await run(hardened, `/snapshots/missing.${HEX16}.snapz`, {});
+    expect(snap.calls.map((c) => c.key)).toEqual([`snapshots/missing.${HEX16}.snapz`]);
+    const index = await run(hardened, "/profiles/index.json", {});
+    expect(index.calls.map((c) => c.key)).toEqual(["profiles/index.json"]);
+  });
+});
+
+describe("release: errors on release-mapped paths are never cached", () => {
+  test("QED64_LEGACY + release: release-mapped 404s are no-store, site 404s keep the legacy path rule", async () => {
+    const w = createWorker({ ...QED64_LEGACY, release: RELEASE, releaseFallback: true });
+    for (const p of [`/runtime/chunks/missing.${HEX16}.part-000`, "/runtime/runtime-manifest.json", `/profiles/missing.${DIGEST.slice(0, 20)}.part-001`]) {
+      const r = await w.fetch(req(p), { ASSETS: fakeAssets(FILES), ARTIFACTS: fakeBucket({}) });
+      expect([r.status, r.headers.get("cache-control"), await r.text()], p).toEqual([404, "no-store", "not found"]);
+      isolated(r);
+    }
+    const site = await w.fetch(req(`/snapshots/missing.${HEX16}.snapz`), makeEnv());
+    expect([site.status, site.headers.get("cache-control")]).toEqual([404, "public, max-age=31536000, immutable"]);
+  });
+
+  test("a custom errorCacheControl applies to site paths only; 405 and 416 on release paths are no-store", async () => {
+    const w = createWorker({ release: RELEASE, errorCacheControl: "public, max-age=60" });
+    const env = () => ({ ASSETS: fakeAssets(FILES), ARTIFACTS: fakeBucket({ [`${RP}runtime${CHUNK.slice(8)}`]: { bytes: BYTES } }) });
+    const cases: [string, RequestInit | undefined, number, string][] = [
+      [`/runtime/chunks/missing.${HEX16}.part-000`, undefined, 404, "no-store"],
+      [CHUNK, { method: "PUT", body: "x" }, 405, "no-store"],
+      [CHUNK, { headers: { range: "bytes=5000-" } }, 416, "no-store"],
+      [`/snapshots/missing.${HEX16}.snapz`, undefined, 404, "public, max-age=60"],
+      [SNAPZ, { method: "PUT", body: "x" }, 405, "public, max-age=60"],
+      ["/nope.js", undefined, 404, "public, max-age=60"],
+    ];
+    for (const [p, init, status, cc] of cases) {
+      const r = await w.fetch(req(p, init), env());
+      expect([r.status, r.headers.get("cache-control")], `${init?.method ?? "GET"} ${p}`).toEqual([status, cc]);
+    }
+    // a release-mapped success keeps the path rule
+    const ok = await w.fetch(req(CHUNK), env());
+    expect([ok.status, ok.headers.get("cache-control")]).toEqual([200, "public, max-age=31536000, immutable"]);
+  });
+});
+
+describe("release: Range and HEAD are the same whichever prefix a path maps to", () => {
+  // One path, three routings of the same bytes: the release prefix, the site prefix (a record that
+  // leaves /profiles/ to the site) and the release miss that falls back to the site prefix.
+  const routings: [string, EdgeWorker, string][] = [
+    ["release", createWorker({ release: RELEASE, r2Prefix: "site/" }), `${RP}profiles${PACK.slice("/profiles".length)}`],
+    ["site", createWorker({ release: withHosting({ siteOwned: ["/profiles/", "/snapshots/"] }), r2Prefix: "site/" }), `site${PACK}`],
+    ["fallback", createWorker({ release: RELEASE, r2Prefix: "site/", releaseFallback: true }), `site${PACK}`],
+  ];
+  const ETAG_FIXED = '"etag-fixed"';
+  const objects = (key: string): ReturnType<typeof fakeBucket> => {
+    const b = fakeBucket({ [key]: { bytes: BYTES, contentType: "application/octet-stream" } });
+    const head = b.head.bind(b);
+    const get = b.get.bind(b);
+    // the same object under either key: the same etag
+    return Object.assign(b, {
+      head: async (k: string) => { const m = await head(k); return m && { ...m, httpEtag: ETAG_FIXED }; },
+      get: async (k: string, o?: { range?: Headers }) => { const m = await get(k, o); return m && { ...m, httpEtag: ETAG_FIXED }; },
+    });
+  };
+  const variants: [string, RequestInit][] = [
+    ["HEAD", { method: "HEAD" }],
+    ["HEAD + Range", { method: "HEAD", headers: { range: "bytes=0-9" } }],
+    ["GET", {}],
+    ["bytes=0-99", { headers: { range: "bytes=0-99" } }],
+    ["bytes=-100", { headers: { range: "bytes=-100" } }],
+    ["bytes=990-", { headers: { range: "bytes=990-" } }],
+    ["If-Range strong", { headers: { range: "bytes=500-", "if-range": ETAG_FIXED } }],
+    ["If-Range weak", { headers: { range: "bytes=500-", "if-range": "W/" + ETAG_FIXED } }],
+    ["If-Range stale", { headers: { range: "bytes=500-", "if-range": '"other"' } }],
+    ["416", { headers: { range: "bytes=1000-" } }],
+    ["multi-range", { headers: { range: "bytes=0-1,5-6" } }],
+  ];
+
+  test(`${variants.length} requests × ${routings.length} routings: identical status, headers and body`, async () => {
+    for (const [label, init] of variants) {
+      const seen = [];
+      for (const [name, w, key] of routings) {
+        const r = await w.fetch(req(PACK, init), { ASSETS: fakeAssets(FILES), ARTIFACTS: objects(key) });
+        seen.push({ name, snap: await snapshot(r) });
+      }
+      for (const s of seen.slice(1)) expect(s.snap, `${s.name}: ${label}`).toEqual(seen[0]!.snap);
+    }
+    // what they agree on
+    const [, w, key] = routings[0]!;
+    const head = await w.fetch(req(PACK, { method: "HEAD" }), { ASSETS: fakeAssets(FILES), ARTIFACTS: objects(key) });
+    expect([head.headers.get("content-length"), head.headers.get("accept-ranges")]).toEqual(["1000", "bytes"]);
+    const part = await w.fetch(req(PACK, { headers: { range: "bytes=0-99" } }), { ASSETS: fakeAssets(FILES), ARTIFACTS: objects(key) });
+    expect([part.status, part.headers.get("content-range"), part.headers.get("content-length")]).toEqual([206, "bytes 0-99/1000", "100"]);
+  });
+});
+
+describe("an exception while answering", () => {
+  test("a throwing binding: 500 internal error, isolation headers, no-store, logged with the path", async () => {
+    const logged: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => void logged.push(args.join(" ")));
+    try {
+      const boom = { get: async () => { throw new Error("R2 exploded"); }, head: async () => { throw new Error("R2 exploded"); } };
+      const assetsBoom = { fetch: async () => { throw new Error("assets exploded"); } };
+      for (const [w, p, env] of [
+        [createWorker({ release: RELEASE, releaseFallback: true }), CHUNK, { ASSETS: fakeAssets(FILES), ARTIFACTS: boom }],
+        [createWorker({ ...QED64_LEGACY, release: RELEASE }), SNAPZ, { ASSETS: fakeAssets(FILES), ARTIFACTS: boom }],
+        [createWorker(QED64_LEGACY), "/assets/x.js", { ASSETS: assetsBoom, ARTIFACTS: boom }],
+      ] as const) {
+        logged.length = 0;
+        const r = await w.fetch(req(p), env);
+        expect([r.status, r.headers.get("cache-control"), await r.text()], p).toEqual([500, "no-store", "internal error"]);
+        isolated(r);
+        expect(logged.join("\n"), p).toMatch(new RegExp(`edge-worker: GET ${p.replace(/[.]/g, "\\.")}: .*exploded`));
+      }
+      // decorate throwing: still a 500 with the isolation headers (without decorate's word)
+      const bad = createWorker({ decorate: () => { throw new Error("decorate exploded"); } });
+      const r = await bad.fetch(req("/assets/x.js"), makeEnv());
+      expect([r.status, r.headers.get("cache-control")]).toEqual([500, "no-store"]);
+      isolated(r);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

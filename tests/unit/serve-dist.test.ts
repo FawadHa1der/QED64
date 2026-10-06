@@ -19,7 +19,7 @@ import path from "node:path";
 import shipped from "../../infra/worker.js";
 import { createWorker, isImmutable, parseRange, resolveRange } from "../../infra/edge-worker.js";
 import type { EdgeWorker } from "../../infra/edge-worker.js";
-import { createDistServer, startupLine, USAGE } from "../../scripts/serve-dist.mjs";
+import { createArtifactsBinding, createDistServer, RELEASE_ID, releaseDirProblem, startupLine, USAGE } from "../../scripts/serve-dist.mjs";
 import type { EdgeMode } from "../../scripts/serve-dist.mjs";
 
 const root = path.resolve(__dirname, "../..");
@@ -197,7 +197,11 @@ describe.each(["legacy", "hardened"] as const)("serve-dist, edge=%s", (edge) => 
       isolated(artifact);
       expect(artifact.headers["content-type"]).toBe("text/plain;charset=UTF-8");
       expect(artifact.headers["content-length"]).toBe("9");
-      expect(artifact.headers["cache-control"]).toBe(edge === "legacy" ? IMMUTABLE : "no-store");
+      // a release-mapped miss is never cached, in either mode (the shipped worker's toolchain release)
+      expect(artifact.headers["cache-control"]).toBe("no-store");
+      // a site-owned miss keeps legacy's path rule (errorCacheControl null), no-store when hardened
+      const snapshot = await ask(port, "GET", "/snapshots/missing.dca2763359db27e7.snapz");
+      expect([snapshot.status, snapshot.headers["cache-control"]]).toEqual([404, edge === "legacy" ? IMMUTABLE : "no-store"]);
       expect((await ask(port, "GET", "/runtime/")).status).toBe(404);
       expect((await ask(port, "GET", "/runtime/chunks")).status).toBe(404); // a directory is no R2 object
       expect((await ask(port, "GET", "/favicon.ico")).status).toBe(404);
@@ -372,10 +376,91 @@ describe("the CLI", () => {
     expect(r.stdout).not.toContain("prod preview");
   });
 
-  test("the startup line keeps its shape and names the mode", () => {
-    expect(startupLine(5185, "/x/dist", "legacy")).toBe("prod preview: http://localhost:5185 (/x/dist + public artifacts) edge=legacy");
+  test("the startup line keeps its shape and names the mode and the release (and the release dir when set)", () => {
+    expect(startupLine(5185, "/x/dist", "legacy")).toBe(`prod preview: http://localhost:5185 (/x/dist + public artifacts) edge=legacy release=${RELEASE_ID}`);
+    expect(startupLine(5185, "/x/dist", "hardened", "/r/lean-v4.34.0-a8817d0")).toBe(
+      `prod preview: http://localhost:5185 (/x/dist + public artifacts) edge=hardened release=${RELEASE_ID} releaseDir=/r/lean-v4.34.0-a8817d0`,
+    );
+    const pinned = JSON.parse(fs.readFileSync(path.join(root, "toolchain/lean4-wasm64-release.json"), "utf8")) as { id: string };
+    expect(RELEASE_ID).toBe(pinned.id);
   });
 
+  test("QED64_RELEASE_DIR naming a missing dir, or a release dir of another id, exits 2 with the usage line before listening", () => {
+    const other = path.join(tmp, "other-release");
+    fs.mkdirSync(other, { recursive: true });
+    fs.writeFileSync(path.join(other, "release.json"), JSON.stringify({ schema: "lean4-wasm64.release/v1", id: "lean-v4.99.0-0000000", hosting: { layout: "served" } }));
+    for (const [dir, msg] of [[path.join(tmp, "no-such-release"), /no readable release\.json/], [other, /release "lean-v4\.99\.0-0000000", but toolchain\/lean4-wasm64-release\.json pins/]] as const) {
+      const r = spawnSync(process.execPath, [SCRIPT], { env: { ...process.env, QED64_RELEASE_DIR: dir, QED64_EDGE: "legacy", PORT: "0" }, encoding: "utf8", timeout: 15000 });
+      expect(r.status, dir).toBe(2);
+      expect(r.stderr, dir).toMatch(msg);
+      expect(r.stderr, dir).toContain(USAGE);
+      expect(r.stdout, dir).not.toContain("prod preview");
+    }
+    expect(() => createDistServer({ dist: distDir, publicDir, releaseDir: other })).toThrow(/pins/);
+  });
+});
+
+// ------------------------------------------------------------------ the toolchain release's keys (decision 3)
+describe("ARTIFACTS: lean4-wasm64/<id>/ keys", () => {
+  const RELEASE_MANIFEST = new TextEncoder().encode('{"buildId":"wasm64-dca2763359db27e7","from":"release dir"}');
+  let releaseDir = "";
+  beforeAll(() => {
+    releaseDir = path.join(tmp, RELEASE_ID);
+    fs.mkdirSync(path.join(releaseDir, "runtime/chunks"), { recursive: true });
+    fs.mkdirSync(path.join(releaseDir, "profiles"), { recursive: true });
+    fs.writeFileSync(path.join(releaseDir, "release.json"), JSON.stringify({ schema: "lean4-wasm64.release/v1", id: RELEASE_ID, hosting: { layout: "served" } }));
+    fs.writeFileSync(path.join(releaseDir, "runtime/runtime-manifest.json"), RELEASE_MANIFEST);
+    fs.writeFileSync(path.join(releaseDir, CHUNK.slice(1)), CHUNK_BYTES);
+    fs.writeFileSync(path.join(releaseDir, "profiles/lean-core.manifest.json"), "{}");
+  });
+  const RK = (rest: string) => `lean4-wasm64/${RELEASE_ID}/${rest}`;
+
+  test("with a release dir: release keys read it; root keys read public/; another id or a site dir under the release is absent", async () => {
+    expect(releaseDirProblem(releaseDir)).toBeNull();
+    const b = createArtifactsBinding(publicDir, { releaseDir });
+    const m = await b.get(RK("runtime/runtime-manifest.json"));
+    expect(Buffer.from(await new Response(m!.body).arrayBuffer()).toString()).toContain("release dir");
+    expect((await b.head(RK(CHUNK.slice(1))))?.size).toBe(CHUNK_BYTES.length);
+    expect((await b.head(RK("profiles/lean-core.manifest.json")))?.size).toBe(2);
+    expect((await b.head(MANIFEST.slice(1)))?.size).toBe(ARTIFACTS[MANIFEST.slice(1)]!.bytes.length); // the root key: public/
+    for (const key of [`lean4-wasm64/lean-v4.99.0-0000000/runtime/runtime-manifest.json`, RK("release.json"), RK("snapshots/index.json"), RK("runtime/../release.json"), "lean4-wasm64/", RK("")]) {
+      expect(await b.head(key), key).toBeNull();
+    }
+  });
+
+  test("without one: release keys read public/<rest> (today's trees keep working)", async () => {
+    const b = createArtifactsBinding(publicDir);
+    const m = await b.get(RK("runtime/runtime-manifest.json"));
+    expect(Buffer.from(await new Response(m!.body).arrayBuffer()).toString()).toBe(new TextDecoder().decode(ARTIFACTS[MANIFEST.slice(1)]!.bytes));
+    expect((await b.head(RK("profiles/index.json")))?.size).toBe(ARTIFACTS["profiles/index.json"]!.bytes.length);
+  });
+
+  test.each(["legacy", "hardened"] as const)("over HTTP (edge=%s; both route the pinned release): the release dir answers, a file only under public/ comes through the fallback, a miss is no-store", async (edge) => {
+    // a pinned manifest present only in public/ (the root): the Worker's one-cycle fallback finds it
+    const server = createDistServer({ dist: distDir, publicDir, edge, releaseDir });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const manifest = await ask(port, "GET", MANIFEST);
+      expect([manifest.status, manifest.body.toString()]).toEqual([200, new TextDecoder().decode(RELEASE_MANIFEST)]);
+      isolated(manifest);
+      expect(manifest.headers["cache-control"]).toBe(REVALIDATE);
+      const chunk = await ask(port, "GET", CHUNK);
+      expect([chunk.status, chunk.headers["cache-control"], chunk.body.length]).toEqual([200, IMMUTABLE, CHUNK_BYTES.length]);
+      const pinned = await ask(port, "GET", PINNED); // not in the release dir: public/ through the fallback
+      expect([pinned.status, pinned.body.toString()]).toEqual([200, '{"pinned":true}']);
+      const index = await ask(port, "GET", "/profiles/index.json"); // site-owned: public/
+      expect([index.status, index.body.toString()]).toEqual([200, '{"profiles":[]}']);
+      const miss = await ask(port, "GET", "/runtime/chunks/missing.0123456789abcdef0123.part-000");
+      expect([miss.status, miss.headers["cache-control"]]).toEqual([404, "no-store"]);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});
+
+describe("the CLI (factory)", () => {
   test("an unknown mode is refused by the factory too", () => {
     expect(() => createDistServer({ dist: distDir, publicDir, edge: "bogus" as EdgeMode })).toThrow(/unknown edge mode/);
   });

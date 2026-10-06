@@ -1560,3 +1560,23 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   runs runtime <id>" where the worker's says "this worker booted <id>"
   (classify by `kind`/`code`, never by the words). No export changes:
   `EMBED_API_REVISION` stays `1.0.0-pre.6`.
+- **`qed64/edge` routes a toolchain release (plan step B2b, 2026-10-06):**
+  additive options, every default unchanged (`QED64_LEGACY` and the hardened
+  defaults keep `release: null`). `release` takes a `lean4-wasm64.release/v1`
+  record, checked once by `createWorker` (a bad record throws one
+  `TypeError`): `hosting.mount` paths (`/runtime/*`, `/profiles/*`) read
+  `lean4-wasm64/<id>/…`, `hosting.siteOwned` paths (`/profiles/index.json`,
+  `/snapshots/*`) and anything else read `r2Prefix` (`""`, the bucket root, is
+  allowed); unsafe release paths are refused whatever `rejectUnsafeKeys` says,
+  and every error on a release path is no-store. `releaseFallback` retries a
+  release miss once under `r2Prefix`. New exports `releaseRoutes` and
+  `RELEASE_R2_ROOT`, new types `ReleaseRecord` and `ReleaseRoutes`. One
+  behaviour change for every configuration: an exception while answering
+  (a missing or throwing binding, an extra route, `decorate`) is a 500
+  `internal error` with the isolation headers and no-store, logged, where
+  `fetch` used to reject. QED64's `infra/worker.js` adopts it with its
+  pinned record (docs/DEPLOY.md, "The toolchain release prefix") and keeps
+  re-exporting the same `isImmutable`; importing that file now also loads
+  `toolchain/lean4-wasm64-release.json` with an import attribute (a full
+  checkout has it; Node ≥ 22 and wrangler ≥ 4 handle the syntax). The
+  workers, `qed64/embed` and `EMBED_API_REVISION` are untouched.

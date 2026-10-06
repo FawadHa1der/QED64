@@ -32,7 +32,19 @@
 //              pointing outside).
 //   ARTIFACTS  an R2 bucket, structurally, over <repo>/public: the key
 //              "runtime/chunks/x" (artifactKey's shape) is public/runtime/
-//              chunks/x, only under runtime/, profiles/ and snapshots/.
+//              chunks/x, only under runtime/, profiles/ and snapshots/. The
+//              toolchain release's keys (decision 3: infra/worker.js reads
+//              /runtime/* and /profiles/<not index.json> from
+//              "lean4-wasm64/<id>/runtime/…" and "…/profiles/…", <id> the
+//              pinned toolchain/lean4-wasm64-release.json's) are
+//              $QED64_RELEASE_DIR/<rest> when QED64_RELEASE_DIR names a
+//              served-layout release directory of that id (a fork release dir
+//              such as …/wasm64-lean-kernel-release/lean-v4.34.0-a8817d0,
+//              read-only), else public/<rest>: today's public/ trees
+//              (symlinked, or filled by `npm run fetch:artifacts`) keep
+//              working unchanged, and a file only under public/ is still
+//              found through the Worker's one-cycle fallback to the root key.
+//              Another release id is absent. Nothing is ever written.
 //              Symlinks inside public/ are followed (the worktree layout links
 //              chunks/ and snapshots into the main checkout). head(key) and
 //              get(key, {range}) return null when absent; the objects carry
@@ -58,8 +70,9 @@
 // with curl on 2026-10-06; tests/unit/serve-dist.test.ts pins them.
 //
 // QED64_EDGE=legacy (default) runs infra/worker.js exactly, what the live site
-// runs (createWorker(QED64_LEGACY)); QED64_EDGE=hardened runs createWorker({}),
-// the hardened defaults (ranges, metadata HEAD, 405, no-store errors), which
+// runs (createWorker({...QED64_LEGACY, release, releaseFallback: true}));
+// QED64_EDGE=hardened runs createWorker({ release, releaseFallback: true }), the
+// hardened defaults (ranges, metadata HEAD, 405, no-store errors), which
 // the live site has NOT adopted: preview and test them here. Any other value
 // exits 2 with the usage line, before listening.
 //
@@ -69,31 +82,40 @@
 // page-api lane load it on a build).
 //
 // PORT (default 5185) picks the port; DIST=<dir> serves a saved build instead
-// of dist/ (an A/B against the current build on a second PORT).
+// of dist/ (an A/B against the current build on a second PORT);
+// QED64_RELEASE_DIR=<dir> serves the toolchain release's files from a release
+// directory (above). A QED64_RELEASE_DIR that is not a served-layout release
+// directory of the pinned id exits 2 with the usage line, before listening.
+// The hardened mode is what infra/worker.js would be with the hardened
+// defaults: createWorker({ release, releaseFallback: true }) on the same pinned
+// record, so it previews exactly what adopting them would ship.
 //
 // Tests import createDistServer (tests/unit/serve-dist.test.ts); it listens
 // only when run as the main module.
 import { createServer } from "node:http";
 import { createHash } from "node:crypto";
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { open, readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import legacyWorker from "../infra/worker.js";
-import { createWorker, DEFAULT_ARTIFACT_PREFIXES, parseRange, resolveRange } from "../infra/edge-worker.js";
+import { createWorker, DEFAULT_ARTIFACT_PREFIXES, parseRange, RELEASE_R2_ROOT, resolveRange } from "../infra/edge-worker.js";
+import pinnedRelease from "../toolchain/lean4-wasm64-release.json" with { type: "json" };
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 export const DEFAULT_PORT = 5185;
 export const DEFAULT_DIST = path.join(ROOT, "dist");
 export const DEFAULT_PUBLIC = path.join(ROOT, "public");
-export const USAGE = "usage: [PORT=<port>] [DIST=<dir>] [QED64_EDGE=legacy|hardened] node scripts/serve-dist.mjs";
+export const USAGE = "usage: [PORT=<port>] [DIST=<dir>] [QED64_EDGE=legacy|hardened] [QED64_RELEASE_DIR=<release dir>] node scripts/serve-dist.mjs";
+/** The release id infra/worker.js routes to (the pinned record's). */
+export const RELEASE_ID = pinnedRelease.id;
 
 /** The edge modes: the worker each one runs. */
 export const EDGE_MODES = Object.freeze({
   legacy: () => legacyWorker,
-  hardened: () => createWorker({}),
+  hardened: () => createWorker({ release: pinnedRelease, releaseFallback: true }),
 });
 
 // Workers static assets' content types, as the live site sends them (checked
@@ -251,15 +273,41 @@ export function createAssetsBinding(dist) {
   };
 }
 
-/** The ARTIFACTS binding over `publicDir`: an R2 bucket, structurally (see the header). */
-export function createArtifactsBinding(publicDir) {
+/** Why `dir` is not a served-layout release directory of release `id`, or null when it is
+ * (release.json there: schema lean4-wasm64.release/v1, that id, hosting.layout "served"). */
+export function releaseDirProblem(dir, id = RELEASE_ID) {
+  let record;
+  try {
+    record = JSON.parse(readFileSync(path.join(dir, "release.json"), "utf8"));
+  } catch (err) {
+    return `QED64_RELEASE_DIR=${dir}: no readable release.json (${err?.code ?? err?.message ?? err})`;
+  }
+  if (record?.schema !== "lean4-wasm64.release/v1") return `QED64_RELEASE_DIR=${dir}: release.json is not lean4-wasm64.release/v1`;
+  if (record.id !== id) return `QED64_RELEASE_DIR=${dir}: release ${JSON.stringify(record.id)}, but toolchain/lean4-wasm64-release.json pins ${JSON.stringify(id)}`;
+  if (record.hosting?.layout !== "served") return `QED64_RELEASE_DIR=${dir}: hosting.layout is not "served"`;
+  return null;
+}
+
+/** The ARTIFACTS binding over `publicDir`: an R2 bucket, structurally (see the header).
+ * `releaseDir` (optional) serves the keys of release `releaseId`. */
+export function createArtifactsBinding(publicDir, { releaseDir = null, releaseId = RELEASE_ID } = {}) {
   const root = path.resolve(publicDir);
+  const releaseRoot = releaseDir === null ? null : path.resolve(releaseDir);
+  const releaseHead = RELEASE_R2_ROOT.slice(0, -1);
 
   async function find(key) {
     if (typeof key !== "string" || /[\\\u0000]/.test(key)) return null;
-    const segs = key.split("/");
-    if (segs.length < 2 || !ARTIFACT_DIRS.includes(segs[0]) || segs.some((s) => s === "" || s === "." || s === "..")) return null;
-    const file = path.join(root, ...segs);
+    let segs = key.split("/");
+    if (segs.some((s) => s === "" || s === "." || s === "..")) return null;
+    let base = root;
+    if (segs[0] === releaseHead) {
+      // lean4-wasm64/<id>/<rest>: the release directory, or public/<rest>
+      if (segs[1] !== releaseId) return null;
+      segs = segs.slice(2);
+      if (releaseRoot !== null) base = releaseRoot;
+    }
+    if (segs.length < 2 || !ARTIFACT_DIRS.includes(segs[0])) return null;
+    const file = path.join(base, ...segs);
     const st = await statFile(file);
     return st === null ? null : { key, file, st };
   }
@@ -450,12 +498,17 @@ async function serveEmbedHost(req, res, publicDir) {
 }
 
 /** An http.Server (not listening) that answers every request through the
- * worker of `edge` ("legacy" | "hardened") over `dist` and `publicDir`. */
-export function createDistServer({ dist = DEFAULT_DIST, publicDir = DEFAULT_PUBLIC, edge = "legacy" } = {}) {
+ * worker of `edge` ("legacy" | "hardened") over `dist` and `publicDir`, and
+ * `releaseDir` (optional) for the toolchain release's keys. */
+export function createDistServer({ dist = DEFAULT_DIST, publicDir = DEFAULT_PUBLIC, edge = "legacy", releaseDir = null } = {}) {
   if (!Object.hasOwn(EDGE_MODES, edge)) throw new TypeError(`serve-dist: unknown edge mode ${JSON.stringify(edge)} (legacy, hardened)`);
+  if (releaseDir !== null) {
+    const problem = releaseDirProblem(releaseDir);
+    if (problem !== null) throw new TypeError(`serve-dist: ${problem}`);
+  }
   const worker = EDGE_MODES[edge]();
   const pub = path.resolve(publicDir);
-  const env = { ASSETS: createAssetsBinding(dist), ARTIFACTS: createArtifactsBinding(pub) };
+  const env = { ASSETS: createAssetsBinding(dist), ARTIFACTS: createArtifactsBinding(pub, { releaseDir }) };
   const ctx = { waitUntil() {}, passThroughOnException() {} };
 
   return createServer(async (req, res) => {
@@ -473,8 +526,8 @@ export function createDistServer({ dist = DEFAULT_DIST, publicDir = DEFAULT_PUBL
 }
 
 /** The startup line. */
-export function startupLine(port, dist, edge) {
-  return `prod preview: http://localhost:${port} (${dist} + public artifacts) edge=${edge}`;
+export function startupLine(port, dist, edge, releaseDir = null, releaseId = RELEASE_ID) {
+  return `prod preview: http://localhost:${port} (${dist} + public artifacts) edge=${edge} release=${releaseId}${releaseDir === null ? "" : ` releaseDir=${releaseDir}`}`;
 }
 
 // Run as a server only when this file is the main module (realpaths: a symlinked path keeps argv[1]'s link path).
@@ -493,8 +546,15 @@ if (isMain) {
     console.error(USAGE);
     process.exit(2);
   }
+  const releaseDir = process.env.QED64_RELEASE_DIR ? path.resolve(process.env.QED64_RELEASE_DIR) : null;
+  const problem = releaseDir === null ? null : releaseDirProblem(releaseDir);
+  if (problem !== null) {
+    console.error(`serve-dist: ${problem}`);
+    console.error(USAGE);
+    process.exit(2);
+  }
   const port = Number(process.env.PORT) || DEFAULT_PORT;
   const dist = process.env.DIST ? path.resolve(process.env.DIST) : DEFAULT_DIST;
-  const server = createDistServer({ dist, publicDir: DEFAULT_PUBLIC, edge });
-  server.listen(port, () => console.log(startupLine(server.address().port, dist, edge)));
+  const server = createDistServer({ dist, publicDir: DEFAULT_PUBLIC, edge, releaseDir });
+  server.listen(port, () => console.log(startupLine(server.address().port, dist, edge, releaseDir)));
 }
