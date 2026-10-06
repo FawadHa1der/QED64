@@ -754,8 +754,10 @@ interface FailureCause { kind: FailureKind; httpStatus?: number; stage?: BootSta
 
 An `unpaired` failure is decided by the page wherever it holds both facts,
 the index entry's `runtime` and the runtime manifest's `buildId`: the same
-cause and projection as the worker's refusal, now without a worker start or
-a download (`ResidentSession.start()` rejects before the runtime boots;
+cause and projection as the worker's refusal, now without the runtime
+starting or a byte of the snapshot downloading (the session's Worker object
+is created and disposed, but no `boot` request, `lean.wasm` fetch or
+Memory64 reservation happens; `ResidentSession.start()` rejects first;
 `loadSnapshotByName` returns false before fetching; an entry without
 `runtime` is still the worker's to decide; HARDENING #62).
 
@@ -1544,7 +1546,13 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   and progress call the worker path makes. The relay's `Death`, the page
   API's `boot` and `lastDeath` and the boot card are as before; no console
   line is added, and the relay and its breaker are unchanged (each of the
-  three retries now costs no runtime and no download). An entry without
+  three retries now costs no runtime and no download). The halt comes about
+  3 s after the relay is constructed, often before the language client sends
+  `initialize`: the client's `initialize` may then be answered with the
+  breaker's "QED64: checker halted after repeated crashes" error instead of
+  "QED64: the Lean checker died (bootFailed)", and the died line may appear
+  fewer than three times or not at all (both shapes were already the
+  relay's, and the showcase's C9 allowlists both). An entry without
   `runtime` is not refused by the page. The cause's message says "this page
   runs runtime <id>" where the worker's says "this worker booted <id>"
   (classify by `kind`/`code`, never by the words). No export changes:

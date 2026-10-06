@@ -280,10 +280,14 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   deaths), `api.status().boot` `{failed: true}` with a message,
   `lastDeath.reason` `bootFailed` and `cause.kind` `unpaired`, the boot
   card failed, no renderer crash, and no console error or warning outside
-  the two boot-failure shapes the showcase allowlists ("QED64: the Lean
-  checker died (bootFailed)", "Error: ?snapshots=<dir>: …"); every console
-  line is printed, with the time to halt and the relay's states. Exit 0
-  PASS, 1 FAIL. Run it through the host browser lock.
+  the three shapes the showcase's C9 allowlists ("QED64: the Lean checker
+  died (bootFailed)", "QED64: checker halted after repeated crashes",
+  "Error: ?snapshots=<dir>: …"). The halt comes about 3 s after the relay
+  is constructed, often before the client's `initialize`, which is then
+  answered with the halted line, so the died line may appear fewer than
+  three times or not at all. Every console line is printed, with the time
+  to halt, the relay's states, when `initialize` reached the relay and each
+  shape's count. Exit 0 PASS, 1 FAIL. Run it through the host browser lock.
 
 ## Pipeline CLI contract (docs/CLI-CONTRACT.md, tests/unit/cli-contract.test.ts)
 
