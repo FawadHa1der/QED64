@@ -268,6 +268,22 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   arm for `pageslow`, which crashed on every build without it). Serve a
   build (`scripts/serve-dist.mjs`), not the dev server, and run it through
   the host browser lock.
+- **Unpaired snapshot** (`unpaired-snapshot.mjs --url <served build>
+  [--runtime wasm64-0000000000000000] [--buffer <text>] [--wait-ms 90000]
+  [--headed]`, HARDENING #62; docs/EMBEDDING.md §7.2): the page refuses a
+  snapshot of another runtime before the runtime starts and before a byte of
+  the snapshot downloads. It serves nothing and writes nothing under
+  `public/`: Playwright's route answers the snapshot index request (served
+  or `?snapshots=` overlay) with a copy whose every entry's `runtime` is
+  `--runtime`. PASS: no `.snapz` request, no `lean.wasm` chunk request and
+  no `runtime-initialized` log, the relay halted (three `bootFailed`
+  deaths), `api.status().boot` `{failed: true}` with a message,
+  `lastDeath.reason` `bootFailed` and `cause.kind` `unpaired`, the boot
+  card failed, no renderer crash, and no console error or warning outside
+  the two boot-failure shapes the showcase allowlists ("QED64: the Lean
+  checker died (bootFailed)", "Error: ?snapshots=<dir>: …"); every console
+  line is printed, with the time to halt and the relay's states. Exit 0
+  PASS, 1 FAIL. Run it through the host browser lock.
 
 ## Pipeline CLI contract (docs/CLI-CONTRACT.md, tests/unit/cli-contract.test.ts)
 
