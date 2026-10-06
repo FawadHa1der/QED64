@@ -109,14 +109,26 @@ ships. The integration suite runs the exact runtime bytes the browser executes.
 
 Snapshots are binary-paired (their relocations are keyed to the producing
 binary's function table), so bake them with the exact runtime you ship. The
-bake gzips to `public/snapshots/<name>.snapz` and upserts `index.json`
-with the probe's ordered import list — which is what the app matches
-against, exactly. Two snapshots ship: `init` (no imports, loaded at boot)
+bake stages under `work/staging/<buildId>/snapshots` (it refuses any `--out`
+inside `public/`): it gzips to `<name>.snapz` there and upserts that
+directory's `index.json` with the probe's ordered import list — which is what
+the app matches against, exactly. `npm run promote:staging -- --staging
+work/staging/<buildId>` publishes the staged set into `public/`. Two snapshots ship: `init` (no imports, loaded at boot)
 and `mathlib` (the `QED64.Essential` umbrella that serves every Mathlib
 import combination via the header rewrite — see docs/ARCHITECTURE.md).
 
+Every path below is passed explicitly. Each tool also reads the variables in
+docs/TESTING.md "Environment" (`QED64_LEAN_ARTIFACT`, `QED64_WORK`,
+`QED64_STAGING`, `QED64_LIB_TREE`); with neither a flag nor a variable it
+falls back to the old repo-relative default with a deprecation WARNING, and on
+a fresh clone, where those defaults do not exist, it exits 2 naming the flag
+and the variable (docs/CLI-CONTRACT.md "Path resolution"). `<buildId>` is
+`wasm64-` plus the first 16 hex digits of the SHA-256 of `bin/lean.wasm`.
+
 ```sh
-npm run bake:snapshot   # the init (no-import) snapshot
+ART=pipeline/toolchain/work/build/stage1   # the runtime you ship
+ID=wasm64-$(shasum -a 256 $ART/bin/lean.wasm | cut -c1-16)
+npm run bake:snapshot -- --name init --artifact $ART --work work/snapshot --out work/staging/$ID/snapshots   # the init (no-import) snapshot
 ```
 
 The mathlib umbrella: reconstruct the olean tree from the verified profile
@@ -129,9 +141,9 @@ bake exits 0 even when the examples stop compiling against the umbrella
 node pipeline/artifacts/unpack.mjs --manifest public/profiles/lean-core.manifest.json --out work/lib-tree
 node pipeline/artifacts/unpack.mjs --manifest public/profiles/mathlib-essential.manifest.json --out work/lib-tree
 # Essential.lean = `import <M>` for every module in the essential manifest
-node --stack-size=8192 pipeline/snapshot/node-runner.mjs --work work/umbrella --lib work/lib-tree -- -o /work/Essential.olean /work/Essential.lean
+node --stack-size=8192 pipeline/snapshot/node-runner.mjs --artifact $ART --work work/umbrella --lib work/lib-tree -- -o /work/Essential.olean /work/Essential.lean
 cp work/umbrella/Essential.olean* work/lib-tree/QED64/
-npm run bake:snapshot -- --name mathlib --lib work/lib-tree --probe 'import QED64.Essential
+npm run bake:snapshot -- --name mathlib --artifact $ART --work work/snapshot --out work/staging/$ID/snapshots --lib work/lib-tree --probe 'import QED64.Essential
 <the bundled Mathlib examples>'
 ```
 
@@ -146,7 +158,7 @@ exact path — and asserts the follow-up compile is an env-cache hit rather
 than a silent re-import:
 
 ```sh
-node --stack-size=8192 pipeline/snapshot/snapshot-probe.mjs --snap work/snapshot/mathlib.snap --probe-file example.lean
+node --stack-size=8192 pipeline/snapshot/snapshot-probe.mjs --artifact $ART --lib work/lib-tree --snap work/snapshot/mathlib.snap --probe-file example.lean
 ```
 
 ## Provenance and trust

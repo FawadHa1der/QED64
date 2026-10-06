@@ -54,12 +54,18 @@ seed ∪ (wanted ∩ defined) by `pipeline/toolchain/gen-exports.py`; run it wit
 stale. Then chunk it for serving:
 
 ```sh
+ID=wasm64-$(shasum -a 256 pipeline/toolchain/work/build/stage1/bin/lean.wasm | cut -c1-16)   # the buildId, as bump-chain.sh computes it
 node pipeline/toolchain/chunk-runtime.mjs --bin pipeline/toolchain/work/build/stage1/bin \
+  --out work/staging/$ID/runtime \
   --lean-version <the Lean version of the pin> \
   --revision $(git -C pipeline/toolchain/work/lean4 rev-parse --short HEAD)
 ```
 
-The default `--out` is `work/staging/<buildId>/runtime`; keep it. NEVER pass
+Stage under `work/staging/<buildId>/runtime`: pass that `--out` (as above and
+in `pipeline/release/bump-chain.sh`), or set `QED64_STAGING=work/staging`
+(the tool appends `<buildId>/runtime`). Leaving both out still stages there,
+with a deprecation WARNING, and exits 2 from the next contract on
+(docs/CLI-CONTRACT.md "Path resolution"). NEVER pass
 `--out public/runtime` (it destroyed the served chunks once — only
 `promote-staging.mjs` writes there, additively). `--lean-version` defaults to
 `4.33.0-pre` with a loud warning: pass the real one after a version import
@@ -105,12 +111,19 @@ from the new stage1 on every bump:
 rsync -a --delete --exclude='*.olean.private' --link-dest=$PWD/work/lib-tree work/lib-tree/ work/lib-tree-slim/
 rsync -a --delete --exclude='*.olean.private' --link-dest=$PWD/pipeline/toolchain/work/build/stage1/lib/lean \
   pipeline/toolchain/work/build/stage1/lib/lean/ work/core-lib-slim/
-npm run bake:snapshot -- --name init    --lib work/core-lib-slim --reserve 1073741824 --artifact pipeline/toolchain/work/build/stage1
-npm run bake:snapshot -- --name mathlib --lib work/lib-tree-slim --reserve 3221225472 --probe 'import QED64.Essential' --artifact pipeline/toolchain/work/build/stage1
+npm run bake:snapshot -- --name init    --lib work/core-lib-slim --reserve 1073741824 --artifact pipeline/toolchain/work/build/stage1 \
+  --work work/snapshot --out work/staging/$ID/snapshots
+npm run bake:snapshot -- --name mathlib --lib work/lib-tree-slim --reserve 3221225472 --probe 'import QED64.Essential' --artifact pipeline/toolchain/work/build/stage1 \
+  --work work/snapshot --out work/staging/$ID/snapshots
 ```
 
-Both land in `work/staging/<buildId>/snapshots` (the bake refuses foreign
-siblings). The raw sizes recorded in KERNEL-PIN are the check: for an
+`$ID` is the buildId of § 2. Both land in `work/staging/<buildId>/snapshots`
+(the bake refuses foreign siblings); the raw `.snap` files go to `--work`,
+here `work/snapshot`, the set paired to the served runtime, so only a bake of
+the served runtime may name it (bump-chain.sh's `QED64_SNAP_WORK`, below).
+Both paths are explicit, as in bump-chain.sh: without `--work`/`--out` (or
+`QED64_WORK`/`QED64_STAGING`) the bake falls back to the same places with one
+deprecation WARNING each, and exits 2 from the next contract on. The raw sizes recorded in KERNEL-PIN are the check: for an
 unchanged library a bake within a few percent of them is the right bake; a
 full-tree bake is 2.5x larger (HARDENING #48). Snapshots MUST be re-baked
 after every compiler rebuild.
