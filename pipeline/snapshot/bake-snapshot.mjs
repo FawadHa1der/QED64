@@ -159,14 +159,6 @@ const out = resolveToolPath({
   legacy: stagingDir(root, buildId, "snapshots"), legacyLabel: "work/staging/<buildId>/snapshots under the repo root", usage: USAGE,
 }).path;
 refuseInsidePublic(root, out, "bake-snapshot");
-// The runner: --runner, else QED64_RUNNER, else QED64's own node-runner (the
-// default, not deprecated). Checked here, before the index is read or the
-// paired .snap unlinked.
-const runner = toolPath({ value: arg("runner", null), env: "QED64_RUNNER", legacy: path.join(root, "pipeline/snapshot/node-runner.mjs") }).path;
-if (!fs.existsSync(runner)) {
-  console.error(`bake-snapshot: no runner script ${runner} — pass --runner <script> or set QED64_RUNNER`);
-  process.exit(2);
-}
 
 // The index this bake will upsert into is ONE pairing, checked before the
 // runner starts (a refusal after a 20-minute bake is the expensive kind):
@@ -186,6 +178,15 @@ if (foreign.length) {
 const unpaired = siblings.filter((s) => !s.runtime);
 if (unpaired.length) {
   console.error(`bake-snapshot: ${indexPath} holds entries with no runtime pairing (${unpaired.map((s) => s.name).join(", ")}) — rebake ${unpaired.map((s) => `--name ${s.name}`).join(", ")} against this runtime first, or bake into an empty --out (promote refuses an unpaired index)`);
+  process.exit(2);
+}
+
+// The runner: --runner, else QED64_RUNNER, else QED64's own node-runner (the
+// default, not deprecated). Checked before --work is created or the paired
+// .snap unlinked.
+const runner = toolPath({ value: arg("runner", null), env: "QED64_RUNNER", legacy: path.join(root, "pipeline/snapshot/node-runner.mjs") }).path;
+if (!fs.existsSync(runner)) {
+  console.error(`bake-snapshot: no runner script ${runner} — pass --runner <script> or set QED64_RUNNER`);
   process.exit(2);
 }
 

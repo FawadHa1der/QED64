@@ -156,10 +156,11 @@ describe("embedding/closure.json", () => {
         expect(r !== null && listed.has(r), `${f}: ${s} → ${r}`).toBe(true);
       }
     }
-    // gate.mjs reads the kernel probes by name and spawns two pipeline scripts.
+    // gate.mjs forwards to lean4-wasm64's gate (its own probes and runner, plan B1a): it spawns no
+    // pipeline script and reads no probe; the probes stay in pipelineData for browser-check.sh.
     const gate = read("pipeline/toolchain/gate.mjs");
-    for (const m of gate.matchAll(/PROBES,\s*"([\w-]+\.lean)"/g)) expect(closure.pipelineData, m[1]).toContain(`tests/adversarial/kernel-probes/${m[1]}`);
-    for (const m of gate.matchAll(/"(pipeline\/[\w/.-]+\.mjs)"/g)) expect(listed.has(m[1]!), m[1]).toBe(true);
+    expect(gate).toContain('forwardToLean4Wasm64("gate", "gate.mjs", ["--artifact", artifact])');
+    expect(gate).not.toMatch(/node:child_process|"pipeline\/[\w/.-]+\.mjs"|kernel-probes/);
   });
 
   it("the edge-worker library (qed64/edge) imports nothing: one dependency-free ES module plus its types", () => {
