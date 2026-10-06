@@ -81,6 +81,15 @@ function tree(dir: string): string[] {
 }
 
 const legacyStage1 = (s: string) => path.join(s, "pipeline/toolchain/work/build/stage1");
+const CHUNK_FORWARD = "chunk-runtime: WARNING — pipeline/toolchain/chunk-runtime.mjs is deprecated; use lean4-wasm64 chunk --bin <dir> --out <dir> --lean-version <x.y.z> --revision <string> (the fork's package) (docs/CLI-CONTRACT.md)";
+/** A FAKE lean4-wasm64 package inside checkout `s`: its chunk-runtime.mjs prints its argv and exits 7. */
+function fakeChunker(s: string): string {
+  const pkg = path.join(s, "fake-lean4-wasm64");
+  fs.mkdirSync(pkg, { recursive: true });
+  fs.writeFileSync(path.join(pkg, "package.json"), JSON.stringify({ name: "lean4-wasm64" }));
+  fs.writeFileSync(path.join(pkg, "chunk-runtime.mjs"), "console.log(JSON.stringify(process.argv.slice(2)));\nprocess.exit(7);\n");
+  return pkg;
+}
 function fakeStage1(dir: string, { js = true, wasm = false, jsIsDir = false } = {}) {
   fs.mkdirSync(path.join(dir, "bin"), { recursive: true });
   if (jsIsDir) fs.mkdirSync(path.join(dir, "bin/lean.js"));
@@ -243,14 +252,14 @@ describe("the tools in a scratch checkout: the variable is honoured", () => {
     expect(r.stderr).not.toMatch(/WARNING|no --\S+ given/);
   });
 
-  test("chunk-runtime: QED64_STAGING puts the runtime under <root>/<buildId>/runtime, no WARNING", () => {
+  test("chunk-runtime: QED64_STAGING puts the runtime under <root>/<buildId>/runtime (no path WARNING), handed to the package's chunker", () => {
     const s = toolCheckout("chunk-runtime");
     const bin = path.join(fakeStage1(path.join(s, "art/stage1"), { wasm: true }), "bin");
-    const r = run(s, "pipeline/toolchain/chunk-runtime.mjs", ["--bin", bin, "--revision", "test", "--lean-version", "9.9.9"], { QED64_STAGING: path.join(s, "stg") });
-    expect(r.status, r.stderr).toBe(0);
-    expect(r.stderr).toBe("");
+    const r = run(s, "pipeline/toolchain/chunk-runtime.mjs", ["--bin", bin, "--revision", "test", "--lean-version", "9.9.9"], { QED64_STAGING: path.join(s, "stg"), LEAN4_WASM64_DIR: fakeChunker(s) });
+    expect(r.status, r.stderr).toBe(7);
+    expect(r.lines).toEqual([CHUNK_FORWARD]);
     const id = runtimeBuildId(fs.readFileSync(path.join(bin, "lean.wasm")));
-    expect(fs.existsSync(path.join(s, "stg", id, "runtime/runtime-manifest.json"))).toBe(true);
+    expect(JSON.parse(r.stdout)).toEqual(["--bin", bin, "--out", path.join(s, "stg", id, "runtime"), "--lean-version", "9.9.9", "--revision", "test"]);
     expect(fs.existsSync(path.join(s, "work"))).toBe(false);
   });
 
@@ -337,16 +346,24 @@ describe("the tools in a scratch checkout: a deprecated default prints exactly o
     expect(tree(s)).toEqual(before);
   });
 
-  test("chunk-runtime: the default --out (one WARNING) still stages under the checkout's work/staging/<buildId>/runtime", () => {
+  test("chunk-runtime: the default --out (one WARNING) is still the checkout's work/staging/<buildId>/runtime, forwarded absolute", () => {
     const s = toolCheckout("chunk-runtime");
     const bin = path.join(fakeStage1(path.join(s, "art/stage1"), { wasm: true }), "bin");
-    const r = run(s, "pipeline/toolchain/chunk-runtime.mjs", ["--bin", bin, "--revision", "test", "--lean-version", "9.9.9"]);
-    expect(r.status, r.stderr).toBe(0);
+    const r = run(s, "pipeline/toolchain/chunk-runtime.mjs", ["--bin", bin, "--revision", "test", "--lean-version", "9.9.9"], { LEAN4_WASM64_DIR: fakeChunker(s) });
+    expect(r.status, r.stderr).toBe(7);
     const id = runtimeBuildId(fs.readFileSync(path.join(bin, "lean.wasm")));
     const out = path.join(s, "work/staging", id, "runtime");
-    expect(r.lines).toEqual([`chunk-runtime: WARNING — the default --out work/staging/<buildId>/runtime under the repo root (${out}) is deprecated; use --out <dir> or set QED64_STAGING (docs/CLI-CONTRACT.md)`]);
+    expect(r.lines).toEqual([`chunk-runtime: WARNING — the default --out work/staging/<buildId>/runtime under the repo root (${out}) is deprecated; use --out <dir> or set QED64_STAGING (docs/CLI-CONTRACT.md)`, CHUNK_FORWARD]);
     expect(r.lines[0]).toMatch(marker("chunk-runtime", "deprecated-default"));
-    expect(fs.existsSync(path.join(out, "runtime-manifest.json"))).toBe(true);
+    expect(r.lines[1]).toMatch(marker("chunk-runtime", "deprecated"));
+    expect(JSON.parse(r.stdout)).toEqual(["--bin", bin, "--out", out, "--lean-version", "9.9.9", "--revision", "test"]);
+    // without the package: the same front half, then exit 2 with one line
+    const absent = run(s, "pipeline/toolchain/chunk-runtime.mjs", ["--bin", bin, "--revision", "test", "--lean-version", "9.9.9", "--out", path.join(s, "o")]);
+    expect([absent.status, absent.stdout, absent.lines.length]).toEqual([2, "", 2]);
+    expect(absent.lines[1]).toMatch(marker("chunk-runtime", "no-package"));
+    expect(reservedHit(absent.stderr)).toBeNull();
+    expect(fs.existsSync(path.join(s, "work"))).toBe(false);
+    expect(fs.existsSync(path.join(s, "o"))).toBe(false);
   });
 });
 

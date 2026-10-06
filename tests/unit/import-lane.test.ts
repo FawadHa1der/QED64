@@ -1,8 +1,9 @@
 // The version-import lane's pieces, run as the REAL scripts against temp
 // trees: the .olean import reader, the packer's served-URL / release / import
 // options, the staged-profiles assembler (pair checks + layout contract), the
-// supervisor that reaps the never-exiting CLI, and the lane's own contract
-// validation in --dry-run. Nothing here touches public/ or work/.
+// supervisor that reaps the never-exiting CLI. Nothing here touches public/ or
+// work/. (The lane's driver is pipeline/release/adopt-release.sh now:
+// tests/unit/adopt-release.test.ts.)
 import { describe, expect, test, beforeAll, afterAll } from "vitest";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -15,7 +16,6 @@ const root = path.resolve(__dirname, "../..");
 const packer = path.join(root, "pipeline/artifacts/pack.mjs");
 const stager = path.join(root, "pipeline/release/stage-profiles.mjs");
 const supervisor = path.join(root, "pipeline/snapshot/supervised-run.mjs");
-const lane = path.join(root, "pipeline/release/import-packs.sh");
 const run = (script: string, args: string[]) => spawnSync("node", [script, ...args], { cwd: root, encoding: "utf8", timeout: 60_000 });
 
 let tmp: string;
@@ -402,96 +402,5 @@ describe("supervised-run.mjs", () => {
     const crashed = supervise(fakeRunner("crashed", `fs.writeFileSync(target, "partial"); process.exit(3);`), path.join(tmp, "crashed.olean"));
     expect(crashed.status).toBe(1);
     expect(crashed.stdout).toMatch(/the runner exited 3/);
-  });
-});
-
-describe("import-packs.sh contract validation (--dry-run)", () => {
-  const SERVED_ROOTS = (JSON.parse(fs.readFileSync(path.join(root, "public/profiles/mathlib-essential.manifest.json"), "utf8")) as { content: { roots: string[] } }).content.roots;
-  const dryRun = (args: string[]) => spawnSync("bash", [lane, ...args, "--dry-run"], { cwd: root, encoding: "utf8", timeout: 60_000 });
-  const fakeK = (name: string, withMathlib: boolean) => {
-    const k = path.join(tmp, name);
-    const lib = path.join(k, "build/stage1/lib/lean");
-    fs.mkdirSync(path.join(k, "build/stage1/bin"), { recursive: true });
-    fs.writeFileSync(path.join(k, "build/stage1/bin/lean.js"), "// glue\n");
-    fs.writeFileSync(path.join(k, "build/stage1/bin/lean.wasm"), Buffer.from(`\0asm-${name}`));
-    fs.mkdirSync(path.join(lib, "Init"), { recursive: true });
-    for (const f of ["Init.olean", "Init.olean.server", "Init.olean.private", "Init.ir", "Init.ir.sig", "Init/Prelude.olean"]) fs.writeFileSync(path.join(lib, f), "x");
-    fs.writeFileSync(path.join(k, "BUILT-COMMIT"), `${"ab".repeat(20)}\n`);
-    if (withMathlib) {
-      const tree = path.join(k, "mathlib/essential-tree");
-      for (const d of ["Mathlib", "Lean", "Std"]) fs.mkdirSync(path.join(tree, d), { recursive: true });
-      for (const r of SERVED_ROOTS) {
-        const f = path.join(tree, `${r.split(".").join("/")}.olean`);
-        fs.mkdirSync(path.dirname(f), { recursive: true });
-        fs.writeFileSync(f, "x");
-      }
-      fs.writeFileSync(path.join(k, "mathlib/essential-modules.txt"), SERVED_ROOTS.join("\n"));
-      fs.writeFileSync(path.join(k, "mathlib/MATHLIB-COMMIT"), `${"cd".repeat(20)}\n`);
-    }
-    return k;
-  };
-
-  test("a complete K: contract met, the plan names every step, nothing is run or created", () => {
-    const k = fakeK("k-complete", true);
-    const scratch = path.join(tmp, "scratch-complete");
-    const r = dryRun([k, "--lean-version", "4.34.0", "--scratch", scratch]);
-    expect(r.stdout).toMatch(/DRY RUN — contract met, nothing was run/);
-    expect(r.status).toBe(0);
-    expect(r.stdout).toMatch(/buildId {2}wasm64-[0-9a-f]{16}/);
-    expect(r.stdout).toMatch(/--release lean-core-4\.34\.0-wasm64-[0-9a-f]{16} --url-prefix \/profiles\//);
-    expect(r.stdout).toMatch(/--release mathlib-essential-cdcdcdc-wasm64-[0-9a-f]{16}/);
-    expect(r.stdout).toMatch(/QED64_SNAP_WORK=.*scratch-complete\/snapshot .*bump-chain\.sh stage-artifact/);
-    expect(fs.existsSync(scratch)).toBe(false);
-  });
-
-  test("a K without its Mathlib half: each missing contract path is named, exit 1", () => {
-    const k = fakeK("k-runtime-only", false);
-    const r = dryRun([k, "--lean-version", "4.34.0"]);
-    expect(r.status).toBe(1);
-    const missing = r.stdout.split("\n").filter((l) => l.startsWith("  MISSING  "));
-    expect(missing).toEqual([
-      `  MISSING  ${fs.realpathSync(k)}/mathlib/essential-tree/`,
-      `  MISSING  ${fs.realpathSync(k)}/mathlib/essential-modules.txt`,
-      `  MISSING  ${fs.realpathSync(k)}/mathlib/MATHLIB-COMMIT`,
-    ]);
-    expect(r.stdout).toMatch(/IMPORT-FAIL the K contract is not met: 3 problem/);
-  });
-
-  test("--lean-version is required and has no default; a malformed BUILT-COMMIT and an Init-carrying essential tree are contract violations", () => {
-    const k = fakeK("k-bad", true);
-    fs.writeFileSync(path.join(k, "BUILT-COMMIT"), "8d91aad\n");
-    fs.mkdirSync(path.join(k, "mathlib/essential-tree/Init"));
-    const r = dryRun([k]);
-    expect(r.status).toBe(1);
-    expect(r.stdout).toMatch(/MISSING {2}--lean-version <x\.y\.z> \(required/);
-    expect(r.stdout).toMatch(/BUILT-COMMIT exists but is not 40 lowercase hex/);
-    expect(r.stdout).toMatch(/must NOT contain Init/);
-    expect(dryRun([k, "--lean-version", "v4.34.0"]).stdout).toMatch(/is not x\.y\.z/);
-  });
-
-  test("refuses a scratch dir whose lib-tree/ and snapshot/ would be the served pairing's, and unknown steps", () => {
-    const k = fakeK("k-scratch", true);
-    const r = dryRun([k, "--lean-version", "4.34.0", "--scratch", "work"]);
-    expect(r.status).toBe(1);
-    expect(r.stdout).toMatch(/IMPORT-FAIL --scratch .* is not a private scratch dir/);
-    const step = dryRun([k, "--lean-version", "4.34.0", "--only", "bake"]);
-    expect(step.status).toBe(2);
-    expect(step.stdout).toMatch(/unknown step 'bake'/);
-  });
-  test("K whose runtime is already served: a full run refuses (nothing to import); a partial re-issue without 'stage' proceeds", () => {
-    const k = fakeK("k-served", true);
-    const wasm = fs.readFileSync(path.join(k, "build/stage1/bin/lean.wasm"));
-    const id = `wasm64-${createHash("sha256").update(wasm).digest("hex").slice(0, 16)}`;
-    const pub = fs.mkdtempSync(path.join(tmp, "public-served-"));
-    fs.mkdirSync(path.join(pub, "runtime"), { recursive: true });
-    fs.writeFileSync(path.join(pub, "runtime/runtime-manifest.json"), JSON.stringify({ buildId: id, leanVersion: "4.34.0", files: {} }));
-    const env = { ...process.env, QED64_PUBLIC_DIR: pub };
-    const full = spawnSync("bash", [lane, k, "--lean-version", "4.34.0", "--dry-run"], { cwd: root, encoding: "utf8", env });
-    expect(full.status).toBe(1);
-    expect(full.stdout).toMatch(/IS the served runtime .* nothing to import/);
-    const partial = spawnSync("bash", [lane, k, "--lean-version", "4.34.0", "--dry-run", "--only", "pack-extra"], { cwd: root, encoding: "utf8", env });
-    expect(partial.status).toBe(0);
-    expect(partial.stdout).toMatch(/partial re-issue of: +pack-extra/);
-    expect(partial.stdout).toMatch(/DRY RUN/);
   });
 });

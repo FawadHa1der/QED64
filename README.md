@@ -100,11 +100,11 @@ docs/CLI-CONTRACT.md.
 | `src/` | shared runtime code: worker RPC client (`runtime/`), OPFS installer (`install/`) |
 | `public/workers/lean.worker.js` | the Lean worker: verified runtime materialization, Memory64 heap, WORKERFS mounts, persistent compile loop |
 | `public/runtime`, `public/profiles` | content-addressed artifacts: the manifests are tracked, the bytes are fetched (`npm run fetch:artifacts`), never committed |
-| `pipeline/release` | `fetch-artifacts` (fill `public/` with the pinned bytes), `import-packs` / `promote-staging` (stage and publish a runtime pairing), `verify-release` (out-of-band digest audit) |
+| `pipeline/release` | `fetch-artifacts` (fill `public/` with the pinned bytes), `adopt-release.sh` (adopt a lean4-wasm64 release: trees, bakes, staging, an isolated promote) / `promote-staging` (publish a staged pairing), `verify-release` (out-of-band digest audit) |
 | `pipeline/artifacts` | deterministic packer + deep inspector for profile packs |
 | `public/snapshots` | baked environment snapshots + `index.json` (baked per runtime; the index is tracked, the `.snapz` files are fetched, never committed) |
 | `pipeline/snapshot` | Node runner for the wasm64 binary + `--incr-header-save` snapshot baking (`--lib` mounts an unpacked olean tree; upserts the snapshot index); `cli.mjs` is the pipeline CLI contract (every tool's `--help`, flags, exit codes, stable output: docs/CLI-CONTRACT.md) |
-| `pipeline/toolchain` | `artifact-paths.mjs` (the path rule, the lean4-wasm64 locator and forwards), `chunk-runtime`, the `gate.mjs` forward, `KERNEL-PIN`; the build recipe is the fork's `wasm64-build/` (docs/REBUILD.md §1) |
+| `pipeline/toolchain` | `artifact-paths.mjs` (the path rule, the lean4-wasm64 locator and forwards), the `chunk-runtime` and `gate.mjs` forwards, `KERNEL-PIN`; the build recipe is the fork's `wasm64-build/` (docs/REBUILD.md §1) |
 | `tests/` | unit suite (pure logic + real-manifest invariants) and integration suite (the real runtime under Node) |
 
 ## Testing
@@ -164,7 +164,8 @@ npm run bake:snapshot -- --name mathlib --artifact $ART --work work/snapshot --o
 The served pairings are baked from the slim trees (the same oleans without
 `*.olean.private`) with explicit reserves — the exact commands, the staging
 layout and the promote flow are in docs/REBUILD.md § 3 and
-`pipeline/release/bump-chain.sh`.
+`pipeline/release/adopt-release.sh`, which adopts a lean4-wasm64 release end
+to end (`--dry-run` prints the plan).
 
 Validate the result with the snapshot probe, which loads the raw .snap
 (kept in `work/snapshot/`) through `lean_wasm_load_snapshot` — the worker's

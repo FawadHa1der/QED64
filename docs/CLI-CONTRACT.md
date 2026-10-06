@@ -248,7 +248,7 @@ decisions".
 | `QED64_LEAN_ARTIFACT` | bake-snapshot, node-runner, snapshot-probe, persistent-probe (and `gate.mjs`, the compiler battery, resident-probe, the integration tests) | The stage1 artifact dir when `--artifact` is absent. An empty value counts as unset everywhere (before contract 2 bake-snapshot counted it as set, meaning the cwd). |
 | `QED64_WORK` | bake-snapshot, node-runner | The dir mounted at `/work` when `--work` is absent: bake-snapshot's raw `<name>.snap` and `probe.lean`, node-runner's Lean cwd. |
 | `QED64_STAGING` | bake-snapshot, chunk-runtime | A staging root when `--out` is absent: `--out` is `<QED64_STAGING>/<buildId>/snapshots` (bake-snapshot) or `<QED64_STAGING>/<buildId>/runtime` (chunk-runtime). `public/` is still refused. |
-| `QED64_LIB_TREE` | snapshot-probe (and the compiler battery) | The olean tree mounted at `/lib/lean` when `--lib` is absent: the tree the probed snapshot was baked from. `pipeline/release/bump-chain.sh` reads the same name for the fat tree it bakes from. |
+| `QED64_LIB_TREE` | snapshot-probe (and the compiler battery) | The olean tree mounted at `/lib/lean` when `--lib` is absent: the tree the probed snapshot was baked from. |
 | `LEAN_COMPACTOR_RESERVE` | node-runner (forwarded into the wasm env) | Bytes the compactor reserves up front for a whole-environment save (patch 0011). bake-snapshot **sets** it for its runner from `--reserve` and overrides any inherited value. |
 | `QED64_ALLOW_LEGACY_IMPORTS` | node-runner (forwarded as `1` when non-empty) | Lets the exported-level env cache load legacy non-module packages (patch 0030). The documented form is `bake-snapshot --allow-legacy-imports`, which sets it to `1` for the runner; an inherited value is its equivalent and stays accepted (both consumers' bake lanes set the variable). |
 | `QED64_PROFILE_INIT` | node-runner, snapshot-probe (forwarded) | Profiles the `[init]` replay. |
@@ -264,9 +264,10 @@ The QED64 lanes outside SPECS use the same rule with their own variables:
 | `QED64_INIT_SNAP` | `tests/integration/fileworker-exit.test.ts` | The init `.snap` (deprecated default `work/snapshot/init.snap`). The integration tests skip, naming the variable, when it or the artifact is absent. |
 
 Other `QED64_*` variables belong to shell lanes, not to these tools:
-`QED64_LEAN_VERSION`, `QED64_ARTIFACT`, `QED64_SNAP_WORK` and the rest are
-documented in `pipeline/release/bump-chain.sh`, and `QED64_SLOW` in
-docs/TESTING.md.
+`QED64_ADOPT_IGNORE_DISK` and `QED64_PUBLIC_DIR` (the served tree it compares
+a release with) are documented in `pipeline/release/adopt-release.sh`, and
+`QED64_SLOW` in docs/TESTING.md. (`QED64_LEAN_VERSION`, `QED64_ARTIFACT`,
+`QED64_SNAP_WORK` and the rest left with `bump-chain.sh` in plan B2a.)
 
 ### Output streams and reserved substrings
 
@@ -393,8 +394,8 @@ Older `.snapz` files are never deleted.
   (`wasm64-port`) or the packaged one (`qed64-dep`) with `--name --artifact
   --lib --reserve --out` and `QED64_ALLOW_LEGACY_IMPORTS=1`; it omits `--work`
   (the deprecated default, one WARNING).
-- In QED64: `pipeline/release/bump-chain.sh` and `import-packs.sh` (they grep
-  `^baked`), and `tests/unit/artifact-discipline.test.ts`.
+- In QED64: `pipeline/release/adopt-release.sh` (it greps `^baked`), and
+  `tests/unit/artifact-discipline.test.ts`.
 
 ### snapshot-probe
 
@@ -514,8 +515,8 @@ usage: supervised-run.mjs --target <file> [--quiet-ms n] [--stable-ms n] [--give
 
 **Consumers:**
 
-- QED64's `pipeline/release/import-packs.sh` (the umbrella compile; it greps
-  `: error|supervised-run`).
+- QED64's `pipeline/release/adopt-release.sh --rebuild-umbrella` (the
+  umbrella compile; on a failure it prints the log's tail).
 - The showcase's `scripts/headless/run-e2.sh` (from the submodule; it reads the
   `^supervised-run: ` verdict line).
 - `tests/unit/import-lane.test.ts`.
@@ -738,7 +739,9 @@ usage: olean-imports.mjs (--audit <olean tree> | --entries <olean file>)
 
 **Consumers:**
 
-- QED64's `import-packs.sh` (it greps `^import-all audit|outside Init`).
+- QED64's `adopt-release.sh --rebuild-umbrella` greps the same lines
+  (`^import-all audit|outside Init`) from the package's `lean4-wasm64
+  olean-imports --audit`.
 - The showcase's `scripts/stage-trees.mjs` G5 (from the submodule). It parses
   `outside Init/Std/Lean/Lake: (\d+)` and the first line, under a 300 s
   watchdog.
@@ -840,7 +843,9 @@ usage: persistent-probe.mjs [--artifact <dir>]
 
 ### chunk-runtime
 
-**Tier 2.** `node pipeline/toolchain/chunk-runtime.mjs …`
+**Tier 2.** `node pipeline/toolchain/chunk-runtime.mjs …` — since plan B2a
+(contract 3) a **forward** to `lean4-wasm64 chunk` (see
+[the forwards](#lean4-wasm64-the-forwards)).
 
 ```
 usage: chunk-runtime.mjs --bin <dir> [--lean-version v] [--revision sha] [--upstream-base sha] [--out dir]
@@ -851,19 +856,29 @@ usage: chunk-runtime.mjs --bin <dir> [--lean-version v] [--revision sha] [--upst
 | `--bin <dir>` | — | **Required.** The dir holding `lean.js` and `lean.wasm`. |
 | `--lean-version <x.y.z>` | `4.33.0-pre`, with a WARNING on stderr | The manifest's `leanVersion`. Promote pairs packs against it. |
 | `--revision <string>` | `qed64-wasm64@<HEAD of pipeline/toolchain/work/lean4, relative to the cwd> (base <upstream-base>)`, else `unspecified` | The manifest's `sourceRevision`. git runs only when the flag is absent. |
-| `--upstream-base <sha\|tag>` | `5732b84` | Named in the default `--revision`. |
+| `--upstream-base <sha\|tag>` | `5732b84` | Named in the default `--revision`. Never forwarded (the package has no such flag). |
 | `--out <dir>` | `<$QED64_STAGING>/<buildId>/runtime`, else (deprecated) `work/staging/<buildId>/runtime` under the repo root | The staging dir. Refused inside `public/`. Resolves against the repo root. |
 
-- **Environment:** `QED64_STAGING` (the path rule).
-- **Leaving for the fork (plan B2a):** once its callers (`import-packs.sh`,
-  `bump-chain.sh`) are deleted it becomes a forward to `lean4-wasm64 chunk`.
-  That tool is **not** flag-compatible: it requires `--bin --out
-  --lean-version --revision`, has no `--upstream-base`, no defaults and no
-  `public/` refusal. Pass all four flags now and the switch changes nothing.
+- **Environment:** `QED64_STAGING` (the path rule), `LEAN4_WASM64_DIR` (the
+  package dir).
+- **What runs:** QED64 keeps the front half: the prelude (help, usage, flag
+  WARNINGs), the buildId (`runtimeBuildId` of `<bin>/lean.wasm`, which keys
+  the default `--out`), the path rule, the `public/` refusal, the
+  `no-version` WARNING and the no-`--revision` WARNING with their defaults.
+  Then one `deprecated` WARNING, and the script replaces itself with
+  `node <package>/chunk-runtime.mjs --bin <bin> --out <abs out>
+  --lean-version <v> --revision <r>`: all four flags the package requires,
+  always. The package's chunker writes the same bytes (its tests pin the
+  manifest; the first release was checked against the served one).
+- **No package:** after the WARNINGs, one `no-package` line, exit 2 (or
+  `not-package` for a `LEAN4_WASM64_DIR` that is not it). Before contract 3's
+  B2a row it chunked by itself.
+- **A release-adopted runtime is not chunked:** `pipeline/release/adopt-release.sh`
+  stages the release's own `runtime-manifest.json` and chunks.
 - **Inputs:** `<bin>/lean.js` and `<bin>/lean.wasm`.
-- **Outputs:**
-  - `<out>/chunks/<file>.<sha20>.part-NNN`. Additive: existing files are kept.
-  - `<out>/runtime-manifest.json` and `<out>/runtime-manifest.<buildId>.json`.
+- **Outputs** (the package's): `<out>/chunks/<file>.<sha20>.part-NNN`
+  (additive: existing files are kept), `<out>/runtime-manifest.json` and
+  `<out>/runtime-manifest.<buildId>.json`.
 
 | Marker | Stream | Regex |
 |---|---|---|
@@ -871,29 +886,35 @@ usage: chunk-runtime.mjs --bin <dir> [--lean-version v] [--revision sha] [--upst
 | done | stdout | `^runtime (wasm64-[0-9a-f]{16}) → (.+)$` |
 | no-version | stderr | `^chunk-runtime: WARNING — no --lean-version given` |
 | refuse-public | stderr | `^(bake-snapshot\|chunk-runtime): refusing --out (.+): it resolves inside public\/\. ` |
+| deprecated | stderr | `^chunk-runtime: WARNING — pipeline\/toolchain\/chunk-runtime\.mjs is deprecated; use lean4-wasm64 chunk ` |
+| no-package | stderr | `^(\S+): lean4-wasm64 not found — set LEAN4_WASM64_DIR=<package dir> or install it: ` (then exit 2) |
 | deprecated-default | stderr | `^(\S+): WARNING — the default --(\S+) (.+) \((.+)\) is deprecated; use --\S+ \S+ or set (\w+) \(docs\/CLI-CONTRACT\.md\)$` (`--out`) |
+
+`file` and `done` are printed by the package's script (their format strings
+are checked against it where it is installed).
 
 | Exit | Meaning |
 |---|---|
 | 0 | Chunked. |
-| 1 | A crash: `lean.js` or `lean.wasm` is unreadable under `--bin`. |
-| 2 | Usage, or `--out` inside `public/`. |
+| 1 | A crash: `lean.wasm` is unreadable under `--bin` (before the forward), or the package's chunker failed. |
+| 2 | Usage, `--out` inside `public/`, or lean4-wasm64 not found (set `LEAN4_WASM64_DIR` or install the devDependency). |
 
 **Side effects:**
 
 1. Without `--revision`, spawns `git -C pipeline/toolchain/work/lean4
-   rev-parse` for the default revision; the path is relative to the cwd, and
-   git's complaint can appear on stderr. (Before 2026-10-06 it ran on every
-   run, the default being evaluated eagerly.) The default leaves with the
-   toolchain lane (plan step B1).
-2. Creates `<out>/chunks` (`mkdir -p`).
-3. Writes the chunks and both manifests.
+   rev-parse` for the default revision (relative to the cwd; git's own
+   stderr is discarded).
+2. None other before the forward; the package creates `<out>/chunks` and
+   writes the chunks and both manifests.
 
 **Consumers:**
 
-- QED64's `bump-chain.sh` and `import-packs.sh` (the restamp).
-- lean4game's `build-from-source.sh` runtime lane (vendored).
-- `tests/unit/artifact-discipline.test.ts`.
+- None in QED64 since plan B2a: `import-packs.sh` and `bump-chain.sh` (the
+  restamp) are deleted, and `adopt-release.sh` stages the release's chunks.
+- lean4game's `build-from-source.sh` runtime lane (vendored, pinned before
+  B1; it does not re-sync).
+- `tests/unit/artifact-discipline.test.ts`, `tests/unit/tool-paths.test.ts`,
+  `tests/unit/cli-contract.test.ts` (against a fake package).
 
 ### pack
 
@@ -941,7 +962,8 @@ usage: pack.mjs --lib <dir> --id <name> --out <dir> [...]
 
 **Consumers:**
 
-- QED64's `import-packs.sh`.
+- None of QED64's lanes since plan B2a: the release packs, and
+  `import-packs.sh` is deleted.
 - lean4game's `build-from-source.sh` core lane (vendored).
 - `tests/unit/{import-lane,pack-format,artifact-discipline}.test.ts`.
 
@@ -1007,8 +1029,8 @@ are checked against it where it is installed).
 
 **Consumers:**
 
-- The README and QED64's `import-packs.sh` (it runs from the repo root, so
-  it finds QED64's own devDependency once installed; B2a deletes it).
+- The README. (`import-packs.sh` is deleted; `adopt-release.sh` runs the
+  package's `unpack` directly.)
 - lean4game's `build-from-source.sh` trees lane (vendored).
 - The showcase (from the submodule; no script of it calls unpack today,
   checked 2026-10-06).
@@ -1018,12 +1040,13 @@ are checked against it where it is installed).
 Decision 10: the fork's package `lean4-wasm64` is a devDependency of QED64,
 pinned by its release tgz URL (`toolchain/lean4-wasm64-release.json` names
 the release). QED64's library, workers and pipeline import nothing from it;
-three scripts hand it paths instead, through `forwardToLean4Wasm64` in
+four scripts hand it paths instead, through `forwardToLean4Wasm64` in
 `pipeline/toolchain/artifact-paths.mjs`:
 
 | Script | Tier | Before the forward | Runs |
 |---|---|---|---|
 | `pipeline/artifacts/unpack.mjs` | 2 | its prelude (help, usage, warnings), one WARNING | `<pkg>/unpack.mjs <args>` |
+| `pipeline/toolchain/chunk-runtime.mjs` | 2 | its prelude, the buildId, the `--out` path rule and `public/` refusal, the version/revision WARNINGs, one WARNING | `<pkg>/chunk-runtime.mjs --bin <dir> --out <abs dir> --lean-version <v> --revision <r>` |
 | `pipeline/artifacts/inspect.mjs` | 3 | one WARNING | `<pkg>/inspect.mjs <args>` |
 | `pipeline/toolchain/gate.mjs` | 3 | the `--artifact` path rule and the `bin/lean.js` check, one WARNING | `<pkg>/gate.mjs --artifact <abs dir>` |
 
@@ -1057,17 +1080,19 @@ three scripts hand it paths instead, through `forwardToLean4Wasm64` in
   manifest, `--pack <file>` and `--deep`.
 - **gate** runs the package's own probes, runner and `--stack-size`; its
   output keeps the ` ok `/`FAIL` check lines and `GATE PASSED` /
-  `GATE FAILED (n)`, the only markers parsed downstream (`bump-chain.sh`,
-  lean4game's `build-from-source.sh`); check labels differ. The kernel probes
+  `GATE FAILED (n)`, the only markers parsed downstream (`adopt-release.sh
+  --gate`, which runs the package's gate directly, and lean4game's
+  `build-from-source.sh`); check labels differ. The kernel probes
   stay in closure.json `pipelineData` (browser-check.sh uses them).
 - **Not flag-identical, whatever the kernel session's handover said:** the
   package's `pack` requires `--lib --id --out --lean-version` (QED64's
   defaults `--out work/packs` and `--lean-version 4.33.0-pre`), its
   `chunk` requires `--bin --out --lean-version --revision`, and its
   `unpack` has `--slim` but **no `--exclude`** (neither in the package nor
-  at fork HEAD 712e371a06). `pack`, `chunk-runtime`, `node-runner`,
-  `persistent-probe`, `olean-imports` and `artifact-paths.mjs` stay real
-  QED64 scripts in this contract.
+  at fork HEAD 712e371a06). `pack`, `node-runner`, `persistent-probe`,
+  `olean-imports` and `artifact-paths.mjs` stay real QED64 scripts in this
+  contract; `chunk-runtime` forwards (plan B2a) by always passing the four
+  flags `chunk` requires.
 
 ## Frozen: the flags and lines consumers parse
 
@@ -1079,14 +1104,14 @@ script by `tests/unit/cli-contract.test.ts`); each flag is in its SPEC.
 |---|---|---|
 | `--name --artifact --lib --reserve --work --out --probe`, and `--roots --label --initial-bytes --allow-legacy-imports` | bake-snapshot | the showcase's `scripts/bake.sh` (the first seven, absolute paths); lean4game's `build-from-source.sh` bake lane (`--name --artifact --lib --reserve --out`) |
 | `QED64_ALLOW_LEGACY_IMPORTS=1`, the equivalent of `--allow-legacy-imports` | bake-snapshot (inherited by its runner), node-runner | both consumers' bake lanes set it |
-| the `baked` line, and exit 0 meaning "baked" (not a Lean verdict) | bake-snapshot | the showcase's `scripts/judge-bake.mjs` J3; QED64's `bump-chain.sh` and `import-packs.sh` (`^baked`) |
+| the `baked` line, and exit 0 meaning "baked" (not a Lean verdict) | bake-snapshot | the showcase's `scripts/judge-bake.mjs` J3; QED64's `adopt-release.sh` (`^baked`) |
 | `--snap --fresh-import --probe-file --probe --lib --artifact --budget-ms --via-mem --init-flags --workspace --dump-messages` | snapshot-probe | the showcase's `scripts/headless/exact-header.mjs`; lean4game `--verify-snapshots`; the compiler battery |
 | `SNAPSHOT PROBE PASS` (exit 0), `SNAPSHOT PROBE FAIL: …`, `load:`, `compile:`, `[lean:stdout] …`, `ABORT: …` | snapshot-probe | `exact-header.mjs` (verdict, fail reason, load and compile times, the JSON messages, the abort); the compiler battery; lean4game |
-| `--target --quiet-ms --stable-ms --give-up-ms --`, and the runner arguments after `--` verbatim | supervised-run | the showcase's `scripts/headless/run-e2.sh`; `import-packs.sh`; `runtime-smoke.test.ts` |
-| the last line `supervised-run: <why> (<n> s)` (`^supervised-run: `) and exits 0 / 1 / 2 | supervised-run | `run-e2.sh` (`grep -E '^supervised-run: ' … \| tail -1`); `import-packs.sh`; `runtime-smoke.test.ts` |
+| `--target --quiet-ms --stable-ms --give-up-ms --`, and the runner arguments after `--` verbatim | supervised-run | the showcase's `scripts/headless/run-e2.sh`; `adopt-release.sh --rebuild-umbrella`; `runtime-smoke.test.ts` |
+| the last line `supervised-run: <why> (<n> s)` (`^supervised-run: `) and exits 0 / 1 / 2 | supervised-run | `run-e2.sh` (`grep -E '^supervised-run: ' … \| tail -1`); `runtime-smoke.test.ts` |
 | `--url --no-boot --boot-budget-ms --run-dir` | preflight | the showcase's `scripts/preflight-overlays.sh` and `tests/experiments/x1-preflight.mjs`; `resident-gate.sh` |
 | `PREFLIGHT OK buildId=… mode=… snapshots=…` (exit 0), `PREFLIGHT REFUSED: …` (exit 3), the `ok`/`warn`/`FAIL` check lines | preflight | the same, and `run.mjs` through `runPreflight` |
-| `import-all audit of …` and `  outside Init/Std/Lean/Lake: N` | olean-imports `--audit` | the showcase's `scripts/stage-trees.mjs` G5; `import-packs.sh` |
+| `import-all audit of …` and `  outside Init/Std/Lean/Lake: N` | olean-imports `--audit` | the showcase's `scripts/stage-trees.mjs` G5; `adopt-release.sh --rebuild-umbrella` (the package's audit) |
 
 ### Toolchain lines consumers parse
 
@@ -1174,6 +1199,7 @@ as QED64's own gate did.
 | 3 | 2026-10-06 | unpack's `done` regex gains an optional `--slim` group: `… → (.+?)(?: \(--slim: (\d+) \*\.olean\.private left out\))?$`. Group 4 is the out dir with or without `--slim` (before, it captured the suffix too), group 5 the count. Every line the old regex matched still matches with the same groups 1-4 when there is no suffix. Markers may carry more `examples`, each checked like `example`. | additive (a regex group) |
 | 3 | 2026-10-06 | Deleted: `pipeline/toolchain/setup-source.sh`, `build.sh`, `finish.sh`, `README.md` and the 35 patch copies under `pipeline/toolchain/patches/` (provenance only; never in package.json `files` or closure.json, called by no consumer: the build and its series are the fork's `wasm64-build/`, docs/REBUILD.md §1). `pipeline/toolchain/PATCHES.md` keeps its path (persistent-probe's PARSE-ERROR-SWALLOWED line names it) as a pointer to the fork's series and the pinned record. README's layout row and provenance paragraph point at docs/REBUILD.md §1. | removed (unused); docs |
 | 3 | 2026-10-06 | Plan step B2b, recorded for consumers: **no tool changed**. QED64's `infra/worker.js` reads `/runtime/*` and `/profiles/<not index.json>` from the toolchain release's R2 prefix `lean4-wasm64/<id>/` (decision 3; the id from `toolchain/lean4-wasm64-release.json`), with a one-cycle fallback to the bucket root; the library `qed64/edge` gains the additive `release`/`releaseFallback` options (docs/EMBEDDING.md §12). `scripts/serve-dist.mjs` (not a contract tool) maps the release keys to `QED64_RELEASE_DIR` or `public/` and names `release=<id>` in its startup line; `scripts/upload-artifacts.sh` (not a contract tool) uploads only the site-owned snapshots and `profiles/index.json`, refuses (exit 3) when the release is not in R2 or the shell is of another runtime, keeps the old root upload behind `--legacy-root`, and gains `DRY_RUN=1` (docs/DEPLOY.md, "The toolchain release prefix"). | ops/library, no tool change |
+| 3 | 2026-10-06 | Plan step B2a, **chunk-runtime forwards** to `lean4-wasm64 chunk` (breaking: without the package it now exits 2 with `no-package` where it used to chunk; contract 3 from B1a). It keeps its flags, defaults, path rule, `public/` refusal and WARNINGs, then prints one `chunk-runtime: WARNING — pipeline/toolchain/chunk-runtime.mjs is deprecated; use lean4-wasm64 chunk --bin <dir> --out <dir> --lean-version <x.y.z> --revision <string> …` and hands the package all four flags (`--upstream-base` only feeds the default `--revision`, never forwarded). New markers `deprecated` and `no-package`; `file` and `done` are the package's lines (same format). The default revision's git call no longer prints git's stderr. QED64's own callers, `pipeline/release/import-packs.sh` and `bump-chain.sh`, are deleted: `pipeline/release/adopt-release.sh` adopts a release (no chunker, no restamp; docs/REBUILD.md §3). | breaking (exit 2 without the package); deprecation (WARNING); removed (two shell lanes) |
 
 ## Open decisions
 

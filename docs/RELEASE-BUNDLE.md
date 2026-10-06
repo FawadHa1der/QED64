@@ -204,7 +204,8 @@ in order. Each one trusts only the previous one.
 ## PROPOSED: publishing from CI (not applied)
 
 This section is a proposal for review. Neither `.github/workflows/deploy.yml`
-nor `bump-chain.sh` has been changed. The proposal adds three steps to
+nor the adoption lane (`pipeline/release/adopt-release.sh`, which replaced
+`bump-chain.sh` in plan B2a) has been changed for it. The proposal adds three steps to
 `deploy.yml`, between `npm run build:site` and `wrangler deploy`, plus a
 release step after the deploy. Since plan step A4 the build, the prune and
 `wrangler deploy` run inside `scripts/deploy-app.sh` (docs/DEPLOY.md, "The

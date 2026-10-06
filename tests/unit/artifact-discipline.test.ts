@@ -24,7 +24,15 @@ const run = (script: string, args: string[]) =>
 const sha = (b: Buffer) => createHash("sha256").update(b).digest("hex");
 
 let tmp: string;
-beforeAll(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), "qed64-artifacts-")); });
+/** A FAKE lean4-wasm64 package: its chunk-runtime.mjs prints its argv as JSON and exits 7. */
+let fakePkg: string;
+beforeAll(() => {
+  tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "qed64-artifacts-")));
+  fakePkg = path.join(tmp, "fake-lean4-wasm64");
+  fs.mkdirSync(fakePkg);
+  fs.writeFileSync(path.join(fakePkg, "package.json"), JSON.stringify({ name: "lean4-wasm64", version: "0.0.0-fake" }));
+  fs.writeFileSync(path.join(fakePkg, "chunk-runtime.mjs"), "console.log(JSON.stringify(process.argv.slice(2)));\nprocess.exit(7);\n");
+});
 afterAll(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
 
 /** A fake stage1/bin with distinct lean.js/lean.wasm bytes per tag. */
@@ -34,6 +42,29 @@ function fakeBin(tag: string): string {
   fs.writeFileSync(path.join(bin, "lean.js"), `// glue ${tag}\n`);
   fs.writeFileSync(path.join(bin, "lean.wasm"), Buffer.from(`\0asm${tag}`));
   return bin;
+}
+
+/** The staged runtime layout the chunker writes (lean4-wasm64 chunk; its tests own the algorithm):
+ * each file as sha256-named parts under <out>/chunks (one part: the fixtures are tiny) and the
+ * manifest under both names. */
+function stageChunks(bin: string, out: string, leanVersion = "4.33.0-pre") {
+  const buildId = runtimeBuildId(fs.readFileSync(path.join(bin, "lean.wasm")));
+  fs.mkdirSync(path.join(out, "chunks"), { recursive: true });
+  const files: Record<string, unknown> = {};
+  for (const name of ["lean.js", "lean.wasm"]) {
+    const bytes = fs.readFileSync(path.join(bin, name));
+    const digest = sha(bytes);
+    const file = `${name}.${digest.slice(0, 20)}.part-000`;
+    fs.writeFileSync(path.join(out, "chunks", file), bytes);
+    files[name] = { bytes: bytes.length, sha256: digest, chunks: [{ url: `/runtime/chunks/${file}`, bytes: bytes.length, sha256: digest }] };
+  }
+  const manifest = {
+    schema: "org.lean-browser64.runtime/v1", buildId, leanVersion, sourceRevision: "test", target: "wasm64-unknown-emscripten", pointerBits: 64,
+    memory: { initialBytes: 134217728, maximumBytes: 17179869184, shared: true }, files,
+  };
+  fs.writeFileSync(path.join(out, "runtime-manifest.json"), JSON.stringify(manifest, null, 2));
+  fs.writeFileSync(path.join(out, `runtime-manifest.${buildId}.json`), JSON.stringify(manifest, null, 2));
+  return manifest;
 }
 
 describe("isInsidePublic", () => {
@@ -46,62 +77,70 @@ describe("isInsidePublic", () => {
   });
 });
 
-describe("chunk-runtime.mjs", () => {
-  test("refuses --out inside public/ before writing anything", () => {
+describe("chunk-runtime.mjs (a forward to lean4-wasm64 chunk: QED64 keeps the front half)", () => {
+  // The chunking itself is the fork's (its tests pin the manifest bytes); here the package is a
+  // FAKE whose chunk-runtime.mjs prints the argv it was handed and exits 7.
+  const forwarded = (r: { stdout: string }) => JSON.parse(r.stdout) as string[];
+  const DEPRECATED = "chunk-runtime: WARNING — pipeline/toolchain/chunk-runtime.mjs is deprecated; use lean4-wasm64 chunk --bin <dir> --out <dir> --lean-version <x.y.z> --revision <string> (the fork's package) (docs/CLI-CONTRACT.md)";
+  const chunk = (args: string[], env: Record<string, string> = {}) =>
+    spawnSync("node", [chunker, ...args], { cwd: root, encoding: "utf8", timeout: 60_000, env: { ...process.env, LEAN4_WASM64_DIR: fakePkg, QED64_STAGING: "", ...env } });
+
+  test("refuses --out inside public/ before writing anything (and before the forward)", () => {
     const bin = fakeBin("refuse");
     const before = fs.existsSync(path.join(root, "public/runtime/chunks")) ? fs.readdirSync(path.join(root, "public/runtime/chunks")).length : -1;
-    const r = run(chunker, ["--bin", bin, "--out", "public/runtime"]);
+    const r = chunk(["--bin", bin, "--out", "public/runtime"]);
     expect(r.status).toBe(2);
     expect(r.stderr).toMatch(/refusing --out .*public/);
+    expect(r.stdout).toBe("");
     const after = fs.existsSync(path.join(root, "public/runtime/chunks")) ? fs.readdirSync(path.join(root, "public/runtime/chunks")).length : -1;
     expect(after).toBe(before);
   });
 
-  test("is additive: a second build's chunks land beside the first's", () => {
-    const out = path.join(tmp, "runtime-out");
-    const a = run(chunker, ["--bin", fakeBin("A"), "--out", out, "--revision", "test"]);
-    expect(a.status).toBe(0);
-    const firstChunks = fs.readdirSync(path.join(out, "chunks"));
-    const firstManifest = JSON.parse(fs.readFileSync(path.join(out, "runtime-manifest.json"), "utf8"));
-    const b = run(chunker, ["--bin", fakeBin("B"), "--out", out, "--revision", "test"]);
-    expect(b.status).toBe(0);
-    const chunks = fs.readdirSync(path.join(out, "chunks"));
-    for (const f of firstChunks) expect(chunks).toContain(f);
-    expect(chunks.length).toBeGreaterThan(firstChunks.length);
-    const second = JSON.parse(fs.readFileSync(path.join(out, "runtime-manifest.json"), "utf8"));
-    expect(second.buildId).not.toBe(firstManifest.buildId);
-    // both per-build manifests survive; the identity is the wasm digest
-    expect(fs.existsSync(path.join(out, `runtime-manifest.${firstManifest.buildId}.json`))).toBe(true);
-    expect(second.buildId).toBe(runtimeBuildId(Buffer.from("\0asmB")));
+  test("forwards --bin, an absolute --out, --lean-version and --revision; one deprecation WARNING; the package's exit code", () => {
+    const bin = fakeBin("fwd");
+    const r = chunk(["--bin", bin, "--out", path.join(tmp, "runtime-fwd"), "--revision", "test", "--lean-version", "9.9.9", "--upstream-base", "v9.9.9"]);
+    expect(r.status).toBe(7);
+    expect(forwarded(r)).toEqual(["--bin", bin, "--out", path.join(tmp, "runtime-fwd"), "--lean-version", "9.9.9", "--revision", "test"]);
+    expect(r.stderr.split("\n").filter(Boolean)).toEqual([DEPRECATED]);
+    expect(fs.existsSync(path.join(tmp, "runtime-fwd"))).toBe(false); // the fake writes nothing; neither does the front half
   });
 
-  test("a missing --lean-version is a loud warning, not an error; --upstream-base feeds the default revision", () => {
-    const silent = run(chunker, ["--bin", fakeBin("ver"), "--out", path.join(tmp, "runtime-ver"), "--revision", "test", "--lean-version", "9.9.9"]);
-    expect(silent.status).toBe(0);
-    expect(silent.stderr).not.toMatch(/no --lean-version/);
-    expect(JSON.parse(fs.readFileSync(path.join(tmp, "runtime-ver/runtime-manifest.json"), "utf8")).leanVersion).toBe("9.9.9");
-    const loud = run(chunker, ["--bin", fakeBin("nover"), "--out", path.join(tmp, "runtime-nover"), "--upstream-base", "v9.9.9"]);
-    expect(loud.status).toBe(0);
+  test("a missing --lean-version is a loud warning and forwards 4.33.0-pre; --upstream-base only feeds the default revision", () => {
+    const loud = chunk(["--bin", fakeBin("nover"), "--out", path.join(tmp, "runtime-nover"), "--upstream-base", "v9.9.9"]);
+    expect(loud.status).toBe(7);
     expect(loud.stderr).toMatch(/WARNING — no --lean-version given; the manifest will say Lean 4\.33\.0-pre/);
     // no --revision for a binary outside pipeline/toolchain/work: said out loud
     expect(loud.stderr).toMatch(/WARNING — no --revision given for a binary outside pipeline\/toolchain\/work/);
-    const m = JSON.parse(fs.readFileSync(path.join(tmp, "runtime-nover/runtime-manifest.json"), "utf8"));
-    expect(m.leanVersion).toBe("4.33.0-pre");
+    const argv = forwarded(loud);
+    expect(argv.slice(0, 6)).toEqual(["--bin", path.join(tmp, "bin-nover"), "--out", path.join(tmp, "runtime-nover"), "--lean-version", "4.33.0-pre"]);
+    expect(argv[6]).toBe("--revision");
     // The default revision needs the fork checkout; where it exists the base is the argument's.
-    expect(m.sourceRevision === "unspecified" || /^qed64-wasm64@[0-9a-f]+ \(base v9\.9\.9\)$/.test(m.sourceRevision)).toBe(true);
+    expect(argv[7] === "unspecified" || /^qed64-wasm64@[0-9a-f]+ \(base v9\.9\.9\)$/.test(argv[7]!)).toBe(true);
+    expect(argv).not.toContain("--upstream-base");
+    expect(loud.stderr.split("\n").filter(Boolean).at(-1)).toBe(DEPRECATED);
   });
 
-  test("default --out is work/staging/<buildId>/runtime (never public/), deprecated with one WARNING", () => {
+  test("default --out is work/staging/<buildId>/runtime (never public/), deprecated with one WARNING, forwarded absolute", () => {
     const bin = fakeBin("default");
-    const r = spawnSync("node", [chunker, "--bin", bin, "--revision", "test"], { cwd: root, encoding: "utf8", timeout: 60_000, env: { ...process.env, QED64_STAGING: "" } });
-    expect(r.status).toBe(0);
+    const r = chunk(["--bin", bin, "--revision", "test", "--lean-version", "9.9.9"]);
+    expect(r.status).toBe(7);
     const id = runtimeBuildId(Buffer.from("\0asmdefault"));
     const staged = path.join(root, "work/staging", id, "runtime");
-    expect(r.stderr.split("\n").filter((l) => l.includes("is deprecated"))).toEqual([
+    expect(r.stderr.split("\n").filter(Boolean)).toEqual([
       `chunk-runtime: WARNING — the default --out work/staging/<buildId>/runtime under the repo root (${staged}) is deprecated; use --out <dir> or set QED64_STAGING (docs/CLI-CONTRACT.md)`,
+      DEPRECATED,
     ]);
-    expect(fs.existsSync(path.join(staged, "runtime-manifest.json"))).toBe(true);
-    fs.rmSync(path.join(root, "work/staging", id), { recursive: true, force: true });
+    expect(forwarded(r)).toEqual(["--bin", bin, "--out", staged, "--lean-version", "9.9.9", "--revision", "test"]);
+    expect(fs.existsSync(path.join(root, "work/staging", id))).toBe(false);
+  });
+
+  test("no package: the front half's WARNING, then one not-found line, exit 2", () => {
+    const r = chunk(["--bin", fakeBin("nopkg"), "--out", path.join(tmp, "runtime-nopkg"), "--revision", "test", "--lean-version", "9.9.9"], { LEAN4_WASM64_DIR: "" });
+    // the walk from the repo root may find an installed package (CI's npm ci); this host has none
+    if (r.status === 2) {
+      expect(r.stdout).toBe("");
+      expect(r.stderr.split("\n").filter(Boolean)).toEqual([DEPRECATED, expect.stringMatching(/^chunk-runtime: lean4-wasm64 not found — set LEAN4_WASM64_DIR=<package dir> or install it: /)]);
+    }
   });
 });
 
@@ -162,10 +201,7 @@ describe("bake-snapshot.mjs", () => {
 
 describe("promote-staging.mjs", () => {
   function stageRuntime(dir: string, tag: string, opts: { runtime?: string | null; snapshotTag?: string; leanVersion?: string } = {}) {
-    const bin = fakeBin(`p-${tag}`);
-    const r = run(chunker, ["--bin", bin, "--out", path.join(dir, "runtime"), "--revision", "test", ...(opts.leanVersion ? ["--lean-version", opts.leanVersion] : [])]);
-    expect(r.status).toBe(0);
-    const manifest = JSON.parse(fs.readFileSync(path.join(dir, "runtime/runtime-manifest.json"), "utf8"));
+    const manifest = stageChunks(fakeBin(`p-${tag}`), path.join(dir, "runtime"), opts.leanVersion);
     const snapDir = path.join(dir, "snapshots");
     fs.mkdirSync(snapDir, { recursive: true });
     const body = Buffer.from(`snap-${opts.snapshotTag ?? tag}`);
@@ -499,6 +535,59 @@ describe("promote-staging.mjs", () => {
     expect(r.stdout).toMatch(new RegExp(`fix   .*profiles/${s.parts[0]!.replace(/\./g, "\\.")}`));
     expect(sha(fs.readFileSync(served))).toBe(sha(fs.readFileSync(path.join(stage, "profiles", s.parts[0]!))));
     expect(run(verifyRelease, ["--public", pub]).status).toBe(0);
+  }, 120_000);
+
+  test("refuses any target a symlink sends outside --public (a directory or a file), before writing anything", () => {
+    const stage = path.join(tmp, "stage-escape");
+    stageRuntime(stage, "esc");
+    // runtime/chunks as a DIRECTORY symlink into another tree: this worktree's public/ has exactly that shape
+    const pub = path.join(tmp, "public-escape-dir");
+    const elsewhere = path.join(tmp, "elsewhere-chunks");
+    fs.mkdirSync(elsewhere, { recursive: true });
+    fs.mkdirSync(path.join(pub, "runtime"), { recursive: true });
+    fs.symlinkSync(elsewhere, path.join(pub, "runtime/chunks"));
+    for (const extra of [["--dry-run"], []]) {
+      const r = run(promote, ["--staging", stage, "--public", pub, ...extra]);
+      expect(r.status).toBe(2);
+      expect(r.stderr).toMatch(new RegExp(`^promote: refusing .*runtime/chunks/lean\\.js\\.[0-9a-f]{20}\\.part-000: it resolves to ${fs.realpathSync(elsewhere).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/.*, outside --public .* — nothing was written\n$`));
+      expect(fs.readdirSync(elsewhere)).toEqual([]);
+      expect(fs.readdirSync(path.join(pub, "runtime"))).toEqual(["chunks"]);
+    }
+    // a mutable file (the default manifest) as a symlink to a file outside: refused, the outside file untouched
+    const pub2 = path.join(tmp, "public-escape-file");
+    const outsideFile = path.join(tmp, "elsewhere-manifest.json");
+    fs.writeFileSync(outsideFile, "the other checkout's manifest");
+    fs.mkdirSync(path.join(pub2, "runtime"), { recursive: true });
+    fs.symlinkSync(outsideFile, path.join(pub2, "runtime/runtime-manifest.json"));
+    const f = run(promote, ["--staging", stage, "--public", pub2]);
+    expect(f.status).toBe(2);
+    expect(f.stderr).toMatch(/refusing .*runtime\/runtime-manifest\.json: it resolves to .*elsewhere-manifest\.json, outside --public/);
+    expect(fs.readFileSync(outsideFile, "utf8")).toBe("the other checkout's manifest");
+    expect(fs.readdirSync(path.join(pub2, "runtime"))).toEqual(["runtime-manifest.json"]);
+    // a --public that is itself a symlink, and a symlink that stays inside the tree, are fine
+    const realPub = path.join(tmp, "public-real-target");
+    fs.mkdirSync(path.join(realPub, "snapshots-real"), { recursive: true });
+    fs.symlinkSync("snapshots-real", path.join(realPub, "snapshots"));
+    const linkPub = path.join(tmp, "public-link");
+    fs.symlinkSync(realPub, linkPub);
+    const ok = run(promote, ["--staging", stage, "--public", linkPub]);
+    expect(ok.status, ok.stderr).toBe(0);
+    expect(fs.readdirSync(path.join(realPub, "snapshots-real")).sort()).toEqual(["index.json", expect.stringMatching(/^init\.[0-9a-f]{16}\.snapz$/)]);
+  });
+
+  test("a kernel-only re-point keeps the served profile index's trailing newline (and adds none it lacked)", () => {
+    for (const eol of ["\n", ""]) {
+      const tag = eol ? "nl" : "nonl";
+      const pub = path.join(tmp, `public-eol-${tag}`);
+      stagePairing(path.join(tmp, `stage-eol-base-${tag}`), `eol-base-${tag}`);
+      expect(run(promote, ["--staging", path.join(tmp, `stage-eol-base-${tag}`), "--public", pub]).status).toBe(0);
+      const indexFile = path.join(pub, "profiles/index.json");
+      const served = JSON.parse(fs.readFileSync(indexFile, "utf8"));
+      fs.writeFileSync(indexFile, JSON.stringify(served, null, 2) + eol); // the tracked file ends in a newline
+      const bump = stageRuntime(path.join(tmp, `stage-eol-bump-${tag}`), `eol-bump-${tag}`, { leanVersion: LEAN });
+      expect(run(promote, ["--staging", path.join(tmp, `stage-eol-bump-${tag}`), "--public", pub]).status).toBe(0);
+      expect(fs.readFileSync(indexFile, "utf8")).toBe(JSON.stringify({ ...served, runtime: { buildId: bump.manifest.buildId, leanVersion: LEAN } }, null, 2) + eol);
+    }
   }, 120_000);
 });
 
