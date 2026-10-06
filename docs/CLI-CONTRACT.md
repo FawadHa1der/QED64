@@ -46,6 +46,7 @@ node pipeline/snapshot/cli.mjs --write-preludes  # regenerate the inline prelude
 | [snapshot-probe](#snapshot-probe) | `pipeline/snapshot/snapshot-probe.mjs` | — | 1 | inline prelude |
 | [supervised-run](#supervised-run) | `pipeline/snapshot/supervised-run.mjs` | — | 1 | imports `cli.mjs` |
 | [preflight](#preflight) | `pipeline/release/preflight.mjs` (shim at `tests/adversarial/preflight.mjs`) | — | 1 | imports `cli.mjs` |
+| [fetch-artifacts](#fetch-artifacts) | `pipeline/release/fetch-artifacts.mjs` | `fetch:artifacts` | 1 | imports `cli.mjs` |
 | [olean-imports](#olean-imports---audit----entries) | `pipeline/artifacts/olean-imports.mjs` | — | 1 | inline prelude (inside the main-module check) |
 | [node-runner](#node-runner) | `pipeline/snapshot/node-runner.mjs` | `runner` | 2 | inline prelude |
 | [persistent-probe](#persistent-probe) | `pipeline/snapshot/persistent-probe.mjs` | — | 2 | inline prelude |
@@ -162,11 +163,12 @@ prelude rewrites `--flag=value` into `process.argv` as the two-token form, and
 drops the later occurrences of a repeated value flag, so the script's own
 legacy parser reads it unchanged and sees only the first value.
 
-Only supervised-run and preflight import `parseCli` at run time. No downstream
-copies either of them without `cli.mjs`: the showcase runs them from its
-submodule beside `cli.mjs`, and preflight runs in place from the QED64 checkout or the
-installed package (`cli.mjs`, `supervised-run.mjs` and `preflight.mjs` are in
-`files` and in closure.json's `pipeline` list, with every Tier 1/2 tool;
+Only supervised-run, preflight and fetch-artifacts import `parseCli` at run
+time. No downstream copies any of them without `cli.mjs`: the showcase runs
+them from its submodule beside `cli.mjs`, and preflight and fetch-artifacts
+run in place from the QED64 checkout or the installed package (`cli.mjs`,
+`supervised-run.mjs`, `preflight.mjs` and `fetch-artifacts.mjs` are in `files`
+and in closure.json's `pipeline` list, with every Tier 1/2 tool;
 `tests/unit/package-contract.test.ts` checks it).
 
 After you edit SPECS, run `node pipeline/snapshot/cli.mjs --write-preludes`.
@@ -576,6 +578,95 @@ usage: preflight.mjs [--url <page url>] [--no-boot] [--boot-budget-ms 180000] [-
   (old path, through the shim, until it re-pins).
 - The showcase's `tests/experiments/x1-preflight.mjs` (old path, likewise).
 
+### fetch-artifacts
+
+**Tier 1.** `node pipeline/release/fetch-artifacts.mjs …` or `npm run fetch:artifacts -- …`
+
+```
+usage: fetch-artifacts.mjs [--out <dir>] [--manifests <dir>] [--release <dir|url>] [--origin <url|dir>] [--only runtime,profiles,snapshots] [--with-manifests]
+```
+
+A fresh clone has the tracked manifests and none of the bytes they pin (the
+runtime chunks, the profile pack parts and the snapshot `.snapz` files are
+gitignored). This tool puts every one of them under `--out`, verified, so the
+page and the browser lanes run from the clone (docs/TESTING.md "A fresh
+clone"). It replaces the retired `sync:artifacts`, which copied from the
+owner's sibling checkout.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--out <dir>` | this checkout's `public/` (refused, exit 2, when that is inside `node_modules`) | The tree to fill, in the served layout (`runtime/chunks/`, `profiles/`, `snapshots/`). Nothing is written outside it. Created if absent. |
+| `--manifests <dir>` | this checkout's `public/` | The tree holding the tracked manifests: `runtime/runtime-manifest.json`, `profiles/index.json` and the profile manifests it lists, `snapshots/index.json`. An installed package ships none of them (the profile manifests are 12 MB): pass a QED64 checkout's `public/` at your pin. |
+| `--release <dir\|url>` | none | A fork release in the served layout (`release.json`, schema `lean4-wasm64.release/v1`). `/runtime/*` and `/profiles/*` come from it through its `hosting.mount`; each file must also be listed in its `files[]` with the sha256 and size the tracked manifest pins. The release's `runtime.buildId` must be the tracked manifest's (when runtime is fetched). |
+| `--origin <url\|dir>` | `https://qed64.fawadworkaddress.workers.dev/` | A QED64 site, or a served tree on disk: everything `--release` does not provide. Manifest URLs (`/runtime/chunks/…`) resolve against it, so an origin with a path prefix works. |
+| `--only <groups>` | `runtime,profiles,snapshots` | A comma list of `runtime`, `profiles`, `snapshots`. |
+| `--with-manifests` | off | Also writes the tracked manifests themselves into `--out`, for a tree that is not this checkout's `public/` (an upload, another server's root). |
+
+What each group fetches, and against what it is verified:
+
+| Group | Files | Verified against |
+|---|---|---|
+| `runtime` | every chunk of `runtime/runtime-manifest.json`, and `runtime/runtime-manifest.<buildId>.json` | each chunk's `sha256` and `bytes`, then each whole file (`lean.js`, `lean.wasm`) over its chunks in order. The digest-named copy is written from the tracked manifest's own bytes, never fetched. |
+| `profiles` | the transport parts of every manifest `profiles/index.json` lists | each part's `digest` and `byteLength` as the profile manifest records them, then the whole transport's `digest` and `byteLength` |
+| `snapshots` | every `.snapz` of `snapshots/index.json` | the entry's `digest` (the sha256 of the `.snapz` itself) and `transfer` (its size; `bytes` when an entry has no `transfer`) |
+
+**Site-owned files.** Snapshots and `/profiles/index.json` belong to the site
+that serves them (release.json `hosting.siteOwned`): they come from the
+tracked files or the origin, never from a release. With `--release`, the
+snapshots still come from `--origin`; with `--release --only runtime,profiles`
+the origin is not contacted at all.
+
+Every manifest URL must name a file directly under its group's directory
+(`/runtime/chunks/`, `/profiles/`, `/snapshots/`: no `..`, no subdirectory),
+and every target's directory, through symlinks, must resolve inside `--out`;
+otherwise the tool refuses before writing anything.
+
+- **Environment:** none.
+- **Inputs:** the tracked manifests, the release's `release.json` and files,
+  the origin's files.
+- **Outputs:** the files above under `--out` (and the manifests with
+  `--with-manifests`), one stdout summary line, progress on stderr.
+
+| Marker | Stream | Regex |
+|---|---|---|
+| plan | stderr | `^fetch-artifacts: (runtime\|profiles\|snapshots): (\d+) files, (\d+) bytes from (.+)$` (one per group, first) |
+| fetched | stderr | `^fetch-artifacts: fetched (\S+) \((\d+) bytes\)$` |
+| present | stderr | `^fetch-artifacts: present (\S+) \((\d+) bytes, verified\)$` (already there with its pin: skipped) |
+| replacing | stderr | `^fetch-artifacts: replacing (\S+): ` (there, but not with its pin) |
+| verified | stderr | `^fetch-artifacts: verified (.+) \((\d+) bytes, sha256 ([0-9a-f]{16})…, (\d+) parts\)$` (a whole file or transport) |
+| wrote | stderr | `^fetch-artifacts: wrote (\S+) \((\d+) bytes, the tracked (\S+)\)$` (the digest-named runtime manifest; `--with-manifests`) |
+| ok | stdout | `^FETCH OK (\d+) files, (\d+) bytes \((\d+) fetched, (\d+) already present\)$` (the only stdout line; the totals are the whole verified set) |
+| failed | stdout | `^FETCH FAILED (.*)$` (the only stdout line; the reason starts with the file it is about, when it is about one) |
+
+| Exit | Meaning |
+|---|---|
+| 0 | `FETCH OK`: every file the manifests name is under `--out` with its pinned digest. |
+| 1 | `FETCH FAILED`: a fetch failed (an HTTP status such as `404`, the network, 120 s without bytes), a size or digest mismatch, parts that do not assemble to their whole-file pin, or a release whose schema, `runtime.buildId` or `files[]` does not match. The run stops at the first failure; files verified before it stay. |
+| 2 | `FETCH FAILED`, refused before any write: a malformed `--only`, a tracked manifest missing or malformed, a manifest URL outside its directory, a target outside `--out`, or the default `--out` inside `node_modules`. |
+
+**Side effects, in order:**
+
+1. Reads the tracked manifests; with `--release`, its `release.json`. Every
+   refusal and every release mismatch happens here, before anything is
+   written.
+2. Creates the target directories under `--out` (`mkdir -p`).
+3. For each file (four at a time): hashes the file already there, if any, and
+   skips it when it matches its pin; otherwise GETs it into
+   `.<name>.<pid>-<random>.tmp` in the target's directory, counting and
+   hashing as it streams (a body longer than the pin is cut off), and renames
+   it into place only when the size and sha256 match. A mismatch deletes the
+   temp file. Nothing is written under a final name unverified.
+4. Re-reads each whole file's parts and checks the whole-file pin.
+5. Writes the digest-named runtime manifest (and, with `--with-manifests`,
+   the tracked manifests) the same way.
+
+Existing files that no manifest names are never touched or deleted.
+
+**Consumers:** the README's quick start and docs/TESTING.md ("a fresh clone
+runs G1 after fetch:artifacts"); `tests/unit/fetch-artifacts.test.ts`;
+`tests/consumer/check-consumer.mjs` (`--help` through the package symlink,
+and the no-manifests refusal). Neither downstream calls it yet.
+
 ### olean-imports --audit / --entries
 
 **Tier 1.** `node pipeline/artifacts/olean-imports.mjs --audit <tree>` or
@@ -937,6 +1028,7 @@ before it judges Lean's output.
 | 2 | 2026-10-06 | **Breaking, so contract 2:** the sibling-checkout fallback of node-runner and persistent-probe (another project's stage1, two directories above the repo) is deleted with no shim: it pointed at someone else's checkout. With no flag, no variable and no default stage1, the five tools now exit 2 with `no-path` and the usage line; before, node-runner exited 2 naming the sibling path, persistent-probe and snapshot-probe crashed with exit 1, and bake-snapshot exited 2 with `no-artifact`. `QED64_LEAN_ARTIFACT=""` now counts as unset in bake-snapshot too (it meant the cwd). Neither consumer relied on either: both pass `--artifact`. | breaking (a default removed) |
 | 2 | 2026-10-06 | `bake-snapshot --allow-legacy-imports`, the documented form of `QED64_ALLOW_LEGACY_IMPORTS=1` for the runner; the inherited variable stays accepted as its equivalent. node-runner, snapshot-probe and persistent-probe started without `--stack-size` re-exec themselves with `--stack-size=8192` through `process.execve` (same PID, stdio and exit code; "Runtime"); before, `npm run runner` and `gate.mjs`'s runs used V8's default stack. chunk-runtime runs git for the default `--revision` only when `--revision` is absent. snapshot-probe removes its scratch dir when the `--snap` link fails. | additive; fixes |
 | 2 | 2026-10-06 | A3 review fixes. The compiler battery's path-rule refusal (exit 2) leaves a record: compiler.log in `--run-dir` and a fresh all-infra `compiler-report.json` in `work/adversarial/` and the run dir, with a `refused` field naming the `no-path` line, written before the exit (its pairing is a harness input, not a pipeline output; the five tools' "exit 2 before any side effect" is unchanged). Before, it exited 2 with nothing written, so `run.mjs`'s report.md dropped the lane and `resident-gate.sh` printed the previous run's tally. `run.mjs` shows a lane that ran and wrote no report as a `REFUSED`/`NO REPORT` line; `resident-gate.sh` removes the old report before the battery. The harness's `teeLog` appends synchronously, so lines printed just before an exit reach the log. README "Baking snapshots" and docs/REBUILD.md §2/§3 pass `--artifact`/`--work`/`--out`/`--lib` explicitly instead of relying on the deprecated defaults. | fix, no flag or tool-output change |
+| 2 | 2026-10-06 | Plan step A3b: **fetch-artifacts**, a new Tier 1 tool (`pipeline/release/fetch-artifacts.mjs`, `npm run fetch:artifacts`, Node built-ins only, in `files` and closure.json `pipeline` with its `.d.mts`): fills a `public/`-shaped tree with every runtime chunk, profile pack part and snapshot `.snapz` the tracked manifests name, from a fork release (`--release`, checked against its `files[]` too) and a QED64 origin (`--origin`), each verified by sha256 and size and written by temp file + rename; one stdout line `FETCH OK …` / `FETCH FAILED …`. It replaces the retired `sync:artifacts`. The import-bound check in `tests/unit/cli-contract.test.ts` accepts `parseCli("<tool>", …)` with arguments (fetch-artifacts' `main(argv, io)` passes its own). | additive (a new tool) |
 
 ## Open decisions
 

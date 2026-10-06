@@ -81,6 +81,7 @@ const ARGS: Record<string, (d: string) => [string[], string[]]> = {
   "snapshot-probe": (d) => [["--snap", path.join(d, "work/init.snap"), "--probe", "#check 1", "--artifact", missing, "--lib", path.join(d, "lib"), "--budget-ms", "1000"], []],
   "persistent-probe": () => [["--artifact", missing], []],
   preflight: (d) => [["--url", "http://127.0.0.1:9/", "--no-boot", "--run-dir", path.join(d, "run")], []],
+  "fetch-artifacts": (d) => [["--out", path.join(d, "out"), "--manifests", d, "--origin", "http://127.0.0.1:9/", "--only", "runtime", "--with-manifests"], []],
   "olean-imports": (d) => [["--audit", path.join(d, "lib")], []],
   "chunk-runtime": (d) => [["--bin", path.join(d, "bin"), "--out", path.join(d, "out"), "--revision", "test"], []],
   pack: (d) => [["--lib", path.join(d, "lib"), "--id", "x", "--out", path.join(d, "out"), "--no-imports"], []],
@@ -225,7 +226,7 @@ describe("SPECS", () => {
       } else {
         expect(begins, tool).toBe(0);
         expect(source).toMatch(/import \{ parseCli \} from "(\.\/|(\.\.\/)+(pipeline\/)?snapshot\/)cli\.mjs";/);
-        expect(source).toContain(`parseCli(${JSON.stringify(tool)})`);
+        expect(source).toMatch(new RegExp(`parseCli\\(${JSON.stringify(tool)}[,)]`));
       }
     }
   });

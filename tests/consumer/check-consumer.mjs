@@ -9,8 +9,9 @@
 //      closure.json lists under it), each target inside the extracted
 //      package; a path outside `exports` must be refused; qed64/edge,
 //      the olean reader and closure.json are loaded for real;
-//      the shipped CLIs (preflight, olean-imports, cli.mjs) run --help
-//      through the symlink and print their usage line;
+//      the shipped CLIs (preflight, olean-imports, fetch-artifacts, cli.mjs) run --help
+//      through the symlink and print their usage line, and fetch-artifacts
+//      without --manifests refuses (the package ships no tracked manifests);
 //   4. tests/consumer/fixture/ (index.html + main.ts on qed64/embed,
 //      headless.ts = docs/EMBEDDING.md §6.1's headless boot on qed64/embed,
 //      worker.ts on qed64/edge) copied into the consumer, plus snippet.ts =
@@ -154,12 +155,20 @@ if (JSON.stringify(loaded.redirect) !== JSON.stringify([302, "https://consumer.e
 ok(`loaded from the tarball: qed64/edge (${loaded.edge.length} exports, a worker answered 302 with COEP), olean-imports, closure.json`);
 // The shipped CLIs run through the symlink (Node loads the main module by its realpath while
 // argv[1] keeps the symlink path; a main guard that compares plain paths prints nothing, exit 0).
-for (const cli of ["pipeline/release/preflight.mjs", "pipeline/artifacts/olean-imports.mjs", "pipeline/snapshot/cli.mjs"]) {
+for (const cli of ["pipeline/release/preflight.mjs", "pipeline/artifacts/olean-imports.mjs", "pipeline/release/fetch-artifacts.mjs", "pipeline/snapshot/cli.mjs"]) {
   const via = `node_modules/qed64/${cli}`;
   const help = sh(process.execPath, [via, "--help"], { cwd: consumer });
   if (!help.startsWith(`usage: ${path.basename(cli)} `)) fail(`node ${via} --help (through the symlink) printed ${JSON.stringify(help.slice(0, 120))}, not its usage line`);
 }
-ok("the shipped CLIs run through the node_modules/qed64 symlink: preflight, olean-imports, cli.mjs --help print their usage, exit 0");
+ok("the shipped CLIs run through the node_modules/qed64 symlink: preflight, olean-imports, fetch-artifacts, cli.mjs --help print their usage, exit 0");
+// The package carries no tracked manifests: fetch-artifacts without --manifests refuses (2) before any write.
+{
+  const r = spawnSync(process.execPath, ["node_modules/qed64/pipeline/release/fetch-artifacts.mjs", "--out", path.join(consumer, "fetched"), "--origin", "http://127.0.0.1:9/"], { cwd: consumer, encoding: "utf8", timeout: 60_000 });
+  if (r.status !== 2 || !/^FETCH FAILED no tracked manifest .*--manifests <dir>/.test(r.stdout) || fs.existsSync(path.join(consumer, "fetched"))) {
+    fail(`fetch-artifacts from the package without --manifests: exit ${r.status}, ${JSON.stringify((r.stdout + r.stderr).slice(0, 200))}`);
+  }
+  ok("fetch-artifacts from the package without --manifests refuses (exit 2: no tracked manifest) and writes nothing");
+}
 
 // 4. the fixture: typecheck and build against the tarball only
 const fixture = path.join(root, "tests/consumer/fixture");

@@ -11,7 +11,7 @@
 //
 // Two ways a script binds to it (SPEC.binding):
 //   "import" — the script imports parseCli from this module (supervised-run,
-//              preflight: both ship in the package beside this file);
+//              preflight, fetch-artifacts: they ship in the package beside this file);
 //   "inline" — the script carries a generated prelude (renderPrelude) between
 //              `// <cli-contract>` and `// </cli-contract>`: the same
 //              cliContract source, the compact spec and the help text, so it
@@ -367,6 +367,51 @@ export const SPECS = {
         example: "PREFLIGHT REFUSED: runtime manifest: http://localhost:5187/runtime/runtime-manifest.json: HTTP 404" },
       { id: "ok", stream: "stdout", template: ["PREFLIGHT OK buildId=${result.buildId} mode=${result.mode} snapshots=${target.snapshotsDir}"],
         regex: /^PREFLIGHT OK buildId=(\S+) mode=(\S+) snapshots=(\S+)$/, example: "PREFLIGHT OK buildId=wasm64-0123456789abcdef mode=resident snapshots=snapshots" },
+    ],
+  },
+
+  "fetch-artifacts": {
+    script: "pipeline/release/fetch-artifacts.mjs",
+    npm: "fetch:artifacts",
+    tier: 1,
+    binding: "import",
+    node: "node",
+    synopsis: "fetch-artifacts.mjs [--out <dir>] [--manifests <dir>] [--release <dir|url>] [--origin <url|dir>] [--only runtime,profiles,snapshots] [--with-manifests]",
+    summary: "Fill a public/-shaped tree with every binary the tracked manifests name (runtime chunks, profile pack parts, snapshot .snapz), each verified by sha256 and size and written by temp file + rename; files already present with the pinned digest are skipped. Runtime and profiles come from --release when given, everything else from --origin; snapshots are site-owned and never come from a release.",
+    flags: [
+      { name: "out", value: "<dir>", default: "this checkout's public/ (refused when that is inside node_modules)", doc: "the tree to fill; nothing is written outside it" },
+      { name: "manifests", value: "<dir>", default: "this checkout's public/", doc: "the tree holding the tracked manifests (runtime/runtime-manifest.json, profiles/index.json and its manifests, snapshots/index.json); an installed package has none" },
+      { name: "release", value: "<dir|url>", doc: "a fork release in the served layout (release.json, lean4-wasm64.release/v1): /runtime/* and /profiles/* come from it, each also checked against its files[] sha256 and bytes" },
+      { name: "origin", value: "<url|dir>", default: "https://qed64.fawadworkaddress.workers.dev/", doc: "a QED64 site (or a served tree on disk): everything --release does not provide" },
+      { name: "only", value: "<groups>", default: "runtime,profiles,snapshots", doc: "a comma list of runtime, profiles, snapshots" },
+      { name: "with-manifests", doc: "also write the tracked manifests themselves into --out (for a tree that is not this checkout's public/)" },
+    ],
+    env: [],
+    exits: {
+      0: "FETCH OK: every file the manifests name is in --out with its pinned digest",
+      1: "FETCH FAILED: a fetch failed (an HTTP status, the network), a size or digest mismatch (the temp file is deleted), parts that do not assemble to their whole-file pin, or a release that does not list or pin a file as the manifests do",
+      2: "FETCH FAILED, refused before any write: a malformed --only, a tracked manifest missing or malformed, a manifest URL outside its directory, a target outside --out (a symlink out of the tree), or the default --out inside node_modules",
+    },
+    markers: [
+      { id: "plan", stream: "stderr", template: ["${TOOL}: ${group}: ${g.length} files, ${g.reduce((s, j) => s + j.bytes, 0)} bytes from ${from}"],
+        regex: /^fetch-artifacts: (runtime|profiles|snapshots): (\d+) files, (\d+) bytes from (.+)$/,
+        example: "fetch-artifacts: runtime: 10 files, 158847486 bytes from https://qed64.fawadworkaddress.workers.dev/" },
+      { id: "fetched", stream: "stderr", template: ["${TOOL}: fetched ${j.rel} (${j.bytes} bytes)"],
+        regex: /^fetch-artifacts: fetched (\S+) \((\d+) bytes\)$/, example: "fetch-artifacts: fetched runtime/chunks/lean.wasm.5500c87fb8f37d2e273a.part-000 (16777216 bytes)" },
+      { id: "present", stream: "stderr", template: ["${TOOL}: present ${j.rel} (${j.bytes} bytes, verified)"],
+        regex: /^fetch-artifacts: present (\S+) \((\d+) bytes, verified\)$/, example: "fetch-artifacts: present snapshots/init.b6d945e398b4d55e.snapz (32643656 bytes, verified)" },
+      { id: "replacing", stream: "stderr", template: ["${TOOL}: replacing ${j.rel}: the file there does not match its pin"],
+        regex: /^fetch-artifacts: replacing (\S+): /, example: "fetch-artifacts: replacing profiles/lean-core.pack.gzip.bc2709bea0127940a05b.part-000: the file there does not match its pin" },
+      { id: "verified", stream: "stderr", template: ["${TOOL}: verified ${w.label} (${w.bytes} bytes, sha256 ${got.slice(0, 16)}…, ${w.rels.length} parts)"],
+        regex: /^fetch-artifacts: verified (.+) \((\d+) bytes, sha256 ([0-9a-f]{16})…, (\d+) parts\)$/,
+        example: "fetch-artifacts: verified runtime lean.wasm (109875453 bytes, sha256 3ab1c6a9da03bc29…, 7 parts)" },
+      { id: "wrote", stream: "stderr", template: ["${TOOL}: wrote ${c.rel} (${c.bytes} bytes, the tracked ${c.from ?? c.rel})"],
+        regex: /^fetch-artifacts: wrote (\S+) \((\d+) bytes, the tracked (\S+)\)$/,
+        example: "fetch-artifacts: wrote runtime/runtime-manifest.wasm64-3ab1c6a9da03bc29.json (2858 bytes, the tracked runtime/runtime-manifest.json)" },
+      { id: "ok", stream: "stdout", template: ["FETCH OK ${stats.files} files, ${stats.bytes} bytes (${stats.fetched} fetched, ${stats.present} already present)"],
+        regex: /^FETCH OK (\d+) files, (\d+) bytes \((\d+) fetched, (\d+) already present\)$/, example: "FETCH OK 139 files, 1260153706 bytes (139 fetched, 0 already present)" },
+      { id: "failed", stream: "stdout", template: ["FETCH FAILED ${e.message}"], regex: /^FETCH FAILED (.*)$/,
+        example: "FETCH FAILED snapshots/init.b6d945e398b4d55e.snapz: HTTP 404 from https://qed64.fawadworkaddress.workers.dev/snapshots/init.b6d945e398b4d55e.snapz" },
     ],
   },
 
