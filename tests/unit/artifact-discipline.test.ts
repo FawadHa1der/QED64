@@ -500,6 +500,59 @@ describe("promote-staging.mjs", () => {
     expect(sha(fs.readFileSync(served))).toBe(sha(fs.readFileSync(path.join(stage, "profiles", s.parts[0]!))));
     expect(run(verifyRelease, ["--public", pub]).status).toBe(0);
   }, 120_000);
+
+  test("refuses any target a symlink sends outside --public (a directory or a file), before writing anything", () => {
+    const stage = path.join(tmp, "stage-escape");
+    stageRuntime(stage, "esc");
+    // runtime/chunks as a DIRECTORY symlink into another tree: this worktree's public/ has exactly that shape
+    const pub = path.join(tmp, "public-escape-dir");
+    const elsewhere = path.join(tmp, "elsewhere-chunks");
+    fs.mkdirSync(elsewhere, { recursive: true });
+    fs.mkdirSync(path.join(pub, "runtime"), { recursive: true });
+    fs.symlinkSync(elsewhere, path.join(pub, "runtime/chunks"));
+    for (const extra of [["--dry-run"], []]) {
+      const r = run(promote, ["--staging", stage, "--public", pub, ...extra]);
+      expect(r.status).toBe(2);
+      expect(r.stderr).toMatch(new RegExp(`^promote: refusing .*runtime/chunks/lean\\.js\\.[0-9a-f]{20}\\.part-000: it resolves to ${fs.realpathSync(elsewhere).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/.*, outside --public .* — nothing was written\n$`));
+      expect(fs.readdirSync(elsewhere)).toEqual([]);
+      expect(fs.readdirSync(path.join(pub, "runtime"))).toEqual(["chunks"]);
+    }
+    // a mutable file (the default manifest) as a symlink to a file outside: refused, the outside file untouched
+    const pub2 = path.join(tmp, "public-escape-file");
+    const outsideFile = path.join(tmp, "elsewhere-manifest.json");
+    fs.writeFileSync(outsideFile, "the other checkout's manifest");
+    fs.mkdirSync(path.join(pub2, "runtime"), { recursive: true });
+    fs.symlinkSync(outsideFile, path.join(pub2, "runtime/runtime-manifest.json"));
+    const f = run(promote, ["--staging", stage, "--public", pub2]);
+    expect(f.status).toBe(2);
+    expect(f.stderr).toMatch(/refusing .*runtime\/runtime-manifest\.json: it resolves to .*elsewhere-manifest\.json, outside --public/);
+    expect(fs.readFileSync(outsideFile, "utf8")).toBe("the other checkout's manifest");
+    expect(fs.readdirSync(path.join(pub2, "runtime"))).toEqual(["runtime-manifest.json"]);
+    // a --public that is itself a symlink, and a symlink that stays inside the tree, are fine
+    const realPub = path.join(tmp, "public-real-target");
+    fs.mkdirSync(path.join(realPub, "snapshots-real"), { recursive: true });
+    fs.symlinkSync("snapshots-real", path.join(realPub, "snapshots"));
+    const linkPub = path.join(tmp, "public-link");
+    fs.symlinkSync(realPub, linkPub);
+    const ok = run(promote, ["--staging", stage, "--public", linkPub]);
+    expect(ok.status, ok.stderr).toBe(0);
+    expect(fs.readdirSync(path.join(realPub, "snapshots-real")).sort()).toEqual(["index.json", expect.stringMatching(/^init\.[0-9a-f]{16}\.snapz$/)]);
+  });
+
+  test("a kernel-only re-point keeps the served profile index's trailing newline (and adds none it lacked)", () => {
+    for (const eol of ["\n", ""]) {
+      const tag = eol ? "nl" : "nonl";
+      const pub = path.join(tmp, `public-eol-${tag}`);
+      stagePairing(path.join(tmp, `stage-eol-base-${tag}`), `eol-base-${tag}`);
+      expect(run(promote, ["--staging", path.join(tmp, `stage-eol-base-${tag}`), "--public", pub]).status).toBe(0);
+      const indexFile = path.join(pub, "profiles/index.json");
+      const served = JSON.parse(fs.readFileSync(indexFile, "utf8"));
+      fs.writeFileSync(indexFile, JSON.stringify(served, null, 2) + eol); // the tracked file ends in a newline
+      const bump = stageRuntime(path.join(tmp, `stage-eol-bump-${tag}`), `eol-bump-${tag}`, { leanVersion: LEAN });
+      expect(run(promote, ["--staging", path.join(tmp, `stage-eol-bump-${tag}`), "--public", pub]).status).toBe(0);
+      expect(fs.readFileSync(indexFile, "utf8")).toBe(JSON.stringify({ ...served, runtime: { buildId: bump.manifest.buildId, leanVersion: LEAN } }, null, 2) + eol);
+    }
+  }, 120_000);
 });
 
 describe("snapshot index schema", () => {

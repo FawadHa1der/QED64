@@ -56,6 +56,12 @@
 //     reader is what the pairing fields are for (snapshot entry.runtime is
 //     enforced by the worker; index.runtime is the same handle for packs).
 //
+// CONFINED. Every target — each copied file and each switched one — must lie
+// inside realpath(--public) once symlinks are resolved, or the promote exits 2
+// before writing anything: a tree whose runtime/chunks is a symlink into
+// another checkout (this repo's worktrees are built that way) would otherwise
+// send the chunks into that checkout's served tree.
+//
 // Usage: node pipeline/release/promote-staging.mjs --staging work/staging/<buildId>
 //        [--public public] [--dry-run]
 
@@ -273,7 +279,9 @@ function repointServedProfileIndex() {
     if (!fs.existsSync(file)) fail(`served profile ${entry.id}: ${rel(file)} is absent — cannot assert its pairing with ${promotedRuntime.buildId}`);
     requirePackVersion(entry.id, readJson(file, `served profile ${entry.id} manifest`), "served, not restaged");
   }
-  return JSON.stringify({ ...served, runtime: promotedRuntime }, null, 2);
+  // The served file ends in a newline (git's view of it); a re-point keeps it.
+  const eol = fs.readFileSync(servedIndexPath, "utf8").endsWith("\n") ? "\n" : "";
+  return JSON.stringify({ ...served, runtime: promotedRuntime }, null, 2) + eol;
 }
 
 let stagedPacks = null;
@@ -290,8 +298,27 @@ if (fs.existsSync(path.join(stagedProfiles, "index.json"))) {
 // ------------------------------------------------------------------ plan --
 const plan = [];
 const tmpName = (to) => `${to}.${process.pid}.tmp`;
+// Every target must land inside --public once symlinks are resolved: a tree
+// whose runtime/chunks (or any file) is a symlink into another checkout would
+// otherwise send the promote's bytes there (fetch-artifacts confines its
+// writes the same way). Resolved as far as the path exists.
+const inside = (p, dir) => { const r = path.relative(dir, p); return r === "" || (!r.startsWith("..") && !path.isAbsolute(r)); };
+const realish = (p) => {
+  const rest = [];
+  let cur = p;
+  while (!fs.existsSync(cur) && path.dirname(cur) !== cur) { rest.unshift(path.basename(cur)); cur = path.dirname(cur); }
+  return path.join(fs.realpathSync.native(cur), ...rest);
+};
+const publicReal = realish(publicDir);
+const confine = (to) => {
+  const real = realish(to);
+  if (!inside(to, publicDir) || !inside(real, publicReal)) {
+    fail(`refusing ${rel(to)}: it resolves to ${real}, outside --public ${publicReal} (a symlink leaves the tree) — nothing was written`);
+  }
+};
 const copyAdditive = (from, toDir, base, sha) => {
   const to = path.join(toDir, base);
+  confine(to);
   if (fs.existsSync(to)) {
     if (!sha || sha256File(to) === sha) { plan.push(`keep  ${rel(to)}`); return; }
     // A content-addressed name with other bytes under it is a torn copy; the
@@ -314,12 +341,21 @@ const switchFile = (to, data) => {
   // One switch per target, ever: a duplicate would share a temp name and
   // tear the rename phase.
   if (switchTargets.has(to)) fail(`internal: ${rel(to)} is queued for switching twice — refusing before anything is touched`);
+  confine(to);
   switchTargets.add(to);
   plan.push(`swap  ${rel(to)}`);
   switches.push({ to, data });
 };
 
-// 2. content-addressed files
+// 2. content-addressed files — every target (these and the switches below)
+// confined first, so a refusal leaves the tree exactly as it was
+const perBuildManifest = path.join(publicRuntime, `runtime-manifest.${manifest.buildId}.json`);
+for (const to of [
+  ...chunkFiles.map((c) => path.join(publicRuntime, "chunks", c.base)),
+  ...snapshotFiles.map((s) => path.join(publicSnapshots, s.base)),
+  ...(stagedPacks ? [...stagedPacks.parts.keys(), ...stagedPacks.manifests.map((m) => m.base)].map((b) => path.join(publicProfiles, b)) : []),
+  perBuildManifest, path.join(publicSnapshots, "index.json"), path.join(publicRuntime, "runtime-manifest.json"), path.join(publicProfiles, "index.json"),
+]) confine(to);
 for (const { base, from, sha } of chunkFiles) copyAdditive(from, path.join(publicRuntime, "chunks"), base, sha);
 for (const { base, from, sha } of snapshotFiles) copyAdditive(from, publicSnapshots, base, sha);
 if (stagedPacks) for (const [base, { from, sha }] of stagedPacks.parts) copyAdditive(from, publicProfiles, base, sha);
@@ -328,7 +364,7 @@ if (stagedPacks) for (const [base, { from, sha }] of stagedPacks.parts) copyAddi
 const manifestText = JSON.stringify(manifest, null, 2);
 // The per-build (immutable) name first, so `?runtime=<buildId>` and the
 // pinned shell can find it before the default flips.
-switchFile(path.join(publicRuntime, `runtime-manifest.${manifest.buildId}.json`), manifestText);
+switchFile(perBuildManifest, manifestText);
 if (stagedPacks) for (const { base, bytes } of stagedPacks.manifests) switchFile(path.join(publicProfiles, base), bytes);
 switchFile(path.join(publicSnapshots, "index.json"), JSON.stringify(index, null, 2));
 switchFile(path.join(publicRuntime, "runtime-manifest.json"), manifestText);
