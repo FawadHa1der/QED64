@@ -20,7 +20,9 @@
 #              operator checking a build, and for tests/unit/deploy-script.test.ts)
 # It runs from the repository root whatever the cwd. Exit 0 deployed (or, with
 # --dry-run, ready to deploy); 1 the size check refused; 2 a bad argument; a
-# failing step stops the script with that step's own exit code.
+# failing step stops the script with that step's own exit code. 1 also comes
+# from a failing step (vite build exits 1): a size refusal is the run whose
+# stderr ends with a `deploy-app: REFUSED:` line.
 #
 # Auth: wrangler's native non-interactive variables, CLOUDFLARE_API_TOKEN and
 # CLOUDFLARE_ACCOUNT_ID (the account id spares narrowly-scoped tokens the

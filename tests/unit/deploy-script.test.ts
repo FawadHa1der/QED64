@@ -14,8 +14,9 @@ const root = path.resolve(__dirname, "../..");
 const SCRIPT = "scripts/deploy-app.sh";
 const MiB25 = 25 * 1024 * 1024;
 
-// A command line, not a comment: shell/YAML `#`, JS `//` and block-comment `*` lines are prose.
-const isComment = (line: string) => /^\s*(#|\/\/|\*|\/\*)/.test(line);
+// A command line, not a comment: shell/YAML `#`, JS `//`, `/*` and block-comment continuation lines
+// (`*` then a space, `/` or the line's end) are prose. A shell `case` arm such as `*) rm -rf …` is code.
+const isComment = (line: string) => /^\s*(#|\/\/|\/\*|\*(\s|\/|$))/.test(line);
 const PRUNE = /\brm\s+-[a-zA-Z]*r[a-zA-Z]*\b.*\bdist\/(runtime|profiles|snapshots)\b/;
 const WRANGLER_DEPLOY = /\bwrangler(@\S+)?\s+deploy\b|wrangler-action/;
 
@@ -41,6 +42,17 @@ describe("deploy.yml calls the one deploy script", () => {
     for (const s of steps.filter((s) => s !== `bash ${SCRIPT}`)) {
       expect(s).not.toMatch(/build:site|typecheck:site|\brm\b|wrangler/);
     }
+  });
+
+  it("has no `run:` the step list misses: no named step's `run:`, no `run: |` or `run: >` block", () => {
+    const runLines = text.split("\n").filter((l) => !isComment(l) && /^\s*-?\s*run:/.test(l));
+    expect(runLines.length, runLines.join("\n")).toBe(steps.length);
+    for (const l of runLines) expect(l).not.toMatch(/run:\s*[|>]/);
+  });
+
+  it("no line but the script's step runs build:site or typecheck:site", () => {
+    const lines = text.split("\n").filter((l) => !isComment(l) && l.trim() !== `- run: bash ${SCRIPT}`);
+    for (const l of lines) expect(l).not.toMatch(/build:site|typecheck:site/);
   });
 
   it("hands the script wrangler's auth variables", () => {
@@ -101,11 +113,11 @@ describe("scripts/deploy-app.sh against stubbed npm/npx", () => {
     for (const d of [path.join(repo, "scripts"), path.join(repo, "frontend"), bin, elsewhere]) fs.mkdirSync(d, { recursive: true });
     fs.copyFileSync(path.join(root, SCRIPT), path.join(repo, SCRIPT));
     // `npm run build:site` writes a dist/ with the artifact directories the prune must remove, plus
-    // STUB_BIG_BYTES of one sparse file; STUB_FAIL names a script that exits 7.
+    // STUB_BIG_BYTES of one sparse file; STUB_FAIL names a script that exits STUB_FAIL_CODE (default 7).
     fs.writeFileSync(path.join(bin, "npm"), [
       "#!/bin/sh",
       'printf "npm %s\\n" "$*" >> "$STUB_LOG"',
-      'if [ "$1" = run ] && [ "$2" = "$STUB_FAIL" ]; then exit 7; fi',
+      'if [ "$1" = run ] && [ "$2" = "$STUB_FAIL" ]; then exit "${STUB_FAIL_CODE:-7}"; fi',
       'if [ "$1" = run ] && [ "$2" = build:site ]; then',
       "  rm -rf dist && mkdir -p dist/assets dist/runtime dist/profiles/mathlib dist/snapshots",
       "  echo shell > dist/index.html; echo chunk > dist/runtime/lean.wasm.0; echo pack > dist/profiles/mathlib/p.pack; echo snap > dist/snapshots/index.json",
@@ -164,6 +176,14 @@ describe("scripts/deploy-app.sh against stubbed npm/npx", () => {
     const r = run([], { STUB_FAIL: "typecheck:site" });
     expect(r.status).toBe(7);
     expect(r.argv).toEqual(BUILD.slice(0, 2));
+  });
+
+  // vite build exits 1 on an error, the same code as the size refusal: only the REFUSED line tells them apart.
+  it("a build failing with exit 1 stops the script with 1 and no REFUSED line", () => {
+    const r = run([], { STUB_FAIL: "build:site", STUB_FAIL_CODE: "1" });
+    expect(r.status).toBe(1);
+    expect(r.argv).toEqual(BUILD);
+    expect(r.stderr).not.toMatch(/deploy-app: REFUSED:/);
   });
 
   it("refuses an unknown argument with exit 2 before running anything", () => {

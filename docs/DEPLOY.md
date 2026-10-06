@@ -80,8 +80,12 @@ From the repository root, whatever the cwd, under `set -euo pipefail`:
 `deploy-app: --dry-run: dist/ is ready; would run: npx wrangler deploy`
 instead of deploying. Exit codes: 0 deployed (or ready, with `--dry-run`),
 1 the size check refused, 2 an unknown argument, and otherwise the exit code
-of the step that failed. `--help` prints the script's header.
-`tests/unit/deploy-script.test.ts` pins `deploy.yml`'s step order, that no
+of the step that failed. 1 also comes from a failing step (vite build exits
+1): a size refusal is the run whose stderr ends with a `deploy-app: REFUSED:`
+line. `--help` prints the script's header.
+`tests/unit/deploy-script.test.ts` pins `deploy.yml`'s step order (every
+`run:` line, named or block, must be a one-line `- run:` step, and no line
+but the script's step names `build:site` or `typecheck:site`), that no
 other tracked file outside docs and tests runs the prune or `wrangler
 deploy`, and the script itself, run with stub `npm`/`npx` commands.
 
