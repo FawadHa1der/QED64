@@ -36,19 +36,114 @@ at the origin root.
    keys (command in `scripts/upload-artifacts.sh`), then run
    `scripts/upload-artifacts.sh` — one ~2.1 GB multipart upload; re-run
    only when artifacts change.
-4. `scripts/deploy-app.sh` — builds the shell and `wrangler deploy`s it.
-   The app is live at `qed64.<account>.workers.dev` (or attach a domain).
+4. `scripts/deploy-app.sh` — builds the shell and `wrangler deploy`s it
+   (see "The deploy script" below; `--dry-run` first if you want to see the
+   build pass without deploying). The app is live at
+   `qed64.<account>.workers.dev` (or attach a domain).
 
 ## Continuous integration & deployment
 
 - `.github/workflows/ci.yml` — every push/PR: typecheck, 95 unit tests,
   worker syntax. No artifacts needed; runs in under a minute.
-- `.github/workflows/deploy.yml` — pushes to `main` rebuild and redeploy
-  the app shell (needs the `CLOUDFLARE_API_TOKEN` repo secret). Artifact
+- `.github/workflows/deploy.yml` — pushes to `main` install both roots
+  (`npm ci`, `npm ci --prefix frontend`), run the root typecheck and the
+  unit suite, then run `scripts/deploy-app.sh`, the same script an operator
+  runs by hand (needs the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`
+  repo secrets). Artifact
   changes stay a manual `scripts/upload-artifacts.sh` — they change only
   when the toolchain is rebuilt or snapshots re-baked, which requires the
   14-core local pipeline anyway (GitHub's free runners have neither the
   cores nor the ~15 GB wasm heap the umbrella bake needs).
+
+### The deploy script
+
+`scripts/deploy-app.sh` is the only place the shell is built for a deploy
+and the only place `wrangler deploy` runs; `deploy.yml` adds nothing to it.
+From the repository root, whatever the cwd, under `set -euo pipefail`:
+
+1. `npm ci --prefix frontend`, only when `frontend/node_modules` is absent
+   (local use; CI has installed both roots already);
+2. `npm run typecheck:site`, then `npm run build:site` (into `dist/`);
+3. the prune, `rm -rf dist/runtime dist/profiles dist/snapshots`: artifacts
+   are served from R2 and never bundled (Vite's `publicDir` is off for
+   builds, so this is a defensive invariant);
+4. the size check: if `dist/` still holds a `runtime/`, `profiles/` or
+   `snapshots/` path, or any file over 25 MiB (the Workers static-assets
+   cap per file), the script prints one `deploy-app: REFUSED: …` line on
+   stderr and exits 1 before wrangler uploads anything;
+5. `npx wrangler deploy` (the wrangler pinned in devDependencies; plain
+   wrangler rather than `wrangler-action`, whose wrapper swallowed error
+   output). It authenticates with `CLOUDFLARE_API_TOKEN` and
+   `CLOUDFLARE_ACCOUNT_ID` when set, else with `wrangler login`.
+
+`scripts/deploy-app.sh --dry-run` runs steps 1 to 4 and prints
+`deploy-app: --dry-run: dist/ is ready; would run: npx wrangler deploy`
+instead of deploying. Exit codes: 0 deployed (or ready, with `--dry-run`),
+1 the size check refused, 2 an unknown argument, and otherwise the exit code
+of the step that failed. 1 also comes from a failing step (vite build exits
+1): a size refusal is the run whose stderr ends with a `deploy-app: REFUSED:`
+line. `--help` prints the script's header.
+`tests/unit/deploy-script.test.ts` pins `deploy.yml`'s step order (every
+`run:` line, named or block, must be a one-line `- run:` step, and no line
+but the script's step names `build:site` or `typecheck:site`), that no
+other tracked file outside docs and tests runs the prune or `wrangler
+deploy`, and the script itself, run with stub `npm`/`npx` commands.
+
+### Local preview: the Worker's own code
+
+`npm run build:site && npm run preview:prod` (`node scripts/serve-dist.mjs`,
+http://localhost:5185) serves a production build through **the same code
+the live site runs**: each request becomes a Fetch `Request` for
+`infra/worker.js`'s `fetch(request, env, ctx)`, and its `Response` is written
+back (status, every header, the body streamed; HEAD sends none). There are
+no local path rules or headers to drift from the Worker's. `env` holds Node
+stand-ins for the two `wrangler.toml` bindings:
+
+- `ASSETS`: the Workers static-assets subset QED64 relies on, over `dist/`
+  (or `DIST=<dir>`): `/` and `<dir>/` serve their `index.html`,
+  `html_handling`'s default `auto-trailing-slash` redirects
+  (`/index.html` and `/x.html` answer 307 to `/` and `/x`, `/index` and
+  `<dir>/index` 307 to `/` and `<dir>/`; a run of slashes, `//assets/x.html`,
+  collapses in one 307 to `/assets/x`, and no `Location` ever starts with
+  `//`, as live), the live
+  content types (`text/html`, `text/javascript`, ... without a charset),
+  an etag and `Content-Length` on GET (HTML has neither, as live), no
+  `Content-Length` on HEAD (the real binding sends none), an empty 404.
+  Encoded `..` segments and symlinks that leave `dist/` are refused.
+- `ARTIFACTS`: an R2 bucket over `public/` (`runtime/`, `profiles/`,
+  `snapshots/`; symlinks followed, as in a worktree): `head`/`get` with R2's
+  range semantics, streamed file bodies, the content type rclone stores
+  (`application/json` for `.json`, else `application/octet-stream`). Its
+  etag is a hash of size and mtime, not R2's MD5.
+
+Both stand-ins open a file before they return it, so one that stats but
+cannot be opened (`EACCES`, a snapshot replaced in the main checkout
+mid-request) answers 500 `internal error` with the isolation headers and a
+log line, never a 200 head on a reset connection.
+
+Where the Workers runtime adds a `Content-Length` the worker does not set
+(an R2 body, the worker's own `not found`), the Node layer adds it too, so
+a legacy artifact GET carries its length and a legacy HEAD carries none,
+exactly as on the live site (header table checked against
+`qed64.fawadworkaddress.workers.dev` on 2026-10-06: the same headers apart
+from Cloudflare's own, etag values, and lengths of files the two builds
+differ in).
+
+`QED64_EDGE` picks the worker: `legacy` (the default) is `infra/worker.js`,
+`createWorker(QED64_LEGACY)`, what is deployed; `hardened` is
+`createWorker({})`, the defaults of "Legacy vs hardened" below, which the live
+site has **not** adopted. Use it to preview and test that switch locally
+(Range 206/416, metadata HEAD with `Content-Length`, 405, no-store errors)
+before deciding on it. Any other value exits 2 with the usage line before
+listening. The startup line names the mode: `prod preview:
+http://localhost:5185 (<dist> + public artifacts) edge=legacy`.
+
+One route is local only and never in the Worker: `/embed-host.html` (the
+test embed host, `public/embed-host.html`) is answered by the Node layer
+before the worker, with the isolation headers. `PORT` and `DIST` work as
+before. `tests/unit/serve-dist.test.ts` pins the headers per mode and runs a
+request matrix through serve-dist and through the worker's own `fetch` with
+in-memory bindings, which must agree.
 
 ## Consistency rule
 
@@ -189,7 +284,9 @@ The behaviour switches default to the hardened forks' behaviour;
 | `errorCacheControl` | `"no-store"` for every status ≥ 400 | `null`: the path rule (a 404 on a digest-named path is cached for a year) |
 
 New consumers take the defaults. Adopt switches one at a time with
-`createWorker({ ...QED64_LEGACY, errorCacheControl: "no-store" })`. Under
+`createWorker({ ...QED64_LEGACY, errorCacheControl: "no-store" })`.
+`QED64_EDGE=hardened npm run preview:prod` serves a local build through the
+hardened defaults ("Local preview: the Worker's own code" above). Under
 the hardened switches the worker's bucket operations are still reads only
 (`get` and `head`). Neither mode sets a `Content-Encoding` (the runtime
 worker refuses transformed chunks) or carries an upstream `statusText`.
