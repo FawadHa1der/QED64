@@ -55,7 +55,11 @@ at the origin root.
 Snapshots are binary-paired to the runtime. **Never upload a runtime
 without its snapshots** (or vice versa): sync R2 from a `promote:staging`
 output so `runtime/`, `snapshots/` and `index.json` move together, exactly
-like the local promote. The digest-named chunk files make mixed CDN caches
+like the local promote. A toolchain release is adopted with
+`pipeline/release/adopt-release.sh` (docs/REBUILD.md §3), which bakes against
+the release's runtime, stages the pairing under `work/staging/<buildId>/`
+and promotes it into an ISOLATED served tree (`--public`; never a checkout's
+`public/`); that tree is the promote output to upload from. The digest-named chunk files make mixed CDN caches
 harmless; the mutable files (`runtime-manifest.json`, `snapshots/index.json`)
 are served `must-revalidate`.
 
@@ -77,6 +81,13 @@ broken window whichever went first. The pinning scheme closes it:
 
 Promote checklist, in order:
 
+0. For a new toolchain release: `pipeline/release/adopt-release.sh … --public
+   <isolated tree>` (run `--dry-run` first), then its printed landing steps:
+   `toolchain/lean4-wasm64-release.json` ← the adopted `release.json`,
+   `pipeline/toolchain/KERNEL-PIN` ← the generated `work/adopt/<id>/KERNEL-PIN`
+   (release-manifest checks its commit against the runtime's
+   `sourceRevision`), the three tracked manifests from the isolated tree,
+   and the devDependency re-pinned to the release's tgz once published.
 1. Commit the new `public/runtime/runtime-manifest.json` (paired with the
    rebaked snapshots) — the shell build reads its `buildId`.
 2. `scripts/upload-artifacts.sh` — additive; invisible to deployed shells

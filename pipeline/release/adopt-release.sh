@@ -19,6 +19,8 @@
 # --fat-tree also writes $W/lib-tree (no --slim). --dry-run validates and prints the plan, fetching
 # and writing nothing. --keep keeps $W/release's chunks and pack parts after a successful run.
 # Refusals: one stderr line `adopt-release: …`, exit 2. A failed step: ADOPT-FAIL <step>, exit 1.
+# Env: QED64_PUBLIC_DIR (the served tree a release is compared with, default public/; read only),
+# QED64_ADOPT_IGNORE_DISK=1 (skip the free-space floor: 12 GB under work/, 16 GB with the fat tree).
 set -u
 Q=$(cd "$(dirname "$0")/../.." && pwd -P); cd "$Q" || exit 2
 H=(node "$Q/pipeline/release/adopt-helper.mjs")
@@ -126,7 +128,7 @@ step fetch-artifact pkg fetch --from "$SRC" --out "$W/artifact" --only runtime -
 checkrecord "$W/release/release.json"; [ "$STAGING" = "$Q/work/staging/$BID" ] || fail "the fetched record names runtime $BID, not the one planned"
 if [ $FROMDIR = 1 ]; then say verify; step verify pkg verify --release "$SRC"${SKIP}; grep -E '^RELEASE' "$L/verify.log"; fi
 say artifact-lib; rm -rf "$W/artifact/lib"; step artifact-lib pkg unpack --manifest "$R/lean-lib.manifest.json" --out "$W/artifact/lib/lean"
-[ -n "$(find "$W/artifact/lib/lean" -name '*.ilean' -print -quit)" ] || echo "note: lean-lib carries no .ilean files: the persistent-path test's patch-0010 check (docs/TESTING.md) is SKIPPED on $W/artifact, not failed" | tee -a "$L/notes.log"
+[ -n "$(find "$W/artifact/lib/lean" -name '*.ilean' -print -quit)" ] || echo "note: lean-lib carries no .ilean files: the persistent-path test's patch-0010 check (docs/TESTING.md) is skipped on $W/artifact, not failed (the test runs)" | tee -a "$L/notes.log"
 say base-trees; for t in $TREES; do rm -rf "${W:?}/$t"; done
 step core-lib-slim pkg unpack --slim --manifest "$R/$INITLIB.manifest.json" --out "$W/core-lib-slim"
 for m in lean-core mathlib-essential; do

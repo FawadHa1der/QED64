@@ -9,11 +9,12 @@ commit named in `pipeline/toolchain/KERNEL-PIN` on branch `qed64-wasm64` of
 build environment is the Dockerfile under `docker-wasm64/` in that tree, and
 every downstream artifact is a deterministic function of those.
 
-> Last checked against the tree on 2026-09-22 (pairing
-> `wasm64-36a96239e08fd2e0`, Lean 4.34.0 — the first version import,
-> done with `pipeline/release/import-packs.sh`, §3b). The one-command form of
-> section 3 is `QED64_ARTIFACT=<fetched runtime> pipeline/release/bump-chain.sh stage-artifact` … pyramid …
-> `pipeline/release/bump-chain.sh promote`.
+> Last checked against the tree on 2026-10-06. The one-command form of
+> sections 1-3 for a published (or staged) lean4-wasm64 release is
+> `pipeline/release/adopt-release.sh` (§3), which replaced
+> `pipeline/release/import-packs.sh` and `bump-chain.sh` in plan step B2a:
+> the release already packs, checks the pair, gates, chunks and names the
+> build.
 
 ## What is where
 
@@ -51,11 +52,12 @@ follow `wasm64-build/` there; the gate it runs must print `GATE PASSED`. To
 use the published one, fetch the release (`npm run fetch:artifacts -- --release
 <dir|url>`, or `lean4-wasm64 fetch`); its `runtime/` is already chunked and
 its `buildId` (`wasm64-<sha256(lean.wasm)[:16]>`) is `release.json`
-`runtime.buildId`. QED64's own `pipeline/toolchain/gate.mjs` forwards to the
-package's gate, and `pipeline/release/bump-chain.sh stage` refuses: stage a
-fetched runtime with `QED64_ARTIFACT=<its dir> bump-chain.sh stage-artifact`.
-(`setup-source.sh`, `build.sh`, `finish.sh` and the patch copies under
-`pipeline/toolchain/` are retired; `gen-exports.py` is a stub that exits 2.)
+`runtime.buildId`. QED64's own `pipeline/toolchain/gate.mjs` and
+`chunk-runtime.mjs` forward to the package's gate and chunker; a release's
+runtime is staged by `adopt-release.sh` (§3) from the release's own chunks,
+with no chunker and no restamp. (`setup-source.sh`, `build.sh`, `finish.sh`
+and the patch copies under `pipeline/toolchain/` are deleted;
+`gen-exports.py` is a stub that exits 2.)
 
 The resulting `buildId` names the runtime; snapshots are only valid against
 the exact binary that baked them.
@@ -83,46 +85,106 @@ is enforced by the SHA-256 manifests instead). Two options:
   the resulting manifests will differ from the committed ones only if you
   change the Mathlib revision or fork tree.
 
-## 3. The snapshots (init + the Mathlib umbrella)
+## 3. The snapshots (init + the Mathlib umbrella): adopting a release
 
-README.md § "Baking snapshots" explains the pieces (unpack the packs into
-`work/lib-tree`, compile the `QED64.Essential` umbrella with the wasm runtime
-under Node). The served pairings are baked from the **slim** trees — the same
-oleans without `*.olean.private` (docs/SERVER-SLIM-REBAKE.md) — regenerated
-from the new stage1 on every bump:
+`pipeline/release/adopt-release.sh` adopts a lean4-wasm64 release end to
+end into a STAGING tree and an ISOLATED served tree. It calls the package
+only as a process (`node <tools>/cli.mjs …`; `<tools>` is `--tools`, else
+`$LEAN4_WASM64_DIR`, else `node_modules/lean4-wasm64`) and writes only under
+`work/adopt/<id>/` (`$W`), `work/staging/<buildId>/` and `--public`:
 
 ```sh
-rsync -a --delete --exclude='*.olean.private' --link-dest=$PWD/work/lib-tree work/lib-tree/ work/lib-tree-slim/
-rsync -a --delete --exclude='*.olean.private' --link-dest=$PWD/pipeline/toolchain/work/build/stage1/lib/lean \
-  pipeline/toolchain/work/build/stage1/lib/lean/ work/core-lib-slim/
-npm run bake:snapshot -- --name init    --lib work/core-lib-slim --reserve 1073741824 --artifact pipeline/toolchain/work/build/stage1 \
-  --work work/snapshot --out work/staging/$ID/snapshots
-npm run bake:snapshot -- --name mathlib --lib work/lib-tree-slim --reserve 3221225472 --probe 'import QED64.Essential' --artifact pipeline/toolchain/work/build/stage1 \
-  --work work/snapshot --out work/staging/$ID/snapshots
+# fill an isolated served tree with the tracked manifests and their bytes first
+npm run -s fetch:artifacts -- --out <tree> --with-manifests --release <the SERVED release dir|url>
+pipeline/release/adopt-release.sh --id <lean-vX.Y.Z-hash> --digest sha256:<hex> \
+  (--from https://github.com/FawadHa1der/lean4/releases/download/<id>/ | --from-dir <release dir>) \
+  --public <tree> [--tools <package dir>] (--umbrella <dir with QED64/Essential.olean{,.server}> | --rebuild-umbrella) \
+  [--fat-tree] [--gate] [--init-lib lean-lib|lean-core] [--allow-served] [--dry-run] [--keep]
 ```
 
-`$ID` is the buildId of § 1. Both land in `work/staging/<buildId>/snapshots`
-(the bake refuses foreign siblings); the raw `.snap` files go to `--work`,
-here `work/snapshot`, the set paired to the served runtime, so only a bake of
-the served runtime may name it (bump-chain.sh's `QED64_SNAP_WORK`, below).
-Both paths are explicit, as in bump-chain.sh: without `--work`/`--out` (or
-`QED64_WORK`/`QED64_STAGING`) the bake falls back to the same places with one
-deprecation WARNING each, and exits 2 from the next contract on. The raw sizes recorded in KERNEL-PIN are the check: for an
-unchanged library a bake within a few percent of them is the right bake; a
-full-tree bake is 2.5x larger (HARDENING #48). Snapshots MUST be re-baked
-after every compiler rebuild.
+In order (`--dry-run` validates the inputs and prints exactly this plan,
+fetching and writing nothing):
 
-**Test before promoting.** Copy the staged runtime manifest
-(`runtime-manifest.<buildId>.json`) and its chunks additively into
-`public/runtime/`, point the `public/snapshots-0031` symlink at
-`../work/staging/<buildId>/snapshots`, restart the dev server, and run
-`tests/adversarial/resident-gate.sh` (preflight, e2e, latency, compiler
-battery) plus the two crash gauntlets against
-`tests/adversarial/resident-url.sh`. One gate at a time: two concurrent runs
-kill each other's browsers. Then write KERNEL-PIN and
-`pipeline/release/bump-chain.sh promote` (promote-staging + verify:release).
-The user uploads artifacts (`scripts/upload-artifacts.sh`) and pushes; the
-kernel commit must be on `origin/qed64-wasm64` first.
+1. **fetch** `--only runtime-chunks,lean-lib,lean-core,mathlib-essential` into
+   `$W/release` and `--only runtime` into `$W/artifact` (two calls: `bin/` is
+   rebuilt from the verified chunks and the build id recomputed), both pinned
+   by `--id` AND `--digest`; for a local dir also `lean4-wasm64 verify` of it
+   (`--skip-packs` when the packs are the served ones).
+2. **checks**: the record's self-digest and pin, `kernel.patch` ≥ closure.json
+   `runtime.minKernelPatch` (NNNN, then an optional suffix), and the runtime
+   is not the one `public/runtime/runtime-manifest.json` serves (a rehearsal
+   passes `--allow-served`, into an isolated tree only). `--public` must not
+   be (or lie in) this checkout's or the main checkout's `public/` or the
+   release dir, and must hold no symlink leaving it.
+3. **artifact-lib**: `lean-lib` (the runtime's own `lib/lean`, the tree the
+   release gate passed on) unpacked to `$W/artifact/lib/lean`. It has no
+   `.ilean` files, so the persistent-path test's patch-0010 check is skipped
+   on that artifact, not failed (logged in `$W/logs/notes.log`).
+4. **base-trees**, fresh: `$W/core-lib-slim` (`unpack --slim` of the init lib,
+   `lean-lib` by default, the precedent; `--init-lib lean-core` is the
+   alternative), `$W/lib-tree-slim` (`--slim` lean-core + mathlib-essential)
+   and, with `--fat-tree`, `$W/lib-tree` (the same without `--slim`; the
+   showcase's heavy path uses a fat tree).
+5. **umbrella**: a runtime-only release (every served pack's raw digest is
+   one of `release.packs`) REUSES the served pair (`--umbrella`): its header
+   carries the packs' compiler githash, and a recompile would change the base
+   tree's bytes. Otherwise `--rebuild-umbrella` regenerates and compiles it
+   against the fat tree (`gen-umbrella.mjs`, `supervised-run.mjs`), runs the
+   `olean-imports --audit`, and the packs are staged (`stage-profiles.mjs`).
+   The pair is copied into each lib tree's `QED64/`.
+6. **base-tree**: `$W/base-tree.json` (`qed64.base-tree/v1`): the release id
+   and digest, per tree the pack ids and raw digests it came from, the
+   umbrella pair's sha256 and bytes, and a tree digest (sha256 over the
+   sorted `"<relpath>\0<sha256>\n"` lines of every file) a downstream checks
+   byte identity by.
+7. **gate** (`--gate`, recommended for an unpublished release): the
+   package's gate on `$W/artifact`, ` ok ` lines and `GATE PASSED`.
+8. **bake-init / bake-mathlib** (QED64's runner):
+
+   ```sh
+   node --stack-size=8192 pipeline/snapshot/bake-snapshot.mjs --artifact $W/artifact --work $W/snapshot \
+     --out work/staging/$BID/snapshots --name init --lib $W/core-lib-slim --reserve 1073741824
+   node --stack-size=8192 pipeline/snapshot/bake-snapshot.mjs --artifact $W/artifact --work $W/snapshot \
+     --out work/staging/$BID/snapshots --name mathlib --lib $W/lib-tree-slim --reserve 3221225472 --probe 'import QED64.Essential'
+   ```
+
+   The raw `.snap` files land in `$W/snapshot`, never `work/snapshot` (the
+   set paired to the served runtime). The raw sizes recorded in KERNEL-PIN
+   are the check: for an unchanged library a bake within a few percent of
+   them is the right bake; a full-tree bake is 2.5x larger (HARDENING #48).
+9. **stage-runtime**: the release's `runtime-manifest.json` and `chunks/`
+   copied to `work/staging/$BID/runtime` (no chunker, no restamp).
+10. **pairing**: the staged runtime manifest and both snapshot entries name
+    `$BID` and the release's Lean version.
+11. **promote** into `--public` (dry run, then real), `verify-release.mjs
+    --public`, and `cmp` of the promoted runtime manifest with the release's.
+12. **kernel-pin**: `$W/KERNEL-PIN` is GENERATED: the first line
+    `<kernel.commit>  qed64-wasm64 @ FawadHa1der/lean4` (release-manifest
+    checks it against the runtime's `sourceRevision` and buildId), comment
+    lines naming the release id and digest, `kernel.patch`, the buildId, the
+    raw snapshot sizes and the pack raw digests.
+13. **next**: the operator's landing steps, printed and not performed: copy
+    `$W/release/release.json` to `toolchain/lean4-wasm64-release.json`,
+    `$W/KERNEL-PIN` to `pipeline/toolchain/KERNEL-PIN`, and the three tracked
+    manifests from the isolated tree into `public/`; `npm install
+    --package-lock-only -D <release tgz URL>` once published; the wrangler
+    variable (plan B2b); the user uploads the snapshots
+    (`scripts/upload-artifacts.sh`), then pushes and deploys.
+
+Disk: the script refuses with less than 12 GB free under `work/` (16 GB with
+the fat tree; `QED64_ADOPT_IGNORE_DISK=1` overrides); the measured need is
+6-9 GB. Without `--keep`, the release's chunks and pack parts under
+`$W/release` are removed after a successful run (they are staged and
+promoted by then); the trees, `$W/artifact` and `$W/snapshot` stay.
+
+**Test before landing.** The isolated tree is a served layout: serve it,
+or copy its runtime manifests, chunks and snapshots additively into a test
+tree, and run `tests/adversarial/resident-gate.sh` (preflight, e2e,
+latency, compiler battery: `--artifact $W/artifact --snap
+$W/snapshot/mathlib.snap --lib $W/lib-tree-slim`) plus the two crash
+gauntlets against `tests/adversarial/resident-url.sh`. One gate at a time:
+two concurrent runs kill each other's browsers. The kernel commit must be on
+`origin/qed64-wasm64` first.
 
 **What one promote moves.** `promote-staging.mjs --staging work/staging/<buildId>`
 verifies everything staged before it touches `public/` (sizes, SHA-256,
@@ -170,30 +232,26 @@ touches, in this order:
    manifests, so they follow; the compiler battery's golden messages and the
    e2e corpus may need re-goldening where upstream changed message text.
 5. Records: `docs/PROVENANCE.md` (toolchain identity, Mathlib revision, pack
-   digests), `PATCHES.md`, KERNEL-PIN, `--lean-version` at chunk time.
-   A runtime built in its own directory is staged with
-   `pipeline/release/bump-chain.sh stage-artifact` and the environment
-   `QED64_ARTIFACT` (dir with `bin/` and `lib/lean`), `QED64_LIB_TREE` (the
-   new unpacked olean tree), `QED64_SLIM`, `QED64_LEAN_VERSION`, and —
-   mandatory for a foreign runtime, the script refuses without it —
-   `QED64_SNAP_WORK`: the bake's raw `.snap` files default to `work/snapshot`,
-   which is the set the compiler battery and the Node probes load against the
-   SERVED binary; overwriting it unpairs them. Only at promotion time do the
-   new raw snapshots replace `work/snapshot/{init,mathlib}.snap`.
-   After the promote, either point the battery and the Node probes at the
-   served pairing explicitly (`--artifact/--snap/--lib`, or
+   digests), the pinned release record and the generated KERNEL-PIN. The
+   release (the fork cuts it: packs, the pair checks, the gate, the chunks)
+   is adopted with `pipeline/release/adopt-release.sh --rebuild-umbrella`
+   (§3): it stages the new packs with the runtime and snapshots, bakes from
+   `$W` trees, and writes the raw `.snap` files to `$W/snapshot`, never
+   `work/snapshot` (the set the compiler battery and the Node probes load
+   against the SERVED binary). After landing, either point the battery and
+   the Node probes at the served pairing explicitly (`--artifact/--snap/--lib`, or
    `QED64_LEAN_ARTIFACT`, `QED64_MATHLIB_SNAP`, `QED64_LIB_TREE`: docs/TESTING.md
    "Environment"), or make the toolchain working directory mirror what is
    served, so their deprecated defaults (`pipeline/toolchain/work/build/stage1`,
    `work/snapshot`, `work/lib-tree-slim`; one WARNING each, gone next cycle)
-   test the served pairing: install the artifact's `bin/`, `lib/lean` and
-   `lib/temp` into `pipeline/toolchain/work/build/stage1` **with
-   `bin/package.json` = `{ "type": "commonjs" }`** (the glue's pthread workers
-   `require` it; under this repo's `"type": "module"` a bare `.js` is ESM and
-   every probe dies with "require is not defined"), check out `work/lean4` at
-   the pin, and move the new `work/{lib-tree,lib-tree-slim,core-lib-slim,umbrella}`
-   and `work/snapshot/{init,mathlib}.snap` into place (keep the previous
-   sets aside as `*-<old version>`).
+   test the served pairing: install `$W/artifact`'s `bin/` and `lib/lean`
+   into `pipeline/toolchain/work/build/stage1` **with `bin/package.json` =
+   `{ "type": "commonjs" }`** (the fetch writes it into `$W/artifact/bin`; the
+   glue's pthread workers `require` it, and under this repo's `"type":
+   "module"` a bare `.js` is ESM and every probe dies with "require is not
+   defined"), and move `$W/{lib-tree,lib-tree-slim,core-lib-slim}` and
+   `$W/snapshot/{init,mathlib}.snap` into `work/` (keep the previous sets
+   aside as `*-<old version>`).
 6. lean4game vendors qed64 at its own pin and has its own kernel pin and
    build lane (`wasm/build-from-source.sh` there); it is a separate bump.
 

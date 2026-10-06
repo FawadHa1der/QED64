@@ -248,7 +248,7 @@ decisions".
 | `QED64_LEAN_ARTIFACT` | bake-snapshot, node-runner, snapshot-probe, persistent-probe (and `gate.mjs`, the compiler battery, resident-probe, the integration tests) | The stage1 artifact dir when `--artifact` is absent. An empty value counts as unset everywhere (before contract 2 bake-snapshot counted it as set, meaning the cwd). |
 | `QED64_WORK` | bake-snapshot, node-runner | The dir mounted at `/work` when `--work` is absent: bake-snapshot's raw `<name>.snap` and `probe.lean`, node-runner's Lean cwd. |
 | `QED64_STAGING` | bake-snapshot, chunk-runtime | A staging root when `--out` is absent: `--out` is `<QED64_STAGING>/<buildId>/snapshots` (bake-snapshot) or `<QED64_STAGING>/<buildId>/runtime` (chunk-runtime). `public/` is still refused. |
-| `QED64_LIB_TREE` | snapshot-probe (and the compiler battery) | The olean tree mounted at `/lib/lean` when `--lib` is absent: the tree the probed snapshot was baked from. `pipeline/release/bump-chain.sh` reads the same name for the fat tree it bakes from. |
+| `QED64_LIB_TREE` | snapshot-probe (and the compiler battery) | The olean tree mounted at `/lib/lean` when `--lib` is absent: the tree the probed snapshot was baked from. |
 | `LEAN_COMPACTOR_RESERVE` | node-runner (forwarded into the wasm env) | Bytes the compactor reserves up front for a whole-environment save (patch 0011). bake-snapshot **sets** it for its runner from `--reserve` and overrides any inherited value. |
 | `QED64_ALLOW_LEGACY_IMPORTS` | node-runner (forwarded as `1` when non-empty) | Lets the exported-level env cache load legacy non-module packages (patch 0030). The documented form is `bake-snapshot --allow-legacy-imports`, which sets it to `1` for the runner; an inherited value is its equivalent and stays accepted (both consumers' bake lanes set the variable). |
 | `QED64_PROFILE_INIT` | node-runner, snapshot-probe (forwarded) | Profiles the `[init]` replay. |
@@ -264,9 +264,10 @@ The QED64 lanes outside SPECS use the same rule with their own variables:
 | `QED64_INIT_SNAP` | `tests/integration/fileworker-exit.test.ts` | The init `.snap` (deprecated default `work/snapshot/init.snap`). The integration tests skip, naming the variable, when it or the artifact is absent. |
 
 Other `QED64_*` variables belong to shell lanes, not to these tools:
-`QED64_LEAN_VERSION`, `QED64_ARTIFACT`, `QED64_SNAP_WORK` and the rest are
-documented in `pipeline/release/bump-chain.sh`, and `QED64_SLOW` in
-docs/TESTING.md.
+`QED64_ADOPT_IGNORE_DISK` and `QED64_PUBLIC_DIR` (the served tree it compares
+a release with) are documented in `pipeline/release/adopt-release.sh`, and
+`QED64_SLOW` in docs/TESTING.md. (`QED64_LEAN_VERSION`, `QED64_ARTIFACT`,
+`QED64_SNAP_WORK` and the rest left with `bump-chain.sh` in plan B2a.)
 
 ### Output streams and reserved substrings
 
@@ -393,8 +394,8 @@ Older `.snapz` files are never deleted.
   (`wasm64-port`) or the packaged one (`qed64-dep`) with `--name --artifact
   --lib --reserve --out` and `QED64_ALLOW_LEGACY_IMPORTS=1`; it omits `--work`
   (the deprecated default, one WARNING).
-- In QED64: `pipeline/release/bump-chain.sh` and `import-packs.sh` (they grep
-  `^baked`), and `tests/unit/artifact-discipline.test.ts`.
+- In QED64: `pipeline/release/adopt-release.sh` (it greps `^baked`), and
+  `tests/unit/artifact-discipline.test.ts`.
 
 ### snapshot-probe
 
@@ -514,8 +515,8 @@ usage: supervised-run.mjs --target <file> [--quiet-ms n] [--stable-ms n] [--give
 
 **Consumers:**
 
-- QED64's `pipeline/release/import-packs.sh` (the umbrella compile; it greps
-  `: error|supervised-run`).
+- QED64's `pipeline/release/adopt-release.sh --rebuild-umbrella` (the
+  umbrella compile; on a failure it prints the log's tail).
 - The showcase's `scripts/headless/run-e2.sh` (from the submodule; it reads the
   `^supervised-run: ` verdict line).
 - `tests/unit/import-lane.test.ts`.
@@ -738,7 +739,9 @@ usage: olean-imports.mjs (--audit <olean tree> | --entries <olean file>)
 
 **Consumers:**
 
-- QED64's `import-packs.sh` (it greps `^import-all audit|outside Init`).
+- QED64's `adopt-release.sh --rebuild-umbrella` greps the same lines
+  (`^import-all audit|outside Init`) from the package's `lean4-wasm64
+  olean-imports --audit`.
 - The showcase's `scripts/stage-trees.mjs` G5 (from the submodule). It parses
   `outside Init/Std/Lean/Lake: (\d+)` and the first line, under a 300 s
   watchdog.
@@ -959,7 +962,8 @@ usage: pack.mjs --lib <dir> --id <name> --out <dir> [...]
 
 **Consumers:**
 
-- QED64's `import-packs.sh`.
+- None of QED64's lanes since plan B2a: the release packs, and
+  `import-packs.sh` is deleted.
 - lean4game's `build-from-source.sh` core lane (vendored).
 - `tests/unit/{import-lane,pack-format,artifact-discipline}.test.ts`.
 
@@ -1025,8 +1029,8 @@ are checked against it where it is installed).
 
 **Consumers:**
 
-- The README and QED64's `import-packs.sh` (it runs from the repo root, so
-  it finds QED64's own devDependency once installed; B2a deletes it).
+- The README. (`import-packs.sh` is deleted; `adopt-release.sh` runs the
+  package's `unpack` directly.)
 - lean4game's `build-from-source.sh` trees lane (vendored).
 - The showcase (from the submodule; no script of it calls unpack today,
   checked 2026-10-06).
@@ -1076,8 +1080,9 @@ four scripts hand it paths instead, through `forwardToLean4Wasm64` in
   manifest, `--pack <file>` and `--deep`.
 - **gate** runs the package's own probes, runner and `--stack-size`; its
   output keeps the ` ok `/`FAIL` check lines and `GATE PASSED` /
-  `GATE FAILED (n)`, the only markers parsed downstream (`bump-chain.sh`,
-  lean4game's `build-from-source.sh`); check labels differ. The kernel probes
+  `GATE FAILED (n)`, the only markers parsed downstream (`adopt-release.sh
+  --gate`, which runs the package's gate directly, and lean4game's
+  `build-from-source.sh`); check labels differ. The kernel probes
   stay in closure.json `pipelineData` (browser-check.sh uses them).
 - **Not flag-identical, whatever the kernel session's handover said:** the
   package's `pack` requires `--lib --id --out --lean-version` (QED64's
@@ -1099,14 +1104,14 @@ script by `tests/unit/cli-contract.test.ts`); each flag is in its SPEC.
 |---|---|---|
 | `--name --artifact --lib --reserve --work --out --probe`, and `--roots --label --initial-bytes --allow-legacy-imports` | bake-snapshot | the showcase's `scripts/bake.sh` (the first seven, absolute paths); lean4game's `build-from-source.sh` bake lane (`--name --artifact --lib --reserve --out`) |
 | `QED64_ALLOW_LEGACY_IMPORTS=1`, the equivalent of `--allow-legacy-imports` | bake-snapshot (inherited by its runner), node-runner | both consumers' bake lanes set it |
-| the `baked` line, and exit 0 meaning "baked" (not a Lean verdict) | bake-snapshot | the showcase's `scripts/judge-bake.mjs` J3; QED64's `bump-chain.sh` and `import-packs.sh` (`^baked`) |
+| the `baked` line, and exit 0 meaning "baked" (not a Lean verdict) | bake-snapshot | the showcase's `scripts/judge-bake.mjs` J3; QED64's `adopt-release.sh` (`^baked`) |
 | `--snap --fresh-import --probe-file --probe --lib --artifact --budget-ms --via-mem --init-flags --workspace --dump-messages` | snapshot-probe | the showcase's `scripts/headless/exact-header.mjs`; lean4game `--verify-snapshots`; the compiler battery |
 | `SNAPSHOT PROBE PASS` (exit 0), `SNAPSHOT PROBE FAIL: …`, `load:`, `compile:`, `[lean:stdout] …`, `ABORT: …` | snapshot-probe | `exact-header.mjs` (verdict, fail reason, load and compile times, the JSON messages, the abort); the compiler battery; lean4game |
-| `--target --quiet-ms --stable-ms --give-up-ms --`, and the runner arguments after `--` verbatim | supervised-run | the showcase's `scripts/headless/run-e2.sh`; `import-packs.sh`; `runtime-smoke.test.ts` |
-| the last line `supervised-run: <why> (<n> s)` (`^supervised-run: `) and exits 0 / 1 / 2 | supervised-run | `run-e2.sh` (`grep -E '^supervised-run: ' … \| tail -1`); `import-packs.sh`; `runtime-smoke.test.ts` |
+| `--target --quiet-ms --stable-ms --give-up-ms --`, and the runner arguments after `--` verbatim | supervised-run | the showcase's `scripts/headless/run-e2.sh`; `adopt-release.sh --rebuild-umbrella`; `runtime-smoke.test.ts` |
+| the last line `supervised-run: <why> (<n> s)` (`^supervised-run: `) and exits 0 / 1 / 2 | supervised-run | `run-e2.sh` (`grep -E '^supervised-run: ' … \| tail -1`); `runtime-smoke.test.ts` |
 | `--url --no-boot --boot-budget-ms --run-dir` | preflight | the showcase's `scripts/preflight-overlays.sh` and `tests/experiments/x1-preflight.mjs`; `resident-gate.sh` |
 | `PREFLIGHT OK buildId=… mode=… snapshots=…` (exit 0), `PREFLIGHT REFUSED: …` (exit 3), the `ok`/`warn`/`FAIL` check lines | preflight | the same, and `run.mjs` through `runPreflight` |
-| `import-all audit of …` and `  outside Init/Std/Lean/Lake: N` | olean-imports `--audit` | the showcase's `scripts/stage-trees.mjs` G5; `import-packs.sh` |
+| `import-all audit of …` and `  outside Init/Std/Lean/Lake: N` | olean-imports `--audit` | the showcase's `scripts/stage-trees.mjs` G5; `adopt-release.sh --rebuild-umbrella` (the package's audit) |
 
 ### Toolchain lines consumers parse
 

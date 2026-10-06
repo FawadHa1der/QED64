@@ -33,6 +33,16 @@ variables at the main checkout's.
 | `QED64_STAGING` | bake-snapshot and chunk-runtime (`--out` = `<it>/<buildId>/{snapshots,runtime}`) | `work/staging/<buildId>/…` |
 | `QED64_SLOW` | `npm run test:integration` | unset: the slow tier is off |
 
+**After a release adoption** (`pipeline/release/adopt-release.sh`, docs/REBUILD.md
+§3) the paired build outputs are the adoption's, under `work/adopt/<id>/`
+(`$W`): `QED64_LEAN_ARTIFACT=$W/artifact` (the release runtime with its
+`lean-lib` as `lib/lean`), the battery's `--snap $W/snapshot/mathlib.snap`
+and `--lib $W/lib-tree-slim` (`QED64_MATHLIB_SNAP`, `QED64_LIB_TREE`),
+`QED64_INIT_SNAP=$W/snapshot/init.snap`. The main checkout's
+`pipeline/toolchain/work/build/stage1` and `work/snapshot` stay the OLD
+runtime's after a switch: pointed at them, the battery and the Node probes
+test a runtime that is no longer served.
+
 `npm test` itself needs none of them: `tests/unit/tool-paths.test.ts` runs
 the tools from a scratch copy of the checkout, with every variable cleared,
 and never loads a runtime.
@@ -369,8 +379,12 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   patch 0010 (its `wasmCompile` drops parser diagnostics). 0010 changes only
   compiled Lean code, so the check reads the build's
   `lib/lean/Lean/Shell.ilean`: a patched `wasmCompile` references
-  `Lean.Parser.parseCommand`. When that file is missing the test runs. To run
-  both against the paired runtime from a worktree, set `QED64_LEAN_ARTIFACT`
-  to the main checkout's `pipeline/toolchain/work/build/stage1`.
+  `Lean.Parser.parseCommand`. When that file is missing the test runs: an
+  adopted release's `$W/artifact` has none (its `lib/lean` is the `lean-lib`
+  pack, which ships no `.ilean`), so there the 0010 check is skipped, not
+  failed. To run both against the paired runtime from a worktree, set
+  `QED64_LEAN_ARTIFACT` to the adoption's `work/adopt/<id>/artifact` (before
+  the first adoption: the main checkout's
+  `pipeline/toolchain/work/build/stage1`, the served runtime until a switch).
 - Every live-debugging failure class gained a pinned regression test the same
   day (see installer-stream.test.ts).
