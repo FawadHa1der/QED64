@@ -186,7 +186,7 @@ export async function main() {
   const result = await runPreflight(target, { boot: !cli.values["no-boot"], bootBudgetMs: Number(arg("boot-budget-ms", "180000")) });
   const dir = arg("run-dir", "");
   if (dir) { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(path.join(dir, "preflight.json"), JSON.stringify({ target, ...result }, null, 2)); }
-  if (!result.ok) { console.log(`PREFLIGHT REFUSED: ${oneLine(result.reason)}`); process.exit(3); }
+  if (!result.ok) { console.log(`PREFLIGHT REFUSED: ${result.reason}`); process.exit(3); }
   console.log(`PREFLIGHT OK buildId=${result.buildId} mode=${result.mode} snapshots=${target.snapshotsDir}`);
 }
 
