@@ -76,7 +76,7 @@
   ],
   "runtime": {
     "minKernelPatch": "0032",
-    "note": "the oldest kernel patch level whose runtime these workers drive correctly (the resident header resolver and $/qed64/headerStatus, patch 0032), not what QED64 serves; compare against your own KERNEL-PIN"
+    "note": "the oldest kernel patch level whose runtime these workers drive correctly (the resident header resolver and $/qed64/headerStatus, patch 0032), not what QED64 serves; compare against your release.json kernel.patch (lean4-wasm64 comparePatchIds ordering: NNNN, then an optional lowercase suffix)"
   },
   "workerProtocol": {
     "revision": "1",
