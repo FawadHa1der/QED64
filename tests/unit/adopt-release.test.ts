@@ -386,7 +386,8 @@ describe("adopt-release.sh: its own work dirs, the URL record and the patch orde
       ["0036", "0035b", 0], ["0036", "0035z", 0], ["0034z", "0035", 1], ["0032", "0035b", 1], ["0035b", "0032", 0], ["0100", "0099z", 0],
     ];
     for (const [a, b, want] of table) expect(ge(a, b), `${a} >= ${b}`).toBe(want);
-    for (const [a, b] of [["35", "0032"], ["0035B", "0032"], ["0035ab", "0032"], ["0035", ""]]) expect(ge(a, b), `${a} vs ${b}`).toBe(2);
+    const malformed: [string, string][] = [["35", "0032"], ["0035B", "0032"], ["0035ab", "0032"], ["0035", ""]];
+    for (const [a, b] of malformed) expect(ge(a, b), `${a} vs ${b}`).toBe(2);
   });
 });
 
