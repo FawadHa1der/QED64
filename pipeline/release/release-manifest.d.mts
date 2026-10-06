@@ -7,6 +7,8 @@ export const KERNEL_BRANCH: string;
 export const RECORD_SCHEMA: "lean4-wasm64.release/v1";
 export const BASE_TREE_SCHEMA: "qed64.base-tree/v1";
 export const HOSTING_RULE: string;
+/** The shell's identity file in a built dist/ (frontend/build/build-info.mjs). */
+export const BUILD_INFO_FILE: "qed64-build.json";
 export const INPUTS: Readonly<{
   toolchainRecord: string;
   baseTree: string;
@@ -35,6 +37,7 @@ export interface UmbrellaFile { path: string; sha256: string; bytes: number }
 export interface BaseTreeSection extends TrackedFile {
   schema: "qed64.base-tree/v1";
   releaseId: string;
+  /** The record's digest and runtime when releaseId is the record's id; null for another release (the record cannot vouch for them). */
   releaseDigest: string | null;
   runtime: string | null;
   packs: BaseTreePack[];

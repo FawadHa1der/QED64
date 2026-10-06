@@ -39,10 +39,15 @@
 // another runtime than the served buildId; the runtime manifest's
 // sourceRevision commit is not a prefix of the record's kernel.commit; a
 // runtime/ or profiles/ file the hosting rule stores under the toolchain
-// prefix (the runtime manifest, every profile manifest but the index, every
-// chunk and part) is not in the record's files with that sha256 and size;
-// base-tree.json names another release whose packs' raw digests differ, or
-// was unpacked from other packs than the served ones; a snapshot entry or the profile index is paired with
+// prefix (the runtime manifest and its per-build copy
+// runtime/runtime-manifest.<buildId>.json, every profile manifest but the
+// index, every chunk and part) is not in the record's files with that sha256 and size;
+// base-tree.json names a pack (at the top or in any tree) the record does not
+// carry or with other raw bytes, names the record's id with another
+// releaseDigest or runtime, does not list exactly the served packs at the
+// top, or has a tree other than core-lib-slim without the umbrella pair; with
+// another release id its releaseDigest and runtime are recorded as null (the
+// record cannot vouch for them); a snapshot entry or the profile index is paired with
 // another runtime; a pack was built for another Lean version; the per-build
 // manifest public/runtime/runtime-manifest.<buildId>.json (when tracked, or
 // present with --worktree) is not byte-identical to the default one; with
@@ -320,6 +325,8 @@ export function toolchainRecordOf(r) {
 const TREE_ORDER = ["core-lib-slim", "lib-tree-slim", "lib-tree"];
 const UMBRELLA_PATH = /^QED64\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const UMBRELLA_PAIR = ["QED64/Essential.olean", "QED64/Essential.olean.server"];
+/** The init library's tree (adopt-release.sh): the one tree without the umbrella. */
+const CORE_TREE = "core-lib-slim";
 
 /**
  * Validate embedding/base-tree.json (qed64.base-tree/v1, adopt-helper.mjs
@@ -366,24 +373,53 @@ export function baseTreeOf(bt, { record, packs, tracked }) {
     trees[name] = { slim: t.slim, packs: packList(t.packs, `trees.${name}.packs`), umbrella: umbrellaList(t.umbrella, `trees.${name}.umbrella`), files: t.files, bytes: t.bytes, digest: t.digest };
   }
 
-  // The release it was unpacked from: this record, or one whose packs are these raw bytes.
-  if (bt.releaseId !== record.id) {
-    const raw = new Map(record.packs.map((p) => [p.id, p.rawSha256]));
-    for (const p of [...top, ...Object.values(trees).flatMap((t) => t.packs)]) {
-      if (raw.get(p.id) !== p.rawSha256) {
-        refuse(`${at} names release ${bt.releaseId}, the record is ${record.id}, and its ${p.id} (raw ${p.rawSha256.slice(0, 16)}…) is not the record's (${raw.has(p.id) ? `${raw.get(p.id).slice(0, 16)}…` : "absent"}) — land the adoption's $W/base-tree.json with its record`);
+  // Every pack it names, at the top and in every tree, is one of the record's
+  // packs with the record's raw bytes (and release, when given), whatever
+  // release it names: the record is the only authority on a pack's bytes, and
+  // these are the fields a downstream rebuilds the trees from.
+  const recordPacks = new Map(record.packs.map((p) => [p.id, p]));
+  const listed = [["packs", top], ...Object.entries(trees).map(([name, t]) => [`trees.${name}.packs`, t.packs])];
+  for (const [field, list] of listed) {
+    for (const p of list) {
+      const q = recordPacks.get(p.id);
+      if (!q) refuse(`${at}: ${field} names ${p.id}, which ${record.id} does not carry — land the adoption's $W/base-tree.json with its record`);
+      if (q.rawSha256 !== p.rawSha256) {
+        refuse(`${at} (release ${bt.releaseId}): ${field} names ${p.id} raw ${p.rawSha256.slice(0, 16)}…, the record ${record.id} carries ${q.rawSha256.slice(0, 16)}… — land the adoption's $W/base-tree.json with its record`);
+      }
+      if (p.release !== null && typeof q.release === "string" && p.release !== q.release) {
+        refuse(`${at}: ${field} ${p.id} is release ${p.release}, ${record.id} carries ${q.release}`);
       }
     }
   }
-  // The served packs are the ones the trees were unpacked from (the snapshots were baked from those trees).
-  // A record pack is served at its `manifest` path (the profile index's ids are QED64's own).
+  // The same release: its digest and runtime are the record's. Another
+  // release (a runtime-only successor that kept the trees): the record cannot
+  // vouch for that release's digest or runtime, so the manifest records null.
+  const sameRelease = bt.releaseId === record.id;
+  if (sameRelease) {
+    if (bt.releaseDigest !== record.digest) refuse(`${at}: releaseDigest ${String(bt.releaseDigest).slice(0, 23)}… is not ${record.id}'s ${record.digest.slice(0, 23)}… — land the adoption's $W/base-tree.json with its record`);
+    if (bt.runtime !== record.runtime.buildId) refuse(`${at}: runtime ${JSON.stringify(bt.runtime)} is not ${record.id}'s ${record.runtime.buildId}`);
+  }
+  // The top-level packs are exactly the served packs (the snapshots were baked
+  // from trees unpacked from them). A record pack is served at its `manifest`
+  // path (the profile index's ids are QED64's own).
+  const servedIds = packs.map((s) => {
+    const q = record.packs.find((r) => r.manifest === s.manifest.path);
+    if (!q) refuse(`${at}: the served pack ${s.id} (${s.manifest.path}) is none of ${record.id}'s packs, so no base tree can name it`);
+    return q.id;
+  });
   for (const p of top) {
-    const recordPack = record.packs.find((q) => q.id === p.id);
-    if (!recordPack) refuse(`${at}: the base trees were unpacked from ${p.id}, which ${record.id} does not carry`);
-    const served = packs.find((q) => q.manifest.path === recordPack.manifest);
-    if (served && served.pack.sha256 !== p.rawSha256) {
+    const served = packs.find((s) => s.manifest.path === recordPacks.get(p.id).manifest);
+    if (!served) refuse(`${at}: the base trees were unpacked from ${p.id}, which is not served (the profile index has no ${recordPacks.get(p.id).manifest})`);
+    if (served.pack.sha256 !== p.rawSha256) {
       refuse(`${at}: the base trees were unpacked from ${p.id} raw ${p.rawSha256.slice(0, 16)}…, the served ${p.id} pack is ${served.pack.sha256.slice(0, 16)}… — the snapshots were baked from other trees than the served packs make`);
     }
+  }
+  for (const id of servedIds) if (!top.some((p) => p.id === id)) refuse(`${at}: packs does not list ${id}, a served pack — the base trees were not unpacked from the served packs`);
+  if (new Set(top.map((p) => p.id)).size !== top.length) refuse(`${at}: packs lists a pack twice`);
+  // Every tree but the core one carries the umbrella pair.
+  for (const [name, t] of Object.entries(trees)) {
+    if (name === CORE_TREE) continue;
+    for (const u of UMBRELLA_PAIR) if (!t.umbrella.some((x) => x.path === u)) refuse(`${at}: trees.${name}.umbrella does not list ${u} (every tree but ${CORE_TREE} carries the pair)`);
   }
   // One umbrella file, one content, in every tree that carries it.
   const union = new Map();
@@ -396,8 +432,8 @@ export function baseTreeOf(bt, { record, packs, tracked }) {
     ...tracked,
     schema: bt.schema,
     releaseId: bt.releaseId,
-    releaseDigest: typeof bt.releaseDigest === "string" ? bt.releaseDigest : null,
-    runtime: typeof bt.runtime === "string" ? bt.runtime : null,
+    releaseDigest: sameRelease ? record.digest : null,
+    runtime: sameRelease ? record.runtime.buildId : null,
     packs: top,
     slim: bt.slim,
     umbrella,
@@ -574,7 +610,8 @@ export function buildReleaseManifest(source, { dist = null } = {}) {
     }
   };
   hostedHere(runtime.manifest.path, runtime.manifest.sha256, rtBytes.length, "the served runtime manifest");
-  if (recordFiles.has(runtime.manifest.pinnedPath)) hostedHere(runtime.manifest.pinnedPath, runtime.manifest.sha256, rtBytes.length, "the per-build runtime manifest (= the default one)");
+  // The pinned shell fetches the per-build copy first, from the same prefix: the record must carry it too.
+  hostedHere(runtime.manifest.pinnedPath, runtime.manifest.sha256, rtBytes.length, "the per-build runtime manifest (= the default one)");
   for (const f of runtime.files) for (const c of f.chunks) hostedHere(c.path, c.sha256, c.bytes, `runtime ${f.name} chunk`);
   hostedHere(profiles.index.path, profiles.index.sha256, piBytes.length, "the profile index");
   for (const p of packs) {

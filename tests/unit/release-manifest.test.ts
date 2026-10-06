@@ -373,6 +373,23 @@ describe.skipIf(!hasGit)("cross-checks refuse doctored inputs", () => {
     doctored(RECORD, editRecord((r) => { r.files = r.files.filter((f: any) => !f.path.startsWith("runtime/chunks/lean.wasm.")); }), () => {
       expect(refusal(build)).toMatch(/runtime lean\.wasm chunk runtime\/chunks\/lean\.wasm\.\S+ is not in/);
     });
+    // The per-build runtime manifest (the pinned shell fetches it first, from the release prefix):
+    // the record must carry it with the default one's bytes, and an absent entry is refused too.
+    const perBuild = `runtime/runtime-manifest.${buildId}.json`;
+    doctored(RECORD, editRecord((r) => { r.files.find((f: any) => f.path === perBuild).sha256 = "e".repeat(64); }), () => {
+      expect(refusal(build)).toMatch(/the per-build runtime manifest .* runtime\/runtime-manifest\.wasm64-[0-9a-f]{16}\.json is [0-9a-f]{16}… .*'s files say eeeeeeeeeeeeeeee… .* — the served tree and the pinned record disagree/);
+    });
+    doctored(RECORD, editRecord((r) => { r.files = r.files.filter((f: any) => f.path !== perBuild); }), () => {
+      expect(refusal(build)).toMatch(/the per-build runtime manifest .* runtime\/runtime-manifest\.wasm64-[0-9a-f]{16}\.json is not in lean-v\S+'s files/);
+    });
+    // A pack part the record does not carry, or carries with other bytes.
+    const part = json(fs.readFileSync(treeFile(`public${first.manifest}`))).content.pack.transport.parts[0].url.slice(1);
+    doctored(RECORD, editRecord((r) => { r.files = r.files.filter((f: any) => f.path !== part); }), () => {
+      expect(refusal(build)).toMatch(new RegExp(`profile ${first.id} part ${part.replace(/\./g, "\\.")} is not in lean-v\\S+'s files`));
+    });
+    doctored(RECORD, editRecord((r) => { r.files.find((f: any) => f.path === part).bytes += 1; }), () => {
+      expect(refusal(build)).toMatch(new RegExp(`profile ${first.id} part ${part.replace(/\./g, "\\.")} is .*'s files say`));
+    });
     doctored(RECORD, editRecord((r) => { r.hosting.siteOwned = ["/snapshots/"]; }), () => {
       expect(refusal(build)).toMatch(/the profile index profiles\/index\.json is not in lean-v\S+'s files/);
     });
@@ -380,16 +397,59 @@ describe.skipIf(!hasGit)("cross-checks refuse doctored inputs", () => {
 
   test("base-tree.json: schema, the release it names, the served packs, the umbrella", () => {
     const editBt = (fn: (o: any) => void) => editJson(fn);
+    const Z = (c: string) => `sha256:${c.repeat(64)}`;
     doctored(BASE_TREE, editBt((o) => { o.schema = "qed64.base-tree/v0"; }), () => { expect(refusal(build)).toMatch(/embedding\/base-tree\.json: schema is "qed64\.base-tree\/v0"/); });
-    // Another release whose packs are the same raw bytes: accepted (a runtime-only release keeps the trees).
-    doctored(BASE_TREE, editBt((o) => { o.releaseId = "lean-v4.34.0-0000000"; }), () => { expect(build().baseTree.releaseId).toBe("lean-v4.34.0-0000000"); });
-    // Another release with other packs: refused.
-    doctored(BASE_TREE, editBt((o) => { o.releaseId = "lean-v4.34.0-0000000"; o.trees["core-lib-slim"].packs[0].rawSha256 = `sha256:${"1".repeat(64)}`; }), () => {
-      expect(refusal(build)).toMatch(/names release lean-v4\.34\.0-0000000, the record is lean-v\S+, and its lean-lib \(raw 1111111111111111…\) is not the record's/);
+    // The pristine file names the record's own release: its digest and runtime are the record's.
+    const ok = build().baseTree;
+    const rec = json(fs.readFileSync(treeFile(RECORD)));
+    expect([ok.releaseId, ok.releaseDigest, ok.runtime]).toEqual([rec.id, rec.digest, rec.runtime.buildId]);
+    // Another release whose packs are the same raw bytes: accepted (a runtime-only release keeps the trees),
+    // and its digest and runtime, which the record cannot vouch for, are recorded as null.
+    doctored(BASE_TREE, editBt((o) => { o.releaseId = "lean-v4.34.0-0000000"; o.releaseDigest = Z("9"); o.runtime = OTHER_ID; }), () => {
+      const bt = build().baseTree;
+      expect([bt.releaseId, bt.releaseDigest, bt.runtime]).toEqual(["lean-v4.34.0-0000000", null, null]);
     });
-    // The same release, but trees unpacked from another mathlib-essential than the served one.
-    doctored(BASE_TREE, editBt((o) => { o.packs[1].rawSha256 = `sha256:${"2".repeat(64)}`; }), () => {
-      expect(refusal(build)).toMatch(/the base trees were unpacked from mathlib-essential raw 2222222222222222…, the served mathlib-essential pack is [0-9a-f]{16}…/);
+    // Another release with other packs: refused.
+    doctored(BASE_TREE, editBt((o) => { o.releaseId = "lean-v4.34.0-0000000"; o.trees["core-lib-slim"].packs[0].rawSha256 = Z("1"); }), () => {
+      expect(refusal(build)).toMatch(/embedding\/base-tree\.json \(release lean-v4\.34\.0-0000000\): trees\.core-lib-slim\.packs names lean-lib raw 1111111111111111…, the record lean-v\S+ carries [0-9a-f]{16}…/);
+    });
+    // The SAME release: every pack, at the top and in every tree, is still checked against the record.
+    doctored(BASE_TREE, editBt((o) => { o.trees["core-lib-slim"].packs[0].rawSha256 = Z("0"); }), () => {
+      expect(refusal(build)).toMatch(/\(release lean-v\S+\): trees\.core-lib-slim\.packs names lean-lib raw 0000000000000000…, the record lean-v\S+ carries/);
+    });
+    doctored(BASE_TREE, editBt((o) => { o.trees["lib-tree-slim"].packs[1].rawSha256 = Z("0"); }), () => {
+      expect(refusal(build)).toMatch(/: trees\.lib-tree-slim\.packs names mathlib-essential raw 0000000000000000…, the record lean-v\S+ carries/);
+    });
+    doctored(BASE_TREE, editBt((o) => { o.packs[1].rawSha256 = Z("2"); }), () => {
+      expect(refusal(build)).toMatch(/: packs names mathlib-essential raw 2222222222222222…, the record lean-v\S+ carries/);
+    });
+    doctored(BASE_TREE, editBt((o) => { o.trees["lib-tree"].packs.push({ id: "mathlib-bogus", rawSha256: Z("4") }); }), () => {
+      expect(refusal(build)).toMatch(/: trees\.lib-tree\.packs names mathlib-bogus, which lean-v\S+ does not carry/);
+    });
+    doctored(BASE_TREE, editBt((o) => { o.trees["lib-tree-slim"].packs[0].release = "lean-core-4.99.0-wasm64-0000000000000000"; }), () => {
+      expect(refusal(build)).toMatch(/: trees\.lib-tree-slim\.packs lean-core is release lean-core-4\.99\.0-wasm64-0000000000000000, lean-v\S+ carries lean-core-/);
+    });
+    // The same release with another releaseDigest or runtime.
+    doctored(BASE_TREE, editBt((o) => { o.releaseDigest = Z("5"); }), () => {
+      expect(refusal(build)).toMatch(/: releaseDigest sha256:5555555555555555… is not lean-v\S+'s sha256:[0-9a-f]{16}…/);
+    });
+    doctored(BASE_TREE, editBt((o) => { o.runtime = OTHER_ID; }), () => {
+      expect(refusal(build)).toMatch(new RegExp(`: runtime "${OTHER_ID}" is not lean-v\\S+'s ${buildId}`));
+    });
+    // The top-level packs are exactly the served packs: a record pack that is not served, one served pack missing.
+    const game = rec.packs.find((p: any) => p.id === "mathlib-game-extra");
+    doctored(BASE_TREE, editBt((o) => { o.packs[1] = { id: game.id, rawSha256: `sha256:${game.rawSha256}` }; }), () => {
+      expect(refusal(build)).toMatch(/: the base trees were unpacked from mathlib-game-extra, which is not served \(the profile index has no profiles\/mathlib-game-extra\.manifest\.json\)/);
+    });
+    doctored(BASE_TREE, editBt((o) => { o.packs = o.packs.filter((p: any) => p.id !== "mathlib-essential"); }), () => {
+      expect(refusal(build)).toMatch(/: packs does not list mathlib-essential, a served pack/);
+    });
+    // Every tree but core-lib-slim carries the umbrella pair.
+    doctored(BASE_TREE, editBt((o) => { o.trees["lib-tree-slim"].umbrella = []; }), () => {
+      expect(refusal(build)).toMatch(/: trees\.lib-tree-slim\.umbrella does not list QED64\/Essential\.olean \(every tree but core-lib-slim carries the pair\)/);
+    });
+    doctored(BASE_TREE, editBt((o) => { o.trees["lib-tree"].umbrella = o.trees["lib-tree"].umbrella.filter((u: any) => !u.path.endsWith(".server")); }), () => {
+      expect(refusal(build)).toMatch(/: trees\.lib-tree\.umbrella does not list QED64\/Essential\.olean\.server/);
     });
     doctored(BASE_TREE, editBt((o) => { o.umbrella = o.umbrella.filter((u: any) => !u.path.endsWith(".server")); }), () => {
       expect(refusal(build)).toMatch(/umbrella does not list QED64\/Essential\.olean\.server/);
