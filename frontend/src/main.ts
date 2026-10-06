@@ -2,16 +2,18 @@
 // the real vscode-lean4 InfoView) with zero servers — the Lean file worker
 // runs in this browser tab on the wasm64 runtime.
 import { LeanMonaco, LeanMonacoEditor, type LeanMonacoOptions } from "lean4monaco";
-import { installArtifacts, type ProgressInfo, type StatusSink } from "./qed64-boot";
+// The library surface, through the same barrel an embedder imports (`qed64/embed`):
+// the stock page is its first consumer. The imports below it are page-internal
+// modules (or names) the barrel does not export.
+import {
+  LspRelay, ResidentSession, entryLabel, failureCauseOf, installArtifacts, makeEditorPolicy,
+  type FailureCause, type ProgressInfo, type RelayStatus, type ResidentPolicy, type StatusSink,
+} from "./embed";
 import { registerImportCompletion } from "./import-completion";
-import { LspRelay, type RelayStatus } from "./lsp-relay";
-import { ResidentSession, makeEditorPolicy, type ResidentPolicy } from "./resident-session";
-import { entryLabel } from "../../src/runtime/snapshots";
 import { selfWiden } from "./self-widen";
 import { installInfoviewEditorApi, type EditsEditor } from "./editor/infoview-edits";
 import { codeFromHash, createPageApi, pageStatusSink, type EditorLike } from "./page-api";
 import { normalizeMemoryBytes, parseEditHoldParam, parseMemoryParam } from "./embed/params";
-import { failureCauseOf, type FailureCause } from "./embed/failure";
 import { tapRelay } from "./relay-taps";
 import { installWidgetSourceCache } from "./widget-source-cache";
 import { createTestHatch } from "./test-hatch";
