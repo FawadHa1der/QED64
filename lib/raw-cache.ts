@@ -22,7 +22,7 @@
 // `.raw`), and `.raw` re-probed: a commit that finished just before reports
 // "done". After a flight settles no message or timer has any effect. It never
 // throws.
-import { snapshotCacheKey, type SnapshotEntry, type SnapshotIndex } from "../../../src/runtime/snapshots";
+import { snapshotCacheKey, type SnapshotEntry, type SnapshotIndex } from "./snapshots";
 import { failureCauseOf, type FailureCause } from "./failure";
 
 /** The OPFS directory of the snapshot caches. */

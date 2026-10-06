@@ -11,7 +11,7 @@
 // one file shared with the worker (it importScripts the same script), as
 // pipeline/snapshot/resident-probe.mjs imports lsp-frames.js. package.json
 // `sideEffects` names the file, so a bundler keeps this import.
-import "../../public/workers/memory64-probe.js";
+import "../public/workers/memory64-probe.js";
 
 export const PROTOCOL = 1;
 

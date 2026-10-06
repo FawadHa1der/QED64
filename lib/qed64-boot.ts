@@ -4,12 +4,12 @@
 // restart ("Load exact imports", widening a light session) boots a fresh
 // one — so the pieces a session boot needs (pack install on demand, snapshot
 // prefetch + load) live here, and the boot itself in resident-session.ts.
-import { runtimeManifestIdFault, type LeanSession, type RuntimeManifest } from "../../src/runtime/client";
-import { fetchProfileIndex, installProfile, type InstalledProfile, type ProfileIndex } from "../../src/install/profiles";
-import { entryLabel, fetchSnapshotIndex, loadSnapshotIndex, snapshotCacheKey, type SnapshotEntry, type SnapshotIndex } from "../../src/runtime/snapshots";
-import { NO_OVERRIDES, parseBootParams, validateBootOverrides, type BootOverrides } from "./embed/params";
-import { failureCauseOf, stepOfInstallPhase, type BootStage, type BootStep, type FailureCause } from "./embed/failure";
-import { PREFETCH_SILENCE_MS, prefetchRaw } from "./embed/raw-cache";
+import { runtimeManifestIdFault, type LeanSession, type RuntimeManifest } from "./client";
+import { fetchProfileIndex, installProfile, type InstalledProfile, type ProfileIndex } from "./profiles";
+import { entryLabel, fetchSnapshotIndex, loadSnapshotIndex, snapshotCacheKey, type SnapshotEntry, type SnapshotIndex } from "./snapshots";
+import { NO_OVERRIDES, parseBootParams, validateBootOverrides, type BootOverrides } from "./params";
+import { failureCauseOf, stepOfInstallPhase, type BootStage, type BootStep, type FailureCause } from "./failure";
+import { PREFETCH_SILENCE_MS, prefetchRaw } from "./raw-cache";
 
 export interface Qed64Artifacts {
   runtime: RuntimeManifest;
@@ -193,9 +193,9 @@ export async function ensureProfile(
   return true;
 }
 
-// The raw prefetch lives in embed/raw-cache.ts (single-flight, cross-tab
+// The raw prefetch lives in raw-cache.ts (single-flight, cross-tab
 // lock, cleanup); re-exported here for existing importers.
-export { PREFETCH_SILENCE_MS, prefetchRaw, type PrefetchRawOptions, type PrefetchRawResult } from "./embed/raw-cache";
+export { PREFETCH_SILENCE_MS, prefetchRaw, type PrefetchRawOptions, type PrefetchRawResult } from "./raw-cache";
 
 /** Options of `loadSnapshotByName` (docs/EMBEDDING.md §7.3, §7.4). */
 export interface LoadSnapshotOptions {

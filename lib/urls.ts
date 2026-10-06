@@ -1,7 +1,7 @@
 // The URLs an offline cache (a service worker's warm-up) needs for one runtime
 // (docs/EMBEDDING.md §7.5). Snapshot and profile URLs stay with their indexes
 // (`SnapshotEntry.url`, a profile manifest's parts).
-import type { RuntimeManifest } from "../../../src/runtime/client";
+import type { RuntimeManifest } from "./client";
 
 /** The worker scripts a page spawns or a worker `importScripts`, by served path. */
 export const WORKER_URLS: readonly string[] = Object.freeze([

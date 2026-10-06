@@ -5,7 +5,7 @@
 // (§3 row 11), and breaks crash loops. It reads four fields: method, id, version, text
 // — and, since the pump's retirement (PUMP-REMOVAL-ASSESSMENT gaps 2 and 5), the
 // text's import lines: where the halted note sits, and which header a restart served.
-import type { JsonRpcMessage as JsonRpc, WorkerStatus } from "../../src/runtime/client";
+import type { JsonRpcMessage as JsonRpc, WorkerStatus } from "./client";
 
 /** The typed L2 surface the relay drives (LeanSession + an async boot). */
 export interface RelaySession {
@@ -25,7 +25,7 @@ export interface RestartOptions { snapshots?: string[]; warmHeader?: string; pac
 type Reason = "boot" | "crash" | "heartbeat" | "wedged" | "user" | "bootFailed";
 export type RelayState = { kind: "serving" } | { kind: "rebooting"; reason: Reason } | { kind: "halted" };
 /** The last death (gap 2; EMBEDDING §7.2): LeanSession's (reason, message, exit code) or "bootFailed" + the boot rejection's message; the FailureCause the session attached; `seq` (this relay's death count) and `session` identify it. */
-export type Death = { reason: string; message: string; seq: number; session: string; exitCode?: number; cause?: import("./embed/failure").FailureCause };
+export type Death = { reason: string; message: string; seq: number; session: string; exitCode?: number; cause?: import("./failure").FailureCause };
 export type RelayStatus = Omit<WorkerStatus, "phase"> & { phase: WorkerStatus["phase"] | "halted"; relay: RelayState["kind"]; rebootReason: string | null; session: string; lastDeath: Death | null };
 const EMPTY: WorkerStatus = { phase: "booting", version: null, header: null, ring: { bytesQueued: 0, refused: 0 }, pool: { unused: -1, running: -1 }, dropped: 0 };
 const BREAKER_DEATHS = 3;

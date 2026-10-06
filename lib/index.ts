@@ -19,31 +19,31 @@
 export const EMBED_API_REVISION = "1.0.0-pre.6";
 
 // runtime
-export { LeanSession, PROTOCOL, MEMORY64_PROBE, probeMemory64 } from "../../../src/runtime/client";
+export { LeanSession, PROTOCOL, MEMORY64_PROBE, probeMemory64 } from "./client";
 /** @internal */
-export { memoryCandidates } from "../../../src/runtime/client";
+export { memoryCandidates } from "./client";
 export type {
   BootConfig, Capabilities, CompileResult, DeathFacts, Diagnostic, HeaderStatus, JsonRpcMessage, LibraryPack, MemoryTelemetry,
   ProgressEvent, ReadyInfo, RuntimeManifest, WorkerError, WorkerPhase, WorkerStatus,
-} from "../../../src/runtime/client";
+} from "./client";
 
 // snapshots
 export {
   fetchSnapshotIndex, loadSnapshotIndex, snapshotCacheKey,
   BASE_SNAPSHOTS, LEGACY_UMBRELLA_ROOTS, chooseSnapshots, coversModule, entryLabel, entryRoots, initialBytesForEntries, widenTarget,
-} from "../../../src/runtime/snapshots";
-export type { IndexOptions, SnapshotEntry, SnapshotIndex } from "../../../src/runtime/snapshots";
+} from "./snapshots";
+export type { IndexOptions, SnapshotEntry, SnapshotIndex } from "./snapshots";
 
 // profiles (library packs)
 /** @internal */
-export { fetchProfileIndex, installProfile } from "../../../src/install/profiles";
-export type { InstallProgress, InstalledProfile, ProfileIndex, ProfileIndexEntry, ProfileManifest } from "../../../src/install/profiles";
+export { fetchProfileIndex, installProfile } from "./profiles";
+export type { InstallProgress, InstalledProfile, ProfileIndex, ProfileIndexEntry, ProfileManifest } from "./profiles";
 
 // boot
-export { installArtifacts, loadSnapshotByName, resolveRuntimeManifest, fetchSnapshotIndexFor } from "../qed64-boot";
+export { installArtifacts, loadSnapshotByName, resolveRuntimeManifest, fetchSnapshotIndexFor } from "./qed64-boot";
 /** @internal */
-export { ensureProfile, overridesOf } from "../qed64-boot";
-export type { InstallOptions, LoadSnapshotOptions, ProgressInfo, Qed64Artifacts, Qed64Session, StatusSink } from "../qed64-boot";
+export { ensureProfile, overridesOf } from "./qed64-boot";
+export type { InstallOptions, LoadSnapshotOptions, ProgressInfo, Qed64Artifacts, Qed64Session, StatusSink } from "./qed64-boot";
 
 // the raw snapshot region cache (docs/EMBEDDING.md §7.4)
 export { PREFETCH_SILENCE_MS, SNAPSHOT_CACHE_DIR, isCacheKeyOf, isRawCached, prefetchRaw, removeRawRegion } from "./raw-cache";
@@ -70,11 +70,11 @@ export type { BootOverrides } from "./params";
 export {
   DEFAULT_MAXIMUM_BYTES, EDITOR_POLICY, ResidentSession, makeEditorPolicy,
   importLinesOf, importedModulesOf, initialBytesForHeader, initialBytesForSnapshots, isUmbrellaModule, needsMathlib, snapshotsForHeader,
-} from "../resident-session";
-export type { ResidentHost, ResidentPolicy, SessionFile } from "../resident-session";
+} from "./resident-session";
+export type { ResidentHost, ResidentPolicy, SessionFile } from "./resident-session";
 
 // relay
-export { LspRelay } from "../lsp-relay";
+export { LspRelay } from "./lsp-relay";
 /** @internal */
-export { isImport } from "../lsp-relay";
-export type { Death, RelaySession, RelayState, RelayStatus, RestartOptions } from "../lsp-relay";
+export { isImport } from "./lsp-relay";
+export type { Death, RelaySession, RelayState, RelayStatus, RestartOptions } from "./lsp-relay";

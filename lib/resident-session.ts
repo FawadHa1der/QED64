@@ -15,11 +15,11 @@
 // the initial text at first boot, the relay's last full text on a reboot.
 import { ensureProfile, loadSnapshotByName, refuseUnpairedSnapshot, type Qed64Artifacts, type Qed64Session, type StatusSink } from "./qed64-boot";
 import type { RelaySession, RestartOptions } from "./lsp-relay";
-import { LeanSession, memoryCandidates, type JsonRpcMessage, type LibraryPack, type WorkerStatus } from "../../src/runtime/client";
-import { installProfile } from "../../src/install/profiles";
-import { deathCause, failureCauseOf, stageOfWorkerPhase, stepOfInstallPhase, type BootStage } from "./embed/failure";
-import { chooseSnapshots, initialBytesForEntries, type SnapshotIndex } from "../../src/runtime/snapshots";
-import { CANCELLED, createEditCoalescer, DEFAULT_EDIT_COALESCE_MS, type BackPressureEvent, type BackPressureOptions, type EditCoalescer } from "./embed/edit-coalescer";
+import { LeanSession, memoryCandidates, type JsonRpcMessage, type LibraryPack, type WorkerStatus } from "./client";
+import { installProfile } from "./profiles";
+import { deathCause, failureCauseOf, stageOfWorkerPhase, stepOfInstallPhase, type BootStage } from "./failure";
+import { chooseSnapshots, initialBytesForEntries, type SnapshotIndex } from "./snapshots";
+import { CANCELLED, createEditCoalescer, DEFAULT_EDIT_COALESCE_MS, type BackPressureEvent, type BackPressureOptions, type EditCoalescer } from "./edit-coalescer";
 
 const MiB = 1048576;
 const GiB = 1073741824;
@@ -61,11 +61,11 @@ export interface ResidentHost {
   /** Full-text didChanges reach the worker at most once per this many ms, the
    * newest last; other frames sent while a change is held wait behind it, and
    * a request whose text a newer change replaces is answered ContentModified
-   * (embed/edit-coalescer.ts, docs/EMBEDDING.md §7.8). Default 300; 0 forwards
+   * (edit-coalescer.ts, docs/EMBEDDING.md §7.8). Default 300; 0 forwards
    * every frame at once. */
   editCoalesceMs?: number;
   /** Back-pressure on full-text didChanges, keyed on the worker's pool
-   * sample (embed/edit-coalescer.ts, docs/EMBEDDING.md §7.8): a change is
+   * sample (edit-coalescer.ts, docs/EMBEDDING.md §7.8): a change is
    * held, with the frames behind it, while the last `status` showed fewer
    * than `minFreeWorkers` preallocated Workers free (default 6 of the
    * runtime's 24: while more than 18 pthreads are alive), until a later
