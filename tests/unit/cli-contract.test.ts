@@ -7,10 +7,10 @@
 // a SIGKILL timeout, with QED64_LEAN_ARTIFACT and --artifact naming a path
 // that does not exist (no runtime can boot), with every path flag pointing
 // into a temp tree, and only with --help or a deliberately invalid usage —
-// except chunk-runtime, which is run for real against a fake bin (as
-// artifact-discipline.test.ts does) to prove --flag=value reaches it. The
-// forwards (unpack) see a FAKE lean4-wasm64 package (LEAN4_WASM64_DIR) whose
-// scripts print their argv and exit 7, never a real one.
+// except chunk-runtime, which runs its front half for real against a fake bin
+// to prove --flag=value reaches it. The forwards (unpack, chunk-runtime) see a
+// FAKE lean4-wasm64 package (LEAN4_WASM64_DIR) whose scripts print their argv
+// and exit 7, never a real one.
 import { describe, expect, test, beforeAll, afterAll } from "vitest";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -35,7 +35,7 @@ beforeAll(() => {
   fakePkg = path.join(tmp, "fake-lean4-wasm64");
   fs.mkdirSync(fakePkg);
   fs.writeFileSync(path.join(fakePkg, "package.json"), JSON.stringify({ name: "lean4-wasm64" }));
-  fs.writeFileSync(path.join(fakePkg, "unpack.mjs"), "console.log(JSON.stringify(process.argv.slice(2)));\nprocess.exit(7);\n");
+  for (const f of ["unpack.mjs", "chunk-runtime.mjs"]) fs.writeFileSync(path.join(fakePkg, f), "console.log(JSON.stringify(process.argv.slice(2)));\nprocess.exit(7);\n");
 });
 afterAll(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
 
@@ -461,20 +461,16 @@ describe("the real scripts", () => {
     expect(SPECS.unpack!.markers.find((m) => m.id === "no-package")!.regex.test(SPECS.unpack!.markers.find((m) => m.id === "no-package")!.example)).toBe(true);
   });
 
-  test("chunk-runtime: --flag=value reaches the script's own parser (a real chunk of a fake bin)", () => {
+  test("chunk-runtime: --flag=value reaches the script's own front half, which hands the package the two-token form", () => {
     const d = sandbox("chunk-eq");
-    const r = run(SPECS["chunk-runtime"]!.script, [`--bin=${path.join(d, "bin")}`, `--out=${path.join(d, "out")}`, "--revision=test", "--lean-version=9.9.9"], d);
-    expect(r.status, r.stderr).toBe(0);
-    // no contract WARNING and no --lean-version warning (git's own complaint
-    // about a missing fork checkout, from the eager default revision, may appear)
-    expect(r.stderr).not.toMatch(/WARNING/);
-    // markers are per-line regexes: every stdout line is one of the stable ones
-    const markers = SPECS["chunk-runtime"]!.markers.filter((m) => m.stream === "stdout");
-    const lines = r.stdout.trimEnd().split("\n");
-    expect(lines.length).toBe(3);
-    for (const line of lines) expect(markers.some((m) => m.regex.test(line)), line).toBe(true);
-    const manifest = JSON.parse(fs.readFileSync(path.join(d, "out/runtime-manifest.json"), "utf8"));
-    expect(manifest.leanVersion).toBe("9.9.9");
-    expect(manifest.sourceRevision).toBe("test");
+    const r = run(SPECS["chunk-runtime"]!.script, [`--bin=${path.join(d, "bin")}`, `--out=${path.join(d, "out")}`, "--revision=test", "--lean-version=9.9.9", "--upstream-base=v1"], d);
+    expect(r.status, r.stderr).toBe(7);
+    // no contract WARNING and no --lean-version warning: only the forward's deprecation line
+    const deprecated = SPECS["chunk-runtime"]!.markers.find((m) => m.id === "deprecated")!;
+    expect(r.stderr.split("\n").filter(Boolean)).toEqual([deprecated.example]);
+    expect(JSON.parse(r.stdout)).toEqual(["--bin", path.join(d, "bin"), "--out", path.join(d, "out"), "--lean-version", "9.9.9", "--revision", "test"]);
+    expect(fs.existsSync(path.join(d, "out"))).toBe(false);
+    expect(SPECS["chunk-runtime"]!.env).toEqual(["QED64_STAGING", "LEAN4_WASM64_DIR"]);
+    expect(SPECS["chunk-runtime"]!.markers.filter((m) => m.stream === "stdout").every((m) => m.forwarded === "chunk-runtime.mjs")).toBe(true);
   });
 });

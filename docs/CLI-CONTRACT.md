@@ -840,7 +840,9 @@ usage: persistent-probe.mjs [--artifact <dir>]
 
 ### chunk-runtime
 
-**Tier 2.** `node pipeline/toolchain/chunk-runtime.mjs …`
+**Tier 2.** `node pipeline/toolchain/chunk-runtime.mjs …` — since plan B2a
+(contract 3) a **forward** to `lean4-wasm64 chunk` (see
+[the forwards](#lean4-wasm64-the-forwards)).
 
 ```
 usage: chunk-runtime.mjs --bin <dir> [--lean-version v] [--revision sha] [--upstream-base sha] [--out dir]
@@ -851,19 +853,29 @@ usage: chunk-runtime.mjs --bin <dir> [--lean-version v] [--revision sha] [--upst
 | `--bin <dir>` | — | **Required.** The dir holding `lean.js` and `lean.wasm`. |
 | `--lean-version <x.y.z>` | `4.33.0-pre`, with a WARNING on stderr | The manifest's `leanVersion`. Promote pairs packs against it. |
 | `--revision <string>` | `qed64-wasm64@<HEAD of pipeline/toolchain/work/lean4, relative to the cwd> (base <upstream-base>)`, else `unspecified` | The manifest's `sourceRevision`. git runs only when the flag is absent. |
-| `--upstream-base <sha\|tag>` | `5732b84` | Named in the default `--revision`. |
+| `--upstream-base <sha\|tag>` | `5732b84` | Named in the default `--revision`. Never forwarded (the package has no such flag). |
 | `--out <dir>` | `<$QED64_STAGING>/<buildId>/runtime`, else (deprecated) `work/staging/<buildId>/runtime` under the repo root | The staging dir. Refused inside `public/`. Resolves against the repo root. |
 
-- **Environment:** `QED64_STAGING` (the path rule).
-- **Leaving for the fork (plan B2a):** once its callers (`import-packs.sh`,
-  `bump-chain.sh`) are deleted it becomes a forward to `lean4-wasm64 chunk`.
-  That tool is **not** flag-compatible: it requires `--bin --out
-  --lean-version --revision`, has no `--upstream-base`, no defaults and no
-  `public/` refusal. Pass all four flags now and the switch changes nothing.
+- **Environment:** `QED64_STAGING` (the path rule), `LEAN4_WASM64_DIR` (the
+  package dir).
+- **What runs:** QED64 keeps the front half: the prelude (help, usage, flag
+  WARNINGs), the buildId (`runtimeBuildId` of `<bin>/lean.wasm`, which keys
+  the default `--out`), the path rule, the `public/` refusal, the
+  `no-version` WARNING and the no-`--revision` WARNING with their defaults.
+  Then one `deprecated` WARNING, and the script replaces itself with
+  `node <package>/chunk-runtime.mjs --bin <bin> --out <abs out>
+  --lean-version <v> --revision <r>`: all four flags the package requires,
+  always. The package's chunker writes the same bytes (its tests pin the
+  manifest; the first release was checked against the served one).
+- **No package:** after the WARNINGs, one `no-package` line, exit 2 (or
+  `not-package` for a `LEAN4_WASM64_DIR` that is not it). Before contract 3's
+  B2a row it chunked by itself.
+- **A release-adopted runtime is not chunked:** `pipeline/release/adopt-release.sh`
+  stages the release's own `runtime-manifest.json` and chunks.
 - **Inputs:** `<bin>/lean.js` and `<bin>/lean.wasm`.
-- **Outputs:**
-  - `<out>/chunks/<file>.<sha20>.part-NNN`. Additive: existing files are kept.
-  - `<out>/runtime-manifest.json` and `<out>/runtime-manifest.<buildId>.json`.
+- **Outputs** (the package's): `<out>/chunks/<file>.<sha20>.part-NNN`
+  (additive: existing files are kept), `<out>/runtime-manifest.json` and
+  `<out>/runtime-manifest.<buildId>.json`.
 
 | Marker | Stream | Regex |
 |---|---|---|
@@ -871,29 +883,35 @@ usage: chunk-runtime.mjs --bin <dir> [--lean-version v] [--revision sha] [--upst
 | done | stdout | `^runtime (wasm64-[0-9a-f]{16}) → (.+)$` |
 | no-version | stderr | `^chunk-runtime: WARNING — no --lean-version given` |
 | refuse-public | stderr | `^(bake-snapshot\|chunk-runtime): refusing --out (.+): it resolves inside public\/\. ` |
+| deprecated | stderr | `^chunk-runtime: WARNING — pipeline\/toolchain\/chunk-runtime\.mjs is deprecated; use lean4-wasm64 chunk ` |
+| no-package | stderr | `^(\S+): lean4-wasm64 not found — set LEAN4_WASM64_DIR=<package dir> or install it: ` (then exit 2) |
 | deprecated-default | stderr | `^(\S+): WARNING — the default --(\S+) (.+) \((.+)\) is deprecated; use --\S+ \S+ or set (\w+) \(docs\/CLI-CONTRACT\.md\)$` (`--out`) |
+
+`file` and `done` are printed by the package's script (their format strings
+are checked against it where it is installed).
 
 | Exit | Meaning |
 |---|---|
 | 0 | Chunked. |
-| 1 | A crash: `lean.js` or `lean.wasm` is unreadable under `--bin`. |
-| 2 | Usage, or `--out` inside `public/`. |
+| 1 | A crash: `lean.wasm` is unreadable under `--bin` (before the forward), or the package's chunker failed. |
+| 2 | Usage, `--out` inside `public/`, or lean4-wasm64 not found (set `LEAN4_WASM64_DIR` or install the devDependency). |
 
 **Side effects:**
 
 1. Without `--revision`, spawns `git -C pipeline/toolchain/work/lean4
-   rev-parse` for the default revision; the path is relative to the cwd, and
-   git's complaint can appear on stderr. (Before 2026-10-06 it ran on every
-   run, the default being evaluated eagerly.) The default leaves with the
-   toolchain lane (plan step B1).
-2. Creates `<out>/chunks` (`mkdir -p`).
-3. Writes the chunks and both manifests.
+   rev-parse` for the default revision (relative to the cwd; git's own
+   stderr is discarded).
+2. None other before the forward; the package creates `<out>/chunks` and
+   writes the chunks and both manifests.
 
 **Consumers:**
 
-- QED64's `bump-chain.sh` and `import-packs.sh` (the restamp).
-- lean4game's `build-from-source.sh` runtime lane (vendored).
-- `tests/unit/artifact-discipline.test.ts`.
+- None in QED64 since plan B2a: `import-packs.sh` and `bump-chain.sh` (the
+  restamp) are deleted, and `adopt-release.sh` stages the release's chunks.
+- lean4game's `build-from-source.sh` runtime lane (vendored, pinned before
+  B1; it does not re-sync).
+- `tests/unit/artifact-discipline.test.ts`, `tests/unit/tool-paths.test.ts`,
+  `tests/unit/cli-contract.test.ts` (against a fake package).
 
 ### pack
 
@@ -1018,12 +1036,13 @@ are checked against it where it is installed).
 Decision 10: the fork's package `lean4-wasm64` is a devDependency of QED64,
 pinned by its release tgz URL (`toolchain/lean4-wasm64-release.json` names
 the release). QED64's library, workers and pipeline import nothing from it;
-three scripts hand it paths instead, through `forwardToLean4Wasm64` in
+four scripts hand it paths instead, through `forwardToLean4Wasm64` in
 `pipeline/toolchain/artifact-paths.mjs`:
 
 | Script | Tier | Before the forward | Runs |
 |---|---|---|---|
 | `pipeline/artifacts/unpack.mjs` | 2 | its prelude (help, usage, warnings), one WARNING | `<pkg>/unpack.mjs <args>` |
+| `pipeline/toolchain/chunk-runtime.mjs` | 2 | its prelude, the buildId, the `--out` path rule and `public/` refusal, the version/revision WARNINGs, one WARNING | `<pkg>/chunk-runtime.mjs --bin <dir> --out <abs dir> --lean-version <v> --revision <r>` |
 | `pipeline/artifacts/inspect.mjs` | 3 | one WARNING | `<pkg>/inspect.mjs <args>` |
 | `pipeline/toolchain/gate.mjs` | 3 | the `--artifact` path rule and the `bin/lean.js` check, one WARNING | `<pkg>/gate.mjs --artifact <abs dir>` |
 
@@ -1065,9 +1084,10 @@ three scripts hand it paths instead, through `forwardToLean4Wasm64` in
   defaults `--out work/packs` and `--lean-version 4.33.0-pre`), its
   `chunk` requires `--bin --out --lean-version --revision`, and its
   `unpack` has `--slim` but **no `--exclude`** (neither in the package nor
-  at fork HEAD 712e371a06). `pack`, `chunk-runtime`, `node-runner`,
-  `persistent-probe`, `olean-imports` and `artifact-paths.mjs` stay real
-  QED64 scripts in this contract.
+  at fork HEAD 712e371a06). `pack`, `node-runner`, `persistent-probe`,
+  `olean-imports` and `artifact-paths.mjs` stay real QED64 scripts in this
+  contract; `chunk-runtime` forwards (plan B2a) by always passing the four
+  flags `chunk` requires.
 
 ## Frozen: the flags and lines consumers parse
 
@@ -1169,6 +1189,7 @@ as QED64's own gate did.
 | 3 | 2026-10-06 | B1a review fixes, **the forwards.** unpack forwards only the arguments its prelude accepted: an unknown flag or a stray argument is warned about once (before, the package's identical prelude printed the same WARNING again after the `deprecated` line). `LEAN4_WASM64_DIR` must name the package (its `package.json` name is `lean4-wasm64`): a dir that is not refuses with one new `not-package` line, exit 2 (before, a dir holding QED64's own forwards made the forward re-exec itself forever on one PID); a `<pkg>/<script>` that is the running script refuses the same way. Without `process.execve` the forward spawns the package's script asynchronously, passes SIGINT/SIGTERM/SIGHUP on and exits with 128 + the signal for a signalled child (before: a blocking `spawnSync`, exit 1 for a signal death, and an orphaned child when the forward was killed). The walk's skip of a wrong-name or unreadable `node_modules/lean4-wasm64` is tested to continue to the real package above. | fix; additive (a marker) |
 | 3 | 2026-10-06 | unpack's `done` regex gains an optional `--slim` group: `… → (.+?)(?: \(--slim: (\d+) \*\.olean\.private left out\))?$`. Group 4 is the out dir with or without `--slim` (before, it captured the suffix too), group 5 the count. Every line the old regex matched still matches with the same groups 1-4 when there is no suffix. Markers may carry more `examples`, each checked like `example`. | additive (a regex group) |
 | 3 | 2026-10-06 | Deleted: `pipeline/toolchain/setup-source.sh`, `build.sh`, `finish.sh`, `README.md` and the 35 patch copies under `pipeline/toolchain/patches/` (provenance only; never in package.json `files` or closure.json, called by no consumer: the build and its series are the fork's `wasm64-build/`, docs/REBUILD.md §1). `pipeline/toolchain/PATCHES.md` keeps its path (persistent-probe's PARSE-ERROR-SWALLOWED line names it) as a pointer to the fork's series and the pinned record. README's layout row and provenance paragraph point at docs/REBUILD.md §1. | removed (unused); docs |
+| 3 | 2026-10-06 | Plan step B2a, **chunk-runtime forwards** to `lean4-wasm64 chunk` (breaking: without the package it now exits 2 with `no-package` where it used to chunk; contract 3 from B1a). It keeps its flags, defaults, path rule, `public/` refusal and WARNINGs, then prints one `chunk-runtime: WARNING — pipeline/toolchain/chunk-runtime.mjs is deprecated; use lean4-wasm64 chunk --bin <dir> --out <dir> --lean-version <x.y.z> --revision <string> …` and hands the package all four flags (`--upstream-base` only feeds the default `--revision`, never forwarded). New markers `deprecated` and `no-package`; `file` and `done` are the package's lines (same format). The default revision's git call no longer prints git's stderr. QED64's own callers, `pipeline/release/import-packs.sh` and `bump-chain.sh`, are deleted: `pipeline/release/adopt-release.sh` adopts a release (no chunker, no restamp; docs/REBUILD.md §3). | breaking (exit 2 without the package); deprecation (WARNING); removed (two shell lanes) |
 
 ## Open decisions
 

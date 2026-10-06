@@ -35,7 +35,7 @@ import { forwardToLean4Wasm64 } from "../toolchain/artifact-paths.mjs";
     "  -h, --help         print this help and exit 0, before any side effect",
     "",
     "environment:",
-    "  LEAN4_WASM64_DIR  the lean4-wasm64 package dir the forwards run (unpack, and the tier-3 inspect and gate); unset: the first node_modules/lean4-wasm64 above the cwd",
+    "  LEAN4_WASM64_DIR  the lean4-wasm64 package dir the forwards run (unpack, chunk-runtime, and the tier-3 inspect and gate); unset: the first node_modules/lean4-wasm64 above the cwd",
     "",
     "exit codes:",
     "  0  unpacked",
