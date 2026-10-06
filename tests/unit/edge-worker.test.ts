@@ -1094,6 +1094,8 @@ describe("release: routing", () => {
       [PACK, `${RP}profiles${PACK.slice("/profiles".length)}`],
       ["/profiles/index.json", "site/profiles/index.json"],
       ["/profiles/sub/index.json", `${RP}profiles/sub/index.json`], // siteOwned is exact unless it ends in "/"
+      ["/profiles/index.json.gz", `${RP}profiles/index.json.gz`], // ... so an exact entry is not a prefix
+      ["/profiles/index.jsonx", `${RP}profiles/index.jsonx`],
       ["/snapshots/index.json", "site/snapshots/index.json"],
       [SNAPZ, `site${SNAPZ}`],
       ["/extra/x.json", "site/extra/x.json"],
@@ -1209,6 +1211,25 @@ describe("release: the one-cycle fallback to the site prefix", () => {
     expect([past.r.status, past.r.headers.get("cache-control"), past.calls.length]).toEqual([416, "no-store", 2]);
     const pastHit = await run(hardened, CHUNK, both, { headers: { range: "bytes=5000-" } });
     expect([pastHit.r.status, pastHit.calls.length]).toEqual([416, 1]);
+  });
+
+  test("Range: once head() answered at the release key, a ranged get() that then misses is a 404, never a site-key read", async () => {
+    // The object is removed between head() and get(): the site key holds other bytes, whose size and
+    // etag did not decide If-Range or 416, so it must not be read.
+    const objects = { [releaseKey]: { bytes: BYTES }, [rootKey]: { bytes: BYTES.slice(0, 10) } };
+    const bucket = fakeBucket(objects);
+    const realHead = bucket.head;
+    bucket.head = async (key: string) => {
+      const found = await realHead(key);
+      if (key === releaseKey) delete (objects as Record<string, Obj>)[releaseKey];
+      return found;
+    };
+    const env = { ASSETS: fakeAssets(FILES), ARTIFACTS: bucket };
+    const r = await hardened.fetch(req(CHUNK, { headers: { range: "bytes=0-9" } }), env);
+    expect([r.status, r.headers.get("cache-control"), bucket.calls.map((c) => `${c.op} ${c.key}`)]).toEqual([
+      404, "no-store", [`head ${releaseKey}`, `get ${releaseKey}`],
+    ]);
+    isolated(r);
   });
 
   test("405 never looks anything up; site-owned misses never fall back", async () => {
