@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchSnapshotIndex, loadSnapshotIndex, snapshotCacheKey } from "../../src/runtime/snapshots";
+import { fetchSnapshotIndex, loadSnapshotIndex, snapshotCacheKey } from "../../lib/snapshots";
 
 describe("snapshotCacheKey", () => {
   const digest = "sha256:61a520c98f37eda0aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";

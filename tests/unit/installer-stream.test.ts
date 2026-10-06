@@ -7,7 +7,7 @@
 import { describe, expect, test, vi, afterEach } from "vitest";
 import { gzipSync } from "node:zlib";
 import { createHash } from "node:crypto";
-import { inflateTransport, type ProfileManifest } from "../../src/install/profiles";
+import { inflateTransport, type ProfileManifest } from "../../lib/profiles";
 
 const sha256 = (b: Uint8Array) => createHash("sha256").update(b).digest("hex");
 

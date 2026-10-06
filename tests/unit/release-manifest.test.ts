@@ -572,6 +572,7 @@ describe.skipIf(!hasGit)("frontend/build/build-info.mjs: dist/qed64-build.json o
     for (const f of ["vite.config.ts", "package.json"]) fs.copyFileSync(path.join(root, "frontend", f), path.join(frontend, f));
     fs.copyFileSync(path.join(root, "public/runtime/runtime-manifest.json"), path.join(checkout, "public/runtime/runtime-manifest.json"));
     for (const d of ["build", "src", "node_modules"]) fs.symlinkSync(path.join(root, "frontend", d), path.join(frontend, d));
+    fs.symlinkSync(path.join(root, "lib"), path.join(checkout, "lib")); // the barrel the config reads EMBED_API_REVISION from
     const g = (...args: string[]) => spawnSync("git", args, { cwd: checkout, encoding: "utf8" });
     g("init", "-q");
     g("add", "frontend/vite.config.ts", "public/runtime/runtime-manifest.json");
@@ -592,8 +593,8 @@ describe.skipIf(!hasGit)("frontend/build/build-info.mjs: dist/qed64-build.json o
     expect(r.status, r.stderr).toBe(0);
     const info = JSON.parse(fs.readFileSync(path.join(checkout, "dist/qed64-build.json"), "utf8"));
     expect(info).toMatchObject({ commit, dirty: false, buildId });
-    // vite.config.ts wires the barrel's revision (frontend/src/embed/index.ts) into the stamp.
-    const barrel = fs.readFileSync(path.join(root, "frontend/src/embed/index.ts"), "utf8");
+    // vite.config.ts wires the barrel's revision (lib/index.ts) into the stamp.
+    const barrel = fs.readFileSync(path.join(root, "lib/index.ts"), "utf8");
     expect(info.embedApiRevision).toBe(/export const EMBED_API_REVISION = "([^"]+)"/.exec(barrel)?.[1]);
     expect(info.embedApiRevision).toMatch(/^\d+\.\d+\.\d+(-[\w.]+)?$/);
   });

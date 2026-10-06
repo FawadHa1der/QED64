@@ -4,10 +4,10 @@
 // `this.fromClient` / `this.toClient`, and the cache must forward one request
 // per hash per session, answer the rest itself, and release waiters on errors.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { LspRelay, type RelaySession, type RestartOptions } from "../../frontend/src/lsp-relay";
+import { LspRelay, type RelaySession, type RestartOptions } from "../../lib/lsp-relay";
 import { tapRelay, type LspMessage } from "../../frontend/src/relay-taps";
 import { installWidgetSourceCache } from "../../frontend/src/widget-source-cache";
-import type { JsonRpcMessage, WorkerStatus } from "../../src/runtime/client";
+import type { JsonRpcMessage, WorkerStatus } from "../../lib/client";
 
 let seq = 0;
 class Session implements RelaySession {

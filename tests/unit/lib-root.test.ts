@@ -8,6 +8,10 @@
 //   * each shim's text is its comment plus `export * from "<lib/x>"` and
 //     nothing else, and at run time it exports exactly its target's names,
 //     bound to the same values.
+// And the boundary: no tracked source outside lib/ and the shims imports
+// through a shim, takes a `../../../src` hop, or reaches into src/runtime or
+// src/install (they hold nothing but shims); inside lib/ every import is a
+// sibling, except client.ts's side-effect import of the Memory64 probe.
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -78,5 +82,63 @@ describe("the one-cycle path shims (plan A7)", () => {
 
   it("no lib/ module has a default export (an `export *` shim would drop it)", () => {
     for (const [, to] of shims) expect(read(to), to).not.toMatch(/\bexport\s+default\b|\bas\s+default\b/);
+  });
+});
+
+/** Every module specifier of a JS/TS source (comments stripped): static and type imports,
+ * re-exports, side-effect and dynamic imports, `typeof import(...)` and vi.mock targets. */
+function specifiers(source: string): string[] {
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const out: string[] = [];
+  for (const re of [/(?:^|[;\s])(?:import|export)\s[^;]*?\sfrom\s*["']([^"']+)["']/g, /(?:^|[;\s])import\s*["']([^"']+)["']/g,
+    /\bimport\(\s*["']([^"']+)["']\s*\)/g, /\bvi\.(?:mock|doMock|importActual)\(\s*["']([^"']+)["']/g]) {
+    for (const m of code.matchAll(re)) out.push(m[1]!);
+  }
+  return out;
+}
+/** A relative specifier resolved the way the bundler (and vitest) resolve this repository's sources. */
+function resolveRel(from: string, spec: string): string {
+  const base = path.posix.normalize(path.posix.join(path.posix.dirname(from), spec));
+  for (const c of [base, `${base}.ts`, `${base}/index.ts`]) if (tracked.has(c)) return c;
+  return base;
+}
+
+describe("one library root: the import boundary (plan A7)", () => {
+  const code = [...tracked].filter((f) => /\.(?:ts|tsx|mts|cts|mjs|cjs|js)$/.test(f));
+  const lib = code.filter((f) => f.startsWith("lib/"));
+
+  it("lib/ holds exactly the 12 closure files, and they import only each other (and the probe)", () => {
+    expect(lib.sort()).toEqual([...closure.embed].sort());
+    for (const f of lib) {
+      for (const s of specifiers(read(f))) {
+        if (f === "lib/client.ts" && s === "../public/workers/memory64-probe.js") continue;
+        expect(/^\.\/[\w-]+$/.test(s), `${f} imports ${s}: a lib/ module imports its siblings only`).toBe(true);
+        expect(closure.embed, `${f} imports ${s}`).toContain(resolveRel(f, s));
+      }
+    }
+    expect(specifiers(read("lib/client.ts"))).toContain("../public/workers/memory64-probe.js");
+  });
+
+  it("no source outside lib/ and the shims imports a shim, takes a ../../../src hop, or reaches into src/", () => {
+    const shimPaths = new Set(Object.keys(SHIMS));
+    const outside = code.filter((f) => !f.startsWith("lib/") && !shimPaths.has(f));
+    expect(outside.length).toBeGreaterThan(100);
+    const offences: string[] = [];
+    for (const f of outside) {
+      for (const s of specifiers(read(f))) {
+        if (!s.startsWith(".")) continue;
+        const r = resolveRel(f, s);
+        if (s.includes("../../../src") || r.startsWith("src/") || shimPaths.has(r) || r === "frontend/src/embed") offences.push(`${f} imports ${s} (${r})`);
+      }
+    }
+    expect(offences).toEqual([]);
+  });
+
+  it("the page imports the library from lib/, the barrel included", () => {
+    const page = code.filter((f) => f.startsWith("frontend/src/") && !(f in SHIMS));
+    const reached = new Set<string>();
+    for (const f of page) for (const s of specifiers(read(f))) if (s.startsWith(".")) reached.add(resolveRel(f, s));
+    expect([...reached].filter((r) => r.startsWith("lib/")).length).toBeGreaterThan(0);
+    expect(reached.has("lib/index.ts"), "main.ts imports the barrel").toBe(true);
   });
 });

@@ -1,4 +1,4 @@
-// Overlay environments (docs/EMBEDDING.md §8; src/runtime/snapshots.ts): an
+// Overlay environments (docs/EMBEDDING.md §8; lib/snapshots.ts): an
 // index entry may declare the module roots it serves, a label and an initial
 // commit, and the page boots and widens to it by itself. Pinned here: on an
 // index WITHOUT roots every decision is exactly the legacy one (the stock
@@ -10,13 +10,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   chooseSnapshots, coversModule, entryLabel, entryRoots, initialBytesForEntries, loadSnapshotIndex, widenTarget,
   type SnapshotEntry, type SnapshotIndex,
-} from "../../src/runtime/snapshots";
+} from "../../lib/snapshots";
 import {
   EDITOR_POLICY, importedModulesOf, initialBytesForSnapshots, isUmbrellaModule, makeEditorPolicy, snapshotsForHeader, type ResidentPolicy,
-} from "../../frontend/src/resident-session";
-import { LspRelay, type RelaySession, type RestartOptions } from "../../frontend/src/lsp-relay";
+} from "../../lib/resident-session";
+import { LspRelay, type RelaySession, type RestartOptions } from "../../lib/lsp-relay";
 import { selfWiden } from "../../frontend/src/self-widen";
-import type { JsonRpcMessage, WorkerStatus } from "../../src/runtime/client";
+import type { JsonRpcMessage, WorkerStatus } from "../../lib/client";
 
 const GiB = 1073741824;
 const MiB = 1048576;

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { validateManifest, type ProfileManifest } from "../../src/install/profiles";
+import { validateManifest, type ProfileManifest } from "../../lib/profiles";
 
 const realManifestPath = path.resolve(__dirname, "../../public/profiles/lean-core.manifest.json");
 

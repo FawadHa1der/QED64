@@ -189,7 +189,7 @@ async function memSample() {
 }
 /** The relay's counters (`globalThis.qed64.relay.stats`: reboots,
  * userRestarts, workerDeaths, breakerTrips, failedInFlight, staleDeaths,
- * rangedChanges — frontend/src/lsp-relay.ts). Null only when the page
+ * rangedChanges — lib/lsp-relay.ts). Null only when the page
  * cannot be read (dead / closed / no relay); the kill drill treats null as
  * a failure, the corpus loop records it. */
 async function statsSnap() {
@@ -488,7 +488,7 @@ if (runs("worker-kill-recovery")) {
   // ResidentSession adapter, `.lean` its LeanSession, `.lean.worker` the
   // Worker. `terminate()` is silent (no error event), so the death the relay
   // sees is the heartbeat-loss path (6 s without a beat + a 2 s unanswered
-  // telemetry probe — src/runtime/client.ts), which is the point of the drill.
+  // telemetry probe — lib/client.ts), which is the point of the drill.
   await page.evaluate(() => {
     const w = globalThis.qed64?.relay?.session?.lean?.worker;
     if (!w || typeof w.terminate !== "function") throw new Error("kill drill: qed64.relay.session.lean.worker is not a Worker (tap missing)");

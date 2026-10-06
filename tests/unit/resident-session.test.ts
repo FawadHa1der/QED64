@@ -1,4 +1,4 @@
-// The editor's boot policy (frontend/src/resident-session.ts; second review
+// The editor's boot policy (lib/resident-session.ts; second review
 // §6 amendment 15): the initial document decides the boot-only snapshot list
 // and the initial memory commit — an Init-only document boots light (init
 // snapshot, 256 MiB), anything naming a module the umbrella serves boots the
@@ -20,8 +20,8 @@ import {
   needsMathlib,
   snapshotsForHeader,
   type ResidentHost,
-} from "../../frontend/src/resident-session";
-import { LeanSession, type WorkerStatus } from "../../src/runtime/client";
+} from "../../lib/resident-session";
+import { LeanSession, type WorkerStatus } from "../../lib/client";
 
 const MiB = 1048576;
 const GiB = 1073741824;

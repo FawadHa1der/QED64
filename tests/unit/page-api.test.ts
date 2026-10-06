@@ -13,14 +13,14 @@ import {
   codeFromHash, createPageApi, isSyntheticFrame, pageStatusSink, toApiStatus, FILE_PROGRESS_MS, LIVENESS_TIMING,
   type ApiStatus, type Capabilities, type EditorLike, type PageApi, type RelayLike,
 } from "../../frontend/src/page-api";
-import { normalizeMemoryBytes, parseMemoryParam } from "../../frontend/src/embed/params";
-import { LspRelay, type RelaySession, type RelayStatus, type RestartOptions } from "../../frontend/src/lsp-relay";
+import { normalizeMemoryBytes, parseMemoryParam } from "../../lib/params";
+import { LspRelay, type RelaySession, type RelayStatus, type RestartOptions } from "../../lib/lsp-relay";
 import { tapRelay, type LspMessage } from "../../frontend/src/relay-taps";
 import { createCheckFallback } from "../../frontend/src/check-fallback";
 import { STAGES, createBootChecklist } from "../../frontend/src/boot-checklist";
 import { STALE_NOTICE, createStaleWatch, isStaleDeath } from "../../frontend/src/stale-notice";
-import { deathCause } from "../../frontend/src/embed/failure";
-import type { JsonRpcMessage, WorkerStatus } from "../../src/runtime/client";
+import { deathCause } from "../../lib/failure";
+import type { JsonRpcMessage, WorkerStatus } from "../../lib/client";
 
 const CAPS: Capabilities = {
   editorRpc: true, documents: true, events: true, restart: true, embedMode: true, snapshotRoots: false, postMessage: false,

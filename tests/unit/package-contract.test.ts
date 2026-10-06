@@ -18,7 +18,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
-import { WORKER_URLS } from "../../frontend/src/embed/urls";
+import { WORKER_URLS } from "../../lib/urls";
 import { SPECS } from "../../pipeline/snapshot/cli.mjs";
 
 const root = path.resolve(__dirname, "../..");
@@ -125,7 +125,7 @@ describe("embedding/closure.json", () => {
     // Everything listed is reachable from the entry (no dead weight), and the
     // embed directory has no module outside the list.
     expect([...reached].sort()).toEqual([...listed].sort());
-    for (const f of tracked) if (f.startsWith("frontend/src/embed/") && f.endsWith(".ts")) expect(listed.has(f), `${f} ships (frontend/src/embed/ is in files) but is not in closure.embed`).toBe(true);
+    for (const f of tracked) if (f.startsWith("lib/") && f.endsWith(".ts")) expect(listed.has(f), `${f} ships (lib/ is in files) but is not in closure.embed`).toBe(true);
   });
 
   it("no unguarded Vite-only globals in the embed closure", () => {
@@ -191,10 +191,10 @@ describe("embedding/closure.json", () => {
     // fails here instead of leaving a pattern that matches nothing.
     const served = closure.workers.map((w) => w.serveAs);
     const sites = closure.embed.flatMap((f) => (read(f).match(/new Worker\(/g) ?? []).map(() => f));
-    expect(sites.sort()).toEqual(["frontend/src/embed/raw-cache.ts", "src/runtime/client.ts"]);
-    const prefetch = read("frontend/src/embed/raw-cache.ts").match(/new Worker\(opts\.workerUrl \?\? "(\/workers\/[^"]+)"\)/);
+    expect(sites.sort()).toEqual(["lib/client.ts", "lib/raw-cache.ts"]);
+    const prefetch = read("lib/raw-cache.ts").match(/new Worker\(opts\.workerUrl \?\? "(\/workers\/[^"]+)"\)/);
     expect(prefetch && served.includes(prefetch[1]!), "prefetchRaw's default worker URL").toBe(true);
-    const lean = read("src/runtime/client.ts").match(/workerUrl = "(\/workers\/[^"]+)"/);
+    const lean = read("lib/client.ts").match(/workerUrl = "(\/workers\/[^"]+)"/);
     expect(lean && served.includes(lean[1]!), "LeanSession's default worker URL").toBe(true);
     // What an offline cache warms (embed/urls.ts, docs/EMBEDDING.md §7.5) is exactly what ships.
     expect([...WORKER_URLS].sort()).toEqual([...served].sort());
@@ -225,7 +225,7 @@ describe("the worker protocol ledger (docs/EMBEDDING.md §7.7)", () => {
   it("lists exactly the requests the worker answers, and the page protocol number", () => {
     const src = read("public/workers/lean.worker.js");
     expect(src).toContain(`const WORKER_REQUESTS = Object.freeze(${JSON.stringify(c.workerProtocol.requests).replace(/,/g, ", ")});`);
-    expect(read("src/runtime/client.ts")).toContain(`export const PROTOCOL = ${c.workerProtocol.protocol};`);
+    expect(read("lib/client.ts")).toContain(`export const PROTOCOL = ${c.workerProtocol.protocol};`);
     expect(Array.isArray(c.workerProtocol.deprecated)).toBe(true);
   });
   // The floor is checked against the pinned release record (toolchain/lean4-wasm64-release.json, a

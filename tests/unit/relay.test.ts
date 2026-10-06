@@ -1,4 +1,4 @@
-// The L3 relay (frontend/src/lsp-relay.ts) against a FakeSession — the
+// The L3 relay (lib/lsp-relay.ts) against a FakeSession — the
 // invariants docs/ARCHITECTURE-REEVALUATION-2-2026-09-02.md §2.3 names:
 // `hash(fake.lastFullText) === hash(lastText)` after every scenario, zero
 // client-facing messages synthesized except responses to failed in-flight
@@ -12,10 +12,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { LspRelay, isImport, type RelaySession, type RelayStatus, type RestartOptions } from "../../frontend/src/lsp-relay";
+import { LspRelay, isImport, type RelaySession, type RelayStatus, type RestartOptions } from "../../lib/lsp-relay";
 import { tapRelay } from "../../frontend/src/relay-taps";
 import { createTestHatch } from "../../frontend/src/test-hatch";
-import type { JsonRpcMessage as Msg, WorkerStatus } from "../../src/runtime/client";
+import type { JsonRpcMessage as Msg, WorkerStatus } from "../../lib/client";
 
 class FakeSession implements RelaySession {
   static seq = 0;
@@ -116,7 +116,7 @@ async function bootCurrent() {
 }
 
 describe("relay: line and timer budget (§8 item 9)", () => {
-  const source = readFileSync(path.resolve(__dirname, "../../frontend/src/lsp-relay.ts"), "utf8");
+  const source = readFileSync(path.resolve(__dirname, "../../lib/lsp-relay.ts"), "utf8");
   it("owns no timer of any kind — the settle is injected", () => {
     expect(/setTimeout|setInterval|requestIdleCallback|requestAnimationFrame|performance\.now/.test(source)).toBe(false);
   });
