@@ -23,13 +23,21 @@
 // lastDeath.reason "bootFailed", cause.kind "unpaired"), the page's own boot
 // card (class "failed"), a renderer crash (must be none), and every console
 // line and page error (all printed). Console contract: error/warning lines
-// and page errors must match one of the two shapes the showcase allowlists
-// for a boot failure, "QED64: the Lean checker died (bootFailed)" (the
-// relay's orphaned-request reply, logged by the language client) and
-// "Error: ?snapshots=<dir>: …" (main()'s catch); any other is listed and
-// FAILS the run, except "Session disposed." (the showcase's known N2: the
-// heap meter's telemetry request rejected by a disposal), listed as known.
-// log/info/debug lines are printed, not judged.
+// and page errors must match one of the three shapes the showcase's C9
+// allowlists (its bootFailure and crashBreakerTripped scenarios):
+// "QED64: the Lean checker died (bootFailed)" (the relay's orphaned-request
+// reply, logged by the language client), "QED64: checker halted after
+// repeated crashes" (the breaker's reply to a request that reaches the relay
+// after the halt) and "Error: ?snapshots=<dir>: …" (main()'s catch); any
+// other is listed and FAILS the run, except "Session disposed." (the
+// showcase's known N2: the heap meter's telemetry request rejected by a
+// disposal), listed as known. log/info/debug lines are printed, not judged.
+// With the early refusal the relay halts about 3 s after it is constructed
+// (three rejections, two 1.5 s settles), often before the language client
+// sends `initialize`: then no request is pending at a death, the died
+// (bootFailed) line appears fewer than three times or not at all, and
+// `initialize` is answered with the halted line instead. Both are correct;
+// the lane prints when `initialize` reached the relay and each shape's count.
 // Usage: node tests/adversarial/unpaired-snapshot.mjs --url http://localhost:5185/ [--runtime wasm64-0000000000000000] [--buffer 'import Mathlib\n\n#check (1 : Nat)\n'] [--wait-ms 90000] [--headed]
 // Exit 0 = PASS, 1 = FAIL (2 = usage). Run it through the host browser lock.
 import { chromium } from "playwright";
@@ -50,7 +58,7 @@ if (!/^https?:\/\//.test(url) || !Number.isFinite(WAIT) || !/^wasm64-[0-9a-f]{16
   process.exit(2);
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const ALLOWED = [/^QED64: the Lean checker died \(bootFailed\)/, /^Error: \?snapshots=(?:snapshots\/)?[A-Za-z0-9][A-Za-z0-9._-]{0,63}: /];
+const ALLOWED = [/^QED64: the Lean checker died \(bootFailed\)/, /^QED64: checker halted after repeated crashes/, /^Error: \?snapshots=(?:snapshots\/)?[A-Za-z0-9][A-Za-z0-9._-]{0,63}: /];
 const KNOWN_N2 = /^Session disposed\.$/;
 
 const browser = await chromium.launch({ headless: !HEADED, args: ["--enable-features=SharedArrayBuffer"] });
@@ -109,19 +117,22 @@ try {
     const card = document.getElementById("bootcard");
     return {
       relay: r?.relay ?? null, phase: r?.phase ?? null, session: r?.session ?? null,
+      initialize: q?.relay?.initialize != null,
       deaths: st?.workerDeaths ?? null, reboots: st?.reboots ?? null, breakerTrips: st?.breakerTrips ?? null,
       boot: api?.boot ?? null, lastDeath: api?.lastDeath ?? null,
       bootcard: card ? card.className : null, bootlabel: document.getElementById("bootlabel")?.textContent ?? null,
     };
   }).catch(() => null);
   const timeline = [];
-  let last = null, haltedAt = null;
+  let last = null, haltedAt = null, initializeAt = null, initializeAfterHalt = null;
   while (at() < WAIT && crashedAt === null) {
     const s = await sample();
     if (s) {
       const key = `${s.relay}/${s.phase}/${s.session}/${s.deaths}`;
       if (!timeline.length || timeline.at(-1).key !== key) timeline.push({ t: at(), key, relay: s.relay, phase: s.phase, session: s.session, deaths: s.deaths });
       last = s;
+      // Sampled: when both first show in one sample, which came first is unknown (null).
+      if (s.initialize && initializeAt === null) { initializeAt = at(); initializeAfterHalt = haltedAt !== null ? true : s.relay === "halted" ? null : false; }
       if (s.relay === "halted" && haltedAt === null) haltedAt = at();
     }
     if (haltedAt !== null && at() - haltedAt > 3000) break; // stragglers: a request or a log after the halt
@@ -131,7 +142,8 @@ try {
   const judged = consoleLines.filter((l) => /^(?:error|warning|pageerror|worker:error|worker:warning)$/.test(l.type));
   const outside = judged.filter((l) => !ALLOWED.some((re) => re.test(l.text)) && !KNOWN_N2.test(l.text));
   const knownN2 = judged.filter((l) => KNOWN_N2.test(l.text));
-  row = { url, fakeRuntime: FAKE, intercepted, requests, runtimeInit, crashedAt, haltedAt, timeline, last, consoleLines, outside, knownN2 };
+  const shapes = ALLOWED.map((re) => ({ shape: re.source, count: judged.filter((l) => re.test(l.text)).length }));
+  row = { url, fakeRuntime: FAKE, intercepted, requests, runtimeInit, crashedAt, haltedAt, initializeAt, initializeAfterHalt, timeline, last, consoleLines, outside, knownN2, shapes };
 } finally { await browser.close().catch(() => {}); }
 
 const L = row.last ?? {};
@@ -156,6 +168,8 @@ console.log(`  halted at: ${row.haltedAt === null ? "never" : `${(row.haltedAt /
 console.log(`  boot: ${JSON.stringify(L.boot ?? null)}`);
 console.log(`  lastDeath: ${JSON.stringify(L.lastDeath ?? null)}`);
 console.log(`  boot card: ${JSON.stringify(L.bootcard ?? null)} / ${JSON.stringify(L.bootlabel ?? null)}`);
+console.log(`  initialize reached the relay: ${row.initializeAt === null ? "never (sampled every 250 ms)" : `${(row.initializeAt / 1000).toFixed(1)} s, ${row.initializeAfterHalt === null ? "in the same 250 ms sample as the halt (order unknown)" : row.initializeAfterHalt ? "after the halt (answered with the halted line)" : "before the halt (answered at a later death: the died (bootFailed) line)"}`}`);
+console.log(`  allowlisted shapes: ${row.shapes.map((x) => `${x.count}× /${x.shape}/`).join(", ")}`);
 if (row.knownN2.length) console.log(`  known N2 lines (not judged): ${row.knownN2.length}`);
 for (const l of row.outside) console.log(`  OUTSIDE ALLOWLIST [${(l.t / 1000).toFixed(1)}s] ${l.type}: ${l.text.split("\n")[0].slice(0, 300)}`);
 for (const [what, ok] of checks) console.log(`  ${ok ? "ok  " : "FAIL"} ${what}`);
