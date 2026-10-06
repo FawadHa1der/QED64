@@ -504,3 +504,20 @@ The cost, measured: on a document where every elaboration finishes in millisecon
 
 What it still does not fix: the two controls bound what the session sends, not what one command spawns. A single elaboration that creates more threads than the pool has free, or a worker that goes silent while pressured (the hold then ends at its 5 s cap with the pool as it is), are out of reach from the page. The root fix remains the one #55 named: a cap on concurrently live dedicated threads in the runtime's task manager, or smaller isolates, both the kernel's. The lane keeps `pageslow` in its default list so a regression on either side shows.
 
+### 60. Deep recursion overflows a pthread's stack before Lean's own guard (open, the kernel's)
+
+Reported 2026-10-06 by lean4game (NNG4 Multiplication/1, editor mode, kernel 0032): `have h : ∀ n : Fin 40, ∀ m : Fin 40, n * m = m * n := by decide` (also `∀ n < 60`, `< 100`). Expected: Lean's "maximum recursion depth" error with the checker alive. Actual: a pthread worker throws `Uncaught RangeError: Maximum call stack size exceeded`, the FileWorker dies three times and the relay's breaker halts it; the next edit restarts it into the same crash. With a restarted session elaborating that line while the player typed at 150 ms/char, their pool went 26 → 77 Workers in about a second and the tab crashed.
+
+Reproduced on QED64's runtime (wasm64-3ab1c6a9, kernel 0035, a production build carrying #59's back-pressure; `import Mathlib` plus the line above; `tests/adversarial/deep-recursion.mjs`, headless):
+
+| Scenario | First overflow | Deaths / reboots / halt | Pool | Tab |
+|---|---|---|---|---|
+| line in the buffer at boot | 10.9 s | 3 / 2 / halted at 26 s | 24, running peak 8 | alive |
+| line typed at 150 ms/char into a ready session | 22.1 s | 3 / 2 / halted | 24, running peak 18 | alive |
+
+So 0035 overflows exactly as 0032 does: the kernel's stack guard assumes more stack than a wasm pthread's JavaScript stack gives it, and V8's limit trips first. On QED64 the #59 hold keeps the pool at its preallocated 24, so the tab survives where lean4game's 0032 build crashed; the checker still dies, and a document with the line cannot be checked at all.
+
+Owner: the kernel session (the pthread stack size and the stack guard under Emscripten; its next patch). QED64's part: `tests/adversarial/deep-recursion.mjs` FAILS today and is the acceptance check for that patch (it passes when the checker answers the line with Lean's own error and stays up).
+
+Rule: a guard that measures its own stack must be told the real size of the stack it runs on. When a platform's thread stack is smaller than the native one the guard was tuned for, the platform's limit (here V8's RangeError) becomes the user-visible failure, and it kills the process instead of producing a diagnostic.
+
