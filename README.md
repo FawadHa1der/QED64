@@ -104,7 +104,7 @@ docs/CLI-CONTRACT.md.
 | `pipeline/artifacts` | deterministic packer + deep inspector for profile packs |
 | `public/snapshots` | baked environment snapshots + `index.json` (baked per runtime; the index is tracked, the `.snapz` files are fetched, never committed) |
 | `pipeline/snapshot` | Node runner for the wasm64 binary + `--incr-header-save` snapshot baking (`--lib` mounts an unpacked olean tree; upserts the snapshot index); `cli.mjs` is the pipeline CLI contract (every tool's `--help`, flags, exit codes, stable output: docs/CLI-CONTRACT.md) |
-| `pipeline/toolchain` | `artifact-paths.mjs` (the path rule, the lean4-wasm64 locator and forwards), the `chunk-runtime` and `gate.mjs` forwards, `KERNEL-PIN`; the build recipe is the fork's `wasm64-build/` (docs/REBUILD.md §1) |
+| `pipeline/toolchain` | `artifact-paths.mjs` (the path rule, the lean4-wasm64 locator and forwards), the `chunk-runtime` and `gate.mjs` forwards (the kernel pin is `toolchain/lean4-wasm64-release.json` `kernel.commit`; `KERNEL-PIN` retired 2026-10); the build recipe is the fork's `wasm64-build/` (docs/REBUILD.md §1) |
 | `tests/` | unit suite (pure logic + real-manifest invariants) and integration suite (the real runtime under Node) |
 
 ## Testing

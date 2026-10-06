@@ -121,7 +121,7 @@ function refused(r: ReturnType<typeof adopt>, re: RegExp) {
   expect(r.calls.filter((c) => c[0] !== "--version")).toEqual([]);
 }
 const STEPS = ["fetch", "verify", "checks", "artifact-lib", "base-trees", "umbrella", "base-tree", "gate", "bake-init", "bake-mathlib",
-  "stage-runtime", "stage-profiles", "pairing", "promote", "kernel-pin", "next"];
+  "stage-runtime", "stage-profiles", "pairing", "promote", "next"];
 const stepNames = (stdout: string) => stdout.split("\n").map((l) => /^ {2}([a-z][a-z-]+) {2,}/.exec(l)?.[1]).filter((s): s is string => !!s && !["work", "staging", "public", "disk"].includes(s));
 
 describe("adopt-release.sh --dry-run", () => {
@@ -421,7 +421,7 @@ describe("adopt-helper.mjs: the tree digest and base-tree.json", () => {
     expect(() => treeDigest(t)).toThrow(/is a symlink/);
   });
 
-  test("base-tree writes per tree the packs, the umbrella pair and the digest; kernel-pin's first line is the pin release-manifest reads", () => {
+  test("base-tree writes per tree the packs, the umbrella pair and the digest; kernel-pin is retired (plan B2c)", () => {
     const rel = fakeRelease("rel-base");
     const W = path.join(tmp, "W");
     const files: Record<string, string> = {
@@ -441,13 +441,20 @@ describe("adopt-helper.mjs: the tree digest and base-tree.json", () => {
     expect(doc.trees["lib-tree-slim"].umbrella).toEqual(doc.umbrella);
     expect(doc.trees["lib-tree"]).toMatchObject({ slim: false, files: 5, digest: treeDigest(path.join(W, "lib-tree")).digest });
     expect(doc.trees["lib-tree"].umbrella.map((u: { path: string }) => u.path)).toEqual(["QED64/Essential.olean", "QED64/Essential.olean.private", "QED64/Essential.olean.server"]);
+    // The kernel pin is the record's kernel.commit now (toolchain.kernel in qed64.release/v1): no generated file.
     const k = spawnSync("node", [helper, "kernel-pin", "--work", W, "--release", path.join(rel.dir, "release.json"), "--init-lib", "lean-lib", "--staging", "work/staging/x"], { encoding: "utf8" });
-    expect(k.status, k.stderr).toBe(0);
-    const pin = fs.readFileSync(path.join(W, "KERNEL-PIN"), "utf8").split("\n");
-    expect(pin[0]).toBe(`${"ab".repeat(20)}  qed64-wasm64 @ FawadHa1der/lean4`);
-    expect(pin.join("\n")).toContain(`#   runtime        ${NEW_ID} (sha256[:16] of bin/lean.wasm, 42 bytes)`);
-    expect(pin.join("\n")).toContain("#   mathlib.snap   6 bytes raw");
-    expect(pin.join("\n")).toContain("#   init.snap      4 bytes raw (lib: core-lib-slim, unpacked --slim from lean-lib)");
-    expect(pin.join("\n")).toContain(`#   release        ${ID} ${rel.digest}`);
+    expect(k.status).toBe(2);
+    expect(k.stderr).toMatch(/^adopt-release: adopt-helper: unknown subcommand "kernel-pin" \(record, confine, base-tree\)/);
+    expect(fs.existsSync(path.join(W, "KERNEL-PIN"))).toBe(false);
+  });
+
+  test("the printed landing copies the record and $W/base-tree.json, and names no KERNEL-PIN (retired 2026-10, plan B2c)", () => {
+    const text = fs.readFileSync(script, "utf8");
+    const landing = text.slice(text.indexOf("Landing, by the operator"));
+    expect(landing).toContain(" 1. cp $W/release/release.json toolchain/lean4-wasm64-release.json\n");
+    expect(landing).toContain(" 2. cp $W/base-tree.json embedding/base-tree.json");
+    expect(landing).toContain("node pipeline/release/release-manifest.mjs --worktree");
+    expect(text).not.toMatch(/KERNEL-PIN|kernel-pin/);
+    expect(fs.existsSync(path.join(root, "pipeline/toolchain/KERNEL-PIN"))).toBe(false);
   });
 });
