@@ -8,20 +8,28 @@
 // diagnostics arrive for a deliberate error, and the loop shuts down clean.
 //
 //   node pipeline/snapshot/resident-probe.mjs [--artifact <stage1>] [--lib <tree>] [--budget-ms 180000]
-//                                             [--snapshots init,mathlib] [--mathlib] [--act2 | --act4 [--act4-ms 500]]
+//                                             [--snap-dir <dir>] [--snapshots init,mathlib] [--mathlib] [--act2 | --act4 [--act4-ms 500]]
 //
-//   --snapshots  the work/snapshot/<name>.snap files seeded into the env cache
+//   --snap-dir   the directory holding <name>.snap (default: work/snapshot in this checkout)
+//   --snapshots  the <name>.snap files seeded into the env cache
 //                before --worker starts (default: init; mathlib adds the
 //                umbrella env the Mathlib probe needs — 1.1 GB raw)
 //   --mathlib    probe a Mathlib header (`import Mathlib.Data.Real.Basic`)
-//                instead of Init; implies --snapshots init,mathlib unless given
+//                instead of Init; implies --snapshots init,mathlib unless given.
+//                Its text has no deliberate error, so act 1 passes when progress
+//                drains with no error diagnostic (the Init probes pass on their
+//                deliberate `rfl` error instead)
 //   --act2       after act 1 drains, change the header via didChange and
-//                expect an in-process session replacement (exit 2 + re-callMain)
-//   --act4       the header-switch probe (formerly header-switch-probe.mjs):
-//                --act4-ms after the first non-empty fileProgress, send the
-//                document again as headerless full text (the Init header
-//                under a Mathlib-seeded session: the step-1 crash of the
-//                2026-09 gauntlets) and pass when progress drains with no abort
+//                expect an in-process session replacement (exit 2 + re-callMain);
+//                Init probes only (it waits for their deliberate error again),
+//                so --mathlib --act2 is refused
+//   --act4       a full-text header switch mid-elaboration: --act4-ms after
+//                the first non-empty fileProgress, send the document again
+//                without its import line, and pass when progress drains with
+//                no abort. With --mathlib this is the former
+//                header-switch-probe.mjs (the Init-only text under a
+//                Mathlib-seeded session: the step-1 crash of the 2026-09
+//                gauntlets); without it, the same switch on the Init probe
 import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
@@ -41,7 +49,10 @@ const MATHLIB = process.argv.includes("--mathlib");
 const ACT2 = process.argv.includes("--act2");
 const ACT4 = process.argv.includes("--act4");
 const ACT4_MS = Number(arg("act4-ms", process.env.ACT4_MS || "500"));
+if (MATHLIB && ACT2) { console.error("error: --act2 needs the Init probe's deliberate error; it cannot judge --mathlib (use --mathlib --act4 for a Mathlib header switch)"); process.exit(2); }
+if (ACT2 && ACT4) { console.error("error: --act2 and --act4 are separate experiments; pass one"); process.exit(2); }
 const SNAPSHOTS = arg("snapshots", MATHLIB ? "init,mathlib" : "init").split(",").map((s) => s.trim()).filter(Boolean);
+const SNAP_DIR = path.resolve(arg("snap-dir", path.join(repoRoot, "work/snapshot")));
 
 const PROBE = (MATHLIB ? [
   "import Mathlib.Data.Real.Basic",
@@ -65,7 +76,7 @@ const PROBE = (MATHLIB ? [
 // ---------------------------------------------------------------------------
 // Result tracking
 // ---------------------------------------------------------------------------
-const seen = { initializeResponse: false, fileProgressEvents: 0, progressDrained: false, diags: [], evalInfo: false,
+const seen = { initializeResponse: false, fileProgressEvents: 0, progressDrained: false, diags: [], errors: 0, evalInfo: false,
   act: 1, exit2: false, act2Diags: 0, act2Drained: false, act4Armed: false, act4SentAt: 0 };
 const t0 = Date.now();
 const log = (s) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1)}s] ${s}`);
@@ -81,6 +92,7 @@ function finish(ok, why) {
     progressDrained: seen.progressDrained,
     diagnostics: seen.diags.length,
     sawExpectedError: seen.diags.some((d) => /rfl|43|Type mismatch|failed/i.test(d)),
+    errors: seen.errors,
     evalInfo: seen.evalInfo,
     frames: frames.stats.frames,
     nonFrameStdoutBytes: frames.stats.junkBytes,
@@ -177,6 +189,8 @@ function onMessage(msg) {
   if (msg.method === "textDocument/publishDiagnostics") {
     for (const d of msg.params?.diagnostics ?? []) {
       seen.diags.push(String(d.message).slice(0, 120));
+      // The FileWorker's own notice that the probe closed its stdin ring is not an error of the document.
+      if (d.severity === 1 && !/^Cannot read LSP message: Stream was closed/.test(String(d.message))) seen.errors += 1;
       if (/42/.test(String(d.message)) && d.severity >= 3) seen.evalInfo = true;
     }
     checkActs();
@@ -188,12 +202,16 @@ function onMessage(msg) {
 function checkActs() {
   if (ACT4) return; // act 4 judges itself from fileProgress alone
   {
-    // Act 1: progress drained AND our deliberate error surfaced.
-    if (seen.act === 1 && seen.progressDrained && seen.diags.some((x) => /rfl|43|mismatch|failed/i.test(x))) {
+    // Act 1: progress drained AND our deliberate error surfaced (Init probes),
+    // or progress drained with no error at all (the Mathlib probe has none).
+    const act1Done = MATHLIB ? seen.progressDrained : seen.progressDrained && seen.diags.some((x) => /rfl|43|mismatch|failed/i.test(x));
+    if (seen.act === 1 && act1Done) {
       log(`act-1 diagnostics: ${JSON.stringify(seen.diags)}`);
       if (!ACT2) {
+        // The Mathlib verdict is the document's errors when its progress drained (they precede the drain).
+        const errorsAtDrain = seen.errors;
         closeRing();
-        setTimeout(() => finish(true, "clean run"), 1500);
+        setTimeout(() => (MATHLIB && errorsAtDrain > 0 ? finish(false, `mathlib probe: ${errorsAtDrain} error diagnostic(s)`) : finish(true, "clean run")), 1500);
         return;
       }
       // Act 2: change the HEADER — the real worker requests restart (exit 2);
@@ -331,7 +349,7 @@ globalThis.Module = {
     // covering env (Shell.lean publish line in patch 0031) it finds instead.
     // --snapshots names them in load order (init first, then the umbrella).
     for (const snapName of SNAPSHOTS) {
-      const snapHost = path.join(repoRoot, `work/snapshot/${snapName}.snap`);
+      const snapHost = path.join(SNAP_DIR, `${snapName}.snap`);
       if (!fs.existsSync(snapHost)) {
         log(`WARNING: ${snapHost} missing — a header it covers will try olean import (known hang)`);
         continue;
