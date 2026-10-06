@@ -432,7 +432,7 @@ The package:
   - `"./embedding/closure.json"`;
   - `"./package.json"`.
 - `files`: exactly the closure below, plus the license, README and this
-  document. 50 files, about 200 kB packed. `npm run test:consumer`
+  document. 52 files, about 220 kB packed. `npm run test:consumer`
   (tests/consumer/check-consumer.mjs) proves the packed files alone resolve
   and build.
 
@@ -449,6 +449,12 @@ Notes for consumers:
   `QED64_WORK`, `QED64_STAGING`, `QED64_LIB_TREE`), else a deprecated default
   under that root with one WARNING, else exit 2 (docs/CLI-CONTRACT.md "Path
   resolution"); pass them all and nothing lands in the package.
+- `pipeline/release/fetch-artifacts.mjs` (tier 1) ships, but the tracked
+  manifests it reads do not (the profile manifests are 12 MB): run it with
+  `--manifests <a QED64 checkout's public/ at your pin> --out <your
+  publicDir> --with-manifests` to get QED64's own served set, verified, for
+  §6.1 step 4. Without `--manifests` it refuses (exit 2) before writing
+  anything (docs/CLI-CONTRACT.md "fetch-artifacts").
 - The page-API setup (`globalThis.qed64.api`, the `qed64:*` events, `#code=`,
   the buffer) lives only in site modules that are not in the package.
 
@@ -1347,3 +1353,11 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   exit 2; the sibling-checkout fallback is gone, and
   `pipeline/toolchain/artifact-paths.mjs`, already in `files` and closure.json
   `pipeline`, now also carries the rule and the `--stack-size` re-exec.
+- **Fetching the artifacts (plan step A3b, 2026-10-06):** no library change:
+  `qed64/embed`, the workers and `EMBED_API_REVISION` are untouched. The
+  package gains one tier-1 CLI, `pipeline/release/fetch-artifacts.mjs` with
+  its `.d.mts` (in `files` and closure.json `pipeline`; 52 files), which
+  fills a `public/`-shaped tree with the bytes the tracked manifests pin
+  (§6's note: the manifests themselves are not in the package, so a consumer
+  passes `--manifests`). G2 runs its `--help` through the package symlink and
+  checks that refusal.

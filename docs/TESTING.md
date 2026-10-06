@@ -37,6 +37,47 @@ variables at the main checkout's.
 the tools from a scratch copy of the checkout, with every variable cleared,
 and never loads a runtime.
 
+The browser lanes need none of them either: they read the **served tree**
+under `public/` (the tracked manifests plus the bytes they pin), which `npm
+run fetch:artifacts` fills (docs/CLI-CONTRACT.md "fetch-artifacts"). What the
+variables name is different: build outputs (a stage1 dir, raw `.snap`
+regions, the olean trees they were baked from) that no served file contains
+and fetch:artifacts does not produce.
+
+## A fresh clone
+
+A fresh clone runs G1 after `npm run fetch:artifacts`, in two halves:
+
+1. **The page lanes, from the clone alone.**
+   ```sh
+   npm ci && npm --prefix frontend ci && npx playwright install chromium
+   npm run fetch:artifacts          # public/: runtime chunks, profile parts, snapshots (~1.6 GB), verified
+   npm test                         # G0's unit suite
+   npm run test:adversarial -- --skip-compiler   # preflight, cool-down, e2e (23/23)
+   ```
+   and the page lanes below against a dev server on the same tree (page-api,
+   infoview-actions, liveness-faults, reload-storm stock and embedded,
+   edit-storm against `npm run build:site` + `npm run preview:prod`). A
+   second `fetch:artifacts` downloads nothing (every file present with its
+   digest is skipped); a file that fails its digest is never renamed into
+   place, so a half-finished run is resumed by running it again.
+2. **The Node lanes, with the paired build outputs.** The compiler battery
+   (`npm run test:adversarial` without `--skip-compiler`) and the integration
+   tier (`npm run test:integration`) load the runtime under Node from a stage1
+   dir and raw snapshots, which a clone does not have and fetch:artifacts does
+   not produce: set `QED64_LEAN_ARTIFACT`, `QED64_MATHLIB_SNAP`,
+   `QED64_LIB_TREE` and `QED64_INIT_SNAP` (the table above) to a pairing built
+   per docs/REBUILD.md, or to another checkout's. Without them the battery
+   refuses (exit 2, the `no-path` line, a REFUSED row in report.md) and the
+   integration tests skip naming the variable; nothing falls back to an
+   owner-only directory.
+
+`fetch:artifacts --origin <url>` takes the bytes from another deployment
+(a local `npm run preview:prod`, a staging Worker); `--release <dir|url>`
+takes the runtime and the profile packs from a Lean fork release in the
+served layout (its `release.json` is checked too), and the snapshots, which
+the site owns, still from `--origin`.
+
 ## Adversarial suite (`npm run test:adversarial`, tests/adversarial/)
 
 Harness trust rules (docs/ARCHITECTURE-REEVALUATION-2026-09-02.md C7,

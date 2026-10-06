@@ -87,9 +87,11 @@ is enforced by the SHA-256 manifests instead). Two options:
 
 - **Trusted artifacts**: obtain the packs whose digests match the committed
   manifests (`public/profiles/*.manifest.json`) from an existing deployment
-  or release, and `npm run verify:release`. (Until 2026-10 `npm run
-  sync:artifacts` automated this copy from the owner's sibling checkout;
-  it was removed with that dependency.) The manifests in git are the
+  or release, and `npm run verify:release`. `npm run fetch:artifacts` does
+  this (from the live site, `--origin <url>` for another deployment, or
+  `--release <dir|url>` for a Lean fork release; docs/CLI-CONTRACT.md
+  "fetch-artifacts"). (Until 2026-10 `npm run sync:artifacts` copied them
+  from the owner's sibling checkout; it was removed with that dependency.) The manifests in git are the
   trust anchor — bytes from anywhere are fine if the digests match.
 - **Full rebuild**: build the same fork **natively** (`make -C build/release`
   inside `work/lean4`, standard Lean build), then build Mathlib at the
