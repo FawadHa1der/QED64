@@ -205,6 +205,28 @@ export interface LoadSnapshotOptions {
   busyWaitMs?: number;
 }
 
+/** The page-side pairing check (HARDENING #62, docs/EMBEDDING.md §7.2): the
+ * cause the worker's SNAPSHOT_UNPAIRED refusal gives, decided from the two
+ * facts the page already holds, the index entry's `runtime` (the buildId that
+ * baked it) and the runtime manifest's `buildId`. null when they match, or
+ * when either is absent: an entry without `runtime` (an index that predates
+ * the field) is the worker's to decide, as before. */
+export function snapshotPairingFault(entry: Pick<SnapshotEntry, "runtime">, name: string, runtime: Pick<RuntimeManifest, "buildId"> | null | undefined): FailureCause | null {
+  const baked = entry.runtime, booted = runtime?.buildId;
+  if (typeof baked !== "string" || baked.length === 0 || typeof booted !== "string" || baked === booted) return null;
+  return { kind: "unpaired", stage: "snapshot", subject: name, code: "SNAPSHOT_UNPAIRED", message: `snapshot '${name}' was baked for runtime ${baked}; this page runs runtime ${booted}` };
+}
+
+/** `name`'s pairing fault against the artifacts' runtime, reported on the
+ * sink as a failed snapshot load reports it (the call carries the cause);
+ * null when it is paired, unknown, or not in the index. Fetches nothing. */
+export function refuseUnpairedSnapshot(artifacts: Pick<Qed64Artifacts, "runtime" | "snapshots">, name: string, ui: StatusSink): FailureCause | null {
+  const entry = artifacts.snapshots?.snapshots.find((s) => s.name === name);
+  const cause = entry ? snapshotPairingFault(entry, name, artifacts.runtime) : null;
+  if (cause) ui.progress(`${name} snapshot failed: ${cause.message}`, { stage: "snapshot", subject: name, error: cause });
+  return cause;
+}
+
 async function ensureRawSnapshotCached(entry: SnapshotEntry, name: string, ui: StatusSink, opts: LoadSnapshotOptions): Promise<void> {
   const gib = (entry.bytes / 1073741824).toFixed(1);
   // "wait": another tab writing this region finishes it for us; streaming it
@@ -231,6 +253,13 @@ export async function loadSnapshotByName(
   const entry = artifacts.snapshots?.snapshots.find((s) => s.name === name);
   if (!entry) {
     qs.lastFailure = { kind: "missing", stage: "snapshot", subject: name, code: "SNAPSHOT_NOT_IN_INDEX", message: `snapshot '${name}' is not in the snapshot index` };
+    return false;
+  }
+  // Refused here, before a byte of it is fetched or inflated (HARDENING #62):
+  // the worker's own refusal came only after the whole region was cached.
+  const unpaired = refuseUnpairedSnapshot(artifacts, name, ui);
+  if (unpaired) {
+    qs.lastFailure = unpaired;
     return false;
   }
   await ensureRawSnapshotCached(entry, name, ui, opts);

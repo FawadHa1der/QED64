@@ -13,7 +13,7 @@
 // environment passes its own snapshot map and a tighter memory cap). The
 // header text the policy reads is the document this session will serve:
 // the initial text at first boot, the relay's last full text on a reboot.
-import { ensureProfile, loadSnapshotByName, type Qed64Artifacts, type Qed64Session, type StatusSink } from "./qed64-boot";
+import { ensureProfile, loadSnapshotByName, refuseUnpairedSnapshot, type Qed64Artifacts, type Qed64Session, type StatusSink } from "./qed64-boot";
 import type { RelaySession, RestartOptions } from "./lsp-relay";
 import { LeanSession, memoryCandidates, type JsonRpcMessage, type LibraryPack, type WorkerStatus } from "../../src/runtime/client";
 import { installProfile } from "../../src/install/profiles";
@@ -294,6 +294,14 @@ export class ResidentSession implements RelaySession {
   async #boot(): Promise<void> {
     const a = this.artifacts;
     const ui = this.ui;
+    // A pre-open snapshot of another runtime fails the boot HERE (HARDENING
+    // #62), with the cause the worker's refusal gives: before a pack install,
+    // the runtime's 2 GiB commit and a byte of any snapshot. The worker refused
+    // it only after both, and the relay's three retries paid them three times.
+    for (const name of this.snapshots) {
+      const cause = refuseUnpairedSnapshot(a, name, ui);
+      if (cause) throw Object.assign(new Error(`snapshot '${name}' failed to load`), { cause });
+    }
     // "Load exact imports" (§3 row 8; HARDENING #43): the header is imported
     // from oleans below, so the ~1 GB olean pack must be installed BEFORE
     // boot — LEAN_PATH and the mounts are boot inputs, and a running worker
