@@ -454,6 +454,7 @@ describe("adopt-helper.mjs: the tree digest and base-tree.json", () => {
     expect(landing).toContain(" 1. cp $W/release/release.json toolchain/lean4-wasm64-release.json\n");
     expect(landing).toContain(" 2. cp $W/base-tree.json embedding/base-tree.json");
     expect(landing).toContain("node pipeline/release/release-manifest.mjs --worktree");
+    expect(landing).toContain("node pipeline/release/write-bundle.mjs --commit <landing commit> --dist dist --umbrella $W/");
     expect(text).not.toMatch(/KERNEL-PIN|kernel-pin/);
     expect(fs.existsSync(path.join(root, "pipeline/toolchain/KERNEL-PIN"))).toBe(false);
   });
