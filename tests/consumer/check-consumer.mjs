@@ -13,7 +13,9 @@
 //      through the symlink and print their usage line;
 //   4. tests/consumer/fixture/ (index.html + main.ts on qed64/embed,
 //      headless.ts = docs/EMBEDDING.md §6.1's headless boot on qed64/embed,
-//      worker.ts on qed64/edge) copied into the consumer, type-checked with the repo's
+//      worker.ts on qed64/edge) copied into the consumer, plus snippet.ts =
+//      the §6.1 (a) code block verbatim from the packed EMBEDDING.md (top-level
+//      await, so built under §6.1 step 2's build.target), type-checked with the repo's
 //      tsc and built with the repo's vite (`vite build --config`), and the
 //      built worker answered one request.
 // Nothing is written under this repo (git status is compared before and
@@ -162,13 +164,23 @@ ok("the shipped CLIs run through the node_modules/qed64 symlink: preflight, olea
 // 4. the fixture: typecheck and build against the tarball only
 const fixture = path.join(root, "tests/consumer/fixture");
 for (const f of fs.readdirSync(fixture)) fs.copyFileSync(path.join(fixture, f), path.join(consumer, f));
+// The documented snippet itself, not only the fixture's paraphrase of it: the first ```ts block after
+// §6.1's "(a) Without the editor" heading, from the PACKED EMBEDDING.md, becomes snippet.ts (the fixture's
+// tsconfig and vite.config.mjs list it). Step 2's vite.config.js must carry the build target it needs.
+const doc = fs.readFileSync(path.join(pkgDir, "docs/EMBEDDING.md"), "utf8");
+const sec61 = doc.slice(doc.indexOf("### 6.1 Minimal Vite consumer"), doc.indexOf("\n## 7. "));
+const snippet = /\*\*\(a\) Without the editor[\s\S]*?\n```ts\n([\s\S]*?)\n```\n/.exec(sec61)?.[1];
+if (!snippet || !snippet.includes('from "qed64/embed"')) fail("docs/EMBEDDING.md §6.1 (a): no ```ts block importing qed64/embed");
+if (!/^\s*build: \{ target: "es2022" \},/m.test(sec61)) fail('docs/EMBEDDING.md §6.1 step 2: the vite.config.js block does not set build: { target: "es2022" }');
+fs.writeFileSync(path.join(consumer, "snippet.ts"), snippet + "\n");
+ok(`docs/EMBEDDING.md §6.1 (a) extracted from the tarball: snippet.ts, ${snippet.split("\n").length} lines`);
 sh(process.execPath, [path.join(root, "node_modules/typescript/bin/tsc"), "-p", path.join(consumer, "tsconfig.json")], { cwd: consumer });
-ok("tsc -p the fixture: main.ts and headless.ts (qed64/embed, TypeScript source) and worker.ts (qed64/edge, edge-worker.d.ts) type-check");
+ok("tsc -p the fixture: main.ts, headless.ts and snippet.ts (qed64/embed, TypeScript source) and worker.ts (qed64/edge, edge-worker.d.ts) type-check");
 sh(process.execPath, [path.join(root, "node_modules/vite/bin/vite.js"), "build", "--config", path.join(consumer, "vite.config.mjs")], { cwd: consumer });
 const dist = path.join(consumer, "dist");
 const built = fs.readdirSync(dist, { recursive: true }).map(String).sort();
 const text = (f) => fs.readFileSync(path.join(dist, f), "utf8");
-if (!["index.html", "index.js", "headless.js", "worker.js"].every((f) => built.includes(f))) fail(`vite build wrote ${built.join(", ")}`);
+if (!["index.html", "index.js", "headless.js", "snippet.js", "worker.js"].every((f) => built.includes(f))) fail(`vite build wrote ${built.join(", ")}`);
 if (!text("index.js").includes("/workers/lean.worker.js") || !text("index.js").includes("qed64/embed ")) fail("the built page does not carry qed64/embed (WORKER_URLS missing from index.js)");
 // Every module vite bundled came from the extracted package, never from this repo.
 for (const f of built.filter((f) => f.endsWith(".js"))) if (text(f).includes(root)) fail(`${f} names a path inside the repository`);

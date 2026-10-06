@@ -338,7 +338,10 @@ Page-tier facts (stable, for preflights and deploy tools):
   - `runtime/`, `profiles/` and `snapshots/` are served beside it, not built
     into it.
 - **`dist/qed64-build.json`** `{schema: "qed64.build/v1", buildId,
-  leanVersion, sourceRevision, commit, dirty, shell, apiRevision}`.
+  leanVersion, sourceRevision, commit, dirty, shell, apiRevision,
+  embedApiRevision}`.
+  - `embedApiRevision`: the `qed64/embed` barrel's `EMBED_API_REVISION`
+    (§7); additive, so `qed64.build/v1` readers ignore it.
   - `shell` is `"shell-" + 16 hex` of the sha256 of the dist listing. The
     listing is one `<sha256>  <path>` line per file, byte-sorted, covering
     every file except `qed64-build.json` itself.
@@ -462,15 +465,19 @@ Notes for consumers:
 test:consumer` packs QED64, installs the tarball into a scratch consumer and
 type-checks and builds the fixture with Vite against it (`main.ts`: the
 capability check; `headless.ts`: the boot below; `worker.ts`: a Worker on
-`qed64/edge`).
+`qed64/edge`; `vite.config.mjs`: step 2's settings), together with the (a)
+code block below, extracted verbatim from the packed `docs/EMBEDDING.md`.
 
 **Both shapes need the same four things.**
 
 1. **The dependency.** In `package.json`:
    `"qed64": "github:FawadHa1der/QED64#<40-hex>"` (a pushed commit: §1,
    principle 6).
-   TypeScript needs `"moduleResolution": "bundler"`; the `exports` map then
-   gives `qed64/embed` its types (the closure is `.ts` source).
+   TypeScript reads the `exports` map under `"moduleResolution": "bundler"`,
+   which gives `qed64/embed` its types (the closure is `.ts` source). Under
+   `"node"`, add a `paths` entry from `qed64/embed` to closure.json `entry`
+   (`node_modules/qed64/frontend/src/embed/index.ts`), as lean4game does,
+   and re-check it on each bump (its `scripts/stage-workers.sh` does).
 2. **Cross-origin isolation and Vite's pre-bundler.** The top document must
    be `crossOriginIsolated` (§5), in development too:
 
@@ -488,6 +495,7 @@ capability check; `headless.ts`: the boot below; `worker.ts`: a Worker on
        configurePreviewServer: (server) => { server.middlewares.use(isolate); },
      }],
      optimizeDeps: { exclude: ["qed64"] },   // serve the closure as source modules, as lean4game does
+     build: { target: "es2022" },   // top-level await, as in (a); every Memory64 browser has it (Vite's default target does not)
      // optional: define: { __QED64_BUILD_ID__: JSON.stringify("<runtime buildId>") } makes the boot ask for
      // /runtime/runtime-manifest.<buildId>.json first (docs/DEPLOY.md "Atomic promotes"); without it the
      // boot reads the mutable /runtime/runtime-manifest.json.
@@ -533,8 +541,11 @@ capability check; `headless.ts`: the boot below; `worker.ts`: a Worker on
 
 **(a) Without the editor: drive a session headlessly.** Your code is the
 language client. It boots a `ResidentSession` behind an `LspRelay` and
-speaks JSON-RPC on `relay.clientPort` (§7.9). From
-`tests/consumer/fixture/headless.ts`:
+speaks JSON-RPC on `relay.clientPort` (§7.9). A module with top-level
+`await`, so it needs step 2's `build.target`. `npm run test:consumer`
+type-checks and builds this block as written (it reads it from the packed
+copy of this document); `tests/consumer/fixture/headless.ts` is the same
+boot inside an async function, with an `edit()`:
 
 ```ts
 import { LspRelay, MEMORY64_PROBE, ResidentSession, installArtifacts, makeEditorPolicy, type StatusSink } from "qed64/embed";
@@ -636,8 +647,10 @@ library contract a dist was built from without opening the bundle.
   still builds, but they are outside the contract (§9): neither consumer
   imports them, the stock page reaches them only through its own modules,
   and a revision may change or remove them. Use the contract member that
-  wraps each one instead: `ResidentSession` (memory rungs, packs, the
-  profile index), `failureCauseOf` (kind and HTTP status),
+  wraps each one instead: `installArtifacts` (the profile index and the
+  boot packs: `profiles`, `artifacts.index`, `artifacts.installed`),
+  `ResidentSession` (memory rungs, on-demand packs for exact imports),
+  `failureCauseOf` (kind and HTTP status),
   `validateBootOverrides` (your own URL parsing, or `installArtifacts`'
   `overrides: "url"`), `prefetchRaw`/`isRawCached`/`removeRawRegion` (the
   region name), `LspRelay` (the header rule).
@@ -1315,3 +1328,11 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
     minimal Vite consumer with and without the editor, whose headless boot
     is `tests/consumer/fixture/headless.ts`, type-checked and built against
     the packed tarball by `npm run test:consumer` (G2).
+  - review fixes, docs and G2 only: §4's `qed64-build.json` key list names
+    `embedApiRevision`; §6.1 step 2's Vite config sets `build: { target:
+    "es2022" }` (the (a) block uses top-level `await`, which Vite's default
+    target refuses at `vite build`), and G2 now extracts the (a) block
+    verbatim from the packed document and type-checks and builds it beside
+    the fixture; §6.1 step 1 gives the `paths` alternative to
+    `moduleResolution: "bundler"`; §7.0 names `installArtifacts` as the
+    wrapper of the profile index and boot packs.

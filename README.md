@@ -63,13 +63,18 @@ survives is `docs/HARDENING.md`.
 
 ## Use QED64 in your project
 
-Add `"qed64": "github:FawadHa1der/QED64#<commit>"` to your `package.json`
-and either frame QED64's own page (`?embed=1`, driven by the page API) or
-build your own page on `qed64/embed`, with or without an editor.
-[`docs/EMBEDDING.md` §6.1](docs/EMBEDDING.md#61-minimal-vite-consumer) is the
-minimal Vite consumer: the COOP/COEP headers, the workers, the artifact roots
-and a headless boot (type-checked against the packed tarball by
-`npm run test:consumer`). `qed64/edge` is the Cloudflare Worker side
+Two shapes:
+- **Frame QED64's own page.** Build its shell from a QED64 checkout at the
+  pinned commit (`npm run build:site`, as the widgets showcase does from a
+  submodule), serve `dist/` at your origin root and frame `/?embed=1`,
+  driven by the page API. The npm package does not contain the page.
+- **Build your own page.** Add `"qed64": "github:FawadHa1der/QED64#<commit>"`
+  to your `package.json` and import `qed64/embed`, with or without an
+  editor.
+
+[`docs/EMBEDDING.md` §6.1](docs/EMBEDDING.md#61-minimal-vite-consumer) covers
+both: the COOP/COEP headers, the workers, the artifact roots and a headless
+boot (built against the packed tarball by `npm run test:consumer`). `qed64/edge` is the Cloudflare Worker side
 (docs/DEPLOY.md), and the pipeline CLIs a consumer may run are in
 docs/CLI-CONTRACT.md.
 
