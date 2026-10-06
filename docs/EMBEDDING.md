@@ -1414,3 +1414,12 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
     `"1"` (§7.7 "What changes the revision"). A consumer that copies
     closure.json `workers` needs no change; one that lists the scripts by
     name adds the file (§10). `EMBED_API_REVISION` → `1.0.0-pre.6`.
+  - G2 (`npm run test:consumer`) also checks, from the extracted tarball:
+    importing `qed64/workers/lsp-frames.js` publishes
+    `globalThis.Qed64LspFrames` and `qed64/workers/memory64-probe.js`
+    publishes a frozen `globalThis.Qed64Memory64` (the 13 bytes, a probe
+    that validates on Node, the ledger's revision);
+    `qed64/pipeline/toolchain/artifact-paths.mjs` exports
+    `buildIdOfArtifact` (run on a stand-in `lean.wasm`); every path
+    closure.json lists is in the tarball; and the fixture's built page still
+    sets `globalThis.Qed64Memory64` (it fails under `"sideEffects": false`).
