@@ -96,13 +96,13 @@ describe("scripts/upload-artifacts.sh against a stubbed rclone", () => {
   it("an lsf that fails (no remote, credentials, network) is reported as such, not as a missing release; exit 3, no write", () => {
     layout();
     const err = 'CRITICAL: Failed to create file system for "qed64-r2:qed64-artifacts/x": didn\'t find section in config file ("qed64-r2")';
-    for (const extra of [{ STUB_LSF_EXIT: "1", STUB_LSF_STDERR: `2026/10/06 12:00:00 ${err}\nsecond line` }, { STUB_LSF_EXIT: "1", STUB_LSF_STDERR: `2026/10/06 ${err}`, DRY_RUN: "1" }]) {
+    for (const extra of [{ STUB_LSF_EXIT: "1", STUB_LSF_STDERR: `2026/10/06 12:00:00 ${err}\nsecond line` }, { STUB_LSF_EXIT: "1", STUB_LSF_STDERR: `2026/10/06 ${err}`, DRY_RUN: "1" }] as Record<string, string>[]) {
       const r = run([], extra);
       expect(r.status).toBe(3);
       expect(r.argv).toEqual([LSF]);
       expect(r.stdout).toBe("");
       expect(r.stderr.trim().split("\n").filter((l) => !l.startsWith("preflight ok"))).toEqual([
-        `upload-artifacts: cannot check R2 (rclone lsf exit 1): ${extra.STUB_LSF_STDERR.split("\n")[0]}`,
+        `upload-artifacts: cannot check R2 (rclone lsf exit 1): ${(extra.STUB_LSF_STDERR ?? "").split("\n")[0]}`,
       ]);
     }
     const silent = run([], { STUB_LSF_EXIT: "7" });
