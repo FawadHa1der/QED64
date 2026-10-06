@@ -36,6 +36,8 @@ beforeAll(() => {
     'import fs from "node:fs";',
     `fs.appendFileSync(${JSON.stringify(path.join(tools, "argv.log"))}, JSON.stringify(process.argv.slice(2)) + "\\n");`,
     'if (process.argv[2] === "--version") console.log("0.0.0-fake");',
+    // FAKE_FETCH_FAIL: every fetch fails the way fetch-release.mjs does (one stderr line, exit 1), before writing
+    'if (process.argv[2] === "fetch" && process.env.FAKE_FETCH_FAIL) { console.error(process.env.FAKE_FETCH_FAIL); process.exit(1); }',
     "",
   ].join("\n"));
   // The served tree adopt-release compares against (QED64's public/, here a fake).
@@ -50,12 +52,13 @@ beforeAll(() => {
   for (const id of ["lean-core", "mathlib-essential"] as const) {
     fs.writeFileSync(path.join(served, `profiles/${id}.manifest.json`), JSON.stringify({ content: { pack: { digest: `sha256:${RAW[id]}` } } }));
   }
-  // The isolated served tree, filled (its three mutable manifests are what the check looks for).
+  // The isolated served tree, filled: the three mutable manifests and every profile manifest the index lists.
   pub = path.join(tmp, "public-isolated");
-  for (const f of ["runtime/runtime-manifest.json", "snapshots/index.json", "profiles/index.json"]) {
+  for (const f of ["runtime/runtime-manifest.json", "snapshots/index.json", "profiles/lean-core.manifest.json", "profiles/mathlib-essential.manifest.json"]) {
     fs.mkdirSync(path.dirname(path.join(pub, f)), { recursive: true });
     fs.writeFileSync(path.join(pub, f), "{}");
   }
+  fs.copyFileSync(path.join(served, "profiles/index.json"), path.join(pub, "profiles/index.json"));
   umbrella = path.join(tmp, "umbrella");
   fs.mkdirSync(path.join(umbrella, "QED64"), { recursive: true });
   fs.writeFileSync(path.join(umbrella, "QED64/Essential.olean"), "olean");
@@ -214,6 +217,13 @@ describe("adopt-release.sh --dry-run", () => {
     const empty = path.join(tmp, "public-empty");
     fs.mkdirSync(empty);
     refused(adopt(withPublic(empty)), /has no runtime\/runtime-manifest\.json — fill the isolated tree first/);
+    // only the three mutable manifests: promote-staging's re-point would refuse it after the bakes, so the precheck does now
+    const thin = path.join(tmp, "public-thin");
+    fs.cpSync(pub, thin, { recursive: true });
+    fs.rmSync(path.join(thin, "profiles/mathlib-essential.manifest.json"));
+    refused(adopt(withPublic(thin)), /lists profile essential but has no profiles\/mathlib-essential\.manifest\.json — fill the isolated tree first/);
+    fs.writeFileSync(path.join(thin, "profiles/index.json"), "{}");
+    refused(adopt(withPublic(thin)), /profiles\/index\.json is not qed64\.profile-index\/v1 — fill the isolated tree first/);
     // the release dir is never written: a --public inside it refuses
     fs.mkdirSync(path.join(rel.dir, "pub"));
     refused(adopt(withPublic(path.join(rel.dir, "pub"))), new RegExp(`inside ${rel.dir}`));
@@ -268,6 +278,131 @@ describe("adopt-release.sh --dry-run", () => {
     expect(r.stdout).toMatch(/verify +skipped: --from is a URL/);
     refused(adopt(valid(rel).map((a) => (a === "--from-dir" ? "--from" : a === rel.dir ? "http://example.invalid/" : a))), /is not an https:\/\/ URL/);
     refused(adopt([...valid(rel), "--bogus"]), /unknown argument --bogus/);
+  });
+});
+
+/** A throwaway checkout holding only what the script reads (itself, its helper, closure.json; not a
+ * git repo, no work/ unless a test makes one), so writes and symlinks under work/ stay in os.tmpdir(). */
+function fakeRepo(name: string) {
+  const q = path.join(tmp, name);
+  for (const f of ["pipeline/release/adopt-release.sh", "pipeline/release/adopt-helper.mjs", "embedding/closure.json"]) {
+    fs.mkdirSync(path.dirname(path.join(q, f)), { recursive: true });
+    fs.copyFileSync(path.join(root, f), path.join(q, f));
+  }
+  return { q, W: path.join(q, "work/adopt", ID), run: (args: string[], env: Record<string, string> = {}) => {
+    const base: Record<string, string | undefined> = { ...process.env, QED64_PUBLIC_DIR: served };
+    delete base.LEAN4_WASM64_DIR;
+    const r = spawnSync("bash", [path.join(q, "pipeline/release/adopt-release.sh"), ...args], { cwd: q, encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL", env: { ...base, ...env } });
+    return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", errLines: (r.stderr ?? "").split("\n").filter(Boolean) };
+  } };
+}
+/** One stderr line `adopt-release: …` matching `re`, exit 2. */
+function refusedLine(r: { status: number | null; stderr: string; errLines: string[] }, re: RegExp) {
+  expect(r.errLines, r.stderr).toHaveLength(1);
+  expect(r.errLines[0]).toMatch(/^adopt-release: /);
+  expect(r.errLines[0]).toMatch(re);
+  expect(r.status).toBe(2);
+}
+
+describe("adopt-release.sh: its own work dirs, the URL record and the patch order", () => {
+  test("a fresh checkout without work/: the dry run measures the disk where it is, and still writes nothing", () => {
+    const repo = fakeRepo("repo-fresh");
+    const rel = fakeRelease("rel-fresh");
+    const r = repo.run(valid(rel));
+    expect(r.stderr).toBe("");
+    expect(r.status).toBe(0);
+    const kb = Number(spawnSync("df", ["-Pk", repo.q], { encoding: "utf8" }).stdout.split("\n")[1]!.trim().split(/\s+/)[3]);
+    expect(r.stdout).toContain(`  disk     ${Math.floor(kb / 1048576)} GB free under ${repo.q}/work, floor 12 GB`);
+    expect(fs.existsSync(path.join(repo.q, "work"))).toBe(false);
+  });
+
+  test("$W, or a link inside it, that leads elsewhere refuses before anything is written (dry run too)", () => {
+    const repo = fakeRepo("repo-links");
+    const rel = fakeRelease("rel-links");
+    const elsewhere = path.join(tmp, "elsewhere-work");
+    fs.mkdirSync(elsewhere);
+    fs.mkdirSync(path.dirname(repo.W), { recursive: true });
+    fs.symlinkSync(elsewhere, repo.W);
+    refusedLine(repo.run(valid(rel)), new RegExp(`${repo.W} is a symlink: the adoption writes only into this checkout's own work/`));
+    fs.rmSync(repo.W);
+    for (const sub of ["artifact", "lib-tree-slim", "release/runtime/chunks"]) {
+      fs.mkdirSync(path.dirname(path.join(repo.W, sub)), { recursive: true });
+      fs.symlinkSync(elsewhere, path.join(repo.W, sub));
+      refusedLine(repo.run(valid(rel)), new RegExp(`${path.join(repo.W, sub)} is a symlink: a rerun would delete, unpack or copy through it`));
+      refusedLine(repo.run(valid(rel).filter((a) => a !== "--dry-run")), /is a symlink: a rerun would delete/);
+      fs.rmSync(path.join(repo.W, sub));
+    }
+    // the staging dir of the planned runtime, too
+    const staging = path.join(repo.q, "work/staging", NEW_ID);
+    fs.mkdirSync(path.dirname(staging), { recursive: true });
+    fs.symlinkSync(elsewhere, staging);
+    refusedLine(repo.run(valid(rel)), new RegExp(`${staging} is a symlink`));
+    fs.rmSync(staging);
+    expect(fs.readdirSync(elsewhere)).toEqual([]);
+    expect(repo.run(valid(rel)).status).toBe(0);
+  });
+
+  test("an --umbrella or --public inside work/adopt or work/staging refuses: a rerun deletes its own inputs", () => {
+    const repo = fakeRepo("repo-overlap");
+    const rel = fakeRelease("rel-overlap");
+    const prev = path.join(repo.q, "work/adopt", ID, "lib-tree");
+    fs.cpSync(umbrella, prev, { recursive: true });
+    refusedLine(repo.run(valid(rel).map((a) => (a === umbrella ? prev : a))), /--umbrella .*\/lib-tree lies inside .*\/work\/adopt or work\/staging, which an adoption deletes and rewrites/);
+    const other = path.join(repo.q, "work/adopt/lean-v0.0.1-other/lib-tree-slim");
+    fs.cpSync(umbrella, other, { recursive: true });
+    refusedLine(repo.run(valid(rel).map((a) => (a === umbrella ? other : a))), /lies inside .*\/work\/adopt/);
+    for (const where of [`work/staging/${NEW_ID}/public`, `work/adopt/${ID}/public`]) {
+      const p = path.join(repo.q, where);
+      fs.cpSync(pub, p, { recursive: true });
+      refusedLine(repo.run(valid(rel).map((a) => (a === pub ? p : a))), /inside .*\/work\/(staging|adopt) — adopt into an ISOLATED served tree/);
+      fs.rmSync(p, { recursive: true });
+    }
+  });
+
+  test("--from <URL>: a pin mismatch from the package is a one-line refusal, exit 2, and $W is never created", () => {
+    const repo = fakeRepo("repo-url");
+    const rel = fakeRelease("rel-url");
+    const url = `https://github.com/FawadHa1der/lean4/releases/download/${ID}/`;
+    const args = valid(rel).filter((a) => a !== "--dry-run").map((a) => (a === "--from-dir" ? "--from" : a === rel.dir ? url : a));
+    for (const msg of [`fetch: release.json digest is sha256:${"2".repeat(64)}, pinned ${rel.digest}`, `fetch: release is lean-v9.9.9-0000000, expected ${ID}`]) {
+      const r = repo.run(args, { FAKE_FETCH_FAIL: msg });
+      refusedLine(r, new RegExp(`^adopt-release: ${msg.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`));
+      expect(r.stdout).not.toMatch(/ADOPT-FAIL/);
+      expect(fs.existsSync(repo.W)).toBe(false);
+    }
+    // any other fetch failure stays a failed step (exit 1), still before $W/logs
+    const other = repo.run(args, { FAKE_FETCH_FAIL: `fetch: cannot read release.json from ${url}release.json: 404` });
+    expect(other.status).toBe(1);
+    expect(other.stdout).toMatch(/^ADOPT-FAIL fetch-record/m);
+    expect(fs.existsSync(repo.W)).toBe(false);
+  });
+
+  test("patch_ge orders kernel patches like comparePatchIds: NNNN by number, then the suffix (\"\" first)", () => {
+    const fn = spawnSync("sed", ["-n", "/^patch_ge()/,/; }$/p", script], { encoding: "utf8" }).stdout;
+    expect(fn).toMatch(/^patch_ge\(\)/);
+    const ge = (a: string, b: string) => spawnSync("bash", ["-c", `${fn}\npatch_ge "$1" "$2"`, "_", a, b]).status;
+    const table: [string, string, number][] = [
+      ["0035", "0035b", 1], ["0035b", "0035", 0], ["0035a", "0035b", 1], ["0035c", "0035b", 0], ["0035b", "0035b", 0],
+      ["0036", "0035b", 0], ["0036", "0035z", 0], ["0034z", "0035", 1], ["0032", "0035b", 1], ["0035b", "0032", 0], ["0100", "0099z", 0],
+    ];
+    for (const [a, b, want] of table) expect(ge(a, b), `${a} >= ${b}`).toBe(want);
+    for (const [a, b] of [["35", "0032"], ["0035B", "0032"], ["0035ab", "0032"], ["0035", ""]]) expect(ge(a, b), `${a} vs ${b}`).toBe(2);
+  });
+});
+
+describe("adopt-helper.mjs: every failure is one refusal line", () => {
+  test("confine on a --public holding an unreadable directory: one line, exit 2, no stack trace", () => {
+    const p = path.join(tmp, "public-unreadable");
+    fs.cpSync(pub, p, { recursive: true });
+    fs.mkdirSync(path.join(p, "locked"));
+    fs.chmodSync(path.join(p, "locked"), 0o000);
+    try {
+      const r = spawnSync("node", [helper, "confine", "--public", p, "--forbid", path.join(root, "public")], { encoding: "utf8" });
+      const lines = r.stderr.split("\n").filter(Boolean);
+      expect(lines, r.stderr).toHaveLength(1);
+      expect(lines[0]).toMatch(/^adopt-release: confine: EACCES: permission denied, scandir .*locked/);
+      expect(r.status).toBe(2);
+    } finally { fs.chmodSync(path.join(p, "locked"), 0o755); }
   });
 });
 

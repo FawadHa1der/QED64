@@ -13,7 +13,7 @@
 #
 # lean4-wasm64 runs only as a process: node <tools>/cli.mjs … (<tools>: --tools, else
 # $LEAN4_WASM64_DIR, else node_modules/lean4-wasm64). Writes go to work/adopt/<id>/ ($W),
-# work/staging/<buildId>/ and --public, never under the release dir or a checkout's public/.
+# work/staging/<buildId>/ and --public, never under the release dir, this checkout's or main's public/.
 # A runtime-only release (every served pack's raw digest is in release.packs) reuses the umbrella
 # pair (--umbrella); otherwise --rebuild-umbrella recompiles it and the packs are staged too.
 # --fat-tree also writes $W/lib-tree (no --slim). --dry-run validates and prints the plan, fetching
@@ -55,17 +55,19 @@ T=$(cd "$T" && pwd -P); TV=$(node "$T/cli.mjs" --version 2>/dev/null) || refuse 
 if [ $FROMDIR = 1 ]; then [ -f "$SRC/release.json" ] || refuse "--from-dir $SRC holds no release.json"; SRC=$(cd "$SRC" && pwd -P)
 else echo "$SRC" | grep -Eq '^https://' || refuse "--from $SRC is not an https:// URL (a local release dir is --from-dir)"; fi
 MAIN=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null); MAIN=${MAIN%/.git}
-FORBID=(--forbid "$Q/public"); [ -n "$MAIN" ] && FORBID+=(--forbid "$MAIN/public"); [ $FROMDIR = 1 ] && FORBID+=(--forbid "$SRC")
-"${H[@]}" confine --public "$PUB" "${FORBID[@]}" || exit 2
-PUB=$(cd "$PUB" && pwd -P)
-for f in runtime/runtime-manifest.json snapshots/index.json profiles/index.json; do
-  [ -f "$PUB/$f" ] || refuse "--public $PUB has no $f — fill the isolated tree first: npm run -s fetch:artifacts -- --out $PUB --with-manifests [--release <the served release>]"
-done
 for d in work work/adopt work/staging; do [ ! -L "$d" ] || refuse "$Q/$d is a symlink: the adoption writes only into this checkout's own work/"; done
+FORBID=(--forbid "$Q/public" --forbid "$Q/work/adopt" --forbid "$Q/work/staging"); [ -n "$MAIN" ] && FORBID+=(--forbid "$MAIN/public"); [ $FROMDIR = 1 ] && FORBID+=(--forbid "$SRC")
+"${H[@]}" confine --public "$PUB" "${FORBID[@]}" || exit 2 # also: the served layout is filled (every listed profile manifest)
+PUB=$(cd "$PUB" && pwd -P)
 case "$Q/" in "$SRC/"*) refuse "this checkout lies inside the release dir $SRC, which is never written";; esac
 W="$Q/work/adopt/$ID"; SERVED=${QED64_PUBLIC_DIR:-$Q/public}; FLOOR=$(node -p 'require("./embedding/closure.json").runtime.minKernelPatch')
 patch_ge() { echo "$1 $2" | awk '{ if ($1 !~ /^[0-9][0-9][0-9][0-9][a-z]?$/ || $2 !~ /^[0-9][0-9][0-9][0-9][a-z]?$/) exit 2;
   na = substr($1, 1, 4) + 0; nb = substr($2, 1, 4) + 0; exit (na > nb || (na == nb && substr($1, 5) >= substr($2, 5))) ? 0 : 1 }'; }
+realdir() { # <dir under work/>: absent, or a real dir with no link 3 levels down (rm -rf, unpack and cp would go through it)
+  [ ! -L "$1" ] || refuse "$1 is a symlink: the adoption writes only into this checkout's own work/"
+  [ -d "$1" ] || return 0; [ "$(cd "$1" && pwd -P)" = "$1" ] || refuse "$1 resolves outside $Q/work"
+  local l; l=$(find "$1" -mindepth 1 -maxdepth 3 -type l -print -quit); [ -z "$l" ] || refuse "$l is a symlink: a rerun would delete, unpack or copy through it into another tree"
+}
 checkrecord() { # <release.json>: the pin, the floor, the served check and the umbrella mode
   LINE=$("${H[@]}" record --release "$1" --id "$ID" --digest "$DIG" --served "$SERVED" --init-lib "$INITLIB" ${ALLOW[@]+"${ALLOW[@]}"}) || exit 2
   IFS=$'\t' read -r _ _ BID PATCH KCOMMIT LEANVER MODE <<< "$LINE"
@@ -80,14 +82,17 @@ checkrecord() { # <release.json>: the pin, the floor, the served check and the u
 }
 BID="?"; PATCH="?"; KCOMMIT="?"; LEANVER="?"; MODE="?"
 if [ $FROMDIR = 1 ]; then checkrecord "$SRC/release.json"; fi
-if [ -n "$UMBD" ]; then for f in Essential.olean Essential.olean.server; do [ -s "$UMBD/QED64/$f" ] || refuse "--umbrella $UMBD has no QED64/$f"; done; UMBD=$(cd "$UMBD" && pwd -P); fi
+if [ -n "$UMBD" ]; then for f in Essential.olean Essential.olean.server; do [ -s "$UMBD/QED64/$f" ] || refuse "--umbrella $UMBD has no QED64/$f"; done; UMBD=$(cd "$UMBD" && pwd -P)
+  case "$UMBD/" in "$Q/work/adopt/"*|"$Q/work/staging/"*) refuse "--umbrella $UMBD lies inside $Q/work/adopt or work/staging, which an adoption deletes and rewrites: copy the pair out first";; esac; fi
 derive() { # what follows from the record: re-run once a URL release's record is fetched
   STAGING="$Q/work/staging/$BID"; NEED_GB=12; [ $FAT = 1 ] && NEED_GB=16
   SKIP=""; [ "$MODE" = runtime-only ] && SKIP=" --skip-packs"; TREES="core-lib-slim lib-tree-slim"; [ $FAT = 1 ] && TREES="$TREES lib-tree"
   USRC="$UMBD/QED64"; [ $REBUILD = 1 ] && USRC="$W/umbrella"
   BAKE=(node --stack-size=8192 pipeline/snapshot/bake-snapshot.mjs --artifact "$W/artifact" --work "$W/snapshot" --out "$STAGING/snapshots")
+  realdir "$W"; [ "$BID" = "?" ] || realdir "$STAGING"
 }
-derive; R="$W/release/profiles"; FREE_KB=$(df -Pk "$Q/work" | awk 'NR==2{print $4}')
+derive; R="$W/release/profiles"
+free_kb() { df -Pk "$([ -d "$Q/work" ] && echo "$Q/work" || echo "$Q")" | awk 'NR==2{print $4}'; }; FREE_KB=$(free_kb) # work/ may not exist yet
 cat <<EOF
 plan for $ID: runtime $BID, Lean $LEANVER, kernel $KCOMMIT (patch $PATCH, floor $FLOOR), $MODE; lean4-wasm64 $TV at $T
   work     $W
@@ -97,7 +102,7 @@ plan for $ID: runtime $BID, Lean $LEANVER, kernel $KCOMMIT (patch $PATCH, floor 
   fetch           node $T/cli.mjs fetch --from $SRC --out $W/release --only runtime-chunks,lean-lib,lean-core,mathlib-essential --id $ID --digest $DIG
                   node $T/cli.mjs fetch --from $SRC --out $W/artifact --only runtime --id $ID --digest $DIG
   verify          $([ $FROMDIR = 1 ] && echo "node $T/cli.mjs verify --release $SRC$SKIP" || echo "skipped: --from is a URL (the fetch verifies every file against the pinned record)")
-  checks          the --id/--digest pin, kernel.patch >= $FLOOR, runtime not the served one${ALLOW[@]+" (--allow-served: a rehearsal)"}, umbrella mode
+  checks          the --id/--digest pin, kernel.patch >= $FLOOR, runtime not the served one${ALLOW[@]+" (--allow-served: a rehearsal)"}, umbrella mode; before the fetch: node pipeline/release/verify-release.mjs --public $PUB (read only)
   artifact-lib    rm -rf $W/artifact/lib; node $T/cli.mjs unpack --manifest $R/lean-lib.manifest.json --out $W/artifact/lib/lean
   base-trees      rm -rf $(for t in $TREES; do printf '%s ' "$W/$t"; done)
                   node $T/cli.mjs unpack --slim --manifest $R/$INITLIB.manifest.json --out $W/core-lib-slim
@@ -113,15 +118,24 @@ plan for $ID: runtime $BID, Lean $LEANVER, kernel $KCOMMIT (patch $PATCH, floor 
   promote         node pipeline/release/promote-staging.mjs --staging $STAGING --public $PUB --dry-run, then without --dry-run
                   node pipeline/release/verify-release.mjs --public $PUB; cmp $PUB/runtime/runtime-manifest.json $W/release/runtime/runtime-manifest.json
   kernel-pin      node pipeline/release/adopt-helper.mjs kernel-pin → $W/KERNEL-PIN
-  next            print the operator's landing steps (not performed)
+  next            print the operator's landing steps (not performed)$([ "$MODE" = packs-change ] && echo ", led by the required slim-bake audit")
 EOF
 if [ $DRY = 1 ]; then echo "DRY RUN — inputs valid, nothing was fetched or written"; exit 0; fi
-[ "${FREE_KB:-0}" -ge $((NEED_GB * 1048576)) ] || [ -n "${QED64_ADOPT_IGNORE_DISK:-}" ] || fail "disk: less than $NEED_GB GB free under $Q/work (set QED64_ADOPT_IGNORE_DISK=1 to override)"
-mkdir -p "$W/logs" || fail "cannot create $W"; L="$W/logs"
-step() { local name=$1; shift; "$@" > "$L/$name.log" 2>&1 || { tail -8 "$L/$name.log"; fail "$name ($L/$name.log)"; }; }
 pkg() { node "$T/cli.mjs" "$@"; }
+RECLOG=""
+if [ $FROMDIR = 0 ]; then # the record first: the package writes nothing before the pin holds; a pin mismatch is a refusal
+  say fetch-record
+  RECLOG=$(pkg fetch --from "$SRC" --out "$W/release" --only lists --id "$ID" --digest "$DIG" 2>&1) || {
+    E=$(printf '%s\n' "$RECLOG" | grep -E '^fetch: (release is |release\.json digest is )' | head -1); [ -z "$E" ] || refuse "$E"
+    printf '%s\n' "$RECLOG" | tail -8; fail "fetch-record (the release record at $SRC)"; }
+  checkrecord "$W/release/release.json"; derive; FREE_KB=$(free_kb); echo "record: runtime $BID, kernel.patch $PATCH, $MODE"
+fi
+[ "${FREE_KB:-0}" -ge $((NEED_GB * 1048576)) ] || [ -n "${QED64_ADOPT_IGNORE_DISK:-}" ] || fail "disk: less than $NEED_GB GB free under $Q/work (set QED64_ADOPT_IGNORE_DISK=1 to override)"
+mkdir -p "$W/logs" || fail "cannot create $W"; L="$W/logs"; [ -z "$RECLOG" ] || printf '%s\n' "$RECLOG" > "$L/fetch-record.log"
+step() { local name=$1; shift; "$@" > "$L/$name.log" 2>&1 || { tail -8 "$L/$name.log"; fail "$name ($L/$name.log)"; }; }
+say verify-public # the isolated tree must already pass what the promote and the final verify demand
+node pipeline/release/verify-release.mjs --public "$PUB" > "$L/verify-public-before.log" 2>&1 || refuse "--public $PUB fails verify-release.mjs ($L/verify-public-before.log: $(grep -m1 -E '^FAIL|Error' "$L/verify-public-before.log" | cut -c1-120)) — fill the isolated tree first: npm run -s fetch:artifacts -- --out $PUB --with-manifests [--release <the served release>]"
 say fetch
-[ $FROMDIR = 1 ] || { step fetch-record pkg fetch --from "$SRC" --out "$W/release" --only lists --id "$ID" --digest "$DIG"; checkrecord "$W/release/release.json"; derive; echo "record: runtime $BID, kernel.patch $PATCH, $MODE"; }
 step fetch-release pkg fetch --from "$SRC" --out "$W/release" --only runtime-chunks,lean-lib,lean-core,mathlib-essential --id "$ID" --digest "$DIG"
 step fetch-artifact pkg fetch --from "$SRC" --out "$W/artifact" --only runtime --id "$ID" --digest "$DIG"
 [ "$MODE" = runtime-only ] || step fetch-lists pkg fetch --from "$SRC" --out "$W/release" --only lists --id "$ID" --digest "$DIG"
@@ -177,13 +191,30 @@ say kernel-pin; step kernel-pin "${H[@]}" kernel-pin --work "$W" --release "$W/r
 [ $KEEP = 1 ] || rm -rf "$W/release/runtime/chunks" "$R"/*.part-[0-9]*
 cat <<EOF
 
-ADOPT-STAGED $ID — runtime $BID promoted into $PUB (nothing under any checkout's public/ was touched)
+ADOPT-STAGED $ID — runtime $BID promoted into $PUB (nothing under this checkout's or main's public/ was touched)
   artifact $W/artifact   base trees $(for t in $TREES; do printf '%s ' "$W/$t"; done)  raw snapshots $W/snapshot
 Landing, by the operator (NOT performed here):
+EOF
+[ "$MODE" = runtime-only ] || cat <<EOF
+ 0. SLIM-BAKE AUDIT, required at every Mathlib pin (docs/SERVER-SLIM-REBAKE.md): both snapshots were baked from trees WITHOUT *.olean.private.
+    a. $L/bake-mathlib.log: every module of the umbrella imported, zero errors.
+    b. $L/audit.log: the \`import all\` edges; new ones outside Init/Std/Lean reach into private facets (\`import all M\` fails on slim).
+    c. Differential (kernel reduction, rfl / decide / simp unfolding a non-@[expose] def, is where slim and fat disagree: "unknown
+       constant"): bake a FAT umbrella and compare messages byte for byte on the battery's Mathlib cases and a stress file:
+         node --stack-size=8192 pipeline/snapshot/bake-snapshot.mjs --name mathlib --lib $W/lib-tree --reserve 4294967296 --probe 'import QED64.Essential' --artifact $W/artifact --work $W/snapshot-fat --out $W/fat-snapshots
+         node --stack-size=8192 pipeline/snapshot/snapshot-probe.mjs --artifact $W/artifact --lib $W/lib-tree-slim --snap $W/snapshot/mathlib.snap --probe-file <stress.lean>
+         node --stack-size=8192 pipeline/snapshot/snapshot-probe.mjs --artifact $W/artifact --lib $W/lib-tree --snap $W/snapshot-fat/mathlib.snap --probe-file <stress.lean>
+       Identical: ship slim and record the audit (pin, date, counts) in docs/SERVER-SLIM-REBAKE.md. Different: ship the fat bake
+       (copy $W/fat-snapshots over $STAGING/snapshots and promote again; 2.5x the download, resize the page's pre-commit).
+EOF
+UPDIR=$(dirname "$PUB"); if [ "$(basename "$PUB")" = public ] && [ -x "$UPDIR/scripts/upload-artifacts.sh" ]; then UPLOAD="(cd $UPDIR && scripts/upload-artifacts.sh)"
+else UPLOAD="first promote the same staging into the uploading checkout's own real public/ (node pipeline/release/promote-staging.mjs --staging $STAGING --public <checkout>/public: verified, additive), then scripts/upload-artifacts.sh there"; fi
+cat <<EOF
  1. cp $W/release/release.json toolchain/lean4-wasm64-release.json
  2. cp $W/KERNEL-PIN pipeline/toolchain/KERNEL-PIN
  3. cp $PUB/runtime/runtime-manifest.json public/runtime/; cp $PUB/snapshots/index.json public/snapshots/; cp $PUB/profiles/index.json public/profiles/$([ "$MODE" = runtime-only ] || echo " (+ the two pack manifests)")
  4. once published: npm install --package-lock-only -D https://github.com/FawadHa1der/lean4/releases/download/$ID/lean4-wasm64-$TV.tgz
  5. the wrangler var naming the release (plan B2b)
- 6. USER: upload the snapshots (scripts/upload-artifacts.sh), then push and deploy
+ 6. USER: upload, then push and deploy. scripts/upload-artifacts.sh reads only its own checkout's public/, so the new chunks and
+    snapshots must be there: $UPLOAD
 EOF

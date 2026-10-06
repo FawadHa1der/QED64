@@ -11,7 +11,8 @@
 //              mode is runtime-only (every served pack's raw digest is one of release.packs) or packs-change.
 //   confine    --public <dir> --forbid <dir> [--forbid <dir> …]
 //              Refuse a --public that is (or lies inside) a forbidden tree once symlinks are resolved,
-//              or that holds a symlink whose target leaves it.
+//              that holds a symlink whose target leaves it, or that is not a filled served layout (the
+//              three mutable manifests and every profile manifest its profiles/index.json lists).
 //   base-tree  --work <W> --release <release.json> --init-lib <id> --umbrella-source <text> [--fat]
 //              Write <W>/base-tree.json: per tree the packs it was unpacked from, the umbrella files it
 //              carries (sha256/bytes) and the tree digest (treeDigest below); top-level `umbrella` is the pair.
@@ -26,6 +27,7 @@ import { fileURLToPath } from "node:url";
 
 export const RELEASE_SCHEMA = "lean4-wasm64.release/v1";
 export const BASE_TREE_SCHEMA = "qed64.base-tree/v1";
+export const PROFILE_INDEX_SCHEMA = "qed64.profile-index/v1";
 export const TREE_DIGEST_RULE = 'sha256 over the lines "<relpath>\\0<sha256 hex>\\n" of every file, relpath /-separated, sorted by byte order';
 const UMBRELLA = ["QED64/Essential.olean", "QED64/Essential.olean.server"];
 
@@ -138,7 +140,7 @@ function confine(o) {
   const real = fs.realpathSync.native(pub);
   for (const f of o.forbid) {
     const fr = realish(f);
-    if (inside(real, fr)) refuse(`--public ${pub} resolves to ${real}, inside ${fr} — adopt into an ISOLATED served tree, never a checkout's public/`);
+    if (inside(real, fr)) refuse(`--public ${pub} resolves to ${real}, inside ${fr} — adopt into an ISOLATED served tree, never a checkout's public/, the release dir or the adoption's own work/adopt, work/staging (a rerun deletes those)`);
   }
   const escapes = [];
   const walk = (d) => {
@@ -152,6 +154,18 @@ function confine(o) {
   };
   walk(real);
   if (escapes.length) refuse(`--public ${pub} holds ${escapes.length} symlink(s) leaving the tree (first: ${escapes[0]}) — a promote would write through them`);
+  // A filled served layout, checked now and not after hours of bakes: promote-staging's kernel-only
+  // re-point needs every profile manifest the served index lists.
+  const fill = `fill the isolated tree first: npm run -s fetch:artifacts -- --out ${pub} --with-manifests [--release <the served release>]`;
+  for (const f of ["runtime/runtime-manifest.json", "snapshots/index.json", "profiles/index.json"]) {
+    if (!fs.existsSync(path.join(real, f))) refuse(`--public ${pub} has no ${f} — ${fill}`);
+  }
+  const index = readJson(path.join(real, "profiles/index.json"), "--public profile index");
+  if (index?.schema !== PROFILE_INDEX_SCHEMA || !Array.isArray(index.profiles)) refuse(`--public ${pub} profiles/index.json is not ${PROFILE_INDEX_SCHEMA} — ${fill}`);
+  for (const e of index.profiles) {
+    const file = path.join(real, "profiles", path.basename(String(e?.manifest)));
+    if (!fs.existsSync(file)) refuse(`--public ${pub} lists profile ${e?.id} but has no profiles/${path.basename(file)} — ${fill}`);
+  }
 }
 
 function baseTree(o) {
@@ -226,5 +240,9 @@ if (process.argv[1] && fs.realpathSync(process.argv[1]) === fs.realpathSync(file
   const o = parse(rest);
   const jobs = { record, confine, "base-tree": baseTree, "kernel-pin": kernelPin };
   if (!jobs[cmd]) refuse(`adopt-helper: unknown subcommand ${JSON.stringify(cmd)} (${Object.keys(jobs).join(", ")})`);
-  jobs[cmd](o);
+  // Any other failure (an unreadable entry, a failed readlink) is one refusal line too, never a stack trace.
+  try { jobs[cmd](o); } catch (e) {
+    const msg = String(e?.message ?? e).split("\n")[0];
+    refuse(`${cmd}: ${e?.code && !msg.includes(e.code) ? `${e.code} ` : ""}${msg}`);
+  }
 }
