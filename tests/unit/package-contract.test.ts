@@ -13,8 +13,10 @@
 //   * `exports` targets exist, and `npm pack` ships the closure and nothing
 //     beyond the `files` allowlist (plus npm's own README/LICENSE/package.json).
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { WORKER_URLS } from "../../frontend/src/embed/urls";
 import { SPECS } from "../../pipeline/snapshot/cli.mjs";
@@ -154,10 +156,11 @@ describe("embedding/closure.json", () => {
         expect(r !== null && listed.has(r), `${f}: ${s} → ${r}`).toBe(true);
       }
     }
-    // gate.mjs reads the kernel probes by name and spawns two pipeline scripts.
+    // gate.mjs forwards to lean4-wasm64's gate (its own probes and runner, plan B1a): it spawns no
+    // pipeline script and reads no probe; the probes stay in pipelineData for browser-check.sh.
     const gate = read("pipeline/toolchain/gate.mjs");
-    for (const m of gate.matchAll(/PROBES,\s*"([\w-]+\.lean)"/g)) expect(closure.pipelineData, m[1]).toContain(`tests/adversarial/kernel-probes/${m[1]}`);
-    for (const m of gate.matchAll(/"(pipeline\/[\w/.-]+\.mjs)"/g)) expect(listed.has(m[1]!), m[1]).toBe(true);
+    expect(gate).toContain('forwardToLean4Wasm64("gate", "gate.mjs", ["--artifact", artifact])');
+    expect(gate).not.toMatch(/node:child_process|"pipeline\/[\w/.-]+\.mjs"|kernel-probes/);
   });
 
   it("the edge-worker library (qed64/edge) imports nothing: one dependency-free ES module plus its types", () => {
@@ -198,6 +201,17 @@ describe("embedding/closure.json", () => {
   });
 });
 
+/** lean4-wasm64 artifact-id.mjs comparePatchIds: NNNN by number, then an optional lowercase suffix ("" first). */
+function comparePatchIds(a: string, b: string): number {
+  const parse = (id: string) => { const m = /^(\d{4})([a-z]?)$/.exec(id); if (!m) throw new Error(`not a patch id: ${id}`); return [Number(m[1]), m[2]!] as const; };
+  const [na, sa] = parse(a), [nb, sb] = parse(b);
+  if (na !== nb) return na - nb;
+  return sa === sb ? 0 : sa < sb ? -1 : 1;
+}
+const record = JSON.parse(read("toolchain/lean4-wasm64-release.json"));
+const lean4Wasm64Pkg = path.join(root, "node_modules/lean4-wasm64/package.json");
+const lean4Wasm64Index = fs.existsSync(lean4Wasm64Pkg) && JSON.parse(fs.readFileSync(lean4Wasm64Pkg, "utf8")).name === "lean4-wasm64" ? path.join(root, "node_modules/lean4-wasm64/index.mjs") : null;
+
 describe("the worker protocol ledger (docs/EMBEDDING.md §7.7)", () => {
   const c = closure as unknown as { runtime: { minKernelPatch: string }; workerProtocol: { revision: string; protocol: number; requests: string[]; deprecated: unknown[] } };
   it("the four worker scripts carry the ledger's revision", () => {
@@ -214,8 +228,28 @@ describe("the worker protocol ledger (docs/EMBEDDING.md §7.7)", () => {
     expect(read("src/runtime/client.ts")).toContain(`export const PROTOCOL = ${c.workerProtocol.protocol};`);
     expect(Array.isArray(c.workerProtocol.deprecated)).toBe(true);
   });
-  it("declares a runtime floor that is a patch the toolchain carries", () => {
-    expect(tracked.has(`pipeline/toolchain/patches/${c.runtime.minKernelPatch}`) || [...tracked].some((f) => f.startsWith(`pipeline/toolchain/patches/${c.runtime.minKernelPatch}-`))).toBe(true);
+  // The floor is checked against the pinned release record (toolchain/lean4-wasm64-release.json, a
+  // byte copy of the fork's release.json), never against the lean4-wasm64 package: it is a
+  // devDependency this host's shared node_modules does not carry (decision 10).
+  it("declares a runtime floor that the pinned toolchain release carries", () => {
+    expect(record.schema).toBe("lean4-wasm64.release/v1");
+    const { digest, ...rest } = record;
+    expect(digest, "release.json self-digest (lean4-wasm64 release-record.mjs releaseDigest)").toBe(`sha256:${createHash("sha256").update(JSON.stringify(rest, null, 2)).digest("hex")}`);
+    // Plain NNNN: lean4game's qed64-dep (scripts/stage-workers.sh) accepts only ^[0-9]{4}$.
+    expect(c.runtime.minKernelPatch).toMatch(/^\d{4}$/);
+    expect(comparePatchIds(record.kernel.patch, c.runtime.minKernelPatch), `kernel.patch ${record.kernel.patch} < floor ${c.runtime.minKernelPatch}`).toBeGreaterThanOrEqual(0);
+    const url = pkg.devDependencies?.["lean4-wasm64"] as string;
+    expect(url.endsWith(`/${record.id}/lean4-wasm64-${record.tools.version}.tgz`), url).toBe(true);
+    const lock = JSON.parse(read("package-lock.json"));
+    expect(lock.packages["node_modules/lean4-wasm64"]?.resolved).toBe(url);
+  });
+  it.skipIf(!lean4Wasm64Index)("agrees with the installed lean4-wasm64 package (runs where npm ci installed devDependencies)", async () => {
+    const lib = await import(pathToFileURL(lean4Wasm64Index!).href);
+    for (const [a, b] of [["0035b", "0032"], ["0032", "0035b"], ["0035", "0035b"], ["0035b", "0035"], ["0035b", "0035b"], ["0036", "0035z"], [record.kernel.patch, c.runtime.minKernelPatch]]) {
+      expect(Math.sign(lib.comparePatchIds(a, b)), `${a} vs ${b}`).toBe(Math.sign(comparePatchIds(a!, b!)));
+    }
+    expect(lib.checkReleaseRecord(record)).toEqual([]);
+    expect(lib.releaseDigest(record)).toBe(record.digest);
   });
 });
 

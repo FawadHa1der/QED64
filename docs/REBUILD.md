@@ -12,18 +12,19 @@ every downstream artifact is a deterministic function of those.
 > Last checked against the tree on 2026-09-22 (pairing
 > `wasm64-36a96239e08fd2e0`, Lean 4.34.0 — the first version import,
 > done with `pipeline/release/import-packs.sh`, §3b). The one-command form of
-> sections 1 and 3 is `pipeline/release/bump-chain.sh stage` … pyramid …
+> section 3 is `QED64_ARTIFACT=<fetched runtime> pipeline/release/bump-chain.sh stage-artifact` … pyramid …
 > `pipeline/release/bump-chain.sh promote`.
 
 ## What is where
 
 | Thing | Lives in | Committed? |
 |---|---|---|
+| The toolchain release QED64 serves and tests against | `toolchain/lean4-wasm64-release.json` (a byte copy of that release's `release.json`, schema `lean4-wasm64.release/v1`) | yes |
 | The kernel commit to build | `pipeline/toolchain/KERNEL-PIN` (40-hex commit + the paired runtime id and raw snapshot sizes) | yes |
-| Patch series | `pipeline/toolchain/patches/0001–0033` + `PATCHES.md` — **provenance only, never applied**; the branch is the truth | yes |
+| Patch series | the fork: `wasm64-build/PATCHES.md` on branch `qed64-wasm64` (a release names its level in `release.json` `kernel.patch`). QED64's old copy (`pipeline/toolchain/patches/`) was deleted in plan B1 (it is in git history); `pipeline/toolchain/PATCHES.md` is now a pointer to the fork | in the fork |
 | Build environment (emsdk 6.0.5, cmake, ccache) | `docker-wasm64/` in the kernel tree | yes (in the kernel repo) |
-| Source checkout | `pipeline/toolchain/work/lean4` (branch `qed64-wasm64` at the pin) | no — materialized by `setup-source.sh` |
-| Built compiler | `pipeline/toolchain/work/build/stage1/bin/lean.{js,wasm}` | no — build output |
+| Source checkout | your clone of the fork at `release.json` `kernel.commit` | no |
+| Built compiler | the release's `runtime/` (fetched), or `wasm64-build/` output in your fork clone | no — build output |
 | Served artifacts | `public/runtime`, `public/profiles`, `public/snapshots` | no — content-addressed; manifests (the digest roots) ARE committed |
 
 ## Prerequisites
@@ -36,47 +37,28 @@ every downstream artifact is a deterministic function of those.
 
 ## 1. The compiler (lean.js + lean.wasm)
 
-```sh
-pipeline/toolchain/setup-source.sh   # clone FawadHa1der/lean4 qed64-wasm64 at KERNEL-PIN (refuses a pin not on origin)
-pipeline/toolchain/build.sh          # docker build env + stage1 libraries + stdlib compile + generated exports + link
-pipeline/toolchain/finish.sh         # githash reconfigure, leaninitialize, final link
-node --stack-size=8192 pipeline/toolchain/gate.mjs --artifact pipeline/toolchain/work/build/stage1
-```
+The compiler build moved to the fork (plan B1, 2026-10): FawadHa1der/lean4,
+branch `qed64-wasm64`, directory `wasm64-build/` (`build.sh`, the generated
+export list `gen-exports.py`, the gate, `PATCHES.md`), and it is published as
+releases (`release.json`, schema `lean4-wasm64.release/v1`) plus the npm
+package `lean4-wasm64` (its CLI: fetch, verify, gate, chunk, pack, unpack,
+inspect). QED64 pins the release it serves and tests against in
+`toolchain/lean4-wasm64-release.json` and the package as a devDependency by
+that release's tgz URL; nothing in QED64 imports the package.
 
-Docker Desktop must be running (`open -a Docker`). The gate must print
-`GATE PASSED` (kernel-checked proof, positioned errors, resident-environment
-reuse, and THE PARSE GATE). Its two one-shot CLI checks are judged by their
-OUTPUT and each ends in a bounded 4-minute timeout: since the keepalive guard
-the CLI never exits, which is what the product relies on (HARDENING #47).
-The exported-symbol list is generated at build time as
-seed ∪ (wanted ∩ defined) by `pipeline/toolchain/gen-exports.py`; run it with
-`--check` after any large source change to see how many `wanted` names went
-stale. Then chunk it for serving:
+To rebuild the runtime, clone the fork at the record's `kernel.commit` and
+follow `wasm64-build/` there; the gate it runs must print `GATE PASSED`. To
+use the published one, fetch the release (`npm run fetch:artifacts -- --release
+<dir|url>`, or `lean4-wasm64 fetch`); its `runtime/` is already chunked and
+its `buildId` (`wasm64-<sha256(lean.wasm)[:16]>`) is `release.json`
+`runtime.buildId`. QED64's own `pipeline/toolchain/gate.mjs` forwards to the
+package's gate, and `pipeline/release/bump-chain.sh stage` refuses: stage a
+fetched runtime with `QED64_ARTIFACT=<its dir> bump-chain.sh stage-artifact`.
+(`setup-source.sh`, `build.sh`, `finish.sh` and the patch copies under
+`pipeline/toolchain/` are retired; `gen-exports.py` is a stub that exits 2.)
 
-```sh
-ID=wasm64-$(shasum -a 256 pipeline/toolchain/work/build/stage1/bin/lean.wasm | cut -c1-16)   # the buildId, as bump-chain.sh computes it
-node pipeline/toolchain/chunk-runtime.mjs --bin pipeline/toolchain/work/build/stage1/bin \
-  --out work/staging/$ID/runtime \
-  --lean-version <the Lean version of the pin> \
-  --revision $(git -C pipeline/toolchain/work/lean4 rev-parse --short HEAD)
-```
-
-Stage under `work/staging/<buildId>/runtime`: pass that `--out` (as above and
-in `pipeline/release/bump-chain.sh`), or set `QED64_STAGING=work/staging`
-(the tool appends `<buildId>/runtime`). Leaving both out still stages there,
-with a deprecation WARNING, and exits 2 from the next contract on
-(docs/CLI-CONTRACT.md "Path resolution"). NEVER pass
-`--out public/runtime` (it destroyed the served chunks once — only
-`promote-staging.mjs` writes there, additively). `--lean-version` defaults to
-`4.33.0-pre` with a loud warning: pass the real one after a version import
-(the promote refuses a runtime whose Lean version is not the packs'), and
-`--upstream-base <tag or sha>` so the default `--revision` string names the
-new base instead of `5732b84`. For a binary built outside
-`pipeline/toolchain/work`, pass `--revision` explicitly — the default
-describes `work/lean4`, not that build.
-
-The resulting `buildId` (`wasm64-<sha256(lean.wasm)[:16]>`) names the
-runtime; snapshots are only valid against the exact binary that baked them.
+The resulting `buildId` names the runtime; snapshots are only valid against
+the exact binary that baked them.
 
 ## 2. The library packs (Lean core + Mathlib oleans)
 
@@ -94,7 +76,7 @@ is enforced by the SHA-256 manifests instead). Two options:
   from the owner's sibling checkout; it was removed with that dependency.) The manifests in git are the
   trust anchor — bytes from anywhere are fine if the digests match.
 - **Full rebuild**: build the same fork **natively** (`make -C build/release`
-  inside `work/lean4`, standard Lean build), then build Mathlib at the
+  inside your fork clone, standard Lean build), then build Mathlib at the
   pinned revision in `docs/PROVENANCE.md` with that toolchain
   (`lake build`), collect the `.olean`/`.ir` facets, and pack them with
   `pipeline/artifacts/pack.mjs`. Budget several hours and ~40 GB of disk;
@@ -119,7 +101,7 @@ npm run bake:snapshot -- --name mathlib --lib work/lib-tree-slim --reserve 32212
   --work work/snapshot --out work/staging/$ID/snapshots
 ```
 
-`$ID` is the buildId of § 2. Both land in `work/staging/<buildId>/snapshots`
+`$ID` is the buildId of § 1. Both land in `work/staging/<buildId>/snapshots`
 (the bake refuses foreign siblings); the raw `.snap` files go to `--work`,
 here `work/snapshot`, the set paired to the served runtime, so only a bake of
 the served runtime may name it (bump-chain.sh's `QED64_SNAP_WORK`, below).

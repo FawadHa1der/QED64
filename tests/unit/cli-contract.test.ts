@@ -8,12 +8,15 @@
 // that does not exist (no runtime can boot), with every path flag pointing
 // into a temp tree, and only with --help or a deliberately invalid usage —
 // except chunk-runtime, which is run for real against a fake bin (as
-// artifact-discipline.test.ts does) to prove --flag=value reaches it.
+// artifact-discipline.test.ts does) to prove --flag=value reaches it. The
+// forwards (unpack) see a FAKE lean4-wasm64 package (LEAN4_WASM64_DIR) whose
+// scripts print their argv and exit 7, never a real one.
 import { describe, expect, test, beforeAll, afterAll } from "vitest";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { lean4Wasm64Dir } from "../../pipeline/toolchain/artifact-paths.mjs";
 import {
   SPECS, ENV, RESERVED_OUTPUT, compactSpec, cliContract, formatHelp, parseCli, reservedHit,
   PRELUDE_BEGIN, PRELUDE_END, type CliIo,
@@ -25,9 +28,14 @@ const TOOLS = Object.keys(SPECS);
 
 let tmp: string;
 let missing: string;
+let fakePkg: string;
 beforeAll(() => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), "qed64-cli-contract-"));
   missing = path.join(tmp, "no-such-artifact");
+  fakePkg = path.join(tmp, "fake-lean4-wasm64");
+  fs.mkdirSync(fakePkg);
+  fs.writeFileSync(path.join(fakePkg, "package.json"), JSON.stringify({ name: "lean4-wasm64" }));
+  fs.writeFileSync(path.join(fakePkg, "unpack.mjs"), "console.log(JSON.stringify(process.argv.slice(2)));\nprocess.exit(7);\n");
 });
 afterAll(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
 
@@ -38,7 +46,7 @@ function run(script: string, args: string[], cwd: string) {
     encoding: "utf8",
     timeout: 30_000,
     killSignal: "SIGKILL",
-    env: { ...process.env, QED64_LEAN_ARTIFACT: missing },
+    env: { ...process.env, QED64_LEAN_ARTIFACT: missing, LEAN4_WASM64_DIR: fakePkg },
   });
   return { status: r.status, signal: r.signal, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 }
@@ -150,13 +158,19 @@ describe("SPECS", () => {
   });
 
   test("every marker's template is the real format string in the script, and the marker regex matches what it prints", () => {
+    // A forwarded marker's format string is the lean4-wasm64 package's: checked where the package
+    // is installed (CI's npm ci), and by its example and regex everywhere.
+    const pkgDir = lean4Wasm64Dir({ env: {}, cwd: root });
     for (const tool of TOOLS) {
       const s = SPECS[tool]!;
       for (const m of s.markers) {
-        const source = fs.readFileSync(path.join(root, m.source ?? s.script), "utf8");
-        for (const piece of m.template) expect(source, `${tool}/${m.id}: ${piece}`).toContain(piece);
-        expect(templateRegex(m.template, m.prefix).test(m.example), `${tool}/${m.id}: the example is not what the format prints`).toBe(true);
-        expect(m.regex.test(m.example), `${tool}/${m.id}: the regex does not match the example`).toBe(true);
+        const file = m.forwarded ? (pkgDir ? path.join(pkgDir, m.forwarded) : null) : path.join(root, m.source ?? s.script);
+        const source = file ? fs.readFileSync(file, "utf8") : null;
+        if (source !== null) for (const piece of m.template) expect(source, `${tool}/${m.id}: ${piece}`).toContain(piece);
+        for (const example of [m.example, ...(m.examples ?? [])]) {
+          expect(templateRegex(m.template, m.prefix).test(example), `${tool}/${m.id}: the example is not what the format prints: ${example}`).toBe(true);
+          expect(m.regex.test(example), `${tool}/${m.id}: the regex does not match the example: ${example}`).toBe(true);
+        }
       }
       // The usage refusal is the contract's one line, `usage: <synopsis>`; a
       // script that kept its own (now second-line) check prints the same bytes.
@@ -201,13 +215,13 @@ describe("SPECS", () => {
   test("node pipeline/snapshot/cli.mjs --print-specs is valid JSON carrying every spec and regex", () => {
     const r = spawnSync("node", [cliScript, "--print-specs"], { encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL" });
     expect(r.status).toBe(0);
-    const json = JSON.parse(r.stdout) as { contractVersion: number; specs: Record<string, { synopsis: string; markers: { regex: string; example: string }[] }>; env: object; exitClasses: object };
-    expect(json.contractVersion).toBe(2); // 2: the path rule of 2026-10-06 (the sibling-checkout fallback deleted)
+    const json = JSON.parse(r.stdout) as { contractVersion: number; specs: Record<string, { synopsis: string; markers: { regex: string; example: string; examples?: string[] }[] }>; env: object; exitClasses: object };
+    expect(json.contractVersion).toBe(3); // 3: unpack forwards to lean4-wasm64 and exits 2 without it (plan B1a); 2: the path rule of 2026-10-06
     expect(Object.keys(json.specs).sort()).toEqual([...TOOLS].sort());
     expect(Object.keys(json.exitClasses)).toEqual(["0", "1", "2", "3"]);
     for (const tool of TOOLS) {
       expect(json.specs[tool]!.synopsis).toBe(SPECS[tool]!.synopsis);
-      for (const m of json.specs[tool]!.markers) expect(new RegExp(m.regex).test(m.example)).toBe(true);
+      for (const m of json.specs[tool]!.markers) for (const e of [m.example, ...(m.examples ?? [])]) expect(new RegExp(m.regex).test(e)).toBe(true);
     }
   });
 
@@ -430,6 +444,21 @@ describe("the real scripts", () => {
       "",
     ].join("\n"));
     expect(tree(d)).toEqual(before);
+  });
+
+  test("unpack: after the prelude, one deprecation WARNING and the package's unpack with the normalized arguments; without the package, exit 2 as SPECS declares", () => {
+    const d = sandbox("unpack-forward");
+    const before = tree(d);
+    const [own] = ARGS.unpack!(d);
+    const r = run(SPECS.unpack!.script, [`--manifest=${own[1]}`, ...own.slice(2), "--slim"], d);
+    expect(r.status, r.stderr).toBe(7);
+    expect(JSON.parse(r.stdout)).toEqual([...own, "--slim"]);
+    const deprecated = SPECS.unpack!.markers.find((m) => m.id === "deprecated")!;
+    expect(r.stderr.split("\n").filter(Boolean)).toEqual([deprecated.example]);
+    expect(tree(d)).toEqual(before);
+    expect(SPECS.unpack!.exits["2"]).toBe("usage, or lean4-wasm64 not found (set LEAN4_WASM64_DIR or install the devDependency)");
+    expect(SPECS.unpack!.env).toEqual(["LEAN4_WASM64_DIR"]);
+    expect(SPECS.unpack!.markers.find((m) => m.id === "no-package")!.regex.test(SPECS.unpack!.markers.find((m) => m.id === "no-package")!.example)).toBe(true);
   });
 
   test("chunk-runtime: --flag=value reaches the script's own parser (a real chunk of a fake bin)", () => {

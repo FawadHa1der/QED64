@@ -6,9 +6,13 @@ export interface CliMarker {
   stream: "stdout" | "stderr";
   template: string[];
   source?: string;
+  /** The template is the lean4-wasm64 package's: the script (relative to the package dir) a forward runs. */
+  forwarded?: string;
   prefix?: boolean;
   regex: RegExp;
   example: string;
+  /** More lines the format can print (an optional suffix's forms); each matches `regex` too. */
+  examples?: string[];
 }
 export interface CliSpec {
   script: string;

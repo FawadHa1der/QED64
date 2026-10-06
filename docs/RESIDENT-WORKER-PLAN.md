@@ -57,7 +57,7 @@ manifest and index atomically (docs/TESTING.md "Artifact discipline").
 
 ## Phase-1 spike results (2026-09-02) — transport PROVEN; all blockers resolved by the afternoon
 
-Patch 0031 (`pipeline/toolchain/patches/`, committed to work/lean4 and the
+Patch 0031 (`pipeline/toolchain/patches/` — retired 2026-10: the series lives in the fork's `wasm64-build/PATCHES.md`, docs/REBUILD.md §1 — committed to work/lean4 and the
 kernel repo; EXPERIMENTAL, NOT promoted — served public/runtime still
 predates it) ports browser64's resident transport: PROXY_TO_PTHREAD=1, a
 futex stdin ring (`lean_browser64_configure_input_ring`), a once-guard on

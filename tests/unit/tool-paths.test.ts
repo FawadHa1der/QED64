@@ -9,8 +9,8 @@
 // case is chosen to stop at a cheap existence check: a missing lib tree, a
 // foreign index, a missing --snap, a bin/lean.js that is a directory. The one
 // bake that runs to completion runs a FAKE node-runner (a script that writes
-// the .snap and exits); gate's deprecated-default case runs a fake node-runner
-// and persistent-probe likewise. Every child has a SIGKILL timeout: spawnSync's,
+// the .snap and exits); gate's deprecated-default case forwards to a FAKE
+// lean4-wasm64 package (LEAN4_WASM64_DIR) whose gate records its argv. Every child has a SIGKILL timeout: spawnSync's,
 // or (the one async spawn) a timer and a finally that kill it, and the scratch
 // tool's --hang mode exits by itself after 25 s whatever the test did.
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
@@ -25,7 +25,7 @@ import { batteryInputs } from "../../tests/adversarial/compiler-battery.mjs";
 
 const root = path.resolve(__dirname, "../..");
 const pathsModule = path.join(root, "pipeline/toolchain/artifact-paths.mjs");
-const RULE_ENV = ["QED64_LEAN_ARTIFACT", "QED64_WORK", "QED64_STAGING", "QED64_LIB_TREE", "QED64_MATHLIB_SNAP", "QED64_SNAP_DIR", "QED64_ALLOW_LEGACY_IMPORTS"];
+const RULE_ENV = ["QED64_LEAN_ARTIFACT", "QED64_WORK", "QED64_STAGING", "QED64_LIB_TREE", "QED64_MATHLIB_SNAP", "QED64_SNAP_DIR", "QED64_ALLOW_LEGACY_IMPORTS", "QED64_RUNNER", "LEAN4_WASM64_DIR"];
 const marker = (tool: string, id: string) => SPECS[tool]!.markers.find((m) => m.id === id)!.regex;
 const DEPRECATED = marker("bake-snapshot", "deprecated-default");
 const NO_PATH = marker("bake-snapshot", "no-path");
@@ -352,27 +352,30 @@ describe("the tools in a scratch checkout: a deprecated default prints exactly o
 
 describe("gate and resident-probe: the deprecated defaults and QED64_SNAP_DIR", () => {
   // gate's deprecated default is the cwd; resolving it IS passing gate's own lean.js check, so the
-  // next step is the runner: here a fake node-runner and persistent-probe that record their argv.
-  const FAKE_RECORDER = (code: number) => `import fs from "node:fs";
-fs.appendFileSync(process.env.FAKE_RECORD, JSON.stringify(process.argv.slice(2)) + "\\n");
-process.exit(${code});
+  // next step is the forward to lean4-wasm64's gate: here a FAKE package whose gate.mjs records its
+  // argv, prints the package gate's verdict line and exits 1.
+  const FAKE_GATE = `console.log(" ok   numBits=64 (fake)");
+console.log(JSON.stringify(process.argv.slice(2)));
+console.log("\\nGATE FAILED (1)");
+process.exit(1);
 `;
-  test("gate run from a stage1 dir: exactly one WARNING naming the current directory, then its runs use that dir", () => {
-    const probes = ["is-module.lean", "private-default.lean", "rpc-attr.lean", "module-file.lean"].map((f) => `tests/adversarial/kernel-probes/${f}`);
-    const s = checkout([...TOOLS.gate!, "pipeline/toolchain/artifact-paths.mjs", ...probes]);
-    fs.mkdirSync(path.join(s, "pipeline/snapshot"), { recursive: true });
-    fs.writeFileSync(path.join(s, "pipeline/snapshot/node-runner.mjs"), FAKE_RECORDER(0));
-    fs.writeFileSync(path.join(s, "pipeline/snapshot/persistent-probe.mjs"), FAKE_RECORDER(1));
+  test("gate run from a stage1 dir: one path WARNING naming the current directory, one forward WARNING, then the package's gate gets --artifact <that dir>", () => {
+    const s = checkout([...TOOLS.gate!, "pipeline/toolchain/artifact-paths.mjs"]);
+    const pkg = path.join(s, "fake-lean4-wasm64");
+    fs.mkdirSync(pkg);
+    fs.writeFileSync(path.join(pkg, "package.json"), JSON.stringify({ name: "lean4-wasm64" }));
+    fs.writeFileSync(path.join(pkg, "gate.mjs"), FAKE_GATE);
     const stage = fakeStage1(path.join(s, "stage1"));
-    const record = path.join(s, "record.jsonl");
-    const r = run(s, "pipeline/toolchain/gate.mjs", [], { FAKE_RECORD: record }, stage);
+    const r = run(s, "pipeline/toolchain/gate.mjs", [], { LEAN4_WASM64_DIR: pkg }, stage);
     expect(r.status, r.stderr).toBe(1);
-    expect(r.lines).toEqual([`gate: WARNING — the default --artifact the current directory (${stage}) is deprecated; use --artifact <dir> or set QED64_LEAN_ARTIFACT (docs/CLI-CONTRACT.md)`]);
+    expect(r.lines).toEqual([
+      `gate: WARNING — the default --artifact the current directory (${stage}) is deprecated; use --artifact <dir> or set QED64_LEAN_ARTIFACT (docs/CLI-CONTRACT.md)`,
+      "gate: WARNING — pipeline/toolchain/gate.mjs is deprecated; use lean4-wasm64 gate --artifact <dir> (the fork's package) (docs/CLI-CONTRACT.md)",
+    ]);
     expect(r.lines[0]).toMatch(DEPRECATED);
-    expect(r.stdout.trimEnd().split("\n").at(-1)).toMatch(/^GATE FAILED \(\d+\)$/);
-    const runs = fs.readFileSync(record, "utf8").trim().split("\n").map((l) => JSON.parse(l) as string[]);
-    expect(runs).toHaveLength(5); // four node-runner runs, one persistent-probe
-    for (const argv of runs) expect(argv[argv.indexOf("--artifact") + 1]).toBe(stage);
+    const out = r.stdout.trimEnd().split("\n");
+    expect(out.at(-1)).toMatch(/^GATE FAILED \(\d+\)$/);
+    expect(JSON.parse(out[1]!)).toEqual(["--artifact", stage]);
   });
 
   // resident-probe resolves --snap-dir after its lean.js check; a bin/lean.js that is a directory
@@ -458,7 +461,7 @@ const a = process.argv.slice(2);
 const work = a[a.indexOf("--work") + 1];
 const save = a.find((x) => x.startsWith("--incr-header-save=")).split("=")[1].replace(/^\\/work\\//, "");
 fs.writeFileSync(path.join(work, save), "a raw region");
-fs.writeFileSync(path.join(work, "runner.json"), JSON.stringify({ argv: a, execArgv: process.execArgv, allow: process.env.QED64_ALLOW_LEGACY_IMPORTS ?? null }));
+fs.writeFileSync(path.join(work, "runner.json"), JSON.stringify({ argv: a, execArgv: process.execArgv, execPath: process.execPath, allow: process.env.QED64_ALLOW_LEGACY_IMPORTS ?? null }));
 `;
   function bakeCheckout() {
     const s = toolCheckout("bake-snapshot");
@@ -466,7 +469,7 @@ fs.writeFileSync(path.join(work, "runner.json"), JSON.stringify({ argv: a, execA
     const art = fakeStage1(path.join(s, "art/stage1"), { wasm: true });
     return { s, art };
   }
-  const recorded = (work: string) => JSON.parse(fs.readFileSync(path.join(work, "runner.json"), "utf8")) as { argv: string[]; execArgv: string[]; allow: string | null };
+  const recorded = (work: string) => JSON.parse(fs.readFileSync(path.join(work, "runner.json"), "utf8")) as { argv: string[]; execArgv: string[]; execPath: string; allow: string | null };
 
   test("the default --work: one WARNING, the bake completes there; the runner starts with --stack-size=8192 and no legacy-imports gate", () => {
     const { s, art } = bakeCheckout();
@@ -495,6 +498,41 @@ fs.writeFileSync(path.join(work, "runner.json"), JSON.stringify({ argv: a, execA
     expect(b.stderr).toBe("");
     expect(recorded(w2).allow).toBe("1");
     expect(fs.existsSync(path.join(s, "work"))).toBe(false);
+  });
+
+  test("--runner <script>, else QED64_RUNNER, else the checkout's own node-runner (no WARNING); a missing one refuses before any side effect", () => {
+    const { s, art } = bakeCheckout();
+    const other = path.join(s, "other-runner.mjs");
+    fs.writeFileSync(other, FAKE_RUNNER.replace('"runner.json"', '"other.json"'));
+    const w1 = path.join(s, "w1");
+    const a = run(s, "pipeline/snapshot/bake-snapshot.mjs", ["--artifact", art, "--out", path.join(s, "out1"), "--work", w1, "--runner", "other-runner.mjs"]);
+    expect([a.status, a.stderr]).toEqual([0, ""]);
+    expect(fs.existsSync(path.join(w1, "other.json"))).toBe(true);
+    expect(fs.existsSync(path.join(w1, "runner.json"))).toBe(false);
+    const w2 = path.join(s, "w2");
+    const b = run(s, "pipeline/snapshot/bake-snapshot.mjs", ["--artifact", art, "--out", path.join(s, "out2"), "--work", w2], { QED64_RUNNER: other });
+    expect([b.status, b.stderr]).toEqual([0, ""]);
+    expect(JSON.parse(fs.readFileSync(path.join(w2, "other.json"), "utf8")).execArgv).toEqual(["--stack-size=8192"]);
+    // The runner is spawned with the bake's own Node, not PATH's: with a PATH whose `node` exits 99
+    // (and nothing else on it), the bake still completes and the runner ran under process.execPath.
+    const fakeBin = path.join(s, "fake-bin");
+    fs.mkdirSync(fakeBin);
+    fs.writeFileSync(path.join(fakeBin, "node"), "#!/bin/sh\nexit 99\n", { mode: 0o755 });
+    const w4 = path.join(s, "w4");
+    const d = run(s, "pipeline/snapshot/bake-snapshot.mjs", ["--artifact", art, "--out", path.join(s, "out4"), "--work", w4], { PATH: fakeBin });
+    expect([d.status, d.stderr]).toEqual([0, ""]);
+    expect(recorded(w4).execPath).toBe(process.execPath);
+    expect(recorded(w4).execArgv).toEqual(["--stack-size=8192"]);
+    const w3 = path.join(s, "w3");
+    fs.mkdirSync(w3);
+    fs.writeFileSync(path.join(w3, "init.snap"), "the paired raw snapshot");
+    const before = tree(s);
+    const missing = path.join(s, "no-such-runner.mjs");
+    const c = run(s, "pipeline/snapshot/bake-snapshot.mjs", ["--artifact", art, "--out", path.join(s, "out3"), "--work", w3, "--runner", missing]);
+    expect(c.status).toBe(2);
+    expect(c.lines).toEqual([`bake-snapshot: no runner script ${missing} — pass --runner <script> or set QED64_RUNNER`]);
+    expect(c.lines[0]).toMatch(marker("bake-snapshot", "no-runner"));
+    expect(tree(s)).toEqual(before);
   });
 });
 
@@ -556,7 +594,7 @@ if (process.argv.includes("--hang")) { setInterval(() => {}, 1000); setTimeout((
       clearTimeout(timer);
       child.kill("SIGKILL"); // harmless when it is already dead
     }
-    // spawnSync's timeout path, as pipeline/toolchain/gate.mjs runs node-runner without the flag
+    // spawnSync's timeout path, as a supervisor that runs node-runner without the flag times it out
     const record = path.join(path.dirname(tool), "sync.json");
     const r = spawnSync(process.execPath, [tool, "--hang", "--record", record], { timeout: 3000, killSignal: "SIGKILL", encoding: "utf8" });
     expect(r.signal).toBe("SIGKILL");

@@ -104,7 +104,7 @@ docs/CLI-CONTRACT.md.
 | `pipeline/artifacts` | deterministic packer + deep inspector for profile packs |
 | `public/snapshots` | baked environment snapshots + `index.json` (baked per runtime; the index is tracked, the `.snapz` files are fetched, never committed) |
 | `pipeline/snapshot` | Node runner for the wasm64 binary + `--incr-header-save` snapshot baking (`--lib` mounts an unpacked olean tree; upserts the snapshot index); `cli.mjs` is the pipeline CLI contract (every tool's `--help`, flags, exit codes, stable output: docs/CLI-CONTRACT.md) |
-| `pipeline/toolchain` | pinned toolchain build recipe and the wasm64 patch contract |
+| `pipeline/toolchain` | `artifact-paths.mjs` (the path rule, the lean4-wasm64 locator and forwards), `chunk-runtime`, the `gate.mjs` forward, `KERNEL-PIN`; the build recipe is the fork's `wasm64-build/` (docs/REBUILD.md §1) |
 | `tests/` | unit suite (pure logic + real-manifest invariants) and integration suite (the real runtime under Node) |
 
 ## Testing
@@ -177,15 +177,16 @@ node --stack-size=8192 pipeline/snapshot/snapshot-probe.mjs --artifact $ART --li
 
 ## Provenance and trust
 
-The runtime (`wasm64-7a2879deebfbc2c7`, Lean `4.33.0-pre`, clean-room build of
-`cauli/lean4@5732b84` + the 17-patch series in `pipeline/toolchain/patches/`)
+The runtime (the release pinned in `toolchain/lean4-wasm64-release.json`: built
+from the fork FawadHa1der/lean4 `qed64-wasm64` at its `kernel.commit`, patch series
+in the fork's `wasm64-build/PATCHES.md`, level `kernel.patch`; docs/REBUILD.md §1)
 and both profile packs are consumed here **by digest**: every chunk
 and transport part is SHA-256-pinned in a manifest, `promote:staging` refuses
 unverified bytes (as the retired `sync:artifacts` copy did before 2026-10),
 `verify:release` re-derives the raw pack digests, and the
 worker re-verifies every chunk before `importScripts`. See
-`docs/PROVENANCE.md` for the full chain and `pipeline/toolchain/` for how to
-rebuild the runtime from source.
+`docs/PROVENANCE.md` for the full chain and docs/REBUILD.md §1 (the fork's
+`wasm64-build/`) for how to rebuild the runtime from source.
 
 Lean, Mathlib, Batteries: Apache-2.0. The wasm build derives from
 [cauli/lean4](https://github.com/cauli/lean4) `reinstate-wasm` (Apache-2.0);

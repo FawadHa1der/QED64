@@ -481,7 +481,10 @@ Notes for consumers:
 - `infra`: the edge-worker library behind `qed64/edge`;
 - `pipeline` and `pipelineData`;
 - `runtime.minKernelPatch`: `"0032"`, the oldest kernel patch level these
-  workers drive correctly. Compare it against your own KERNEL-PIN;
+  workers drive correctly. Compare it against your release.json
+  `kernel.patch` (lean4-wasm64's `comparePatchIds` ordering: `NNNN`, then an
+  optional lowercase suffix; QED64 pins its own in
+  `toolchain/lean4-wasm64-release.json`);
 - `workerProtocol`: §7.7.
 
 ### 6.1 Minimal Vite consumer
