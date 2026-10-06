@@ -25,19 +25,16 @@ jobs:
       - run: npm ci
       # Both roots before any check: the root typecheck and the unit suite read
       # frontend/node_modules (lean4monaco's shipped files); pinned by
-      # tests/unit/lean4monaco-fixes.test.ts for this workflow and ci.yml.
+      # tests/unit/lean4monaco-fixes.test.ts for this workflow and ci.yml, and
+      # with the step order below by tests/unit/deploy-script.test.ts.
       - run: npm ci --prefix frontend
       - run: npx tsc --noEmit && npx vitest run tests/unit
-      - run: npm run typecheck:site
-      - run: npm run build:site
-      # Artifacts are served from R2 — never bundle them as worker assets
-      # (publicDir is off for builds; this prune is a defensive invariant).
-      - run: rm -rf dist/runtime dist/profiles dist/snapshots
-      # Plain wrangler (pinned in devDependencies) instead of wrangler-action:
-      # the wrapper swallowed error output on failure. Env vars are wrangler's
-      # native non-interactive auth; the account id spares narrowly-scoped
-      # tokens the /accounts discovery call.
-      - run: npx wrangler deploy
+      # The one deploy path, shared with operators: typecheck:site, build:site,
+      # the artifact prune, the 25 MiB size check and `npx wrangler deploy`
+      # all live in scripts/deploy-app.sh (its header says why). Env vars are
+      # wrangler's native non-interactive auth; the account id spares
+      # narrowly-scoped tokens the /accounts discovery call.
+      - run: bash scripts/deploy-app.sh
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
