@@ -1,13 +1,24 @@
 # The pipeline CLI contract
 
 The pipeline's command-line tools are an interface: two downstream projects
-run them and parse what they print. The lean4game port vendors eight of them
-file by file (`scripts/sync-qed64.sh`; olean-imports is in its optional list)
-and runs them in its from-source lane.
-The widgets showcase vendors `pipeline/snapshot/` as a directory plus
-`pipeline/{toolchain/artifact-paths,artifacts/olean-imports,artifacts/unpack}.mjs`
-(`scripts/pin-qed64.mjs`), and it judges bakes and probes by their log lines.
-This document states what those consumers may rely on.
+run them and parse what they print. How each one gets them (checked
+2026-10-06 in their repositories):
+
+- **lean4game** runs them in its from-source lane (`wasm/build-from-source.sh`).
+  On its `qed64-dep` branch they come from the installed package
+  (`"qed64": "github:FawadHa1der/QED64#<sha>"`; every Tier 1/2 tool is in the
+  package's `files`, docs/EMBEDDING.md §6), run from a copy of
+  `node_modules/qed64`. Its deployed `wasm64-port` branch still vendors eight
+  of them file by file (`scripts/sync-qed64.sh`; olean-imports is in its
+  optional list), which is why the inline preludes below exist.
+- **The widgets showcase** runs them in place from the QED64 sources it pins:
+  the git submodule `deps/qed64` at the active pin's commit, or that pin's
+  worktree (`scripts/lib/qed64-src.mjs`; nothing is copied). It judges bakes
+  and probes by their log lines.
+
+This document states what those consumers may rely on. In the "Consumers"
+lists below, "vendored" means lean4game's `wasm64-port` copy; the same lane on
+`qed64-dep` runs the packaged file.
 
 The contract is also data: `pipeline/snapshot/cli.mjs` holds one SPEC per tool
 (flags, defaults, required flags, environment, exit codes, stable output
@@ -26,7 +37,7 @@ node pipeline/snapshot/cli.mjs --write-preludes  # regenerate the inline prelude
 | Tier | Promise |
 |---|---|
 | **1: downstream-stable** | Flags, defaults, exit codes and the stable markers below change only under the stability policy (a deprecation window of one downstream re-pin cycle). |
-| **2: internal-stable** | Same rules, but the consumers are QED64's own scripts and lean4game's from-source lane. A breaking change still needs a changelog row, and a lean4game re-pin when it vendors the tool. |
+| **2: internal-stable** | Same rules, but the consumers are QED64's own scripts and lean4game's from-source lane. A breaking change still needs a changelog row, and a lean4game re-pin (of its vendored copy or of its package pin). |
 | **3: diagnostic** | No promise. They may change or disappear without notice. |
 
 | Tool | Script | npm alias | Tier | `--help` wiring |
@@ -110,15 +121,17 @@ There is one implementation of the grammar, `cliContract` in
 
 ### How the tools bind to the contract
 
-`cli.mjs` lives in `pipeline/snapshot/` because the showcase vendors that
-directory whole. lean4game is different: it vendors `bake-snapshot`,
+`cli.mjs` lives in `pipeline/snapshot/` because the showcase used to vendor
+that directory whole (it now runs the tools from its submodule). lean4game's
+`wasm64-port` branch is different: it vendors `bake-snapshot`,
 `node-runner`, `snapshot-probe`, `persistent-probe`, `chunk-runtime`, `pack`,
 `unpack` and `olean-imports` **one file at a time**, and its sanity check
 refuses any relative import it did not copy. Those scripts therefore carry a
 **generated inline prelude** between `// <cli-contract>` and
 `// </cli-contract>`. The prelude holds the verbatim source of `cliContract`,
-the tool's compact spec and its help text. The showcase also vendors
-olean-imports and unpack one file at a time.
+the tool's compact spec and its help text. (The showcase vendored
+olean-imports and unpack one file at a time before it moved to the
+submodule; the preludes keep any one-file copy self-contained.)
 
 The prelude runs right after the imports. For olean-imports it runs inside the
 main-module check, so importing the module stays side-effect-free. The
@@ -127,8 +140,8 @@ drops the later occurrences of a repeated value flag, so the script's own
 legacy parser reads it unchanged and sees only the first value.
 
 Only supervised-run and preflight import `parseCli` at run time. No downstream
-copies either of them without `cli.mjs`: the showcase gets `cli.mjs` with the
-directory, and preflight runs in place from the QED64 checkout or the
+copies either of them without `cli.mjs`: the showcase runs them from its
+submodule beside `cli.mjs`, and preflight runs in place from the QED64 checkout or the
 installed package (`cli.mjs`, `supervised-run.mjs` and `preflight.mjs` are in
 `files` and in closure.json's `pipeline` list, with every Tier 1/2 tool;
 `tests/unit/package-contract.test.ts` checks it).
@@ -283,7 +296,7 @@ Older `.snapz` files are never deleted.
 
 **Consumers:**
 
-- The showcase's `scripts/bake.sh` runs its vendored copy with
+- The showcase's `scripts/bake.sh` runs it from the submodule with
   `--name --artifact --lib --reserve --work --out --probe`.
 - The showcase's `judge-bake.mjs` scans the whole log for reserved substrings
   (J1) and parses the `baked` line (J3).
@@ -351,7 +364,7 @@ usage: snapshot-probe.mjs (--snap <file> | --fresh-import --lib <tree>) (--probe
   --budget-ms --via-mem --init-flags --artifact --lib --dump-messages` and
   parses `SNAPSHOT PROBE FAIL`, `ABORT:`, `compile: tag=` and the JSON
   messages.
-- The showcase's `scripts/headless/exact-header.mjs` (vendored) parses pass
+- The showcase's `scripts/headless/exact-header.mjs` (from the submodule) parses pass
   and fail, `^ABORT:`, `load:`, `compile:` and `[lean:stdout]`.
 - lean4game's `build-from-source.sh --verify-snapshots` (vendored).
 
@@ -404,7 +417,7 @@ usage: supervised-run.mjs --target <file> [--quiet-ms n] [--stable-ms n] [--give
 
 - QED64's `pipeline/release/import-packs.sh` (the umbrella compile; it greps
   `: error|supervised-run`).
-- The showcase's `scripts/headless/run-e2.sh` (vendored; it reads the
+- The showcase's `scripts/headless/run-e2.sh` (from the submodule; it reads the
   `^supervised-run: ` verdict line).
 - `tests/unit/import-lane.test.ts`.
 - `tests/integration/runtime-smoke.test.ts` (every run: it passes
@@ -513,7 +526,7 @@ usage: olean-imports.mjs (--audit <olean tree> | --entries <olean file>)
 **Consumers:**
 
 - QED64's `import-packs.sh` (it greps `^import-all audit|outside Init`).
-- The showcase's `scripts/stage-trees.mjs` G5 (vendored). It parses
+- The showcase's `scripts/stage-trees.mjs` G5 (from the submodule). It parses
   `outside Init/Std/Lean/Lake: (\d+)` and the first line, under a 300 s
   watchdog.
 
@@ -735,7 +748,8 @@ usage: unpack.mjs --manifest <file> --out <dir>
 
 - The README and QED64's `import-packs.sh`.
 - lean4game's `build-from-source.sh` trees lane (vendored).
-- The showcase (vendored).
+- The showcase (from the submodule; no script of it calls unpack today,
+  checked 2026-10-06).
 
 ## Stability policy
 
@@ -758,8 +772,10 @@ usage: unpack.mjs --manifest <file> --out <dir>
   behaviour alongside the old. Make the old form print a
   `<tool>: WARNING — … is deprecated; use … (docs/CLI-CONTRACT.md)` line,
   without reserved substrings. Add a changelog row. Remove the old form only
-  after **both** lean4game (`client/src/wasm/vendor/QED64-PIN`) and the
-  showcase (`QED64.lock.json`) have re-pinned to a QED64 commit that carries
+  after **both** lean4game (`client/src/wasm/vendor/QED64-PIN` on
+  `wasm64-port`, the `qed64` SHA in `client/package.json` on `qed64-dep`) and
+  the showcase (`pins/<id>/QED64.lock.json` and its submodule) have re-pinned
+  to a QED64 commit that carries
   the warning.
 - A breaking change bumps `CONTRACT_VERSION` in `cli.mjs`.
 - Bug fixes that turn a crash or an undefined behaviour into the documented
@@ -778,6 +794,7 @@ usage: unpack.mjs --manifest <file> --out <dir>
 | 1 | 2026-10-06 | preflight moved from `tests/adversarial/preflight.mjs` to `pipeline/release/preflight.mjs` (same flags, output and exit codes), shim at the old path: it runs the moved script after a stderr deprecation WARNING. Its two harness helpers (`resolveTarget`, `fetchJson`) moved to `pipeline/release/page-target.mjs` (the harness re-exports them). It ships in the package with `cli.mjs`, `cli.d.mts` and `supervised-run.mjs`, so every Tier 1/2 tool is in `files` and closure.json `pipeline`. | moved, shim at the old path |
 | 1 | 2026-10-06 | olean-imports gains `--entries <olean file>` (one `entries of <file>: <JSON>` line, a new marker) and the module export `oleanExtEntryCounts`; the usage line becomes `olean-imports.mjs (--audit <olean tree> \| --entries <olean file>)`. `--audit` output and exits are unchanged. | additive |
 | 1 | 2026-10-06 | Fix: the main guards of preflight, olean-imports and `cli.mjs` (and the old-path preflight shim) compare realpaths, as release-manifest already did. Through a symlinked install (`file:` dependency, `npm link`, a workspace, pnpm) Node loads the main module by its realpath while `argv[1]` keeps the symlink path, so these tools printed nothing and exited 0 there; they now run. G2 (`npm run test:consumer`) runs each one's `--help` through the consumer's `node_modules/qed64` symlink. olean-imports' readers (`oleanImportEntries`, `oleanImports`, `oleanExtEntryCounts`) accept any `Uint8Array` as their .d.mts says; a plain one returned null before. | fix, no flag or output change |
+| 1 | 2026-10-06 | Docs (plan step A2c): this document's consumer statements follow the consumers' repositories: lean4game's `qed64-dep` lane runs the packaged tools and its `wasm64-port` branch still vendors them; the showcase runs them from its submodule `deps/qed64` (it no longer vendors `pipeline/snapshot/`, olean-imports or unpack). The re-pin rule names both lean4game pins and the showcase's `pins/<id>/QED64.lock.json`. The library side of the same step (`qed64/embed`'s pruned barrel, `embedApiRevision` in `dist/qed64-build.json`) touches no tool: release-manifest's `--dist` check reads `schema`, `shell` and `buildId` and ignores the new key. | docs, no flag or output change |
 
 ## Open decisions
 

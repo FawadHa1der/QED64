@@ -61,6 +61,18 @@ unchanged against the same environment. Full numbers in
 `docs/ARCHITECTURE.md`; the war-story list of environment pathologies this
 survives is `docs/HARDENING.md`.
 
+## Use QED64 in your project
+
+Add `"qed64": "github:FawadHa1der/QED64#<commit>"` to your `package.json`
+and either frame QED64's own page (`?embed=1`, driven by the page API) or
+build your own page on `qed64/embed`, with or without an editor.
+[`docs/EMBEDDING.md` §6.1](docs/EMBEDDING.md#61-minimal-vite-consumer) is the
+minimal Vite consumer: the COOP/COEP headers, the workers, the artifact roots
+and a headless boot (type-checked against the packed tarball by
+`npm run test:consumer`). `qed64/edge` is the Cloudflare Worker side
+(docs/DEPLOY.md), and the pipeline CLIs a consumer may run are in
+docs/CLI-CONTRACT.md.
+
 ## Layout
 
 | Path | What lives there |
