@@ -44,6 +44,7 @@ import vm from "node:vm";
 import { Readable } from "node:stream";
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -279,9 +280,13 @@ globalThis.fetch = async (url, init) => (url === SNAP_URL
   : realFetch(url, init));
 
 const sizeOf = (f) => fs.statSync(f).size;
+// The manifest describes the artifact truthfully: the worker refuses one whose buildId is not
+// "wasm64-" + sha256(lean.wasm)[:16] (RUNTIME_MANIFEST_MISMATCH, docs/EMBEDDING.md §7.2).
+const sha256Of = (f) => createHash("sha256").update(fs.readFileSync(f)).digest("hex");
+const wasmSha = sha256Of(leanWasm);
 const booted = await request("boot", { config: {
-  runtime: { buildId: "probe-stage1", leanVersion: "stage1", files: {
-    "lean.js": { bytes: sizeOf(leanJs), chunks: [] }, "lean.wasm": { bytes: sizeOf(leanWasm), chunks: [] } } },
+  runtime: { buildId: `wasm64-${wasmSha.slice(0, 16)}`, leanVersion: "stage1", files: {
+    "lean.js": { bytes: sizeOf(leanJs), sha256: sha256Of(leanJs), chunks: [] }, "lean.wasm": { bytes: sizeOf(leanWasm), sha256: wasmSha, chunks: [] } } },
   memory: { initialBytes: 134217728, maximumCandidates: [17179869184, 8589934592] },
   leanPath: "/lib/lean", packs: [],
 } });
