@@ -65,7 +65,7 @@ One persistent Worker owns one Lean process for the whole session:
    the page arms the worker, and the real `lean --worker` loop runs on an
    application pthread reading a futex stdin ring; see "Transport".
 
-### The snapshot tier (public/snapshots/ + src/runtime/snapshots.ts)
+### The snapshot tier (public/snapshots/ + lib/snapshots.ts)
 
 `public/snapshots/index.json` (schema `qed64.snapshot-index/v1`) maps each
 baked snapshot to the ordered import list it was baked for. The app fetches it
@@ -204,13 +204,13 @@ Monaco / lean4monaco (unchanged)
   │  LSP JSON-RPC over a MessagePort (relay.clientPort); server capability
   │  textDocumentSync.change = 1 (full text) — the wire has no ranged edit
   ▼
-L3  frontend/src/lsp-relay.ts — LspRelay: 3 states, 0 timers, 0 regexes
+L3  lib/lsp-relay.ts — LspRelay: 3 states, 0 timers, 0 regexes
   │  RelaySession: start() · arm() · lsp(msg, replay?) · onLsp · onStatus · onDied(code, reason, message) · dispose()
   ▼
-L4' frontend/src/resident-session.ts — ResidentSession (the adapter; ResidentPolicy hooks)
+L4' lib/resident-session.ts — ResidentSession (the adapter; ResidentPolicy hooks)
   │  LeanSession: boot(config) · loadSnapshot · compile (pre-open only) · lsp · arm → 'lsp-arm' · request('telemetry') · dispose
   ▼
-L2  src/runtime/client.ts — LeanSession: the only owner of the Worker and the wire protocol
+L2  lib/client.ts — LeanSession: the only owner of the Worker and the wire protocol
   │  postMessage: boot, loadSnapshot, compile, lsp {msg, replay?} (fire-and-forget), lsp-arm, telemetry, dispose
   │  events: progress, log, lsp {msg}, status {…}, heartbeat, died / error
   ▼
@@ -315,7 +315,7 @@ out of the heap view, byte-exact bodies, resync at the next `Content-Length:`
 inside junk (HARDENING #27). Library progress and `[WASM LSP] prebuilt
 lookup HIT|MISS` lines go to stderr as `log` events.
 
-**LeanSession** (`src/runtime/client.ts`) owns the Worker. `lsp(msg, replay?)`
+**LeanSession** (`lib/client.ts`) owns the Worker. `lsp(msg, replay?)`
 posts without a promise or ack (a booting worker queues it, a dead one drops
 it); `arm()` is the `lsp-arm` request; `telemetry()` (the public wrapper of
 `request("telemetry")`) answers
@@ -327,7 +327,7 @@ worker `error`, an unrecoverable error reply, the worker's `died` event, or
 every listener *first*, then terminates — a deliberate teardown is never a
 death.
 
-**The relay** (`frontend/src/lsp-relay.ts`; §2.3) reads four fields of a
+**The relay** (`lib/lsp-relay.ts`; §2.3) reads four fields of a
 message — `method`, `id`, `params.textDocument.version`, and the full text
 of a `didOpen` / full-text `didChange` into `lastText` (equal to the
 worker's document by construction) — and keeps `initialize`, `doc {uri,
@@ -369,7 +369,7 @@ severity-1 QED64 diagnostic on the first import line explaining that the
 checker crashed repeatedly on this content, replacing the dead session's
 stale markers.
 
-**ResidentSession** (`frontend/src/resident-session.ts`, extracted from
+**ResidentSession** (`lib/resident-session.ts`, extracted from
 main.ts on 2026-09-04 so lean4game can vendor it) implements `RelaySession`
 over one `LeanSession` and takes a `ResidentPolicy {snapshotsFor?(headerText),
 initialBytesFor?(headerText), maximumBytes?}`. `start()`: reinstall packs the
@@ -434,7 +434,7 @@ settle 1.5 s; boot 2 GiB initial / 6 GiB cap; measured on the served 0032
 pairing: covered header switch 322 ms edit → ready, boot 12.5 s warm, kill
 → ready with all edits present in ~15 s (docs/RESIDENT-WORKER-PLAN.md).
 
-## The installer (src/install/profiles.ts)
+## The installer (lib/profiles.ts)
 
 `fetch parts → SHA-256 each → gunzip stream → sink`, where the sink is an
 OPFS staging file (committed by atomic `move()` + meta marker) or, after any

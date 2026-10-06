@@ -73,7 +73,7 @@ Conventions:
   `digest`, re-derived as `sha256(JSON.stringify(content))` before it is
   recorded.
 - `runtime.manifest.pinnedPath` is the immutable per-build copy. The shell
-  fetches it first (`frontend/src/qed64-boot.ts`), and it must be
+  fetches it first (`lib/qed64-boot.ts`), and it must be
   byte-identical to `runtime.manifest`.
 - A snapshot's `sha256`/`transferBytes` describe the served `.snapz`;
   `rawBytes` is the inflated size. A pack's `transport` describes the served

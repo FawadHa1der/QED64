@@ -419,7 +419,7 @@ The package:
 `package.json` (pinned by `tests/unit/package-contract.test.ts`):
 - `"license": "MIT"`, zero runtime dependencies, and `"sideEffects":
   ["./public/workers/memory64-probe.js"]`: every module is side-effect free
-  except the probe script, which `src/runtime/client.ts` imports for its side
+  except the probe script, which `lib/client.ts` imports for its side
   effect (§7.0). Under `"sideEffects": false` Vite drops that import, and the
   built page throws reading the probe at load.
 - **No script npm treats as "prepare me".** pacote runs `npm install
@@ -428,7 +428,7 @@ The package:
   `preinstall`, `install` or `postinstall`. QED64's build script is therefore
   `build:all`, and CI uses `build:site`.
 - `exports`:
-  - `"./embed"` → `frontend/src/embed/index.ts`;
+  - `"./embed"` → `lib/index.ts` (closure.json `entry`);
   - `"./edge"` → `infra/edge-worker.js` (types `infra/edge-worker.d.ts`):
     the edge-worker library of docs/DEPLOY.md, dependency-free;
   - `"./workers/*"`;
@@ -436,7 +436,9 @@ The package:
   - `"./embedding/closure.json"`;
   - `"./package.json"`.
 - `files`: exactly the closure below, plus the license, README and this
-  document. 54 files, about 220 kB packed. `npm run test:consumer`
+  document, and for one pin cycle the 12 path shims of plan step A7 (§12:
+  the library's old paths, each a one-line re-export of its `lib/` file; not
+  in the closure). 65 files, about 230 kB packed. `npm run test:consumer`
   (tests/consumer/check-consumer.mjs) proves the packed files alone resolve
   and build.
 
@@ -472,11 +474,16 @@ Notes for consumers:
   the buffer) lives only in site modules that are not in the package.
 
 `embedding/closure.json` (schema `qed64.closure/v1`) lists:
-- `embed`: the TS closure of `qed64/embed`;
+- `embed`: the TS closure of `qed64/embed`, the 12 files of `lib/`:
+  `index.ts` (the barrel, `entry`), `params.ts`, `failure.ts`,
+  `qed64-boot.ts`, `raw-cache.ts`, `urls.ts`, `resident-session.ts`,
+  `edit-coalescer.ts`, `lsp-relay.ts`, `profiles.ts`, `client.ts` and
+  `snapshots.ts`. They import only each other, plus `client.ts`'s
+  side-effect import of `../public/workers/memory64-probe.js`;
 - `workers`: `{path, serveAs}`. `lean.worker.js` `importScripts`
   `lsp-frames.js`, `memory64-probe.js` and `lsp-front-door.js` from its own
   directory, so all five ship together. `memory64-probe.js` is also in the
-  embed closure's reach: `src/runtime/client.ts` imports it for its side
+  embed closure's reach: `lib/client.ts` imports it for its side
   effect (it publishes `globalThis.Qed64Memory64`, the probe of §7.0);
 - `infra`: the edge-worker library behind `qed64/edge`;
 - `pipeline` and `pipelineData`;
@@ -504,7 +511,7 @@ code block below, extracted verbatim from the packed `docs/EMBEDDING.md`.
    TypeScript reads the `exports` map under `"moduleResolution": "bundler"`,
    which gives `qed64/embed` its types (the closure is `.ts` source). Under
    `"node"`, add a `paths` entry from `qed64/embed` to closure.json `entry`
-   (`node_modules/qed64/frontend/src/embed/index.ts`), as lean4game does,
+   (`node_modules/qed64/lib/index.ts`), as lean4game does,
    and re-check it on each bump (its `scripts/stage-workers.sh` does).
 2. **Cross-origin isolation and Vite's pre-bundler.** The top document must
    be `crossOriginIsolated` (§5), in development too:
@@ -680,7 +687,7 @@ library contract a dist was built from without opening the bundle.
   types. Both come from one file, `public/workers/memory64-probe.js`: a
   classic script that publishes `globalThis.Qed64Memory64 = { MEMORY64_PROBE,
   probeMemory64, REVISION }` (frozen). `lean.worker.js` `importScripts` it
-  for its capabilities report, and `src/runtime/client.ts` imports it for its
+  for its capabilities report, and `lib/client.ts` imports it for its
   side effect and re-exports the two members, so a page's check is the
   worker's, byte for byte.
 - **snapshots:**
@@ -1293,6 +1300,23 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
 
   Staging from `closure.json` (the package lane, branch `qed64-dep`) picks
   the file up with no change.
+- From a pin at or after plan step A7 the library lives in `lib/` and
+  closure.json `entry` is `lib/index.ts` (§6, §12). The package lane
+  (`qed64-dep`, `lean-v4.34`) changes two places at that bump:
+  - `client/tsconfig.json`'s `paths` entry for `qed64/embed` becomes
+    `../node_modules/qed64/lib/index.ts`. The old
+    `frontend/src/embed/index.ts` is a shim for one cycle, so tsc still
+    compiles through it, but `scripts/stage-workers.sh` compares the entry
+    with closure.json `entry` by real path and refuses the old one.
+  - `client/src/wasm/game-translation-guard.test.ts` imports
+    `frontend/src/embed/edit-coalescer.ts` by file path: it keeps working
+    through the shim for one cycle (the test's resolve hook adds the `.ts`
+    the shim's extensionless re-export needs); point it at
+    `lib/edit-coalescer.ts` before the shims go.
+  The vendored lane (`wasm64-port`, `sync-qed64.sh` `PATHS`) copies the
+  files by their old paths, which are shims at A7: it must vendor the 12
+  `lib/` files instead (their imports are siblings, plus
+  `../public/workers/memory64-probe.js`), or retire for the package lane.
 - Route URL overrides through `validateBootOverrides` (lean4game keeps its
   own parser; `parseBootParams` is internal since `1.0.0-pre.5`) and boot
   with `installArtifacts(ui, {overrides, profiles: "none"})` or the exported
@@ -1580,3 +1604,25 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   `toolchain/lean4-wasm64-release.json` with an import attribute (a full
   checkout has it; Node ≥ 22 and wrangler ≥ 4 handle the syntax). The
   workers, `qed64/embed` and `EMBED_API_REVISION` are untouched.
+- **One library root (plan step A7, 2026-10):** the 12 files of the embed
+  closure move, unchanged but for their imports, from
+  `frontend/src/embed/*`, `frontend/src/{qed64-boot,resident-session,lsp-relay}.ts`,
+  `src/install/profiles.ts` and `src/runtime/{client,snapshots}.ts` into
+  `lib/` (flat names: `lib/index.ts` is the barrel; `profiles.ts`,
+  `client.ts` and `snapshots.ts` keep their basenames). `exports["./embed"]`
+  and closure.json `entry` are `lib/index.ts`; closure.json `embed` lists
+  the `lib/` files; `files` ships `lib/`. Every import inside `lib/` is a
+  sibling (no `../../../src` hop), and the page (`frontend/`) imports the
+  library from `../../lib`. The old paths are **shims for one pin cycle**:
+  each is a one-line `export *` of its `lib/` file, shipped in `files` but
+  not listed in the closure, so a consumer that names a file path instead of
+  `qed64/embed` keeps compiling; the next cycle deletes them, with their
+  `files` entries (`tests/unit/lib-root.test.ts` pins each to its target,
+  and fails on any import of one from inside this repository). An import of `qed64/embed` needs no change; a `paths`
+  entry that names closure.json `entry` changes to `lib/index.ts` (§10:
+  lean4game's `client/tsconfig.json`, which its `stage-workers.sh` checks).
+  No export, type or behaviour changes (the built `dist/` is byte-identical,
+  shell id included; only `qed64-build.json`'s `commit` differs), so
+  `EMBED_API_REVISION` stays `1.0.0-pre.6` (§7: the revision is the semver
+  of the library API) and the page API's revision is unchanged; the workers
+  and their protocol revision are untouched.

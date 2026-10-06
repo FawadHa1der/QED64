@@ -342,7 +342,7 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   `--out` inside `public/`; neither deletes anything it produced before.
 - Every snapshot index entry carries `runtime: <buildId>` (the sha256 of the
   baking artifact's lean.wasm, the same identity chunk-runtime writes);
-  `src/runtime/snapshots.ts` accepts it, preflight checks it, and
+  `lib/snapshots.ts` accepts it, preflight checks it, and
   `promote-staging.mjs --staging work/staging/<buildId> [--dry-run]` refuses
   a mismatch, re-derives every staged chunk's and snapshot's sha256 against
   the manifest/index (a truncated staging file is refused at plan time, not
