@@ -604,6 +604,40 @@ describe("createEditCoalescer: requests in flight", () => {
   const req = (id: number, method = "$/lean/plainGoal", params: unknown = { textDocument: { uri: "file:///a.lean" }, position: { line: 0, character: 0 } }): Msg => ({ jsonrpc: "2.0", id, method, params });
   const note = (method: string, params: unknown = {}): Msg => ({ jsonrpc: "2.0", method, params });
 
+  const keepAlive = () => note("$/lean/rpc/keepAlive", { uri: "file:///a.lean", sessionId: "s" });
+
+  it("a $/lean/rpc/keepAlive never waits for a request slot: 40 s of a saturated cap (a silent check) keeps the RPC session alive", () => {
+    // Lean expires an RPC session 30 s after its last keep-alive (Server/FileWorker/Utils.lean keepAliveTimeMs); the
+    // InfoView sends one every 10 s. Held behind requests waiting out a long check, they arrived too late: Lean answered
+    // the queued calls "Outdated RPC session" (-32900) at the check's end (the widgets showcase, 2026-10-06).
+    const { c, sent, clock } = bp({ maxInFlightRequests: 2 });
+    c.send(req(1)); c.send(req(2)); // both wait for the snapshot: the cap is full
+    c.send(req(3)); // waits for a slot
+    for (let t = 0; t <= 40000; t += 10000) {
+      if (t > 0) clock.advance(10000);
+      c.send(keepAlive()); // at once, every time, although a request waits ahead of it
+      expect(sent().at(-1), `t=${t}`).toBe(`$/lean/rpc/keepAlive@${t}`);
+    }
+    expect(sent().filter((x) => x.startsWith("$/lean/plainGoal"))).toEqual(["$/lean/plainGoal#1@0", "$/lean/plainGoal#2@0"]); // req 3 still waits
+    c.settle(1);
+    expect(sent().at(-1)).toBe("$/lean/plainGoal#3@40000");
+  });
+
+  it("a keep-alive queued behind a held change goes at the window's end, past a request still waiting for a slot", () => {
+    const { c, sent, clock } = bp({ maxInFlightRequests: 1 });
+    c.send(req(1)); // in flight: the cap is full
+    c.send(change(2, "a")); // the leading edge opens the window
+    c.send(change(3, "ab")); // held
+    c.send(req(4)); // behind the held change
+    c.send(keepAlive()); // behind the held change too (bounded by the window)
+    expect(sent()).toEqual(["$/lean/plainGoal#1@0", "v2@0"]);
+    clock.advance(300);
+    // The window's end: the held change, then the queue as far as the slots allow: req 4 has no slot, the keep-alive passes it.
+    expect(sent()).toEqual(["$/lean/plainGoal#1@0", "v2@0", "v3@300", "$/lean/rpc/keepAlive@300"]);
+    c.settle(1);
+    expect(sent().at(-1)).toBe("$/lean/plainGoal#4@300");
+  });
+
   it("the default cap is 6 (one keystroke's requests)", () => {
     expect(DEFAULT_MAX_IN_FLIGHT_REQUESTS).toBe(6);
   });
@@ -613,14 +647,14 @@ describe("createEditCoalescer: requests in flight", () => {
     c.send(req(1));
     c.send(req(2));
     c.send(req(3)); // waits
-    c.send(note("$/lean/rpc/keepAlive", { uri: "file:///a.lean", sessionId: "s" })); // behind it: nothing passes a waiting request
+    c.send(note("$/lean/rpc/release", { uri: "file:///a.lean", sessionId: "s", refs: [] })); // behind it: nothing passes a waiting request (a queued call may use the refs it frees)
     c.send(req(4));
     expect(sent()).toEqual(["$/lean/plainGoal#1@0", "$/lean/plainGoal#2@0"]);
     expect(events).toEqual([{ kind: "wait", queued: 1, inFlight: 2 }, { kind: "wait", queued: 3, inFlight: 2 }]);
     c.settle(99); // not in flight: nothing
     expect(sent()).toHaveLength(2);
     c.settle(1);
-    expect(sent()).toEqual(["$/lean/plainGoal#1@0", "$/lean/plainGoal#2@0", "$/lean/plainGoal#3@0", "$/lean/rpc/keepAlive@0"]); // 3 admitted, the notification behind it goes, 4 waits
+    expect(sent()).toEqual(["$/lean/plainGoal#1@0", "$/lean/plainGoal#2@0", "$/lean/plainGoal#3@0", "$/lean/rpc/release@0"]); // 3 admitted, the notification behind it goes, 4 waits
     c.settle(2);
     expect(sent().at(-1)).toBe("$/lean/plainGoal#4@0");
     c.settle(3); c.settle(4);

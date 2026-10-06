@@ -69,7 +69,10 @@ const MUTANTS = [
   // The cap on requests in flight.
   { name: "cap: one more request in flight than the cap", find: "pending.size < maxInFlight", replace: "pending.size <= maxInFlight" },
   { name: "cap: 0 admits nothing instead of everything", find: "const slotFree = () => maxInFlight <= 0 || pending.size < maxInFlight;", replace: "const slotFree = () => pending.size < maxInFlight;" },
-  { name: "cap: the drain ignores the slots", find: "      if (isRequest(x.msg) && !slotFree()) return;\n", replace: "" },
+  { name: "cap: the drain ignores the slots", find: "      if (isRequest(x.msg) && !slotFree()) {", replace: "      if (false) {" },
+  { name: "keep-alive: a keep-alive waits for a request slot like any frame", find: "      if (!replay && !held && isKeepAlive(msg)) { forward(msg); return; } // waits for no slot (see above)\n", replace: "" },
+  { name: "keep-alive: the drain leaves queued keep-alives behind a waiting request", find: "        for (let i = 1; i < queue.length;) { if (isKeepAlive(queue[i]!.msg)) forward(queue.splice(i, 1)[0]!.msg); else i += 1; }\n", replace: "" },
+  { name: "keep-alive: $/lean/rpc/release jumps the queue too", find: "msg.method === \"$/lean/rpc/keepAlive\" && msg.id === undefined;", replace: "(msg.method === \"$/lean/rpc/keepAlive\" || msg.method === \"$/lean/rpc/release\") && msg.id === undefined;" },
   { name: "cap: a notification behind a waiting request passes it", find: "if (queue.length > 0 || (isRequest(msg) && !slotFree())) {", replace: "if (isRequest(msg) && !slotFree()) {" },
   { name: "cap: a reply admits nothing", find: "      if (pending.delete(id)) drain();", replace: "      pending.delete(id);" },
   { name: "cap: the wait event is never emitted", find: "          if (isRequest(msg)) event(\"wait\");\n", replace: "" },

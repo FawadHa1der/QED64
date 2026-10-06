@@ -104,7 +104,16 @@
 //     request is still queued answers it `RequestCancelled` (-32800) here,
 //     what Lean would answer, and spares the worker the task; one for a
 //     request already forwarded goes at once (it waits for nothing: the
-//     request it names is already there). Barriers and replays flush the
+//     request it names is already there). A `$/lean/rpc/keepAlive` never
+//     waits for a slot either: Lean answers it synchronously on its main loop
+//     (no thread), ignores one for a session it does not know, and expires an
+//     RPC session 30 s after its last keep-alive (Server/FileWorker/Utils.lean
+//     keepAliveTimeMs), so a keep-alive held behind requests that wait out a
+//     long silent check lost the InfoView its session ("Outdated RPC
+//     session", -32900, at the check's end; the widgets showcase, 2026-10-06).
+//     It may still wait behind a held change (at most the window or the
+//     hold's cap). `$/lean/rpc/release` keeps its place: a queued call may
+//     still use the references it frees. Barriers and replays flush the
 //     whole queue past the cap (they never wait);
 //   * `minFreeWorkers` 0 disables the hold, `maxInFlightRequests` 0 the cap,
 //     and with no sample ever observed the hold never engages.
@@ -195,6 +204,8 @@ export function isFullTextChange(msg: CoalescibleMessage): boolean {
 
 const uriOf = (msg: CoalescibleMessage): unknown => (msg.params as { textDocument?: { uri?: unknown } } | undefined)?.textDocument?.uri;
 const isRequest = (msg: CoalescibleMessage): boolean => msg.id !== undefined && msg.method !== undefined;
+/** Lean handles it synchronously and the session dies 30 s without one: it never waits for a request slot. */
+const isKeepAlive = (msg: CoalescibleMessage): boolean => msg.method === "$/lean/rpc/keepAlive" && msg.id === undefined;
 const cancelTarget = (msg: CoalescibleMessage): number | string | undefined =>
   msg.method === "$/cancelRequest" && msg.id === undefined ? (msg.params as { id?: number | string } | undefined)?.id : undefined;
 /** Frames that must not wait behind a held full-text change: they change the document set or edit it partially. */
@@ -281,11 +292,15 @@ export function createEditCoalescer<M extends CoalescibleMessage>({ forward, rej
     timer = timers.setTimeout(tick, ms);
     forward(m);
   };
-  /** The queue, in order, as far as the request slots allow (a request at the head with no slot stops it; nothing passes it). */
+  /** The queue, in order, as far as the request slots allow (a request at the head with no slot stops it; nothing passes it
+   * but the keep-alives queued behind it, which go now: they wait for no slot). */
   const drain = () => {
     while (queue.length > 0 && !held) {
       const x = queue[0]!;
-      if (isRequest(x.msg) && !slotFree()) return;
+      if (isRequest(x.msg) && !slotFree()) {
+        for (let i = 1; i < queue.length;) { if (isKeepAlive(queue[i]!.msg)) forward(queue.splice(i, 1)[0]!.msg); else i += 1; }
+        return;
+      }
       queue.shift();
       admit(x.msg);
     }
@@ -352,6 +367,7 @@ export function createEditCoalescer<M extends CoalescibleMessage>({ forward, rej
         reject(q!.msg, CANCELLED);
         return;
       }
+      if (!replay && !held && isKeepAlive(msg)) { forward(msg); return; } // waits for no slot (see above)
       if (!replay && !isBarrier(msg)) {
         if (held) { queue.push({ msg, seq: changeSeq }); return; } // in order behind the held change
         if (queue.length > 0 || (isRequest(msg) && !slotFree())) { // in order behind a request waiting for a slot, or waiting itself
