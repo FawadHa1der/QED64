@@ -4,7 +4,8 @@
 // DEPRECATED FORWARD (contract 3, plan B1a): the tool is the fork's package,
 // lean4-wasm64 unpack (same flags and output, plus --slim). This script keeps
 // its contract prelude (--help, the usage check, flag warnings) and then
-// replaces itself with the package's unpack.mjs, located by LEAN4_WASM64_DIR
+// replaces itself with the package's unpack.mjs (the accepted arguments only:
+// each token the prelude warned about is dropped), located by LEAN4_WASM64_DIR
 // or the cwd's node_modules/lean4-wasm64 (never imported); absent: one line,
 // exit 2.
 //
@@ -85,5 +86,19 @@ import { forwardToLean4Wasm64 } from "../toolchain/artifact-paths.mjs";
 }
 // </cli-contract>
 
+// Forward only the tokens the prelude accepted. Each one it reported as an
+// unknown flag or an unexpected argument was already warned about here and is
+// documented as ignored; passed on, the package's identical prelude would warn
+// about it a second time. FLAGS is SPECS["unpack"]'s flag arities
+// (tests/unit/decision10.test.ts checks they agree).
+const FLAGS = { manifest: 1, out: 1, slim: 0 };
+const accepted = [];
+for (let i = 2; i < process.argv.length; i += 1) {
+  const name = /^--(.+)$/.exec(process.argv[i])?.[1];
+  if (name === undefined || !Object.hasOwn(FLAGS, name)) continue;
+  accepted.push(...process.argv.slice(i, i + 1 + FLAGS[name]));
+  i += FLAGS[name];
+}
+
 console.error("unpack: WARNING — pipeline/artifacts/unpack.mjs is deprecated; use lean4-wasm64 unpack (the fork's package) (docs/CLI-CONTRACT.md)");
-forwardToLean4Wasm64("unpack", "unpack.mjs", process.argv.slice(2));
+forwardToLean4Wasm64("unpack", "unpack.mjs", accepted);

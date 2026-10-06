@@ -167,8 +167,10 @@ describe("SPECS", () => {
         const file = m.forwarded ? (pkgDir ? path.join(pkgDir, m.forwarded) : null) : path.join(root, m.source ?? s.script);
         const source = file ? fs.readFileSync(file, "utf8") : null;
         if (source !== null) for (const piece of m.template) expect(source, `${tool}/${m.id}: ${piece}`).toContain(piece);
-        expect(templateRegex(m.template, m.prefix).test(m.example), `${tool}/${m.id}: the example is not what the format prints`).toBe(true);
-        expect(m.regex.test(m.example), `${tool}/${m.id}: the regex does not match the example`).toBe(true);
+        for (const example of [m.example, ...(m.examples ?? [])]) {
+          expect(templateRegex(m.template, m.prefix).test(example), `${tool}/${m.id}: the example is not what the format prints: ${example}`).toBe(true);
+          expect(m.regex.test(example), `${tool}/${m.id}: the regex does not match the example: ${example}`).toBe(true);
+        }
       }
       // The usage refusal is the contract's one line, `usage: <synopsis>`; a
       // script that kept its own (now second-line) check prints the same bytes.
@@ -213,13 +215,13 @@ describe("SPECS", () => {
   test("node pipeline/snapshot/cli.mjs --print-specs is valid JSON carrying every spec and regex", () => {
     const r = spawnSync("node", [cliScript, "--print-specs"], { encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL" });
     expect(r.status).toBe(0);
-    const json = JSON.parse(r.stdout) as { contractVersion: number; specs: Record<string, { synopsis: string; markers: { regex: string; example: string }[] }>; env: object; exitClasses: object };
+    const json = JSON.parse(r.stdout) as { contractVersion: number; specs: Record<string, { synopsis: string; markers: { regex: string; example: string; examples?: string[] }[] }>; env: object; exitClasses: object };
     expect(json.contractVersion).toBe(3); // 3: unpack forwards to lean4-wasm64 and exits 2 without it (plan B1a); 2: the path rule of 2026-10-06
     expect(Object.keys(json.specs).sort()).toEqual([...TOOLS].sort());
     expect(Object.keys(json.exitClasses)).toEqual(["0", "1", "2", "3"]);
     for (const tool of TOOLS) {
       expect(json.specs[tool]!.synopsis).toBe(SPECS[tool]!.synopsis);
-      for (const m of json.specs[tool]!.markers) expect(new RegExp(m.regex).test(m.example)).toBe(true);
+      for (const m of json.specs[tool]!.markers) for (const e of [m.example, ...(m.examples ?? [])]) expect(new RegExp(m.regex).test(e)).toBe(true);
     }
   });
 

@@ -253,7 +253,7 @@ decisions".
 | `QED64_ALLOW_LEGACY_IMPORTS` | node-runner (forwarded as `1` when non-empty) | Lets the exported-level env cache load legacy non-module packages (patch 0030). The documented form is `bake-snapshot --allow-legacy-imports`, which sets it to `1` for the runner; an inherited value is its equivalent and stays accepted (both consumers' bake lanes set the variable). |
 | `QED64_PROFILE_INIT` | node-runner, snapshot-probe (forwarded) | Profiles the `[init]` replay. |
 | `QED64_RUNNER` | bake-snapshot | The runner script when `--runner` is absent. Unset: QED64's own `pipeline/snapshot/node-runner.mjs` (the default, not deprecated). Resolves against the cwd. |
-| `LEAN4_WASM64_DIR` | unpack (and the tier-3 `inspect.mjs` and `gate.mjs` forwards) | The [lean4-wasm64](#lean4-wasm64-the-forwards) package dir the forwards run. Unset or empty: the first `<ancestor of the cwd>/node_modules/lean4-wasm64` whose `package.json` name is `lean4-wasm64` (the consumer's own install). Never resolved from the script's own location; the package is never imported. |
+| `LEAN4_WASM64_DIR` | unpack (and the tier-3 `inspect.mjs` and `gate.mjs` forwards) | The [lean4-wasm64](#lean4-wasm64-the-forwards) package dir the forwards run. Set, it must be that package too (its `package.json` name is `lean4-wasm64`), else the forward refuses (`not-package`, exit 2) without falling back to the walk. Unset or empty: the first `<ancestor of the cwd>/node_modules/lean4-wasm64` whose `package.json` name is `lean4-wasm64` (the consumer's own install). Never resolved from the script's own location; the package is never imported. |
 
 The QED64 lanes outside SPECS use the same rule with their own variables:
 
@@ -962,25 +962,34 @@ usage: unpack.mjs --manifest <file> --out <dir> [--slim]
 - **Environment:** `LEAN4_WASM64_DIR`: the package dir; unset, the first
   `node_modules/lean4-wasm64` above the cwd.
 - **What runs:** the script's own prelude answers `--help`, the usage check
-  and the flag WARNINGs exactly as before, without the package. Then it
-  prints one `deprecated` WARNING and replaces itself (`process.execve`: same
-  PID, stdio and exit code) with `node <package>/unpack.mjs` and the
-  normalized arguments. Output and exits are the package's, which are this
+  and the flag WARNINGs exactly as before, without the package, one WARNING
+  per flag. Then it prints one `deprecated` WARNING and replaces itself
+  (`process.execve`: same PID, stdio and exit code) with
+  `node <package>/unpack.mjs` and the normalized arguments it accepted: a
+  token it warned about as an unknown flag or an unexpected argument is
+  ignored, so it is not forwarded and the package's own prelude does not
+  warn about it again. Output and exits are the package's, which are this
   tool's plus `--slim`: with `--slim` the `done` line ends ` (--slim: N
-  *.olean.private left out)` after the out dir.
+  *.olean.private left out)` after the out dir. The `done` regex keeps the
+  out dir in group 4 either way and puts `N` in group 5 (absent without
+  `--slim`).
 - **No package:** after the WARNING, one `no-package` line, exit 2:
   `unpack: lean4-wasm64 not found — set LEAN4_WASM64_DIR=<package dir> or install it: npm i -D <release tgz URL> (toolchain/lean4-wasm64-release.json names it) (docs/CLI-CONTRACT.md)`.
-  A package dir without `unpack.mjs` is the same refusal, naming the dir.
+  A `LEAN4_WASM64_DIR` that is not the package (no `package.json` named
+  `lean4-wasm64`) is one `not-package` line instead, exit 2. A package dir
+  without `unpack.mjs`, or whose `unpack.mjs` is this script itself, is one
+  line naming the dir, exit 2.
 - **Inputs:** the manifest and its transport parts.
 - **Outputs:** the olean tree. The raw pack is inflated **in memory**: the
   essential pack is 3.5 GB.
 
 | Marker | Stream | Regex |
 |---|---|---|
-| done | stdout | `^(\S+): unpacked (\d+) files, (\d+\.\d\d) GB → (.+)$` |
+| done | stdout | `^(\S+): unpacked (\d+) files, (\d+\.\d\d) GB → (.+?)(?: \(--slim: (\d+) \*\.olean\.private left out\))?$` |
 | fail | stderr | `^FAIL: (.*)$` |
 | deprecated | stderr | `^unpack: WARNING — pipeline\/artifacts\/unpack\.mjs is deprecated; use lean4-wasm64 unpack` |
 | no-package | stderr | `^(\S+): lean4-wasm64 not found — set LEAN4_WASM64_DIR=<package dir> or install it: ` (then exit 2) |
+| not-package | stderr | `^(\S+): LEAN4_WASM64_DIR=(.+) is not the lean4-wasm64 package ` (then exit 2) |
 
 `done` and `fail` are printed by the package's script (their format strings
 are checked against it where it is installed).
@@ -989,7 +998,7 @@ are checked against it where it is installed).
 |---|---|
 | 0 | Unpacked. |
 | 1 | A part, the raw pack or a path failed verification. Also an unreadable manifest. |
-| 2 | Usage, or lean4-wasm64 not found (`no-package`; set `LEAN4_WASM64_DIR` or install the devDependency). |
+| 2 | Usage, or lean4-wasm64 not found (`no-package`, or `not-package` for a `LEAN4_WASM64_DIR` that is not it; set `LEAN4_WASM64_DIR` or install the devDependency). |
 
 **Side effects:** none before the forward; the package's unpack creates dirs
 (`mkdir -p`) and writes files under `--out`.
@@ -1018,18 +1027,27 @@ three scripts hand it paths instead, through `forwardToLean4Wasm64` in
 
 - **The package dir:** `LEAN4_WASM64_DIR` (relative to the cwd), else the
   first `<ancestor of the cwd>/node_modules/lean4-wasm64` whose
-  `package.json` name is `lean4-wasm64`: the consumer's own install, or
-  QED64's devDependency when run from this repo. Never the script's own
-  location, never `import`/`require`.
+  `package.json` name is `lean4-wasm64`, walking past any that is not: the
+  consumer's own install, or QED64's devDependency when run from this repo.
+  The variable passes the same name check; a dir it names that is not the
+  package (QED64's own `pipeline/artifacts/`, a vendor dir of copied
+  forwards) refuses with one line, exit 2, and never falls back to the walk.
+  Never the script's own location, never `import`/`require`.
 - **The process:** `process.execve` replaces the script with
   `node <pkg>/<script> …`: the same PID, stdio and exit code, so a
-  supervisor sees one process. Where execve is unavailable (or would drop an
-  IPC channel) the script runs as a child with inherited stdio and the forward
-  exits with its status.
+  supervisor sees one process. A `<pkg>/<script>` that resolves to the
+  running script itself refuses (one line, exit 2) instead of re-executing
+  forever. Where execve is unavailable (or would drop an IPC channel) the
+  script runs as a child (`spawn`, inherited stdio): SIGINT, SIGTERM and
+  SIGHUP sent to the forward are passed on to it, so a supervisor's kill does
+  not orphan the package's gate and its runtime, and the forward exits when
+  the child does, with its code or 128 + its signal (SIGKILL: 137).
 - **Absent:** one stderr line, `<tool>: lean4-wasm64 not found — set
   LEAN4_WASM64_DIR=<package dir> or install it: npm i -D <release tgz URL>
   (toolchain/lean4-wasm64-release.json names it) (docs/CLI-CONTRACT.md)`, exit
-  2. No reserved substring.
+  2; for a `LEAN4_WASM64_DIR` that is not the package, `<tool>:
+  LEAN4_WASM64_DIR=<dir> is not the lean4-wasm64 package (no package.json
+  named lean4-wasm64) — …`, exit 2. No reserved substring.
 - **inspect** is stricter in the package than the script that lived here: it
   also checks the manifest digest, the transport digest and that no two
   WORKERFS ranges overlap, and it streams the parts (the 3.5 GB essential
@@ -1146,6 +1164,9 @@ as QED64's own gate did.
 | 3 | 2026-10-06 | `bake-snapshot --runner <script>` (and `QED64_RUNNER`): the runner script, default QED64's own `node-runner.mjs` (not deprecated); a missing one refuses (`no-runner`, exit 2) before `<work>` is created. The runner is spawned with the bake's own Node (`process.execPath`) instead of PATH's `node`. | additive |
 | 3 | 2026-10-06 | `pipeline/toolchain/gen-exports.py` moved to the fork (`wasm64-build/gen-exports.py` at `release.json` `kernel.commit`): the path stays one cycle (package.json `files`, closure.json `pipeline`) as a stub that prints `gen-exports: WARNING — moved to the fork: …` and exits 2. `pipeline/release/bump-chain.sh stage` (the in-repo build) refuses with one `BUMP-FAIL stage: …` line and exit 2; `stage-artifact` and `promote` are unchanged. The in-repo `setup-source.sh`, `build.sh`, `finish.sh`, `README.md` and the patch copies under `pipeline/toolchain/` are retired (provenance only; their removal is a separate step). | moved (stub); shell lane refusal |
 | 3 | 2026-10-06 | The runtime floor (closure.json `runtime.minKernelPatch`, plain `NNNN`) is checked against the pinned release record `toolchain/lean4-wasm64-release.json` (its `kernel.patch`, lean4-wasm64's `comparePatchIds` ordering; its self-digest; the devDependency URL and lockfile naming that release) instead of a tracked `pipeline/toolchain/patches/` file. | test, no tool change |
+| 3 | 2026-10-06 | B1a review fixes, **the forwards.** unpack forwards only the arguments its prelude accepted: an unknown flag or a stray argument is warned about once (before, the package's identical prelude printed the same WARNING again after the `deprecated` line). `LEAN4_WASM64_DIR` must name the package (its `package.json` name is `lean4-wasm64`): a dir that is not refuses with one new `not-package` line, exit 2 (before, a dir holding QED64's own forwards made the forward re-exec itself forever on one PID); a `<pkg>/<script>` that is the running script refuses the same way. Without `process.execve` the forward spawns the package's script asynchronously, passes SIGINT/SIGTERM/SIGHUP on and exits with 128 + the signal for a signalled child (before: a blocking `spawnSync`, exit 1 for a signal death, and an orphaned child when the forward was killed). The walk's skip of a wrong-name or unreadable `node_modules/lean4-wasm64` is tested to continue to the real package above. | fix; additive (a marker) |
+| 3 | 2026-10-06 | unpack's `done` regex gains an optional `--slim` group: `… → (.+?)(?: \(--slim: (\d+) \*\.olean\.private left out\))?$`. Group 4 is the out dir with or without `--slim` (before, it captured the suffix too), group 5 the count. Every line the old regex matched still matches with the same groups 1-4 when there is no suffix. Markers may carry more `examples`, each checked like `example`. | additive (a regex group) |
+| 3 | 2026-10-06 | The retired `pipeline/toolchain/setup-source.sh`, `build.sh` and `finish.sh` refuse at their first line (one stderr line naming the fork's `wasm64-build/`, exit 2) instead of running hours of build before the gen-exports stub stopped them; `pipeline/toolchain/README.md` and `PATCHES.md` open with a retired banner pointing at docs/REBUILD.md §1, and the README's layout row and provenance paragraph point there instead of at `pipeline/toolchain/`. | shell lane refusal; docs |
 
 ## Open decisions
 

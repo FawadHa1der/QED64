@@ -37,12 +37,21 @@ export function resolveToolPath(
 ): { path: string; source: ToolPathSource } | null;
 export function ensureStackSize(tool: string, kib?: number, proc?: NodeJS.Process): "present" | "absent";
 export const LEAN4_WASM64_TGZ_HINT: string;
-/** The lean4-wasm64 package dir: $LEAN4_WASM64_DIR, else the first <ancestor of cwd>/node_modules/lean4-wasm64 whose package.json name is lean4-wasm64, else null. */
+/** The lean4-wasm64 package dir: $LEAN4_WASM64_DIR when its package.json name is lean4-wasm64 (else null, no walk), else the first <ancestor of cwd>/node_modules/lean4-wasm64 whose package.json name is lean4-wasm64, else null. */
 export function lean4Wasm64Dir(o?: { env?: Record<string, string | undefined>; cwd?: string }): string | null;
-/** Replace this process with `node <pkg>/<script> ...args`; absent package: one stderr line, exit 2. */
+/**
+ * Replace this process with `node <pkg>/<script> ...args` (process.execve). Without execve (or with
+ * an IPC channel) it spawns the script, passes SIGINT/SIGTERM/SIGHUP on, returns, and exits later
+ * with the child's code or 128 + its signal. Refusals (no package, a LEAN4_WASM64_DIR that is not
+ * the package, no `script`, `script` being the running script): one stderr line, exit 2.
+ */
 export function forwardToLean4Wasm64(
   tool: string,
   script: string,
   args: string[],
-  o?: { env?: Record<string, string | undefined>; cwd?: string; proc?: NodeJS.Process },
-): never;
+  o?: {
+    env?: Record<string, string | undefined>;
+    cwd?: string;
+    proc?: Pick<NodeJS.Process, "argv" | "execPath" | "exit" | "on" | "getBuiltinModule"> & { execve?: NodeJS.Process["execve"]; channel?: unknown };
+  },
+): void;

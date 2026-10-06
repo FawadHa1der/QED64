@@ -14,7 +14,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { LEAN4_WASM64_TGZ_HINT, lean4Wasm64Dir } from "../../pipeline/toolchain/artifact-paths.mjs";
+import { LEAN4_WASM64_TGZ_HINT, forwardToLean4Wasm64, lean4Wasm64Dir } from "../../pipeline/toolchain/artifact-paths.mjs";
 import { SPECS, reservedHit } from "../../pipeline/snapshot/cli.mjs";
 
 const root = path.resolve(__dirname, "../..");
@@ -87,12 +87,23 @@ describe("lean4Wasm64Dir: LEAN4_WASM64_DIR, else the first ancestor-of-cwd node_
     expect(lean4Wasm64Dir({ env: {}, cwd: path.join(tmp, "consumer/deep/er") })).toBe(walked);
     expect(lean4Wasm64Dir({ env: { LEAN4_WASM64_DIR: "" }, cwd: path.join(tmp, "consumer") })).toBe(walked);
   });
-  test("a node_modules/lean4-wasm64 whose package.json names another package (or none) is skipped", () => {
-    const d = path.join(tmp, "impostor");
+  test("a node_modules/lean4-wasm64 whose package.json names another package (or none) is skipped: the walk goes on to the real one above", () => {
+    // Two impostors between the cwd and <tmp>/consumer/node_modules/lean4-wasm64: a locator that
+    // stopped (or gave up) at the first node_modules/lean4-wasm64 it met would not reach `walked`.
+    const d = path.join(tmp, "consumer/impostor");
     fakePackage(path.join(d, "node_modules/lean4-wasm64"), "not-lean4-wasm64");
     fs.mkdirSync(path.join(d, "inner/node_modules/lean4-wasm64"), { recursive: true });
     fs.writeFileSync(path.join(d, "inner/node_modules/lean4-wasm64/package.json"), "{ not json");
-    expect(lean4Wasm64Dir({ env: {}, cwd: path.join(d, "inner") })).toBeNull();
+    expect(lean4Wasm64Dir({ env: {}, cwd: path.join(d, "inner") })).toBe(walked);
+    expect(lean4Wasm64Dir({ env: {}, cwd: d })).toBe(walked);
+  });
+  test("LEAN4_WASM64_DIR passes the same name check: a dir that is not the package gives null, never the walk's find", () => {
+    const scripts = fs.mkdtempSync(path.join(tmp, "scripts-only-"));
+    for (const f of ["unpack.mjs", "inspect.mjs", "gate.mjs"]) fs.writeFileSync(path.join(scripts, f), STUB);
+    const wrong = fakePackage(path.join(tmp, "wrong-name"), "qed64");
+    for (const dir of [scripts, wrong, path.join(tmp, "missing")]) {
+      expect(lean4Wasm64Dir({ env: { LEAN4_WASM64_DIR: dir }, cwd: path.join(tmp, "consumer/deep/er") }), dir).toBeNull();
+    }
   });
   test("nothing above the cwd: null; never this repo's own (or the module's) location", () => {
     expect(lean4Wasm64Dir({ env: {}, cwd: bare })).toBeNull();
@@ -167,4 +178,105 @@ describe("the forwards: one WARNING, the argv verbatim, the package's exit code;
     const missing = run("pipeline/toolchain/gate.mjs", ["--artifact", path.join(tmp, "nope")], bare, { LEAN4_WASM64_DIR: named });
     expect([missing.status, missing.lines]).toEqual([2, [`gate: ${path.join(tmp, "nope")}/bin/lean.js not found`]]);
   });
+  test("unpack: an unknown flag or a stray argument is warned about once (by the prelude) and not forwarded, so the package does not repeat it", () => {
+    const r = run("pipeline/artifacts/unpack.mjs", ["--manifest", "/m/x.json", "--bogus", "--out=/o", "stray", "--slim=yes", "--slim"], bare, { LEAN4_WASM64_DIR: named });
+    expect(r.status).toBe(7);
+    // The stub echoes what reached it: only the tokens the prelude accepted (the package's own prelude would warn about any other).
+    expect(JSON.parse(r.stdout)).toEqual(["--manifest", "/m/x.json", "--out", "/o", "--slim"]);
+    expect(r.lines).toEqual([
+      "unpack: WARNING — unknown flag --bogus ignored",
+      "unpack: WARNING — unexpected argument stray ignored",
+      "unpack: WARNING — unknown flag --slim=yes ignored",
+      warning("unpack", "pipeline/artifacts/unpack.mjs"),
+    ]);
+    // A flag's value that looks like a flag stays that flag's value, as in the package's parser.
+    const v = run("pipeline/artifacts/unpack.mjs", ["--manifest", "--slim", "--out", "/o"], bare, { LEAN4_WASM64_DIR: named });
+    expect([v.status, JSON.parse(v.stdout), v.lines]).toEqual([7, ["--manifest", "--slim", "--out", "/o"], [warning("unpack", "pipeline/artifacts/unpack.mjs")]]);
+  });
+  test("unpack: the forward's FLAGS are SPECS.unpack's flag arities", () => {
+    const body = fs.readFileSync(path.join(root, "pipeline/artifacts/unpack.mjs"), "utf8");
+    const literal = /^const FLAGS = (\{[^}]*\});$/m.exec(body)?.[1];
+    expect(literal).toBeDefined();
+    const flags = Function(`return (${literal});`)() as Record<string, number>;
+    expect(flags).toEqual(Object.fromEntries(SPECS.unpack!.flags.map((f) => [f.name, f.value ? 1 : 0])));
+  });
+  test("unpack's done marker: group 4 is the out dir with or without the --slim suffix, group 5 the --slim count", () => {
+    const done = SPECS.unpack!.markers.find((m) => m.id === "done")!;
+    const plain = done.regex.exec("lean-core-x: unpacked 3245 files, 0.39 GB → /x/lean-core (tree)")!;
+    expect([plain[1], plain[2], plain[3], plain[4], plain[5]]).toEqual(["lean-core-x", "3245", "0.39", "/x/lean-core (tree)", undefined]);
+    const slim = done.regex.exec("lean-core-x: unpacked 2596 files, 0.13 GB → /x/lean-core-slim (--slim: 649 *.olean.private left out)")!;
+    expect([slim[4], slim[5]]).toEqual(["/x/lean-core-slim", "649"]);
+    expect(done.examples!.some((e) => e.includes("(--slim: "))).toBe(true);
+  });
+  test("a LEAN4_WASM64_DIR that is not the package (QED64's own forwards, a vendor dir): one line, exit 2, no re-exec loop", () => {
+    // The case that looped: the variable names a dir holding this repo's own forward scripts.
+    const vendored = fs.mkdtempSync(path.join(tmp, "vendored-"));
+    fs.copyFileSync(path.join(root, "pipeline/artifacts/inspect.mjs"), path.join(vendored, "inspect.mjs"));
+    const notPackage = (tool: string, dir: string) =>
+      `${tool}: LEAN4_WASM64_DIR=${dir} is not the lean4-wasm64 package (no package.json named lean4-wasm64) — set LEAN4_WASM64_DIR=<package dir> or install it: ${LEAN4_WASM64_TGZ_HINT} (docs/CLI-CONTRACT.md)`;
+    for (const dir of [path.join(root, "pipeline/artifacts"), vendored, fakePackage(path.join(tmp, "wrong-name-2"), "qed64")]) {
+      const r = run("pipeline/artifacts/inspect.mjs", ["/m.json"], bare, { LEAN4_WASM64_DIR: dir });
+      expect([r.status, r.signal, r.stdout, r.lines], dir).toEqual([2, null, "", [warning("inspect", "pipeline/artifacts/inspect.mjs"), notPackage("inspect", dir)]]);
+    }
+    const u = run("pipeline/artifacts/unpack.mjs", ["--manifest", "m", "--out", "o"], bare, { LEAN4_WASM64_DIR: path.join(root, "pipeline/artifacts") });
+    expect([u.status, u.lines[1]]).toEqual([2, notPackage("unpack", path.join(root, "pipeline/artifacts"))]);
+    expect(u.lines[1]).toMatch(SPECS.unpack!.markers.find((m) => m.id === "not-package")!.regex);
+    expect(reservedHit(u.stderr)).toBeNull();
+  });
+  test("a package whose script is the running script itself (a symlink back): one line, exit 2, no re-exec loop", () => {
+    const loop = fakePackage(path.join(tmp, "loop"), "lean4-wasm64", []);
+    fs.symlinkSync(path.join(root, "pipeline/artifacts/inspect.mjs"), path.join(loop, "inspect.mjs"));
+    const r = run("pipeline/artifacts/inspect.mjs", ["/m.json"], bare, { LEAN4_WASM64_DIR: loop });
+    expect([r.status, r.signal, r.stdout]).toEqual([2, null, ""]);
+    expect(r.lines).toEqual([
+      warning("inspect", "pipeline/artifacts/inspect.mjs"),
+      `inspect: lean4-wasm64 at ${loop} would run this script again (${path.join(loop, "inspect.mjs")}) — set LEAN4_WASM64_DIR=<package dir> or install it: ${LEAN4_WASM64_TGZ_HINT} (docs/CLI-CONTRACT.md)`,
+    ]);
+  });
+});
+
+describe("forwardToLean4Wasm64 without process.execve: a child with signals passed on, exiting with its code or 128 + its signal", () => {
+  /** A proc with no execve: exit() resolves `exited` instead of exiting, on() records the handlers. */
+  function noExecve() {
+    const handlers: Record<string, () => void> = {};
+    let resolve!: (code: number) => void;
+    const exited = new Promise<number>((r) => { resolve = r; });
+    const proc = {
+      argv: [process.execPath, path.join(tmp, "the-forward.mjs")], execPath: process.execPath, execve: undefined, channel: undefined,
+      exit: (code: number) => { resolve(code); }, on: (sig: string, f: () => void) => { handlers[sig] = f; },
+      getBuiltinModule: (id: string) => process.getBuiltinModule(id),
+    };
+    return { proc: proc as unknown as NodeJS.Process, handlers, exited };
+  }
+  function pkgWith(name: string, source: string) {
+    const dir = fakePackage(path.join(tmp, name), "lean4-wasm64", []);
+    fs.writeFileSync(path.join(dir, "tool.mjs"), source);
+    return dir;
+  }
+  const env = (dir: string) => ({ ...process.env, LEAN4_WASM64_DIR: dir });
+
+  test("the package's exit code is the forward's (7)", async () => {
+    const dir = pkgWith("fallback-exit", "process.exit(7);\n");
+    const p = noExecve();
+    forwardToLean4Wasm64("t", "tool.mjs", [], { env: env(dir), cwd: bare, proc: p.proc });
+    expect(await p.exited).toBe(7);
+    expect(Object.keys(p.handlers).sort()).toEqual(["SIGHUP", "SIGINT", "SIGTERM"]);
+  });
+  test("a child killed by a signal: 128 + the signal (SIGTERM: 143), not 1", async () => {
+    const dir = pkgWith("fallback-signal", "process.kill(process.pid, 'SIGTERM');\nsetInterval(() => {}, 1000);\n");
+    const p = noExecve();
+    forwardToLean4Wasm64("t", "tool.mjs", [], { env: env(dir), cwd: bare, proc: p.proc });
+    expect(await p.exited).toBe(143);
+  });
+  test("a SIGTERM to the forward reaches the child (no orphan), and the forward exits 143 when it dies", async () => {
+    const pidFile = path.join(tmp, "fallback-hang.pid");
+    const dir = pkgWith("fallback-hang", `import fs from "node:fs";\nfs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));\nsetInterval(() => {}, 1000);\n`);
+    const p = noExecve();
+    forwardToLean4Wasm64("t", "tool.mjs", [], { env: env(dir), cwd: bare, proc: p.proc });
+    for (let i = 0; i < 200 && !fs.existsSync(pidFile); i += 1) await new Promise((r) => setTimeout(r, 25));
+    const pid = Number(fs.readFileSync(pidFile, "utf8"));
+    p.handlers.SIGTERM!();
+    expect(await p.exited).toBe(143);
+    expect(() => process.kill(pid, 0)).toThrow();
+  }, 15_000);
 });

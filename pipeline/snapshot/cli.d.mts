@@ -11,6 +11,8 @@ export interface CliMarker {
   prefix?: boolean;
   regex: RegExp;
   example: string;
+  /** More lines the format can print (an optional suffix's forms); each matches `regex` too. */
+  examples?: string[];
 }
 export interface CliSpec {
   script: string;

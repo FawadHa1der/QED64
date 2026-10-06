@@ -138,20 +138,32 @@ export function ensureStackSize(tool, kib = 8192, proc = process) {
 /** How to get the lean4-wasm64 package (decision 10: a devDependency pinned by its release tgz URL). */
 export const LEAN4_WASM64_TGZ_HINT = "npm i -D <release tgz URL> (toolchain/lean4-wasm64-release.json names it)";
 
+/** Whether `dir` holds a package.json whose name is lean4-wasm64. */
+function isLean4Wasm64(dir) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")).name === "lean4-wasm64";
+  } catch {
+    return false; // absent or not a package
+  }
+}
+
 /**
  * The lean4-wasm64 package dir: $LEAN4_WASM64_DIR (relative to `cwd`), else
  * the first <ancestor of cwd>/node_modules/lean4-wasm64 whose package.json
- * name is lean4-wasm64 (the consumer's own install), else null. Never
- * resolves from this file's own location and never imports the package: the
- * forwards below hand it paths (docs/CLI-CONTRACT.md "lean4-wasm64").
+ * name is lean4-wasm64 (the consumer's own install), else null. The variable
+ * passes the same name check: a dir it names that is not the package gives
+ * null (no fallback to the walk). Never resolves from this file's own
+ * location and never imports the package: the forwards below hand it paths
+ * (docs/CLI-CONTRACT.md "lean4-wasm64").
  */
 export function lean4Wasm64Dir({ env = process.env, cwd = process.cwd() } = {}) {
-  if (env.LEAN4_WASM64_DIR) return path.resolve(cwd, env.LEAN4_WASM64_DIR);
+  if (env.LEAN4_WASM64_DIR) {
+    const named = path.resolve(cwd, env.LEAN4_WASM64_DIR);
+    return isLean4Wasm64(named) ? named : null;
+  }
   for (let d = path.resolve(cwd); ; d = path.dirname(d)) {
     const candidate = path.join(d, "node_modules", "lean4-wasm64");
-    try {
-      if (JSON.parse(fs.readFileSync(path.join(candidate, "package.json"), "utf8")).name === "lean4-wasm64") return candidate;
-    } catch { /* absent or not a package: keep walking */ }
+    if (isLean4Wasm64(candidate)) return candidate;
     if (path.dirname(d) === d) return null;
   }
 }
@@ -160,21 +172,30 @@ export function lean4Wasm64Dir({ env = process.env, cwd = process.cwd() } = {}) 
  * Replace this process with `node <pkg>/<script> ...args` through
  * process.execve: the same PID, stdio and exit code, so a supervisor sees one
  * process. Where execve is unavailable (or would drop an IPC channel) the
- * script runs as a child with inherited stdio and this process exits with its
- * status. Absent package: one stderr line naming LEAN4_WASM64_DIR and the
- * install, exit 2; a package without `script`: one line naming the dir, exit 2.
+ * script runs as a child with inherited stdio: SIGINT/SIGTERM/SIGHUP are
+ * passed on to it, and this process exits when it does, with its code or
+ * 128 + its signal. Each refusal is one stderr line and exit 2: no package
+ * (naming LEAN4_WASM64_DIR and the install), a LEAN4_WASM64_DIR that is not
+ * the package, a package without `script`, or a `script` that is the running
+ * script itself (it would re-exec forever).
  */
 export function forwardToLean4Wasm64(tool, script, args, { env = process.env, cwd = process.cwd(), proc = process } = {}) {
   const dir = lean4Wasm64Dir({ env, cwd });
   const how = `set LEAN4_WASM64_DIR=<package dir> or install it: ${LEAN4_WASM64_TGZ_HINT} (docs/CLI-CONTRACT.md)`;
-  if (!dir) {
-    console.error(`${tool}: lean4-wasm64 not found — ${how}`);
+  const refuse = (line) => {
+    console.error(line);
     return proc.exit(2);
+  };
+  if (!dir && env.LEAN4_WASM64_DIR) {
+    const named = path.resolve(cwd, env.LEAN4_WASM64_DIR);
+    return refuse(`${tool}: LEAN4_WASM64_DIR=${named} is not the lean4-wasm64 package (no package.json named lean4-wasm64) — ${how}`);
   }
+  if (!dir) return refuse(`${tool}: lean4-wasm64 not found — ${how}`);
   const target = path.join(dir, script);
-  if (!fs.existsSync(target)) {
-    console.error(`${tool}: lean4-wasm64 at ${dir} has no ${script} — ${how}`);
-    return proc.exit(2);
+  if (!fs.existsSync(target)) return refuse(`${tool}: lean4-wasm64 at ${dir} has no ${script} — ${how}`);
+  const real = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+  if (proc.argv[1] && real(target) === real(proc.argv[1])) {
+    return refuse(`${tool}: lean4-wasm64 at ${dir} would run this script again (${target}) — ${how}`);
   }
   const argv = [proc.execPath, target, ...args];
   if (typeof proc.execve === "function" && !proc.channel) {
@@ -182,12 +203,13 @@ export function forwardToLean4Wasm64(tool, script, args, { env = process.env, cw
       return proc.execve(proc.execPath, argv, { ...env });
     } catch { /* fall through to a child process */ }
   }
-  // A built-in fetched lazily, so this file's import list stays as lean4game vendors it.
-  const { spawnSync } = proc.getBuiltinModule("node:child_process");
-  const r = spawnSync(proc.execPath, argv.slice(1), { stdio: "inherit", env: { ...env } });
-  if (r.error) {
-    console.error(`${tool}: could not start lean4-wasm64 ${script} (${r.error.code ?? r.error.message}) — ${how}`);
-    return proc.exit(2);
-  }
-  return proc.exit(r.status ?? 1);
+  // Built-ins fetched lazily, so this file's import list stays as lean4game vendors it.
+  // spawn, not spawnSync: a blocked spawnSync parent dies alone on a signal and
+  // leaves the package's tool (and the runtime a gate starts) orphaned.
+  const { spawn } = proc.getBuiltinModule("node:child_process");
+  const { constants } = proc.getBuiltinModule("node:os");
+  const child = spawn(proc.execPath, argv.slice(1), { stdio: "inherit", env: { ...env } });
+  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) proc.on(sig, () => child.kill(sig));
+  child.on("error", (e) => refuse(`${tool}: could not start lean4-wasm64 ${script} (${e.code ?? e.message}) — ${how}`));
+  child.on("exit", (code, signal) => proc.exit(code ?? 128 + (constants.signals[signal] ?? 0)));
 }

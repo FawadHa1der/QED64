@@ -136,7 +136,8 @@ const ARTIFACT_PATH = { flag: "artifact", placeholder: "<dir>", env: "QED64_LEAN
  * `template` (the format string(s) exactly as they appear in `source`,
  * default the tool's script), `prefix` (the line STARTS with the template:
  * console arguments or optional text follow), `regex` (what consumers may
- * match, applied per line), `example` (a line the script can print).
+ * match, applied per line), `example` (a line the script can print) and
+ * optional `examples` (more such lines, e.g. an optional suffix).
  */
 export const SPECS = {
   "bake-snapshot": {
@@ -561,8 +562,10 @@ export const SPECS = {
       2: "usage, or lean4-wasm64 not found (set LEAN4_WASM64_DIR or install the devDependency)",
     },
     markers: [
-      { id: "done", stream: "stdout", forwarded: "unpack.mjs", template: ["${release}: unpacked ${files} files, ${(bytes / 1e9).toFixed(2)} GB → ${outDir}"],
-        regex: /^(\S+): unpacked (\d+) files, (\d+\.\d\d) GB → (.+)$/, example: "lean-core-4.34.0-wasm64-36a96239e08fd2e0: unpacked 3245 files, 0.39 GB → /repo/work/lib-tree" },
+      // Group 4 is the out dir, group 5 the --slim count (absent without --slim).
+      { id: "done", stream: "stdout", forwarded: "unpack.mjs", template: ["${release}: unpacked ${files} files, ${(bytes / 1e9).toFixed(2)} GB → ${outDir}${slim ? ` (--slim: ${skipped} *.olean.private left out)` : \"\"}"],
+        regex: /^(\S+): unpacked (\d+) files, (\d+\.\d\d) GB → (.+?)(?: \(--slim: (\d+) \*\.olean\.private left out\))?$/, example: "lean-core-4.34.0-wasm64-36a96239e08fd2e0: unpacked 3245 files, 0.39 GB → /repo/work/lib-tree",
+        examples: ["lean-core-4.34.0-wasm64-36a96239e08fd2e0: unpacked 2596 files, 0.13 GB → /repo/work/lib-tree-slim (--slim: 649 *.olean.private left out)"] },
       { id: "fail", stream: "stderr", forwarded: "unpack.mjs", template: ["FAIL: transport part ${part.url} failed verification"], regex: /^FAIL: (.*)$/,
         example: "FAIL: transport part /profiles/lean-core.pack.gzip.0123456789abcdef0123.part-000 failed verification" },
       { id: "deprecated", stream: "stderr", template: ["unpack: WARNING — pipeline/artifacts/unpack.mjs is deprecated; use lean4-wasm64 unpack (the fork's package) (docs/CLI-CONTRACT.md)"],
@@ -571,6 +574,9 @@ export const SPECS = {
       { id: "no-package", stream: "stderr", source: "pipeline/toolchain/artifact-paths.mjs", prefix: true, template: ["${tool}: lean4-wasm64 not found — "],
         regex: /^(\S+): lean4-wasm64 not found — set LEAN4_WASM64_DIR=<package dir> or install it: /,
         example: "unpack: lean4-wasm64 not found — set LEAN4_WASM64_DIR=<package dir> or install it: npm i -D <release tgz URL> (toolchain/lean4-wasm64-release.json names it) (docs/CLI-CONTRACT.md)" },
+      { id: "not-package", stream: "stderr", source: "pipeline/toolchain/artifact-paths.mjs", prefix: true, template: ["${tool}: LEAN4_WASM64_DIR=${named} is not the lean4-wasm64 package (no package.json named lean4-wasm64) — "],
+        regex: /^(\S+): LEAN4_WASM64_DIR=(.+) is not the lean4-wasm64 package /,
+        example: "unpack: LEAN4_WASM64_DIR=/repo/vendor/qed64 is not the lean4-wasm64 package (no package.json named lean4-wasm64) — set LEAN4_WASM64_DIR=<package dir> or install it: npm i -D <release tgz URL> (toolchain/lean4-wasm64-release.json names it) (docs/CLI-CONTRACT.md)" },
     ],
   },
 };
