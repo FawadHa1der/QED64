@@ -13,8 +13,8 @@
 //              Refuse a --public that is (or lies inside) a forbidden tree once symlinks are resolved,
 //              or that holds a symlink whose target leaves it.
 //   base-tree  --work <W> --release <release.json> --init-lib <id> --umbrella-source <text> [--fat]
-//              Write <W>/base-tree.json: per tree the packs it was unpacked from, the umbrella pair's
-//              sha256/bytes and the tree digest (treeDigest below).
+//              Write <W>/base-tree.json: per tree the packs it was unpacked from, the umbrella files it
+//              carries (sha256/bytes) and the tree digest (treeDigest below); top-level `umbrella` is the pair.
 //   kernel-pin --work <W> --release <release.json> --init-lib <id> --staging <dir>
 //              Write <W>/KERNEL-PIN, the generated pin release-manifest.mjs reads.
 //
@@ -170,7 +170,11 @@ function baseTree(o) {
     if (!fs.existsSync(dir)) refuse(`base-tree: ${dir} is absent`);
     let d;
     try { d = treeDigest(dir); } catch (e) { refuse(`base-tree: ${e.message}`); }
-    trees[name] = { slim, packs: ids.map(pack), umbrella: withUmbrella, files: d.files, bytes: d.bytes, digest: d.digest };
+    // The umbrella files this tree carries: the pair, and in a fat tree Essential.olean.private when its source had one.
+    const umbrellaFiles = withUmbrella
+      ? fs.readdirSync(path.join(dir, "QED64")).sort().map((f) => ({ path: `QED64/${f}`, sha256: sha256File(path.join(dir, "QED64", f)), bytes: fs.statSync(path.join(dir, "QED64", f)).size }))
+      : [];
+    trees[name] = { slim, packs: ids.map(pack), umbrella: umbrellaFiles, files: d.files, bytes: d.bytes, digest: d.digest };
   };
   add("core-lib-slim", true, [o["init-lib"]], false);
   add("lib-tree-slim", true, ["lean-core", "mathlib-essential"], true);

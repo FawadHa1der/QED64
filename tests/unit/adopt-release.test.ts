@@ -141,7 +141,7 @@ describe("adopt-release.sh --dry-run", () => {
     expect(plan).toContain(`node ${tools}/cli.mjs unpack --manifest ${W}/release/profiles/lean-lib.manifest.json --out ${W}/artifact/lib/lean`);
     expect(plan).toContain(`node ${tools}/cli.mjs unpack --slim --manifest ${W}/release/profiles/lean-lib.manifest.json --out ${W}/core-lib-slim`);
     expect(plan).toContain(`node ${tools}/cli.mjs unpack --manifest ${W}/release/profiles/{lean-core,mathlib-essential}.manifest.json --out ${W}/lib-tree`);
-    expect(plan).toContain(`reuse cp ${umbrella}/QED64/Essential.olean{,.server} → ${W}/lib-tree-slim/QED64/ ${W}/lib-tree/QED64/`);
+    expect(plan).toContain(`reuse cp ${umbrella}/QED64/Essential.olean{,.server} → ${W}/lib-tree-slim/QED64/ ${W}/lib-tree/QED64/  (+ Essential.olean.private into lib-tree: ABSENT in the source, pair only)`);
     expect(plan).toContain(`node ${tools}/cli.mjs gate --artifact ${W}/artifact > ${W}/logs/gate.log`);
     const staging = path.join(root, "work/staging", NEW_ID);
     expect(plan).toContain(`node --stack-size=8192 pipeline/snapshot/bake-snapshot.mjs --artifact ${W}/artifact --work ${W}/snapshot --out ${staging}/snapshots --name init --lib ${W}/core-lib-slim --reserve 1073741824`);
@@ -290,7 +290,7 @@ describe("adopt-helper.mjs: the tree digest and base-tree.json", () => {
     const W = path.join(tmp, "W");
     const files: Record<string, string> = {
       "core-lib-slim/Init.olean": "i", "lib-tree-slim/Init.olean": "i", "lib-tree-slim/QED64/Essential.olean": "olean", "lib-tree-slim/QED64/Essential.olean.server": "server",
-      "lib-tree/Init.olean": "i", "lib-tree/Init.olean.private": "p", "lib-tree/QED64/Essential.olean": "olean", "lib-tree/QED64/Essential.olean.server": "server",
+      "lib-tree/Init.olean": "i", "lib-tree/Init.olean.private": "p", "lib-tree/QED64/Essential.olean": "olean", "lib-tree/QED64/Essential.olean.server": "server", "lib-tree/QED64/Essential.olean.private": "priv",
       "snapshot/init.snap": "1234", "snapshot/mathlib.snap": "123456",
     };
     for (const [p, text] of Object.entries(files)) { fs.mkdirSync(path.dirname(path.join(W, p)), { recursive: true }); fs.writeFileSync(path.join(W, p), text); }
@@ -301,8 +301,10 @@ describe("adopt-helper.mjs: the tree digest and base-tree.json", () => {
     expect(doc.packs).toEqual([{ id: "lean-core", release: "lean-core-9.9.9", rawSha256: `sha256:${RAW["lean-core"]}` }, { id: "mathlib-essential", release: "mathlib-essential-9.9.9", rawSha256: `sha256:${RAW["mathlib-essential"]}` }]);
     expect(doc.umbrella).toEqual([{ path: "QED64/Essential.olean", sha256: sha("olean"), bytes: 5 }, { path: "QED64/Essential.olean.server", sha256: sha("server"), bytes: 6 }]);
     expect(Object.keys(doc.trees)).toEqual(["core-lib-slim", "lib-tree-slim", "lib-tree"]);
-    expect(doc.trees["core-lib-slim"]).toEqual({ slim: true, packs: [{ id: "lean-lib", release: "lean-lib-9.9.9", rawSha256: `sha256:${RAW["lean-lib"]}` }], umbrella: false, files: 1, bytes: 1, digest: treeDigest(path.join(W, "core-lib-slim")).digest });
-    expect(doc.trees["lib-tree"]).toMatchObject({ slim: false, umbrella: true, files: 4, digest: treeDigest(path.join(W, "lib-tree")).digest });
+    expect(doc.trees["core-lib-slim"]).toEqual({ slim: true, packs: [{ id: "lean-lib", release: "lean-lib-9.9.9", rawSha256: `sha256:${RAW["lean-lib"]}` }], umbrella: [], files: 1, bytes: 1, digest: treeDigest(path.join(W, "core-lib-slim")).digest });
+    expect(doc.trees["lib-tree-slim"].umbrella).toEqual(doc.umbrella);
+    expect(doc.trees["lib-tree"]).toMatchObject({ slim: false, files: 5, digest: treeDigest(path.join(W, "lib-tree")).digest });
+    expect(doc.trees["lib-tree"].umbrella.map((u: { path: string }) => u.path)).toEqual(["QED64/Essential.olean", "QED64/Essential.olean.private", "QED64/Essential.olean.server"]);
     const k = spawnSync("node", [helper, "kernel-pin", "--work", W, "--release", path.join(rel.dir, "release.json"), "--init-lib", "lean-lib", "--staging", "work/staging/x"], { encoding: "utf8" });
     expect(k.status, k.stderr).toBe(0);
     const pin = fs.readFileSync(path.join(W, "KERNEL-PIN"), "utf8").split("\n");

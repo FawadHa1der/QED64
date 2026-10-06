@@ -131,12 +131,14 @@ fetching and writing nothing):
    tree's bytes. Otherwise `--rebuild-umbrella` regenerates and compiles it
    against the fat tree (`gen-umbrella.mjs`, `supervised-run.mjs`), runs the
    `olean-imports --audit`, and the packs are staged (`stage-profiles.mjs`).
-   The pair is copied into each lib tree's `QED64/`.
+   The pair is copied into each lib tree's `QED64/`, and into the fat tree
+   also `Essential.olean.private` when the source has it (the slim served
+   dir has only the pair; main's `work/lib-tree` has all three).
 6. **base-tree**: `$W/base-tree.json` (`qed64.base-tree/v1`): the release id
    and digest, per tree the pack ids and raw digests it came from, the
-   umbrella pair's sha256 and bytes, and a tree digest (sha256 over the
-   sorted `"<relpath>\0<sha256>\n"` lines of every file) a downstream checks
-   byte identity by.
+   umbrella files it carries (sha256 and bytes; top-level `umbrella` is the
+   pair), and a tree digest (sha256 over the sorted `"<relpath>\0<sha256>\n"`
+   lines of every file) a downstream checks byte identity by.
 7. **gate** (`--gate`, recommended for an unpublished release): the
    package's gate on `$W/artifact`, ` ok ` lines and `GATE PASSED`.
 8. **bake-init / bake-mathlib** (QED64's runner):
@@ -176,6 +178,28 @@ the fat tree; `QED64_ADOPT_IGNORE_DISK=1` overrides); the measured need is
 6-9 GB. Without `--keep`, the release's chunks and pack parts under
 `$W/release` are removed after a successful run (they are staged and
 promoted by then); the trees, `$W/artifact` and `$W/snapshot` stay.
+
+**Byte identity with the trees QED64 served from** (checked 2026-10-06
+against lean-v4.34.0-a8817d0, file by file against the packs' per-artifact
+digests, then by tree digest):
+
+- `lib-tree-slim`: `unpack --slim` of lean-core + mathlib-essential gives
+  every one of the 20,012 pack files of the served slim tree (main's
+  `work/lib-tree-slim` = `work/bump-0035b/slim/lib-tree-slim`); with the
+  reused pair the whole tree is identical: 20,014 files, tree digest
+  `sha256:8c247f413e97e1b36341d9fa6774f19171dc89486ebd922bc98690e63ddd3d23`.
+- `lib-tree` (fat): `unpack` of the same two packs gives all 25,015 pack
+  files of main's `work/lib-tree`; with all three umbrella files
+  (`--umbrella` naming main's `work/lib-tree`) the whole tree is identical:
+  25,018 files, `sha256:57adeb5f0d3e82e3bd94fb70a583135cf8f018ea139c6b5d7c1cc80400e1302e`.
+- `core-lib-slim`: `unpack --slim` of the release's `lean-lib` gives all
+  10,074 facet files (`.olean`, `.olean.server`, `.ir`, `.ir.sig`) of the
+  served `work/bump-0035b/slim/core-lib-slim` byte for byte, but that tree,
+  an rsync of the build's `lib/lean`, also holds 20,206 build-side files no
+  pack ships (`.ilean`, `*.hash`, `.trace`, static and shared libraries):
+  identical on every file an import reads, NOT identical as a tree, so its
+  tree digest differs. A runtime release changes this tree anyway (it is
+  the new runtime's own library).
 
 **Test before landing.** The isolated tree is a served layout: serve it,
 or copy its runtime manifests, chunks and snapshots additively into a test
