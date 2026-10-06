@@ -122,7 +122,17 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   machine it may be a sibling worktree's or an interactive session's live
   e2e, not a leak) and waits until free+inactive memory is above
   `--cooldown-gb` (6 GB). `--kill-strays` opts into SIGKILL for unattended
-  re-runs. Every probe closes its browser in `finally`.
+  re-runs. Every probe closes its browser in `finally`. The memory reading is
+  macOS `vm_stat` (free + inactive + speculative pages), else Linux
+  `/proc/meminfo` (`MemAvailable`; `MemFree + Buffers + Cached` on kernels
+  without it), else `os.freemem()` (free pages only, so it waits longer, never
+  shorter); the first line after the stray check names the source
+  (`cool-down: memory from …`). With no reading at all it prints
+  `cool-down: REFUSED — no memory reading (<what each probe said>)`. Exit
+  codes of `harness.mjs cooldown`: 0 fit to start a browser, 3 refused (a
+  stray browser, memory not back within `--cooldown-max-s`, or no reading),
+  2 usage. The parsers are unit-tested on a captured `vm_stat` and on
+  `/proc/meminfo` samples (`tests/unit/adversarial-harness.test.ts`).
 - **Latency.** `editing-latency.mjs` measures header gestures from
   `qed64.status()` facts only: `switchAdmitMs` = header edit → the first
   status change after it (the front door admits the didChange: the document

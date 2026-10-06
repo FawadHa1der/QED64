@@ -5,7 +5,7 @@ import { describe, expect, test } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { MODE, batteryArgv, laneSections, onlyMatches, resolveTarget, settleClass, settleClassFromPhase, suiteExitCode } from "../../tests/adversarial/harness.mjs";
+import { MODE, batteryArgv, coolDown, laneSections, memoryReading, onlyMatches, parseMeminfo, parseVmStat, resolveTarget, settleClass, settleClassFromPhase, suiteExitCode } from "../../tests/adversarial/harness.mjs";
 import { classify, missingInputs } from "../../tests/adversarial/compiler-battery.mjs";
 
 describe("onlyMatches", () => {
@@ -168,5 +168,100 @@ describe("run.mjs: the battery's argv, the merged report's lanes, the suite's ex
     expect(src).toContain("laneSections([");
     expect(src).toContain("process.exit(suiteExitCode(");
     expect(src).not.toContain("filter(Boolean)");
+  });
+});
+
+// The cool-down's memory reading (plan step A3b): macOS vm_stat, else Linux
+// /proc/meminfo, else os.freemem(), else a REFUSED line. VM_STAT is captured
+// on the owner's Apple Silicon Mac (2026-10-06); MEMINFO is the Linux format
+// (procfs, `fs/proc/meminfo.c`), with MEMINFO_OLD as a pre-3.14 kernel prints
+// it (no MemAvailable).
+const VM_STAT = `Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                     9839.
+Pages active:                                 964521.
+Pages inactive:                               929689.
+Pages speculative:                             34593.
+Pages throttled:                                   0.
+Pages wired down:                             287723.
+Pages purgeable:                                 993.
+"Translation faults":                      951434378.
+Pages copy-on-write:                        38483871.
+Pages zero filled:                         623042842.
+Pages reactivated:                          69380345.
+Pages purged:                                4818633.
+File-backed pages:                            230159.
+Anonymous pages:                             1698644.
+Pages stored in compressor:                  1575958.
+Pages occupied by compressor:                  72954.
+Decompressions:                             44312146.
+Compressions:                               95683436.
+Pageins:                                    25160470.
+Pageouts:                                      78469.
+Swapins:                                     2420500.
+Swapouts:                                    5638650.
+`;
+const MEMINFO = `MemTotal:       16303428 kB
+MemFree:          812344 kB
+MemAvailable:    9876544 kB
+Buffers:          254112 kB
+Cached:          8420096 kB
+SwapCached:            0 kB
+Active:          7208120 kB
+Inactive:        6721904 kB
+HugePages_Total:       0
+Hugepagesize:       2048 kB
+`;
+const MEMINFO_OLD = `MemTotal:        8174352 kB
+MemFree:          512000 kB
+Buffers:          100000 kB
+Cached:          2000000 kB
+SwapCached:            0 kB
+`;
+
+describe("the cool-down's memory reading", () => {
+  test("parseVmStat: free + inactive + speculative pages times the page size; null without the counts", () => {
+    expect(parseVmStat(VM_STAT)).toBe((9839 + 929689 + 34593) * 16384);
+    expect(parseVmStat(VM_STAT.replace("page size of 16384", "page size of 4096"))).toBe((9839 + 929689 + 34593) * 4096);
+    expect(parseVmStat("")).toBeNull();
+    expect(parseVmStat("zsh: command not found: vm_stat")).toBeNull();
+    expect(parseVmStat(VM_STAT.replace(/^Pages free:.*\n/m, ""))).toBeNull();
+  });
+
+  test("parseMeminfo: MemAvailable, else MemFree + Buffers + Cached; null without them", () => {
+    expect(parseMeminfo(MEMINFO)).toBe(9876544 * 1024);
+    expect(parseMeminfo(MEMINFO_OLD)).toBe((512000 + 100000 + 2000000) * 1024);
+    expect(parseMeminfo("")).toBeNull();
+    expect(parseMeminfo("MemTotal: 1 kB\n")).toBeNull();
+  });
+
+  const enoent = Object.assign(new Error("spawnSync vm_stat ENOENT"), { code: "ENOENT" });
+  const noProc = () => { throw Object.assign(new Error("no such file"), { code: "ENOENT" }); };
+  test("memoryReading: vm_stat on macOS; without it /proc/meminfo, then os.freemem(); else a reason naming each", () => {
+    expect(memoryReading({ platform: "darwin", vmStat: () => ({ stdout: VM_STAT, status: 0 }), meminfo: noProc, freemem: () => 1 }))
+      .toEqual({ bytes: (9839 + 929689 + 34593) * 16384, source: "vm_stat (free + inactive + speculative)" });
+    expect(memoryReading({ platform: "darwin", vmStat: () => ({ stdout: null, status: null, error: enoent }), meminfo: () => MEMINFO, freemem: () => 1 }))
+      .toEqual({ bytes: 9876544 * 1024, source: "/proc/meminfo" });
+    expect(memoryReading({ platform: "darwin", vmStat: () => ({ stdout: null, status: null, error: enoent }), meminfo: noProc, freemem: () => 8e9 }))
+      .toEqual({ bytes: 8e9, source: "os.freemem() (free pages only)" });
+    expect(memoryReading({ platform: "linux", vmStat: () => { throw new Error("vm_stat must not run off macOS"); }, meminfo: () => MEMINFO_OLD, freemem: () => 1 }))
+      .toEqual({ bytes: (512000 + 100000 + 2000000) * 1024, source: "/proc/meminfo" });
+    expect(memoryReading({ platform: "darwin", vmStat: () => ({ stdout: null, status: null, error: enoent }), meminfo: noProc, freemem: () => 0 }))
+      .toEqual({ bytes: null, reason: "no memory reading (vm_stat ENOENT; /proc/meminfo ENOENT; os.freemem() returned 0)" });
+    expect(memoryReading({ platform: "linux", meminfo: () => "garbage", freemem: () => { throw new Error("unsupported"); } }))
+      .toEqual({ bytes: null, reason: "no memory reading (/proc/meminfo has no MemAvailable or MemFree; os.freemem() threw unsupported)" });
+  });
+
+  test("coolDown: names the reading's source, passes with enough memory, and REFUSES without a reading", async () => {
+    const log: string[] = [];
+    const ok = await coolDown({ minFreeGB: 6, maxWaitS: 0, log: (l) => log.push(l), strays: () => [], reading: () => ({ bytes: 7 * 1024 ** 3, source: "/proc/meminfo" }) });
+    expect(ok).toBe(true);
+    expect(log).toEqual(["cool-down: memory from /proc/meminfo", "cool-down: 7.0 GB reclaimable (need 6) after 0 s — ok"]);
+    log.length = 0;
+    const refused = await coolDown({ minFreeGB: 6, maxWaitS: 0, log: (l) => log.push(l), strays: () => [], reading: () => ({ bytes: null, reason: "no memory reading (vm_stat ENOENT; /proc/meminfo ENOENT; os.freemem() returned 0)" }) });
+    expect(refused).toBe(false);
+    expect(log).toEqual(["cool-down: REFUSED — no memory reading (vm_stat ENOENT; /proc/meminfo ENOENT; os.freemem() returned 0)"]);
+    log.length = 0;
+    expect(await coolDown({ minFreeGB: 6, maxWaitS: 0, log: (l) => log.push(l), strays: () => ["123 chrome-headless-shell --x"], reading: () => { throw new Error("not read while a browser is alive"); } })).toBe(false);
+    expect(log[0]).toMatch(/^cool-down: 1 chrome-headless-shell process\(es\) alive .* refusing to start a browser lane:/);
   });
 });
