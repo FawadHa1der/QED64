@@ -248,12 +248,57 @@ max-age=31536000, immutable`, else `public, max-age=0, must-revalidate`).
 |---|---|---|
 | `assetsBinding` / `artifactsBinding` | `"ASSETS"` / `"ARTIFACTS"` | env binding name, or `(env) => binding` |
 | `artifactPrefixes` | `["/runtime/", "/profiles/", "/snapshots/"]` | paths served from R2 (`DEFAULT_ARTIFACT_PREFIXES`) |
-| `r2Prefix` | `""` | prepended to every R2 key; string or `(env) => string` (null/undefined → `""`). Must match `^([A-Za-z0-9._-]+/)+$` with no `.`/`..` segment, else artifact requests answer **500 no-store** |
+| `r2Prefix` | `""` | the site prefix, prepended to every R2 key the release does not own; string or `(env) => string` (null/undefined → `""`). `""` is allowed and means the bucket root (a bucket of your own, or QED64's). Otherwise it must match `^([A-Za-z0-9._-]+/)+$` with no `.`/`..` segment, else artifact requests answer **500 no-store** |
 | `rootRedirect` | `null` | 302 target for a bare `/`; string or `(env) => string \| null` |
 | `extraRoutes` | `[]` | `{prefix?, match?(url, request, env), handle(request, env, ctx, kit), rawHeaders?}`; `handle` returning null/undefined falls through |
 | `isImmutable` | QED64's rule | the cache rule (lean4game adds vite-hashed `/assets/`) |
 | `isolation` | `{coop: "same-origin", coep: "require-corp", corp: "same-origin"}` | per header; `null` = the worker does not set it (an upstream value passes through) |
-| `decorate` | `null` | `(headers, {pathname, route, status})`, the last word on every non-raw response; route is `asset`, `artifact`, `redirect` or `extra` |
+| `decorate` | `null` | `(headers, {pathname, route, status})`, the last word on every non-raw response; route is `asset`, `artifact`, `redirect` or `extra` (`null` on the 500 below) |
+| `release` | `null` | a `lean4-wasm64.release/v1` record (the parsed `release.json`): its `hosting.mount` paths are read from the shared prefix `lean4-wasm64/<id>/`, everything else from `r2Prefix` (below) |
+| `releaseFallback` | `false` | `true`: a release-mapped lookup that finds nothing retries once under `r2Prefix` before the 404 (needs `release`) |
+
+**`release`.** The toolchain's runtime and packs are uploaded once, by
+their owner, under `lean4-wasm64/<release id>/` of the shared bucket
+(the fork's `formats/HOSTING.md`), and every site serves them under its own
+origin: the browser is never pointed at another. The record is checked once,
+when `createWorker` runs, and a record that breaks a rule throws one
+`TypeError` (`edge-worker: release: …`), so a Worker with a bad record fails
+at module load, never per request. The rules: `schema` is
+`lean4-wasm64.release/v1`; `id` is `lean-v<version>[-<suffix>]-<kernel7>[-r<N>]`
+with no run of 16+ hex digits (the cache rule would call every manifest under
+such a prefix immutable); `hosting.layout` is `"served"`; every
+`hosting.mount` key is one of `artifactPrefixes` and every value one
+top-level directory (`"runtime/"`); every `hosting.siteOwned` entry is an
+exact path or a `/`-ended prefix under an artifact prefix. Routing of an
+artifact path, after the unsafe-path refusal (always applied to
+release-mapped paths, whatever `rejectUnsafeKeys` says, since the key lands
+in a prefix other sites share):
+
+| Path | R2 key | Example (QED64's record, `r2Prefix: ""`) |
+|---|---|---|
+| 1. a `hosting.siteOwned` path (exact, or under a `/`-ended entry) | `r2Prefix` + path | `/profiles/index.json` → `profiles/index.json`; `/snapshots/x.snapz` → `snapshots/x.snapz` |
+| 2. under a `hosting.mount` prefix | `lean4-wasm64/<id>/` + the mount's directory + the rest | `/runtime/chunks/c.part-000` → `lean4-wasm64/lean-v4.34.0-a8817d0/runtime/chunks/c.part-000` |
+| 3. any other artifact path | `r2Prefix` + path | (none for QED64) |
+
+Every response ≥ 400 on a rule-2 path is `Cache-Control: no-store`,
+whatever `errorCacheControl` says (a 404 cached as immutable under a
+digest-named URL during a deploy-before-upload window would outlive the
+upload); `errorCacheControl` keeps governing every other path. Range,
+`If-Range`, 206/416 and HEAD `Content-Length` take the same code path
+whichever prefix a path maps to (pinned per prefix in
+`tests/unit/edge-worker.test.ts`). With `releaseFallback`, the first lookup
+of a rule-2 request that finds nothing (`head()` for a metadata HEAD or a
+Range decision, `get()` otherwise) is retried once with the rule-3 key, and
+the key that answered serves the rest of the request; 405 and 416 never
+consult it. The library also exports `releaseRoutes(record,
+artifactPrefixes?)` (the check, returning the routes) and `RELEASE_R2_ROOT`
+(`"lean4-wasm64/"`).
+
+**Exceptions.** A throw while answering (a binding that throws or is
+missing from `env`, an extra route's handler, `decorate`) is logged with
+`console.error` and answered `500 internal error` with the isolation
+headers and `Cache-Control: no-store`, not left to the Workers runtime's
+own error page, which carries no COOP/COEP. `fetch` never rejects.
 
 `kit` gives an extra route the worker's own pieces, each returning a
 response that already carries the headers (returned unchanged, it is not
