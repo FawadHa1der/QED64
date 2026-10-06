@@ -199,7 +199,11 @@ in order. Each one trusts only the previous one.
 This section is a proposal for review. Neither `.github/workflows/deploy.yml`
 nor `bump-chain.sh` has been changed. The proposal adds three steps to
 `deploy.yml`, between `npm run build:site` and `wrangler deploy`, plus a
-release step after the deploy. Together they:
+release step after the deploy. Since plan step A4 the build, the prune and
+`wrangler deploy` run inside `scripts/deploy-app.sh` (docs/DEPLOY.md, "The
+deploy script"), so applying it means putting the two gates in that script
+between its size check and `npx wrangler deploy`, or splitting the script;
+the YAML below shows the steps in the workflow's older shape. Together they:
 
 - generate the manifest from the CI-built `dist/`, which refuses an
   inconsistent pairing before anything deploys;

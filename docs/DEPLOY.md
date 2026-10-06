@@ -36,19 +36,54 @@ at the origin root.
    keys (command in `scripts/upload-artifacts.sh`), then run
    `scripts/upload-artifacts.sh` — one ~2.1 GB multipart upload; re-run
    only when artifacts change.
-4. `scripts/deploy-app.sh` — builds the shell and `wrangler deploy`s it.
-   The app is live at `qed64.<account>.workers.dev` (or attach a domain).
+4. `scripts/deploy-app.sh` — builds the shell and `wrangler deploy`s it
+   (see "The deploy script" below; `--dry-run` first if you want to see the
+   build pass without deploying). The app is live at
+   `qed64.<account>.workers.dev` (or attach a domain).
 
 ## Continuous integration & deployment
 
 - `.github/workflows/ci.yml` — every push/PR: typecheck, 95 unit tests,
   worker syntax. No artifacts needed; runs in under a minute.
-- `.github/workflows/deploy.yml` — pushes to `main` rebuild and redeploy
-  the app shell (needs the `CLOUDFLARE_API_TOKEN` repo secret). Artifact
+- `.github/workflows/deploy.yml` — pushes to `main` install both roots
+  (`npm ci`, `npm ci --prefix frontend`), run the root typecheck and the
+  unit suite, then run `scripts/deploy-app.sh`, the same script an operator
+  runs by hand (needs the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`
+  repo secrets). Artifact
   changes stay a manual `scripts/upload-artifacts.sh` — they change only
   when the toolchain is rebuilt or snapshots re-baked, which requires the
   14-core local pipeline anyway (GitHub's free runners have neither the
   cores nor the ~15 GB wasm heap the umbrella bake needs).
+
+### The deploy script
+
+`scripts/deploy-app.sh` is the only place the shell is built for a deploy
+and the only place `wrangler deploy` runs; `deploy.yml` adds nothing to it.
+From the repository root, whatever the cwd, under `set -euo pipefail`:
+
+1. `npm ci --prefix frontend`, only when `frontend/node_modules` is absent
+   (local use; CI has installed both roots already);
+2. `npm run typecheck:site`, then `npm run build:site` (into `dist/`);
+3. the prune, `rm -rf dist/runtime dist/profiles dist/snapshots`: artifacts
+   are served from R2 and never bundled (Vite's `publicDir` is off for
+   builds, so this is a defensive invariant);
+4. the size check: if `dist/` still holds a `runtime/`, `profiles/` or
+   `snapshots/` path, or any file over 25 MiB (the Workers static-assets
+   cap per file), the script prints one `deploy-app: REFUSED: …` line on
+   stderr and exits 1 before wrangler uploads anything;
+5. `npx wrangler deploy` (the wrangler pinned in devDependencies; plain
+   wrangler rather than `wrangler-action`, whose wrapper swallowed error
+   output). It authenticates with `CLOUDFLARE_API_TOKEN` and
+   `CLOUDFLARE_ACCOUNT_ID` when set, else with `wrangler login`.
+
+`scripts/deploy-app.sh --dry-run` runs steps 1 to 4 and prints
+`deploy-app: --dry-run: dist/ is ready; would run: npx wrangler deploy`
+instead of deploying. Exit codes: 0 deployed (or ready, with `--dry-run`),
+1 the size check refused, 2 an unknown argument, and otherwise the exit code
+of the step that failed. `--help` prints the script's header.
+`tests/unit/deploy-script.test.ts` pins `deploy.yml`'s step order, that no
+other tracked file outside docs and tests runs the prune or `wrangler
+deploy`, and the script itself, run with stub `npm`/`npx` commands.
 
 ## Consistency rule
 
