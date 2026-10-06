@@ -217,7 +217,7 @@ L2  src/runtime/client.ts — LeanSession: the only owner of the Worker and the 
 L1  public/workers/lean.worker.js + lsp-front-door.js + lsp-frames.js
   │  stdin  = futex ring in shared memory; stdout = per-byte tap → Content-Length framer; stderr = log lines
   ▼
-L0  the Lean fork (KERNEL-PIN; patches 0031/0032) — FileWorker.setupImports is the ONLY header resolver
+L0  the Lean fork (release record kernel.commit; patches 0031/0032) — FileWorker.setupImports is the ONLY header resolver
 ```
 
 **The front door** (`public/workers/lsp-front-door.js`; design

@@ -2,21 +2,28 @@
 
 A QED64 release is deployed through two channels that never meet: the app
 shell goes out via `git push` (`.github/workflows/deploy.yml`), and the runtime,
-snapshots and library packs via `scripts/upload-artifacts.sh` into R2. The facts
-that pair them live in five tracked files: `pipeline/toolchain/KERNEL-PIN`,
-`public/runtime/runtime-manifest.json`, `public/snapshots/index.json`,
-`public/profiles/index.json` and the profile manifests. Before this manifest a
+snapshots and library packs via `scripts/upload-artifacts.sh` into R2 (since
+decision 3 the runtime and packs are the toolchain release's own upload,
+under `lean4-wasm64/<release id>/`). The facts that pair them live in the
+tracked files: the pinned toolchain record `toolchain/lean4-wasm64-release.json`,
+`embedding/base-tree.json`, `public/runtime/runtime-manifest.json`,
+`public/snapshots/index.json`, `public/profiles/index.json` and the profile
+manifests (`pipeline/toolchain/KERNEL-PIN` was one of them until it was
+retired in 2026-10, plan B2c). Before this manifest a
 downstream that wanted to pin "the QED64 it tested against" had to pin a git
 commit and then re-derive everything from those files. Downstreams include
 lean4game, which vendors qed64 at its own pin, and the widgets showcase, which
 vendors `pipeline/snapshot/` and three pipeline modules. Re-deriving also
-meant trusting that the five files agree with each other.
+meant trusting that those files agree with each other.
 
 `pipeline/release/release-manifest.mjs` writes one document per release. It
 names every served object by sha256 and gives the release three identities. It
-refuses to write anything while the pairing facts disagree. Generating and
-checking the manifest are implemented. **Publishing it (CI, GitHub releases) is
-proposed below and has not been applied.**
+refuses to write anything while the pairing facts disagree.
+`pipeline/release/write-bundle.mjs` writes the manifest with the files that go
+with it, the bundle ([below](#the-bundle)). Generating and checking the
+manifest and writing the bundle are implemented. **Publishing them (CI,
+GitHub releases, a public URL) is proposed below and has not been applied**
+(decision 7, the user's).
 
 ## What it is
 
@@ -25,8 +32,13 @@ node pipeline/release/release-manifest.mjs --commit HEAD --out release.json     
 node pipeline/release/release-manifest.mjs --worktree                               # public/ as on disk (after a promote, before the commit)
 node pipeline/release/release-manifest.mjs --commit HEAD --dist dist --out release.json   # + the app shell (after npm run build:site)
 node pipeline/release/release-manifest.mjs --check release.json [--dist dist]        # regenerate and compare byte for byte
+node pipeline/release/release-manifest.mjs --repo <QED64 clone> --commit <rev>     # the shipped copy (node_modules/qed64/pipeline/release/) reads a clone
 node pipeline/release/release-manifest.mjs --help                                   # reads and writes nothing
 ```
+
+`--worktree` reads `public/`, the record and `base-tree.json` from disk
+(`--public`, `--toolchain-record`, `--base-tree` name other copies); it is
+the check right after an adoption's landing steps, before the commit.
 
 `--commit <rev>` reads every input with `git cat-file blob <rev>:<path>`, which
 returns the same raw blob `git show <rev>:<path>` prints. It never reads the
@@ -34,8 +46,8 @@ working tree, so the output is a pure function of the commit: the same bytes on
 any machine, with no network access and no artifact downloads. A shallow CI
 checkout is enough. Every digest and size comes from the tracked manifests,
 which are the same digest roots the browser verifies against. The current
-HEAD's manifest is about 23 KB, or 34 KB with the shell section. It describes
-87 origin objects and 1.65 GB on the wire.
+HEAD's manifest is about 30 KB, or 41 KB with the shell section (59 files,
+18 MB). It describes 87 origin objects and 1.65 GB on the wire.
 
 | Key | Content |
 |---|---|
@@ -45,30 +57,40 @@ HEAD's manifest is about 23 KB, or 34 KB with the shell section. It describes
 | `artifactSetId` | `"set-" + sha256(JSON.stringify({runtime, snapshots, profiles}))[:16]` (see below) |
 | `qed64` | `{repo, commit, committedAt (UTC, from the commit object), source: "commit"\|"worktree", dirty}`. `dirty` is true only for `--worktree` when an input differs from HEAD. With `--dist` the inputs include `public/workers/*`, so an edited worker, or one HEAD has and the tree lacks, makes it dirty |
 | `lean` | `{version, target}` of the runtime manifest |
-| `kernel` | `{repo: "FawadHa1der/lean4", branch: "qed64-wasm64", commit (KERNEL-PIN), sourceRevision (runtime manifest)}` |
+| `kernel` | `{repo: "FawadHa1der/lean4", branch: "qed64-wasm64", commit (the record's `kernel.commit`; KERNEL-PIN's until 2026-10), sourceRevision (runtime manifest)}` |
+| `toolchain` | `{releaseId, digest, record {path, sha256, gitBlob}, kernel {commit, patch}, runtimeBuildId, packs [{id, rawSha256}], tools {package, version, tgz}}`: the pinned lean4-wasm64 release (`toolchain/lean4-wasm64-release.json`): its `id`, its self-digest, the file's identity, `kernel.commit`/`kernel.patch`, `runtime.buildId`, every pack's raw (gunzipped) sha256, and the tools package it ships |
+| `hosting` | `{toolchainPrefix: "lean4-wasm64/<releaseId>/", siteOwned (the record's hosting.siteOwned, URL paths), rule}`: where each path is stored in R2 (below) |
+| `baseTree` | `{path, sha256, gitBlob, schema, releaseId, releaseDigest, runtime, packs [{id, release, rawSha256}], slim, umbrella [{path, sha256, bytes}], umbrellaSource, initLib, digestRule, trees {<name>: {slim, packs, umbrella, files, bytes, digest}}, umbrellaFiles [{path, sha256, bytes}]}`: `embedding/base-tree.json` (`qed64.base-tree/v1`, written by `adopt-helper.mjs base-tree`), built field by field, plus `umbrellaFiles`, the union of the umbrella files the trees carry (what the bundle ships at `umbrella/<path>`) |
 | `runtime` | `{buildId, manifest {path, sha256, gitBlob, pinnedPath}, files [{name, bytes, sha256, chunks [{path, bytes, sha256}]}]}` |
 | `snapshots` | `{index {path, sha256, gitBlob}, entries [{name, path, sha256, transferBytes, rawBytes, imports, runtime}]}` |
 | `profiles` | `{index {…}, packs [{id, release, modules, manifest {path, sha256, gitBlob, contentDigest}, lean {version, gitRevision}, pack {sha256, bytes}, transport {sha256, bytes, parts [{path, sha256, bytes}]}}]}` |
-| `shell` | `null`, or with `--dist`: `{shellId, listingSha256, bytes, bundle {entries, buildIds}, files [{path, sha256, bytes}]}` |
+| `shell` | `null`, or with `--dist`: `{shellId, listingSha256, bytes, apiRevision, embedApiRevision, bundle {entries, buildIds}, files [{path, sha256, bytes}]}`. `apiRevision` (the page API, `globalThis.qed64.api.revision`) and `embedApiRevision` (the `qed64/embed` barrel's `EMBED_API_REVISION`) come from `dist/qed64-build.json`; `null` when the build wrote none |
 
 Conventions:
 
 - **Key order is fixed by the generator.** Every object is built literally.
   The file is `JSON.stringify(m, null, 2) + "\n"`. `JSON.parse` keeps key
   order, so a reader can recompute both digests from the parsed object.
-- **Every `path` is relative to the origin root.** The origin root is also the
-  R2 bucket root and `public/` in git. For example, `runtime/chunks/lean.wasm.5500c87f….part-000`
-  is served at `/runtime/chunks/…`, stored under the R2 key `runtime/chunks/…`,
-  and `gitBlob` is git's blob id of `public/<path>`. Under decision 3
-  (docs/DEPLOY.md, "The toolchain release prefix") the served path is
-  unchanged but the R2 key of a runtime or profile path (everything under
-  `runtime/` and `profiles/` except `profiles/index.json`) is
-  `lean4-wasm64/<release id>/<path>`, the toolchain release's prefix, with
-  the id from `toolchain/lean4-wasm64-release.json`; snapshots and
-  `profiles/index.json` stay at the bucket root. B2c changes the bundle to
-  say so.
-- **Field names tell you the digest format.** Fields named `sha256` hold bare
-  hex. `digest` and `contentDigest` keep the `sha256:` prefix, which matches
+- **Every `path` is relative to the origin root**, and that stays true for
+  browsers: `runtime/chunks/lean.wasm.5500c87f….part-000` is served at
+  `/runtime/chunks/…` and `gitBlob` is git's blob id of `public/<path>`.
+  The exceptions are not served: `toolchain.record.path` and
+  `baseTree.path` are repo paths, and the umbrella paths in `baseTree`
+  (`QED64/Essential.olean`, …) are relative to a base tree's root.
+- **R2 keys follow `hosting.rule`** (decision 3, docs/DEPLOY.md "The
+  toolchain release prefix"): a path under `runtime/` or `profiles/` that is
+  not site-owned is stored at `<toolchainPrefix><path>`, so
+  `lean4-wasm64/lean-v4.34.0-a8817d0/runtime/chunks/…`; every other path
+  (the snapshots and `profiles/index.json`, `siteOwned` today) at `<path>`
+  under the site's prefix (the bucket root for QED64). A path is site-owned
+  when `"/" + path` equals a `siteOwned` entry, or starts with one that ends
+  in `/`. The generator refuses a record whose mounts are not the identity
+  mounts `/runtime/` → `runtime/`, `/profiles/` → `profiles/` that the rule
+  describes.
+- **Field names tell you the digest format.** Fields named `sha256` or
+  `<x>Sha256` (`rawSha256`, `listingSha256`) hold bare hex, also where
+  `base-tree.json` spells `rawSha256` with the prefix. `digest` and
+  `contentDigest` keep the `sha256:` prefix, which matches
   `pack.mjs` and the indexes. `contentDigest` is the profile manifest's own
   `digest`, re-derived as `sha256(JSON.stringify(content))` before it is
   recorded.
@@ -107,6 +129,35 @@ Conventions:
   another shell, or another runtime, is refused. The build writes it only
   after it has written every other file, and never for a failed build.
 
+### Stable field paths (a contract)
+
+A downstream pin tool may read these paths of any `qed64.release/v1`
+manifest. Within `v1` each keeps its name, type and meaning; keys are only
+added. A change to one of them is a new schema (`qed64.release/v2`).
+
+| Path | Type | Meaning |
+|---|---|---|
+| `toolchain.releaseId` | string, `lean-v<x.y.z>-<7 hex>…` | the lean4-wasm64 release the runtime, packs and tools come from; with `toolchain.digest` it pins that release |
+| `toolchain.kernel.commit` | 40 lowercase hex | the kernel commit that built the served `lean.wasm` (the record's `kernel.commit`; the runtime manifest's `sourceRevision` names a prefix of it) |
+| `toolchain.kernel.patch` | `NNNN` + optional lowercase suffix | the record's patch level (compare with lean4-wasm64's `comparePatchIds`) |
+| `toolchain.digest` | `sha256:<64 hex>` | the record's self-digest |
+| `kernel.commit` | 40 lowercase hex | the same commit as `toolchain.kernel.commit` |
+| `runtime.buildId` | `wasm64-<16 hex>` | the served runtime |
+| `qed64.commit`, `releaseId`, `artifactSetId`, `digest` | as above | the three identities and the manifest's own |
+| `shell.shellId`, `shell.apiRevision`, `shell.embedApiRevision` | string; revisions may be `null` | the shell (with `--dist`) |
+| `baseTree.sha256`, `baseTree.trees.<name>.digest`, `baseTree.umbrellaFiles[]` | hex; `sha256:<hex>`; `{path, sha256, bytes}` | the base trees the snapshots were baked from, and the umbrella files the bundle ships |
+| `hosting.toolchainPrefix`, `hosting.siteOwned`, `hosting.rule` | strings | where each path is stored |
+
+**`toolchain.releaseId` replaces KERNEL-PIN's role** (proposal:132, step 3):
+the one check KERNEL-PIN carried, that the served manifest's
+`sourceRevision` names the pinned kernel commit, is now the refusal against
+the record's `kernel.commit`, and the pin itself is the record a release id
+and digest name. `pipeline/toolchain/KERNEL-PIN` left the tree in the commit
+that first ships these keys (plan B2c, 2026-10). A pin tool reads
+`toolchain.kernel.commit` (and `toolchain.releaseId`) from the manifest of a
+commit that has them, and falls back to `git show <commit>:pipeline/toolchain/KERNEL-PIN`
+(first token) only for older pins.
+
 ## What it refuses
 
 Every refusal exits 1 with one line on stderr
@@ -116,8 +167,11 @@ checked here instead:
 
 | Refusal | Why it matters |
 |---|---|
-| The commit prefix in the runtime manifest's `sourceRevision` (`qed64-wasm64@<commit>`) is not a prefix of the KERNEL-PIN commit, or there is no commit in it | The pin and the served binary disagree, so a rebuild from the pin will not reproduce what is served (REBUILD.md) |
-| KERNEL-PIN does not contain the runtime `buildId` | The pin does not record the pairing it claims (REBUILD.md §3: "write KERNEL-PIN") |
+| The toolchain record is not `lean4-wasm64.release/v1`, its `digest` is not `"sha256:" + sha256(JSON.stringify(record without digest, null, 2))` (recomputed with `node:crypto`; lean4-wasm64 is never imported, decision 10), or a field the manifest reads is malformed (`id`, `kernel.commit`/`patch`/`repo`/`branch`, `runtime.buildId`, the packs' raw digests, `tools`, `hosting`, `files`) | The record was edited after the release cut it, or is not the kind this generator describes |
+| The record's `runtime.buildId` is not the served `buildId` | The pinned release and the served runtime are different builds (land the adoption's runtime manifest with its record) |
+| The commit prefix in the runtime manifest's `sourceRevision` (`qed64-wasm64@<commit>`) is not a prefix of the record's `kernel.commit`, or there is no commit in it | The record and the served binary disagree, so a rebuild from the pin will not reproduce what is served (REBUILD.md) |
+| A file the hosting rule stores under the toolchain prefix (the runtime manifest and its per-build copy, every profile manifest except `profiles/index.json`, every chunk and part) is not in the record's `files` with that sha256 and size | The Worker serves that path from `lean4-wasm64/<id>/`, where the release's bytes are, not QED64's |
+| `base-tree.json` names another release and a pack it lists has another raw digest there; or its packs are not the served packs (matched by the record's pack `manifest` path); or its umbrella lacks the pair, or lists one file with two contents | The snapshots were baked from trees the served packs do not make |
 | A snapshot entry's `runtime`, or `profiles/index.json` `runtime.buildId`, is not the `buildId` (or `runtime.leanVersion` is not the runtime's Lean) | Snapshots are binary-paired to the runtime. The index's runtime is the commit record of a promote (promote-staging.mjs) |
 | A pack's `content.lean.version` is not the runtime's Lean version | The runtime does not reject oleans from another Lean version; it misreads them (the githash gate is off) |
 | `public/runtime/runtime-manifest.<buildId>.json` is tracked (in `--commit` mode) or present (in `--worktree` mode) and is not byte-identical to the default manifest | The pinned shell would boot different chunk digests than the unpinned path |
@@ -138,6 +192,60 @@ Nothing in this tool reads artifact bytes. It checks the facts the tracked
 files state about each other. `npm run verify:release` remains the job that
 re-derives digests from the bytes themselves.
 
+## The bundle
+
+```sh
+npm run -s build:site
+node pipeline/release/write-bundle.mjs --commit HEAD --dist dist --umbrella <dir with QED64/Essential.olean*> --out <empty dir>
+```
+
+`write-bundle.mjs` (Node built-ins and `./release-manifest.mjs` only; not in
+the package, it needs a checkout) writes into `--out`, which must be absent
+or empty (else exit 2, before any work), through a sibling temp directory
+renamed into place:
+
+| File | Content |
+|---|---|
+| `release.json` | the manifest of `--commit` with the shell section of `--dist` |
+| `qed64-shell.tar.gz` | every file of `dist/`, `qed64-build.json` included (5.8 MB today) |
+| `qed64-manifests.tar.gz` | the tracked digest roots from the commit's git objects: `toolchain/lean4-wasm64-release.json`, `embedding/base-tree.json`, `public/runtime/runtime-manifest.json`, `public/snapshots/index.json`, `public/profiles/*.json` (1.7 MB) |
+| `umbrella/QED64/Essential.olean`, `.olean.server`, `.olean.private` | `baseTree.umbrellaFiles`, each checked against its sha256 and size (396,664 + 96 + 96 bytes today; `.olean.private` because the fat tree carries it). These bytes are not in git: a downstream that rebuilds the base trees (`lean4-wasm64 unpack [--slim]` of the packs `baseTree.trees.<name>.packs` names, plus these files under `QED64/`) gets byte-identical trees, checked by `baseTree.trees.<name>.digest` |
+| `SHA256SUMS` | `<sha256>  <path>` of every other file, byte-ordered (`shasum -a 256 -c SHA256SUMS` checks it) |
+
+It refuses (exit 1, one line) whatever `release-manifest.mjs` refuses, a
+shell file that changed under it, and an umbrella file that is missing or is
+not the bytes `base-tree.json` names. The operator's source of the umbrella
+is the adoption's `$W/lib-tree` (or `$W/lib-tree-slim` without the fat
+tree): adopt-release prints the command as landing step 7.
+
+**Reproducible.** The same commit, `dist/` and umbrella give the same bytes
+on any machine: written twice, every output compares equal with `cmp`. The
+tars are written in Node, not by a tar binary (macOS bsdtar has no
+`--sort=name`; the GNU tar line this section used to propose is gone):
+ustar; entries byte-ordered by name, with an entry for each directory;
+mtime = the commit time (`git show -s --format=%ct`); uid/gid 0 and empty
+uname/gname; mode 0644, 0755 for directories; names over 100 bytes split
+into the ustar prefix. gzip is `node:zlib` level 9 with the header pinned
+(mtime 0, OS byte 0x03), as the fork's `pack.mjs` pins it, so macOS and
+Linux agree. Deflate output is a function of the zlib build, so across Node
+builds compare the gunzipped tar streams; the tar stream is the identity.
+Whether `vite build` itself is byte-reproducible across runners is not
+established, so the shell tarball reproduces from a given `dist/`.
+
+**PROPOSED: where it is hosted (decision 7, not applied).** Nothing here
+publishes. The proposed public URL is a QED64 GitHub release asset per
+release id, never a site-owned R2 path:
+
+```
+https://github.com/FawadHa1der/QED64/releases/download/<releaseId>/<file>
+  release.json  qed64-shell.tar.gz  qed64-manifests.tar.gz  SHA256SUMS
+  umbrella-QED64-Essential.olean  umbrella-QED64-Essential.olean.server  umbrella-QED64-Essential.olean.private
+```
+
+(GitHub release assets are flat, so `umbrella/QED64/<f>` would be uploaded as
+`umbrella-QED64-<f>`; a downstream verifies each against
+`baseTree.umbrellaFiles` and lays it out as `QED64/<f>`.)
+
 ## How a downstream verifies a bundle
 
 A bundle is `release.json` plus whatever copy of the artifacts or shell you
@@ -153,9 +261,19 @@ in order. Each one trusts only the previous one.
    `node pipeline/release/release-manifest.mjs --check release.json`. It
    re-derives everything from git objects and must print `matches`; add
    `--dist <extracted shell>` if the manifest has a shell section. Without the
-   tool, compare each `gitBlob` with `git rev-parse <commit>:public/<path>`.
+   tool, compare each `gitBlob` with `git rev-parse <commit>:public/<path>`
+   (`<commit>:<path>` for `toolchain.record` and `baseTree`, which are repo
+   paths). The shipped copy (`node_modules/qed64/pipeline/release/`) takes
+   `--repo <clone>`. A bundle's `qed64-manifests.tar.gz` holds those
+   tracked files for a downstream without a clone.
 3. **The bytes are the ones it names.** With the artifacts laid out like
-   `public/` (origin-relative paths), this is enough:
+   `public/` (origin-relative paths), this is enough. The directory you
+   verify may be assembled from two sources: since decision 3 its
+   `runtime/` and `profiles/` files (all but `profiles/index.json`) come
+   from the toolchain release, `lean4-wasm64 fetch` of
+   `toolchain.releaseId` pinned by `toolchain.digest` (or the R2 keys under
+   `hosting.toolchainPrefix`), and its snapshots and `profiles/index.json`
+   from QED64's origin; laid out side by side they are one `public/` tree:
 
    ```js
    // node verify-bundle.mjs release.json <dir>
@@ -194,7 +312,8 @@ in order. Each one trusts only the previous one.
    what `npm run verify:release -- --public <dir>` adds. It inflates every
    pack.
 4. **The shell is the one it names.** Extract the tarball, run the `shasum`
-   line above, and compare the result with `listingSha256`.
+   line above, and compare the result with `listingSha256`. The umbrella
+   files: compare each `umbrella/<path>` with `baseTree.umbrellaFiles`.
 5. **Pin by identity.** Record `releaseId` and `digest`. When you bump, an
    unchanged `artifactSetId` means no artifact moved, so the artifacts do not
    need re-verifying, and an unchanged `shellId` means the shell did not move.
@@ -219,8 +338,8 @@ the YAML below shows the steps in the workflow's older shape. Together they:
   `upload-artifacts.sh`. Today the shell deploys anyway: its pinned manifest
   404s, and `qed64-boot.ts` silently falls back to whatever
   `runtime-manifest.json` R2 still serves, which may be the previous runtime;
-- publish reproducible tarballs and the manifest as a GitHub release, once
-  per artifact set.
+- publish the bundle (`write-bundle.mjs`) as a GitHub release, once per
+  artifact set.
 
 ```yaml
 jobs:
@@ -231,24 +350,27 @@ jobs:
     steps:
       # … existing checkout / setup-node / npm ci / tests / build:site / prune …
       - name: Release manifest (refuses an inconsistent pairing before anything deploys)
-        run: mkdir -p release && node pipeline/release/release-manifest.mjs --commit "$GITHUB_SHA" --dist dist --out release/release.json
+        run: node pipeline/release/release-manifest.mjs --commit "$GITHUB_SHA" --dist dist --out manifest-check.json
       - name: Gate every artifact on the origin (R2 holds what this commit names)
         env:
           QED64_ORIGIN: ${{ vars.QED64_ORIGIN }}   # e.g. https://qed64.<account>.workers.dev
-        run: node pipeline/release/gate-origin.mjs release/release.json   # sketched below; not in the tree
+        run: node pipeline/release/gate-origin.mjs manifest-check.json   # sketched below; not in the tree
       - run: npx wrangler deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      - name: Reproducible tarballs
+      - name: The bundle (write-bundle.mjs; the umbrella bytes are not in git)
         run: |
-          EPOCH=$(git show -s --format=%ct "$GITHUB_SHA")
-          tar --sort=name --mtime="@$EPOCH" --owner=0 --group=0 --numeric-owner \
-              --mode='u+rwX,go+rX,go-w' --format=gnu -C dist -cf - . | gzip -n -9 > release/qed64-shell.tar.gz
-          # the digest roots, for downstreams without a git clone (git archive is reproducible by construction)
-          git archive --format=tar "$GITHUB_SHA" pipeline/toolchain/KERNEL-PIN public/runtime/runtime-manifest.json \
-              public/snapshots/index.json public/profiles | gzip -n -9 > release/qed64-manifests.tar.gz
-          (cd release && sha256sum release.json qed64-shell.tar.gz qed64-manifests.tar.gz > SHA256SUMS)
+          # The umbrella comes from the previous release's assets while baseTree.umbrellaFiles is unchanged
+          # (write-bundle refuses any other bytes); an adoption that rebuilds it uploads the new files first.
+          mkdir -p umbrella/QED64
+          LAST=$(gh release list --limit 1 --json tagName --jq '.[0].tagName')
+          for f in Essential.olean Essential.olean.server Essential.olean.private; do
+            gh release download "$LAST" -p "umbrella-QED64-$f" -O "umbrella/QED64/$f"
+          done
+          node pipeline/release/write-bundle.mjs --commit "$GITHUB_SHA" --dist dist --umbrella umbrella --out release
+        env:
+          GH_TOKEN: ${{ github.token }}
       - name: GitHub release, once per artifact set
         env:
           GH_TOKEN: ${{ github.token }}
@@ -259,7 +381,8 @@ jobs:
           if [ -n "$LAST" ] && gh release download "$LAST" -p release.json -O - | grep -q "\"artifactSetId\": \"$SET\""; then
             echo "artifact set $SET already released as $LAST"; exit 0
           fi
-          gh release create "$ID" release/* --target "$GITHUB_SHA" --title "QED64 $ID ($SET)" \
+          for f in release/umbrella/QED64/*; do cp "$f" "release/umbrella-QED64-$(basename "$f")"; done
+          gh release create "$ID" release/*.json release/*.tar.gz release/SHA256SUMS release/umbrella-QED64-* --target "$GITHUB_SHA" --title "QED64 $ID ($SET)" \
             --notes "runtime $(node -p 'require("./release/release.json").runtime.buildId'), verify: docs/RELEASE-BUNDLE.md"
 ```
 
@@ -290,11 +413,12 @@ Notes on the proposal:
   CI token keeps its "Workers Scripts: Edit only, no R2" scope (DEPLOY.md
   security model). `contents: write` is new, and it means anyone who can push
   to `main` can mint releases. Protect the branch first.
-- **What CI tarballs are reproducible against.** The tarball is reproducible
-  for a given `dist/`: name-sorted, mtime set to the commit time, numeric
-  owner 0, normalized modes, `gzip -n`. Whether `vite build` itself is
-  byte-reproducible across runners is not established. The `shellId` recorded
-  is that of the build that was deployed, which is the one that matters.
+- **What CI tarballs are reproducible against.** The bundle is reproducible
+  for a given `dist/` (["The bundle"](#the-bundle)); a runner and a laptop
+  write the same tar streams. Whether `vite build` itself is
+  byte-reproducible across runners is not established. The `shellId`
+  recorded is that of the build that was deployed, which is the one that
+  matters.
 - **When to release.** The step above releases once per artifact set, which is
   once per promote. Shell-only pushes are deployed but not released.
   Releasing every push, or only on `workflow_dispatch`, are alternatives.

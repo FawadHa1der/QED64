@@ -223,7 +223,7 @@ Run the REAL, unmodified `lean --worker` main loop on an application pthread
 
 1. **Transport spike (Docker, no product wiring)** — apply the transport
    patch onto the current 30-series (kernel repo `FawadHa1der/lean4`,
-   branch `qed64-wasm64`; pin discipline per `pipeline/toolchain/KERNEL-PIN`:
+   branch `qed64-wasm64`; pin discipline per `pipeline/toolchain/KERNEL-PIN` (retired 2026-10, plan B2c: the record's `kernel.commit`):
    any stage1 rebuild rebakes `work/snapshot/*.snap`). Build with
    PROXY_TO_PTHREAD; drive `lean --worker` over the ring from a Node
    harness (`pipeline/snapshot/node-runner.mjs` grows a `--resident` mode).
