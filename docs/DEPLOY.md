@@ -102,7 +102,10 @@ stand-ins for the two `wrangler.toml` bindings:
 - `ASSETS`: the Workers static-assets subset QED64 relies on, over `dist/`
   (or `DIST=<dir>`): `/` and `<dir>/` serve their `index.html`,
   `html_handling`'s default `auto-trailing-slash` redirects
-  (`/index.html` and `/x.html` answer 307 to `/` and `/x`), the live
+  (`/index.html` and `/x.html` answer 307 to `/` and `/x`, `/index` and
+  `<dir>/index` 307 to `/` and `<dir>/`; a run of slashes, `//assets/x.html`,
+  collapses in one 307 to `/assets/x`, and no `Location` ever starts with
+  `//`, as live), the live
   content types (`text/html`, `text/javascript`, ... without a charset),
   an etag and `Content-Length` on GET (HTML has neither, as live), no
   `Content-Length` on HEAD (the real binding sends none), an empty 404.
@@ -112,6 +115,11 @@ stand-ins for the two `wrangler.toml` bindings:
   range semantics, streamed file bodies, the content type rclone stores
   (`application/json` for `.json`, else `application/octet-stream`). Its
   etag is a hash of size and mtime, not R2's MD5.
+
+Both stand-ins open a file before they return it, so one that stats but
+cannot be opened (`EACCES`, a snapshot replaced in the main checkout
+mid-request) answers 500 `internal error` with the isolation headers and a
+log line, never a 200 head on a reset connection.
 
 Where the Workers runtime adds a `Content-Length` the worker does not set
 (an R2 body, the worker's own `not found`), the Node layer adds it too, so

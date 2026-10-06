@@ -348,6 +348,9 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   `dist/` and `public/` in the OS temp dir. Pinned per `QED64_EDGE` mode: the
   isolation headers and the cache rule on the shell, an asset and artifacts
   (through a symlinked `chunks/`), 404s, HEAD lengths as on the live site,
+  doubled slashes and `/index` answering one 307 as live (no `Location`
+  starting with `//`), a mode-000 file answering 500 with the isolation
+  headers,
   traversal refusal (encoded `..`, symlinks out of `dist/`), the local-only
   `/embed-host.html`, Range (hardened 206/416, legacy a full 200), and
   `QED64_EDGE=bogus` exiting 2 before listening. A parity matrix answered by
