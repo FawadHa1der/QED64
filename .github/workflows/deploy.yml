@@ -23,8 +23,11 @@ jobs:
             package-lock.json
             frontend/package-lock.json
       - run: npm ci
-      - run: npx tsc --noEmit && npx vitest run tests/unit
+      # Both roots before any check: the root typecheck and the unit suite read
+      # frontend/node_modules (lean4monaco's shipped files); pinned by
+      # tests/unit/lean4monaco-fixes.test.ts for this workflow and ci.yml.
       - run: npm ci --prefix frontend
+      - run: npx tsc --noEmit && npx vitest run tests/unit
       - run: npm run typecheck:site
       - run: npm run build:site
       # Artifacts are served from R2 — never bundle them as worker assets

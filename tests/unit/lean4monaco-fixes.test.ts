@@ -22,12 +22,19 @@ const skip = !existsSync(LEAN4MONACO_DIR as string) && !process.env.CI;
 if (skip) console.warn("lean4monaco-fixes.test.ts: frontend/node_modules absent — skipping the installed-file checks (run: npm --prefix frontend ci)");
 
 describe("CI runs these checks against installed files", () => {
-  it("installs frontend/node_modules before the unit step (.github/workflows/ci.yml)", () => {
-    const steps = [...readFileSync(path.join(root, ".github/workflows/ci.yml"), "utf8").matchAll(/^\s*- run: (.+)$/gm)].map((m) => m[1]!);
-    const install = steps.findIndex((s) => s.includes("npm ci --prefix frontend"));
-    expect(install).toBeGreaterThanOrEqual(0);
-    expect(steps.findIndex((s) => s.includes("vitest run tests/unit"))).toBeGreaterThan(install);
-  });
+  // deploy.yml once ran the root typecheck before this install: the deploy of 84d594e failed with TS2307 on
+  // tests/unit/infoview-actions.test.ts while ci.yml (already reordered) passed at the same commit.
+  for (const workflow of ["ci.yml", "deploy.yml"]) {
+    it(`installs frontend/node_modules before the root typecheck and the unit step (.github/workflows/${workflow})`, () => {
+      const steps = [...readFileSync(path.join(root, ".github/workflows", workflow), "utf8").matchAll(/^\s*- run: (.+)$/gm)].map((m) => m[1]!);
+      const install = steps.findIndex((s) => s.includes("npm ci --prefix frontend"));
+      expect(install, workflow).toBeGreaterThanOrEqual(0);
+      const tsc = steps.findIndex((s) => s.includes("tsc --noEmit"));
+      const unit = steps.findIndex((s) => s.includes("vitest run tests/unit"));
+      expect(tsc, `${workflow}: root typecheck`).toBeGreaterThan(install);
+      expect(unit, `${workflow}: unit step`).toBeGreaterThan(install);
+    });
+  }
 });
 
 describe.skipIf(skip)("page half (lean4monaco/dist/infowebview.js)", () => {
