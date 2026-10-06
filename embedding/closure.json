@@ -66,7 +66,9 @@
     "pipeline/release/preflight.d.mts",
     "pipeline/release/fetch-artifacts.mjs",
     "pipeline/release/fetch-artifacts.d.mts",
-    "pipeline/release/verify-release.mjs"
+    "pipeline/release/verify-release.mjs",
+    "pipeline/release/release-manifest.mjs",
+    "pipeline/release/release-manifest.d.mts"
   ],
   "pipelineData": [
     "tests/adversarial/kernel-probes/is-module.lean",

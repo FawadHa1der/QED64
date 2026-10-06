@@ -14,7 +14,8 @@
 //      globalThis.Qed64LspFrames, memory64-probe.js → globalThis.Qed64Memory64)
 //      are loaded for real; every path closure.json lists is in the tarball;
 //      the shipped CLIs (preflight, olean-imports, fetch-artifacts, cli.mjs) run --help
-//      through the symlink and print their usage line, and fetch-artifacts
+//      through the symlink and print their usage line, release-manifest --repo <this
+//      checkout> prints the repo's own manifest bytes, and fetch-artifacts
 //      without --manifests refuses (the package ships no tracked manifests);
 //   4. tests/consumer/fixture/ (index.html + main.ts on qed64/embed,
 //      headless.ts = docs/EMBEDDING.md §6.1's headless boot on qed64/embed,
@@ -198,6 +199,18 @@ for (const cli of ["pipeline/release/preflight.mjs", "pipeline/artifacts/olean-i
   if (!help.startsWith(`usage: ${path.basename(cli)} `)) fail(`node ${via} --help (through the symlink) printed ${JSON.stringify(help.slice(0, 120))}, not its usage line`);
 }
 ok("the shipped CLIs run through the node_modules/qed64 symlink: preflight, olean-imports, fetch-artifacts, cli.mjs --help print their usage, exit 0");
+// release-manifest (plan B2c) ships too: the package holds no git objects, so it reads a QED64 clone named by --repo
+// (this checkout, read only) and must print the same qed64.release/v1 bytes as the repo's own copy.
+{
+  const via = path.join("node_modules/qed64", "pipeline/release/release-manifest.mjs");
+  const help = sh(process.execPath, [via, "--help"], { cwd: consumer });
+  if (!help.startsWith("usage: node pipeline/release/release-manifest.mjs ")) fail(`node ${via} --help printed ${JSON.stringify(help.slice(0, 120))}, not its usage line`);
+  const shipped = sh(process.execPath, [via, "--repo", root, "--commit", "HEAD"], { cwd: consumer });
+  const own = sh(process.execPath, [path.join(root, "pipeline/release/release-manifest.mjs"), "--commit", "HEAD"], { cwd: root });
+  if (shipped !== own) fail(`the shipped release-manifest.mjs --repo ${root} --commit HEAD differs from the repo's own (${shipped.length} vs ${own.length} bytes)`);
+  if (JSON.parse(shipped).schema !== "qed64.release/v1") fail("the shipped release-manifest.mjs did not print a qed64.release/v1 manifest");
+  ok(`the shipped release-manifest.mjs runs through the symlink: --help, and --repo <this checkout> --commit HEAD prints the repo's own ${own.length} bytes`);
+}
 // The package carries no tracked manifests: fetch-artifacts without --manifests refuses (2) before any write.
 {
   const r = spawnSync(process.execPath, ["node_modules/qed64/pipeline/release/fetch-artifacts.mjs", "--out", path.join(consumer, "fetched"), "--origin", "http://127.0.0.1:9/"], { cwd: consumer, encoding: "utf8", timeout: 60_000 });
