@@ -634,33 +634,46 @@ otherwise the tool refuses before writing anything.
 | present | stderr | `^fetch-artifacts: present (\S+) \((\d+) bytes, verified\)$` (already there with its pin: skipped) |
 | replacing | stderr | `^fetch-artifacts: replacing (\S+): ` (there, but not with its pin) |
 | verified | stderr | `^fetch-artifacts: verified (.+) \((\d+) bytes, sha256 ([0-9a-f]{16})…, (\d+) parts\)$` (a whole file or transport) |
+| removed | stderr | `^fetch-artifacts: removed (\S+), a temp file left by process (\d+)$` (a temp file of a dead process beside a target, swept before the fetch) |
 | wrote | stderr | `^fetch-artifacts: wrote (\S+) \((\d+) bytes, the tracked (\S+)\)$` (the digest-named runtime manifest; `--with-manifests`) |
 | ok | stdout | `^FETCH OK (\d+) files, (\d+) bytes \((\d+) fetched, (\d+) already present\)$` (the only stdout line; the totals are the whole verified set) |
-| failed | stdout | `^FETCH FAILED (.*)$` (the only stdout line; the reason starts with the file it is about, when it is about one) |
+| failed | stdout | `^FETCH FAILED (.*)$` (the only stdout line, always one line: a newline in the reason, such as the snippet a JSON parse error quotes, is folded with the space around it into one space; the reason starts with the file it is about, when it is about one) |
 
 | Exit | Meaning |
 |---|---|
 | 0 | `FETCH OK`: every file the manifests name is under `--out` with its pinned digest. |
 | 1 | `FETCH FAILED`: a fetch failed (an HTTP status such as `404`, the network, 120 s without bytes), a size or digest mismatch, parts that do not assemble to their whole-file pin, or a release whose schema, `runtime.buildId` or `files[]` does not match. The run stops at the first failure; files verified before it stay. |
 | 2 | `FETCH FAILED`, refused before any write: a malformed `--only`, a tracked manifest missing or malformed, a manifest URL outside its directory, a target outside `--out`, or the default `--out` inside `node_modules`. |
+| 130 | `FETCH FAILED interrupted (SIGINT)`: Ctrl-C. The run stops, its temp files are deleted; files verified before it stay. |
+| 143 | `FETCH FAILED interrupted (SIGTERM)`: likewise. |
 
 **Side effects, in order:**
 
 1. Reads the tracked manifests; with `--release`, its `release.json`. Every
    refusal and every release mismatch happens here, before anything is
    written.
-2. Creates the target directories under `--out` (`mkdir -p`).
-3. For each file (four at a time): hashes the file already there, if any, and
+2. Deletes, in each target's directory, the temp files a dead process left
+   for that target (`.<name>.<pid>-<random>.tmp` whose pid is not running:
+   a run killed outright, `kill -9` or a closed terminal), one `removed` line
+   each. A live process's temp files are left alone.
+3. Creates the target directories under `--out` (`mkdir -p`).
+4. For each file (four at a time): hashes the file already there, if any, and
    skips it when it matches its pin; otherwise GETs it into
    `.<name>.<pid>-<random>.tmp` in the target's directory, counting and
    hashing as it streams (a body longer than the pin is cut off), and renames
    it into place only when the size and sha256 match. A mismatch deletes the
    temp file. Nothing is written under a final name unverified.
-4. Re-reads each whole file's parts and checks the whole-file pin.
-5. Writes the digest-named runtime manifest (and, with `--with-manifests`,
+5. Re-reads each whole file's parts and checks the whole-file pin.
+6. Writes the digest-named runtime manifest (and, with `--with-manifests`,
    the tracked manifests) the same way.
 
-Existing files that no manifest names are never touched or deleted.
+On SIGINT or SIGTERM the run deletes every temp file it has open at once,
+stops its downloads and exits 130 or 143 with `FETCH FAILED interrupted
+(<signal>)`. A second signal, or 5 s without the run ending, exits the same
+way immediately. Rerunning resumes: files already verified are `present`.
+
+Existing files that no manifest names are never touched or deleted, except
+the dead process's temp files of step 2.
 
 **Consumers:** the README's quick start and docs/TESTING.md ("a fresh clone
 runs G1 after fetch:artifacts"); `tests/unit/fetch-artifacts.test.ts`;
@@ -1029,6 +1042,7 @@ before it judges Lean's output.
 | 2 | 2026-10-06 | `bake-snapshot --allow-legacy-imports`, the documented form of `QED64_ALLOW_LEGACY_IMPORTS=1` for the runner; the inherited variable stays accepted as its equivalent. node-runner, snapshot-probe and persistent-probe started without `--stack-size` re-exec themselves with `--stack-size=8192` through `process.execve` (same PID, stdio and exit code; "Runtime"); before, `npm run runner` and `gate.mjs`'s runs used V8's default stack. chunk-runtime runs git for the default `--revision` only when `--revision` is absent. snapshot-probe removes its scratch dir when the `--snap` link fails. | additive; fixes |
 | 2 | 2026-10-06 | A3 review fixes. The compiler battery's path-rule refusal (exit 2) leaves a record: compiler.log in `--run-dir` and a fresh all-infra `compiler-report.json` in `work/adversarial/` and the run dir, with a `refused` field naming the `no-path` line, written before the exit (its pairing is a harness input, not a pipeline output; the five tools' "exit 2 before any side effect" is unchanged). Before, it exited 2 with nothing written, so `run.mjs`'s report.md dropped the lane and `resident-gate.sh` printed the previous run's tally. `run.mjs` shows a lane that ran and wrote no report as a `REFUSED`/`NO REPORT` line; `resident-gate.sh` removes the old report before the battery. The harness's `teeLog` appends synchronously, so lines printed just before an exit reach the log. README "Baking snapshots" and docs/REBUILD.md §2/§3 pass `--artifact`/`--work`/`--out`/`--lib` explicitly instead of relying on the deprecated defaults. | fix, no flag or tool-output change |
 | 2 | 2026-10-06 | Plan step A3b: **fetch-artifacts**, a new Tier 1 tool (`pipeline/release/fetch-artifacts.mjs`, `npm run fetch:artifacts`, Node built-ins only, in `files` and closure.json `pipeline` with its `.d.mts`): fills a `public/`-shaped tree with every runtime chunk, profile pack part and snapshot `.snapz` the tracked manifests name, from a fork release (`--release`, checked against its `files[]` too) and a QED64 origin (`--origin`), each verified by sha256 and size and written by temp file + rename; one stdout line `FETCH OK …` / `FETCH FAILED …`. It replaces the retired `sync:artifacts`. The import-bound check in `tests/unit/cli-contract.test.ts` accepts `parseCli("<tool>", …)` with arguments (fetch-artifacts' `main(argv, io)` passes its own). | additive (a new tool) |
+| 2 | 2026-10-06 | A3b review fixes, **fetch-artifacts**. An interrupted run no longer leaves temp files: SIGINT/SIGTERM delete the run's open `.<name>.<pid>-<random>.tmp` files and exit 130/143 with `FETCH FAILED interrupted (<signal>)` (new exit codes); before, Node exited at once and each in-flight temp file (up to four, a `.snapz` one up to 321 MB) stayed, gitignored and never reused. Every run first deletes the temp files a dead process left beside its targets, one new `removed` stderr marker each. The `failed` line is always one line: a newline in a reason (the snippet a JSON parse error quotes, for a release.json that is an HTML page) is folded into a space; before, it split the summary over two stdout lines. The module gains `oneLine`, `sweepStaleTemps`, `fetchArtifacts({ signal })` and `main(argv, io, { repoRoot, handleSignals })`; unit tests cover the default `--out` inside `node_modules` refusal (exit 2), the one-line summary, the stale sweep and SIGINT/SIGTERM as a process. | fix; additive (exit codes, a marker) |
 
 ## Open decisions
 

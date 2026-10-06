@@ -27,10 +27,13 @@
 // a file already present with the pinned digest is skipped; nothing is written
 // outside --out (manifest URLs are confined to their group's directory, and a
 // symlink out of the tree is refused before anything is written). One summary
-// line on stdout: `FETCH OK …` or `FETCH FAILED <reason>`; progress on stderr.
+// line on stdout: `FETCH OK …` or `FETCH FAILED <reason>` (one line: newlines in
+// a reason are folded to spaces); progress on stderr. Temp files are swept: an
+// interrupted run (SIGINT/SIGTERM, as the CLI) deletes its own before it exits,
+// and every run first deletes the ones a dead process left beside its targets.
 // Exit 0 ok, 1 a failed fetch or verification (the bad temp file is deleted),
 // 2 refused before any write (usage, unreadable manifests, a path outside the
-// root). Node built-ins only.
+// root), 130/143 interrupted by SIGINT/SIGTERM. Node built-ins only.
 import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
@@ -43,13 +46,19 @@ import { parseCli } from "../snapshot/cli.mjs";
 export const DEFAULT_ORIGIN = "https://qed64.fawadworkaddress.workers.dev/";
 export const GROUPS = ["runtime", "profiles", "snapshots"];
 export const RELEASE_SCHEMA = "lean4-wasm64.release/v1";
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const TOOL = "fetch-artifacts";
 /** The directory each group's manifest URLs must stay in (one path segment below it). */
 const URL_DIRS = { runtime: "/runtime/chunks/", profiles: "/profiles/", snapshots: "/snapshots/" };
 const IDLE_MS = 120_000;
+/** Exit codes of an interrupted CLI run (128 + the signal number). */
+const SIGNAL_EXITS = { SIGINT: 130, SIGTERM: 143 };
+/** Every temp file this process has open and not yet renamed or removed (the signal path deletes them). */
+const liveTemps = new Set();
+/** A temp file's name: `.<target basename>.<pid>-<8 hex>.tmp`. */
+const TEMP_NAME = /^\.(.+)\.(\d+)-[0-9a-f]{8}\.tmp$/;
 
-/** A failure with an exit code: 1 = the job ran and failed, 2 = refused before any write. */
+/** A failure with an exit code: 1 = the job ran and failed, 2 = refused before any write, 130/143 = interrupted. */
 export class FetchFailure extends Error {
   constructor(message, code = 1) { super(message); this.code = code; }
 }
@@ -58,6 +67,28 @@ const refuse = (message) => new FetchFailure(message, 2);
 const hex = (d) => { const m = /^(?:sha256:)?([0-9a-f]{64})$/.exec(String(d ?? "")); return m ? m[1] : null; };
 const inside = (p, root) => { const rel = path.relative(root, p); return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel)); };
 const isUrl = (s) => /^https?:\/\//i.test(s);
+/** A failure reason on one line: the summary is exactly one stdout line, whatever a parse error quotes. */
+export const oneLine = (message) => String(message).replace(/\s*[\r\n]+\s*/g, " ");
+const alive = (pid) => {
+  try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; }
+};
+
+/** Delete the temp files a dead process left in `dir` for the target basenames `names`; returns what it removed. */
+export async function sweepStaleTemps(dir, names) {
+  let entries;
+  try { entries = await fsp.readdir(dir); } catch (e) { if (e.code === "ENOENT" || e.code === "ENOTDIR") return []; throw e; }
+  const removed = [];
+  for (const name of entries) {
+    const m = TEMP_NAME.exec(name);
+    if (!m || !names.has(m[1])) continue;
+    const pid = Number(m[2]);
+    const file = path.join(dir, name);
+    if (liveTemps.has(file) || (pid !== process.pid && alive(pid))) continue;
+    await fsp.rm(file, { force: true });
+    removed.push({ file, pid });
+  }
+  return removed;
+}
 
 /** The site path of a manifest URL, confined to `group`'s directory, without its leading slash. */
 export function sitePath(group, url, where) {
@@ -244,11 +275,13 @@ async function writeVerified(input, target, expect, rel, signal) {
   const dir = path.dirname(target);
   await fsp.mkdir(dir, { recursive: true });
   const tmp = path.join(dir, `.${path.basename(target)}.${process.pid}-${randomBytes(4).toString("hex")}.tmp`);
+  liveTemps.add(tmp);
   const h = createHash("sha256");
   let n = 0;
   let idle;
   const ac = new AbortController();
   const onAbort = () => ac.abort(signal.reason);
+  if (signal?.aborted) onAbort();
   signal?.addEventListener("abort", onAbort, { once: true });
   const arm = () => { clearTimeout(idle); idle = setTimeout(() => ac.abort(new FetchFailure(`${rel}: no bytes for ${IDLE_MS / 1000} s`)), IDLE_MS); };
   try {
@@ -280,16 +313,19 @@ async function writeVerified(input, target, expect, rel, signal) {
   } finally {
     clearTimeout(idle);
     signal?.removeEventListener("abort", onAbort);
+    liveTemps.delete(tmp);
   }
 }
 
 /**
  * Fetch and verify. Options: out (dir), manifests (dir), only (group list),
  * release (dir|url|undefined), origin (dir|url), withManifests, concurrency,
- * log (a stderr line). Resolves { files, bytes, fetched, present }; rejects
- * with FetchFailure (code 1 or 2).
+ * log (a stderr line), signal (an AbortSignal: aborting stops the run, its
+ * temp files deleted, and it rejects with the abort reason when that is a
+ * FetchFailure). Resolves { files, bytes, fetched, present }; rejects with
+ * FetchFailure (code 1 or 2, or the reason's).
  */
-export async function fetchArtifacts({ out, manifests, only = GROUPS, release, origin = DEFAULT_ORIGIN, withManifests = false, concurrency = 4, log = () => {} }) {
+export async function fetchArtifacts({ out, manifests, only = GROUPS, release, origin = DEFAULT_ORIGIN, withManifests = false, concurrency = 4, log = () => {}, signal }) {
   const outRoot = path.resolve(out);
   const plan = await planFromManifests(path.resolve(manifests), only);
   const releaseSrc = release ? openSource(release, "--release") : null;
@@ -323,56 +359,82 @@ export async function fetchArtifacts({ out, manifests, only = GROUPS, release, o
     log(`${TOOL}: ${group}: ${g.length} files, ${g.reduce((s, j) => s + j.bytes, 0)} bytes from ${from}`);
   }
 
+  // Temp files a dead process left beside these targets (an earlier run killed outright).
+  const byDir = new Map();
+  for (const t of [...jobs, ...writes]) {
+    const dir = path.dirname(t.target);
+    if (!byDir.has(dir)) byDir.set(dir, new Set());
+    byDir.get(dir).add(path.basename(t.target));
+  }
+  for (const [dir, names] of byDir) {
+    for (const r of await sweepStaleTemps(dir, names)) log(`${TOOL}: removed ${path.relative(outRoot, r.file)}, a temp file left by process ${r.pid}`);
+  }
+
   const stats = { files: 0, bytes: 0, fetched: 0, present: 0 };
   const ac = new AbortController();
   let failure = null;
-  let next = 0;
-  const worker = async () => {
-    while (!failure && next < jobs.length) {
-      const j = jobs[next++];
-      try {
-        const have = await fileDigest(j.target);
-        if (have && have.bytes === j.bytes && have.sha256 === j.sha256) {
-          stats.present += 1;
-          log(`${TOOL}: present ${j.rel} (${j.bytes} bytes, verified)`);
-        } else {
-          if (have) log(`${TOOL}: replacing ${j.rel}: the file there does not match its pin`);
-          await writeVerified((signal) => j.src.stream(j.srcRel, signal), j.target, j, j.rel, ac.signal);
-          stats.fetched += 1;
-          log(`${TOOL}: fetched ${j.rel} (${j.bytes} bytes)`);
-        }
-        stats.files += 1;
-        stats.bytes += j.bytes;
-      } catch (e) {
-        if (!failure) { failure = e instanceof FetchFailure ? e : new FetchFailure(`${j.rel}: ${e.message}`); ac.abort(failure); }
-      }
-    }
+  const stop = () => {
+    if (failure) return;
+    const r = signal.reason;
+    failure = r instanceof FetchFailure ? r : new FetchFailure(`aborted (${r?.message ?? r})`);
+    ac.abort(failure);
   };
-  await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, jobs.length)) }, worker));
-  if (failure) throw failure;
+  if (signal?.aborted) stop();
+  signal?.addEventListener("abort", stop, { once: true });
+  try {
+    let next = 0;
+    const worker = async () => {
+      while (!failure && next < jobs.length) {
+        const j = jobs[next++];
+        try {
+          const have = await fileDigest(j.target);
+          if (have && have.bytes === j.bytes && have.sha256 === j.sha256) {
+            stats.present += 1;
+            log(`${TOOL}: present ${j.rel} (${j.bytes} bytes, verified)`);
+          } else {
+            if (have) log(`${TOOL}: replacing ${j.rel}: the file there does not match its pin`);
+            await writeVerified((signal) => j.src.stream(j.srcRel, signal), j.target, j, j.rel, ac.signal);
+            stats.fetched += 1;
+            log(`${TOOL}: fetched ${j.rel} (${j.bytes} bytes)`);
+          }
+          stats.files += 1;
+          stats.bytes += j.bytes;
+        } catch (e) {
+          if (!failure) { failure = e instanceof FetchFailure ? e : new FetchFailure(`${j.rel}: ${e.message}`); ac.abort(failure); }
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, jobs.length)) }, worker));
+    if (failure) throw failure;
 
-  // Whole files: the concatenated parts, as the manifests pin them.
-  for (const w of plan.wholes) {
-    const h = createHash("sha256");
-    let n = 0;
-    for (const rel of w.rels) for await (const c of fs.createReadStream(path.resolve(outRoot, rel))) { h.update(c); n += c.length; }
-    const got = h.digest("hex");
-    if (n !== w.bytes || got !== w.sha256) throw new FetchFailure(`${w.label}: its parts assemble to ${n} bytes, sha256 ${got}; the manifest pins ${w.bytes} bytes, ${w.sha256}`);
-    log(`${TOOL}: verified ${w.label} (${w.bytes} bytes, sha256 ${got.slice(0, 16)}…, ${w.rels.length} parts)`);
-  }
-
-  for (const c of writes) {
-    const have = await fileDigest(c.target);
-    if (have && have.sha256 === c.sha256) { stats.present += 1; log(`${TOOL}: present ${c.rel} (${c.bytes} bytes, verified)`); }
-    else {
-      await writeVerified(async () => Readable.from([c.data]), c.target, c, c.rel);
-      stats.fetched += 1;
-      log(`${TOOL}: wrote ${c.rel} (${c.bytes} bytes, the tracked ${c.from ?? c.rel})`);
+    // Whole files: the concatenated parts, as the manifests pin them.
+    for (const w of plan.wholes) {
+      if (failure) throw failure;
+      const h = createHash("sha256");
+      let n = 0;
+      for (const rel of w.rels) for await (const c of fs.createReadStream(path.resolve(outRoot, rel))) { h.update(c); n += c.length; }
+      const got = h.digest("hex");
+      if (n !== w.bytes || got !== w.sha256) throw new FetchFailure(`${w.label}: its parts assemble to ${n} bytes, sha256 ${got}; the manifest pins ${w.bytes} bytes, ${w.sha256}`);
+      log(`${TOOL}: verified ${w.label} (${w.bytes} bytes, sha256 ${got.slice(0, 16)}…, ${w.rels.length} parts)`);
     }
-    stats.files += 1;
-    stats.bytes += c.bytes;
+
+    for (const c of writes) {
+      if (failure) throw failure;
+      const have = await fileDigest(c.target);
+      if (have && have.sha256 === c.sha256) { stats.present += 1; log(`${TOOL}: present ${c.rel} (${c.bytes} bytes, verified)`); }
+      else {
+        await writeVerified(async () => Readable.from([c.data]), c.target, c, c.rel, ac.signal);
+        stats.fetched += 1;
+        log(`${TOOL}: wrote ${c.rel} (${c.bytes} bytes, the tracked ${c.from ?? c.rel})`);
+      }
+      stats.files += 1;
+      stats.bytes += c.bytes;
+    }
+    if (failure) throw failure;
+    return stats;
+  } finally {
+    signal?.removeEventListener("abort", stop);
   }
-  return stats;
 }
 
 /** --only: a comma list of GROUPS, or null when malformed. */
@@ -383,19 +445,54 @@ export function parseOnly(value) {
   return GROUPS.filter((g) => list.includes(g));
 }
 
-/** The CLI. Returns the exit code; `io` captures output in tests. */
-export async function main(argv = process.argv.slice(2), io = { out: (s) => console.log(s), err: (s) => console.error(s) }) {
+/** Delete every temp file this process still has open, synchronously (the signal path). */
+function removeLiveTemps() {
+  for (const tmp of liveTemps) { try { fs.rmSync(tmp, { force: true }); } catch {} }
+  liveTemps.clear();
+}
+
+const defaultIo = { out: (s) => console.log(s), err: (s) => console.error(s) };
+
+/**
+ * The CLI. Returns the exit code; `io` captures output in tests. Options:
+ * repoRoot (whose public/ the default --out and --manifests are; tests),
+ * handleSignals (the process entry point sets it: SIGINT/SIGTERM abort the
+ * run, delete its temp files and resolve 130/143 with `FETCH FAILED
+ * interrupted (<signal>)`; a second signal, or 5 s without the run ending,
+ * exits the process at once after the same cleanup).
+ */
+export async function main(argv = process.argv.slice(2), io = defaultIo, { repoRoot = REPO_ROOT, handleSignals = false } = {}) {
   let exitCode = null;
   const parsed = parseCli("fetch-artifacts", argv, { out: io.out, err: io.err, exit: (c) => { exitCode = c; } });
   if (!parsed) return exitCode ?? 2;
   const v = parsed.values;
-  const failed = (e) => { io.out(`FETCH FAILED ${e.message}`); return e.code ?? 1; };
+  let said = false;
+  const failed = (e) => { if (!said) { said = true; io.out(`FETCH FAILED ${oneLine(e.message)}`); } return e.code ?? 1; };
   const only = parseOnly(v.only);
   if (!only) return failed(refuse(`--only ${v.only}: not a comma list of ${GROUPS.join(", ")}`));
   const out = v.out ?? path.join(repoRoot, "public");
   if (v.out === undefined && path.resolve(out).split(path.sep).includes("node_modules")) {
     return failed(refuse(`the default --out ${out} is inside node_modules (an installed package); pass --out <dir>`));
   }
+  const ac = new AbortController();
+  const onSignal = (sig) => {
+    const interrupted = new FetchFailure(`interrupted (${sig})`, SIGNAL_EXITS[sig]);
+    removeLiveTemps();
+    if (ac.signal.aborted) return hardExit(interrupted);
+    ac.abort(interrupted);
+    setTimeout(() => hardExit(interrupted), 5_000).unref();
+  };
+  const hardExit = (e) => {
+    removeLiveTemps();
+    if (!said) {
+      said = true;
+      const line = `FETCH FAILED ${oneLine(e.message)}`;
+      if (io === defaultIo) { try { fs.writeSync(1, `${line}\n`); } catch {} } else io.out(line);
+    }
+    process.exit(e.code);
+  };
+  const handlers = handleSignals ? Object.keys(SIGNAL_EXITS).map((sig) => [sig, () => onSignal(sig)]) : [];
+  for (const [sig, h] of handlers) process.on(sig, h);
   try {
     const stats = await fetchArtifacts({
       out,
@@ -405,11 +502,14 @@ export async function main(argv = process.argv.slice(2), io = { out: (s) => cons
       origin: v.origin ?? DEFAULT_ORIGIN,
       withManifests: v["with-manifests"] === true,
       log: io.err,
+      signal: ac.signal,
     });
     io.out(`FETCH OK ${stats.files} files, ${stats.bytes} bytes (${stats.fetched} fetched, ${stats.present} already present)`);
     return 0;
   } catch (e) {
-    return failed(e instanceof FetchFailure ? e : new FetchFailure(e.message));
+    return failed(ac.signal.aborted ? ac.signal.reason : e instanceof FetchFailure ? e : new FetchFailure(e.message));
+  } finally {
+    for (const [sig, h] of handlers) process.off(sig, h);
   }
 }
 
@@ -418,4 +518,4 @@ const invokedDirectly = (() => {
   try { return !!process.argv[1] && fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url)); }
   catch { return false; }
 })();
-if (invokedDirectly) process.exitCode = await main();
+if (invokedDirectly) process.exitCode = await main(undefined, undefined, { handleSignals: true });

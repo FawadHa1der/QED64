@@ -11,7 +11,7 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { fetchArtifacts, main, parseOnly, planFromManifests, type FetchOptions } from "../../pipeline/release/fetch-artifacts.mjs";
+import { fetchArtifacts, main, oneLine, parseOnly, planFromManifests, type FetchOptions } from "../../pipeline/release/fetch-artifacts.mjs";
 import { SPECS } from "../../pipeline/snapshot/cli.mjs";
 
 const root = path.resolve(__dirname, "../..");
@@ -25,6 +25,9 @@ let base: string;
 /** Served bytes by URL path (/site/…, /rel/…), and every GET path seen. */
 const served = new Map<string, Buffer>();
 const hits: string[] = [];
+/** URL paths answered with a Content-Length of `total`, the first bytes `head`, then nothing (a stalled download). */
+const stalls = new Map<string, { head: Buffer; total: number }>();
+const stalled = new Set<http.ServerResponse>();
 
 /** The fake layout: site path (no leading slash) → bytes. */
 const lj = [bytes("lean.js-0", 64), bytes("lean.js-1", 40)];
@@ -129,6 +132,8 @@ beforeAll(async () => {
   server = http.createServer((req, res) => {
     const p = decodeURIComponent(new URL(req.url!, "http://x").pathname);
     hits.push(p);
+    const st = stalls.get(p);
+    if (st) { res.writeHead(200, { "content-type": "application/octet-stream", "content-length": st.total }); res.write(st.head); stalled.add(res); return; }
     const b = served.get(p);
     if (!b) { res.writeHead(404, { "content-type": "text/plain" }); res.end("not found"); return; }
     res.writeHead(200, { "content-type": "application/octet-stream", "content-length": b.length });
@@ -138,10 +143,15 @@ beforeAll(async () => {
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 });
 afterAll(async () => {
+  for (const r of stalled) r.destroy();
+  server.closeAllConnections();
   await new Promise((r) => server.close(r));
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 beforeEach(() => {
+  for (const r of stalled) r.destroy();
+  stalled.clear();
+  stalls.clear();
   served.clear();
   hits.length = 0;
   serve("/site/", binaries);
@@ -284,6 +294,24 @@ describe("fetchArtifacts", () => {
     expect(hits).toEqual([]);
   });
 
+  test("a temp file a dead process left beside a target is deleted first; a live process's, and other names, are left alone", async () => {
+    const out = outDir();
+    const dir = path.join(out, "snapshots");
+    fs.mkdirSync(dir, { recursive: true });
+    const name = path.basename(snapUrl);
+    const dead = `.${name}.99999999-deadbeef.tmp`;
+    const live = `.${name}.${process.ppid}-0badf00d.tmp`;
+    const other = ".other.snapz.99999999-deadbeef.tmp";
+    for (const f of [dead, live, other]) fs.writeFileSync(path.join(dir, f), "partial");
+    const r = await run({ out, manifests: manifestsDir(), only: ["snapshots"] });
+    expect(r.message).toBe("");
+    expect(r.lines).toContain(`fetch-artifacts: removed snapshots/${dead}, a temp file left by process 99999999`);
+    expect(r.lines.filter((l) => l.includes(" removed "))).toHaveLength(1);
+    expect(list(out)).toEqual([`snapshots/${live}`, `snapshots/${other}`, snapUrl.slice(1)].sort());
+    const markers = SPECS["fetch-artifacts"]!.markers.filter((m) => m.stream === "stderr");
+    for (const line of r.lines) expect(markers.some((m) => m.regex.test(line)), line).toBe(true);
+  });
+
   test("--with-manifests also writes the tracked manifests; a missing manifest tree refuses (2)", async () => {
     const out = outDir();
     const manifests = manifestsDir();
@@ -310,16 +338,75 @@ describe("the CLI", () => {
     expect(list(out)).toEqual([snapUrl.slice(1)]);
   });
 
-  test("as a process: exit 1 and FETCH FAILED on a 404, exit 0 and FETCH OK from a release dir", async () => {
-    const exec = (args: string[]) => new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve) => {
+  test("the default --out inside node_modules (an installed package) refuses (2) before anything is read, fetched or written", async () => {
+    const io = { out: [] as string[], err: [] as string[] };
+    const sink = { out: (s: string) => io.out.push(s), err: (s: string) => io.err.push(s) };
+    // Never created: the guard fires on the path alone.
+    const consumer = path.join(tmp, "consumer-never-created");
+    const installed = path.join(consumer, "node_modules", "qed64");
+    const manifests = manifestsDir();
+    expect(await main(["--manifests", manifests, "--origin", origin()], sink, { repoRoot: installed })).toBe(2);
+    expect(io.out).toEqual([`FETCH FAILED the default --out ${path.join(installed, "public")} is inside node_modules (an installed package); pass --out <dir>`]);
+    expect(io.err).toEqual([]);
+    expect(fs.existsSync(consumer)).toBe(false);
+    expect(hits).toEqual([]);
+    // an explicit --out is not refused, whatever the package root
+    io.out.length = 0;
+    const out = outDir();
+    expect(await main(["--out", out, "--manifests", manifests, "--origin", origin(), "--only", "snapshots"], sink, { repoRoot: installed })).toBe(0);
+    expect(list(out)).toEqual([snapUrl.slice(1)]);
+  });
+
+  test("FETCH FAILED is one stdout line even when the reason quotes a newline (a release.json that is an HTML page)", async () => {
+    const io = { out: [] as string[], err: [] as string[] };
+    const sink = { out: (s: string) => io.out.push(s), err: (s: string) => io.err.push(s) };
+    const rel = releaseDir(new Map([["release.json", Buffer.from("\n<html>")]]));
+    const out = outDir();
+    expect(await main(["--out", out, "--manifests", manifestsDir(), "--release", rel, "--only", "runtime"], sink)).toBe(1);
+    const failedMarker = SPECS["fetch-artifacts"]!.markers.find((m) => m.id === "failed")!;
+    expect(io.out).toHaveLength(1);
+    expect(io.out[0]).not.toMatch(/[\r\n]/);
+    expect(io.out[0]).toMatch(failedMarker.regex);
+    expect(io.out[0]).toMatch(/^FETCH FAILED release\.json: .*<html>/);
+    expect(list(out)).toEqual([]);
+    expect(oneLine("a\n  b \r\n\nc")).toBe("a b c");
+  });
+
+  const exec = (args: string[], onSpawn: (child: ReturnType<typeof spawn>) => void = () => {}) =>
+    new Promise<{ code: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string }>((resolve) => {
       const child = spawn(process.execPath, [script, ...args], { stdio: ["ignore", "pipe", "pipe"] });
       let stdout = "";
       let stderr = "";
-      child.stdout.on("data", (d) => { stdout += d; });
-      child.stderr.on("data", (d) => { stderr += d; });
+      child.stdout!.on("data", (d) => { stdout += d; });
+      child.stderr!.on("data", (d) => { stderr += d; });
       const timer = setTimeout(() => child.kill("SIGKILL"), 20_000);
-      child.on("close", (code) => { clearTimeout(timer); resolve({ code, stdout, stderr }); });
+      child.on("close", (code, signal) => { clearTimeout(timer); resolve({ code, signal, stdout, stderr }); });
+      onSpawn(child);
     });
+
+  test.each([["SIGINT", 130], ["SIGTERM", 143]] as const)("as a process, %s during a stalled download: its temp file is deleted, exit %i, one FETCH FAILED line", async (sig, code) => {
+    const big = Buffer.alloc(4 << 20, "big.snapz;");
+    const url = `/snapshots/big.${sha(big).slice(0, 16)}.snapz`;
+    const manifests = manifestsDir(({ snapshots }) => { snapshots.snapshots[0] = { ...snapshots.snapshots[0]!, url, digest: `sha256:${sha(big)}`, transfer: big.length }; });
+    stalls.set(`/site${url}`, { head: big.subarray(0, 1 << 20), total: big.length });
+    const out = outDir();
+    const temps = () => list(out).filter((f) => f.endsWith(".tmp"));
+    const r = await exec(["--out", out, "--manifests", manifests, "--origin", origin(), "--only", "snapshots"], async (child) => {
+      // wait until the first MiB is in the temp file, then interrupt
+      for (const until = Date.now() + 15_000; Date.now() < until;) {
+        const t = temps()[0];
+        if (t && fs.statSync(path.join(out, t), { throwIfNoEntry: false })?.size === 1 << 20) break;
+        await new Promise((res) => setTimeout(res, 25));
+      }
+      expect(temps()).toHaveLength(1);
+      child.kill(sig);
+    });
+    expect([r.code, r.signal]).toEqual([code, null]);
+    expect(r.stdout).toBe(`FETCH FAILED interrupted (${sig})\n`);
+    expect(list(out)).toEqual([]);
+  });
+
+  test("as a process: exit 1 and FETCH FAILED on a 404, exit 0 and FETCH OK from a release dir", async () => {
     served.delete(`/site${snapUrl}`);
     const out = outDir();
     const a = await exec(["--out", out, "--manifests", manifestsDir(), "--origin", origin()]);
