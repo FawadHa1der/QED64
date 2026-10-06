@@ -211,7 +211,9 @@ export default createWorker({
 ```
 
 ```toml
+name = "your-worker"
 main = "infra/worker.js"
+compatibility_date = "2026-08-01"   # the showcase's; wrangler requires a name and a date
 [assets]
 directory = "out/deploy/assets"     # the pinned QED64 dist at / and the gallery under showcase/
 binding = "ASSETS"
