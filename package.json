@@ -81,7 +81,8 @@
     "build:site": "npm --prefix frontend run build",
     "typecheck:site": "npm --prefix frontend exec -- tsc -p frontend --noEmit",
     "preview:prod": "node scripts/serve-dist.mjs",
-    "test:adversarial": "node tests/adversarial/run.mjs"
+    "test:adversarial": "node tests/adversarial/run.mjs",
+    "test:consumer": "node tests/consumer/check-consumer.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",

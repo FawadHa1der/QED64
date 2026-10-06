@@ -409,7 +409,9 @@ tarball, with no git or SSH needed, and honours `files`.
   - `"./embedding/closure.json"`;
   - `"./package.json"`.
 - `files`: exactly the closure below, plus the license, README and this
-  document. 41 files, about 136 kB packed.
+  document. 50 files, about 194 kB packed. `npm run test:consumer`
+  (tests/consumer/check-consumer.mjs) proves the packed files alone resolve
+  and build.
 
 Notes for consumers:
 - The embed closure is TypeScript source with **relative imports only** (no
@@ -1019,3 +1021,6 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   - `MEMORY64_PROBE` exported (from `src/runtime/client.ts`, re-exported by
     `qed64/embed`; `probeMemory64` validates it; a unit test pins the
     worker's copy to it); `EMBED_API_REVISION` → `1.0.0-pre.3`.
+  - `npm run test:consumer` (G2): every export resolved from the packed
+    tarball by Node, and a fixture page (`qed64/embed`) and Worker
+    (`qed64/edge`) type-checked and built with Vite against it.
