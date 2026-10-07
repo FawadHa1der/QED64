@@ -19,12 +19,14 @@
 //
 // Usage: node tests/adversarial/reload-storm.mjs [--url http://localhost:5198/] [--runs 5]
 //          [--reloads 5] [--interval-ms 3000] [--run-dir <dir>] [--tag <label>]
-//          [--headed] [--embed] [--embed-host /embed-host.html] [--sample-ms 100] [--ready-each] [--console-log]
+//          [--headed] [--embed] [--embed-host /embed-host.html] [--ballast-mb 0] [--sample-ms 100] [--ready-each] [--console-log]
 //   --headed     Chrome for Testing in a real window (the default is chrome-headless-shell),
 //                with --force-device-scale-factor=1 and a 1440×900 viewport
 //   --embed      load the QED64 page (--url) as the only iframe of the same-origin host
 //                page public/embed-host.html (dev server only) and reload the HOST, as an
 //                embedding site does; ready = the frame's qed64.status()
+//   --ballast-mb N (with --embed) the host page first holds N MiB of live JS objects: a heavy
+//                embedding page sharing the renderer's pointer cage (HARDENING #55 residual)
 //   --console-log keep the worker's [lean:*] console lines with their times (boot phases per instance)
 //   --ready-each time every reload to `ready` (a latency probe: use an interval longer than a boot)
 //   --sample-ms  run tests/adversarial/renderer-sampler.py for each browser: every child
@@ -51,7 +53,8 @@ const READY_EACH = has("--ready-each");
 const CONSOLE_LOG = has("--console-log");
 const target = resolveTarget(url);
 const qedPath = new URL(url).pathname + new URL(url).search;
-const pageUrl = EMBED ? `${target.origin}${arg("embed-host", "/embed-host.html")}?src=${encodeURIComponent(qedPath)}` : url;
+const BALLAST_MB = Number(arg("ballast-mb", "0"));
+const pageUrl = EMBED ? `${target.origin}${arg("embed-host", "/embed-host.html")}?src=${encodeURIComponent(qedPath)}${BALLAST_MB > 0 ? `&ballast=${BALLAST_MB}` : ""}` : url;
 const manifest = await fetchJson(target.runtimeOverride ? target.manifestUrl : target.manifestUrl).catch((e) => { console.error(`reload-storm: refused — ${e.message}`); process.exit(3); });
 if (EMBED) {
   const r = await fetch(pageUrl, { cache: "no-cache" }).catch(() => null);
@@ -96,7 +99,7 @@ const runs = [];
 let booted = 0;
 for (let n = 1; n <= RUNS; n++) {
   const marker = `--qed64-storm=${process.pid}-${n}`;
-  const out = { n, mode: browserMode, embed: EMBED, host: hostState() };
+  const out = { n, mode: browserMode, embed: EMBED, ballastMb: BALLAST_MB, host: hostState() };
   browserLog = path.join(dir, `reload-storm-${TAG}-${n}.browser.log`);
   const oomsBefore = ooms.length;
   const browser = await chromium.launch({ headless: !HEADED, args: [...(HEADED ? ["--force-device-scale-factor=1"] : []), marker] });
@@ -179,7 +182,7 @@ for (let n = 1; n <= RUNS; n++) {
   runs.push(out);
   const ca = out.crashAfterReload;
   console.log(`run ${n}: ${out.verdict}${out.crashedAtMs !== null && out.crashedAtMs !== undefined ? ` at ${out.crashedAtMs} ms${ca ? ` (${ca.ms} ms after reload ${ca.reload})` : ""}` : ""}${out.oomKind ? ` [${out.oomKind}, ${out.oom.length} OOM line(s)]` : ""}; first ready ${out.firstReadyMs} ms; at ready ${JSON.stringify(out.atReady ?? null)}; peak live workers ${out.peakAlive}${out.predecessorWaits?.length ? `; waited for predecessors ${out.predecessorWaits.length}× (${out.predecessorWaits.map((w) => (/waited (\d+) ms/.exec(w.text) || [])[1]).join("/")} ms)` : ""}; ready after storm ${out.readyAfterMs ?? null} ms${READY_EACH ? `; reload→ready ${(out.reloads || []).map((r) => r.readyMs ?? "-").join("/")} ms` : ""}; host ${out.host.reclaimableGB} GB reclaimable`);
-  fs.writeFileSync(path.join(dir, `reload-storm-${TAG}.json`), JSON.stringify({ url: pageUrl, qed64Url: url, embed: EMBED, mode: browserMode, buildId: manifest.buildId, tag: TAG, runs }, null, 1));
+  fs.writeFileSync(path.join(dir, `reload-storm-${TAG}.json`), JSON.stringify({ url: pageUrl, qed64Url: url, embed: EMBED, ballastMb: BALLAST_MB, mode: browserMode, buildId: manifest.buildId, tag: TAG, runs }, null, 1));
   await sleep(5000); // let the dead browser's memory drain before the next run
 }
 const crashedRuns = runs.filter((r) => r.verdict === "crashed" || r.verdict === "crashed-before-ready");
