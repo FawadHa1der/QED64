@@ -3,7 +3,9 @@
 // - every relative Markdown link `[text](target)` in README.md and in
 //   docs/**/*.md (docs/history/ included) names a file or directory that exists,
 //   resolved against the linking file's directory (an `#anchor` is dropped;
-//   links inside fenced code blocks are examples, not links);
+//   link syntax inside a fenced code block, column 0 or indented up to three
+//   spaces under a list item, or inside an inline code span is an example,
+//   not a link);
 // - every `docs/….md` path cited in the source under lib/, frontend/src/,
 //   pipeline/, scripts/, infra/ and public/workers/ exists, resolved against
 //   the repository root. A `docs/` that follows another path segment
@@ -34,9 +36,13 @@ const markdownFiles = ["README.md", ...walk("docs", (f) => f.endsWith(".md"))].s
 const CODE_DIRS = ["lib", "frontend/src", "pipeline", "scripts", "infra", "public/workers"];
 const codeFiles = CODE_DIRS.flatMap((d) => walk(d, (f) => /\.(?:ts|mts|cts|js|mjs|cjs|sh|py)$/.test(f))).sort();
 
-/** Relative Markdown link targets of one file, outside fenced code blocks. */
+/** Relative Markdown link targets of one file, outside fenced code blocks and inline code spans. */
 function relativeLinks(text: string): string[] {
-  const prose = text.replace(/^(```|~~~)[^\n]*\n[\s\S]*?^\1[^\n]*$/gm, "");
+  // A fence opens with up to three spaces, then ``` or ~~~ (or longer); it closes at a line of the same
+  // fence character, at least as long, with up to three spaces of indent (CommonMark's rule).
+  const prose = text
+    .replace(/^ {0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:^ {0,3}\1[`~]*[ \t]*$|(?![\s\S]))/gm, "")
+    .replace(/(`+)(?:[^`\n]|\n(?![ \t]*\n))*?\1/g, ""); // an inline code span, never across a blank line
   const targets: string[] = [];
   for (const m of prose.matchAll(/\[[^\]\n]*\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g)) {
     const target = m[1]!;
@@ -53,6 +59,18 @@ describe("the docs' links resolve", () => {
     expect(markdownFiles).toContain("docs/history/README.md");
   });
 
+  test("link syntax in fences (column 0 or indented under a list item) and in code spans is not a link", () => {
+    const fence = "```";
+    const sample = [
+      "Write `[x](NOPE-SPAN.md)` to link, or ``[y](NOPE-SPAN2.md)``.",
+      `${fence}md`, "[x](NOPE-COL0.md)", fence,
+      "1. A step:", `   ${fence}md`, "   [x](NOPE-IND.md)", `   ${fence}`,
+      "~~~", "[x](NOPE-TILDE.md)", "~~~",
+      "A real one: [doc](REAL.md), and [after a span](`x`) `y` [two](REAL2.md).",
+    ].join("\n");
+    expect(relativeLinks(sample)).toEqual(["REAL.md", "REAL2.md"]);
+  });
+
   test("every relative Markdown link in README.md and docs/**/*.md names an existing file", () => {
     const broken: string[] = [];
     let checked = 0;
@@ -62,7 +80,7 @@ describe("the docs' links resolve", () => {
         if (file === "") continue;
         checked++;
         const resolved = path.normalize(path.join(root, path.dirname(f), file));
-        if (!resolved.startsWith(root + path.sep) || !fs.existsSync(resolved)) broken.push(`${f}: (${target})`);
+        if ((resolved !== root && !resolved.startsWith(root + path.sep)) || !fs.existsSync(resolved)) broken.push(`${f}: (${target})`);
       }
     }
     expect(broken).toEqual([]);
