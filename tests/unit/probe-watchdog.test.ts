@@ -1,16 +1,16 @@
 // snapshot-probe's watchdog (docs/CLI-CONTRACT.md §snapshot-probe, HARDENING #61): unless
-// --watchdog-ms 0 (or QED64_PROBE_CHILD=1), the probe runs as ONE supervised child and the
-// supervisor SIGKILLs it past the deadline, because from kernel patch 0037 on a task that never
-// finishes hangs lean_wasm_compile, which blocks the probe's own thread.
+// --watchdog-ms 0, a worker thread in the probe process prints one FAIL line and SIGKILLs the
+// process past the deadline, because from kernel patch 0037 on a task that never finishes hangs
+// lean_wasm_compile, which blocks the probe's main thread. One process: the PID, the exit status
+// of a verdict and every per-PID measure stay the probe's.
 //
 // Safety: no real runtime. The artifact is a FAKE: its bin/lean.js is a stub glue (run by the
 // probe through vm.runInThisContext, as the real one is) that implements the exports the probe
 // calls and then calls onRuntimeInitialized; FAKE_LEAN_MODE picks what its lean_wasm_compile
 // does (pass, an error message, an abort, or a busy loop that never returns, which blocks the
 // thread exactly as a hung wasm call does). Every node process the tests start logs its PID
-// through a --require preload (NODE_OPTIONS), so "no child" and "the child is gone" are facts,
-// not inferences. Every child has a SIGKILL timeout, every async one a finally that kills what it
-// started, and a hung child also dies with its supervisor (the probe's own guard, tested below).
+// through a --require preload (NODE_OPTIONS), so "one process" is a fact, not an inference. Every
+// child has a SIGKILL timeout, every async one a finally that kills what it started.
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -21,11 +21,16 @@ import { SPECS, formatHelp, reservedHit } from "../../pipeline/snapshot/cli.mjs"
 const root = path.resolve(__dirname, "../..");
 const probe = path.join(root, "pipeline/snapshot/snapshot-probe.mjs");
 const WATCHDOG_LINE = (ms: number) => `SNAPSHOT PROBE FAIL: watchdog: no verdict within ${ms} ms (lean_wasm_compile did not return; a task that never finishes hangs it from kernel 0037 on)`;
-const CLEARED = ["QED64_PROBE_CHILD", "QED64_PROBE_SCRATCH", "QED64_LEAN_ARTIFACT", "QED64_LIB_TREE", "QED64_PROFILE_INIT", "NODE_OPTIONS"];
+const CLEARED = ["QED64_LEAN_ARTIFACT", "QED64_LIB_TREE", "QED64_PROFILE_INIT", "NODE_OPTIONS"];
 
 const FAKE_GLUE = `// fake lean.js: the exports snapshot-probe calls, no wasm
 const M = globalThis.Module;
 const mode = process.env.FAKE_LEAN_MODE || "pass";
+// slow-exit: the verdict is printed, then process.exit stalls past the deadline (the verdict won)
+if (mode === "slow-exit") {
+  const realExit = process.exit;
+  process.exit = (c) => { const t = Date.now() + Number(process.env.FAKE_EXIT_DELAY_MS); while (Date.now() < t) {} realExit.call(process, c); };
+}
 Object.assign(M, {
   getValue: (p, t) => (t === "i64" ? 1n : 0), // tag 0, scalar box(0)
   stringToNewUTF8: () => 8, _lean_mk_string: () => 16, _free() {}, _malloc: () => 64,
@@ -91,41 +96,45 @@ function run(args: string[], c: ReturnType<typeof caseDir>, extra: Record<string
   const r = spawnSync(process.execPath, [...nodeArgs, probe, ...args], { cwd: c.d, encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL", env: envFor(c, extra) });
   return { status: r.status, signal: r.signal, pid: r.pid!, stdout: r.stdout ?? "", stderr: r.stderr ?? "", procs: processes(c.log) };
 }
-/** The child the supervisor started (the one process whose PID is not the supervisor's). */
-function childOf(procs: Proc[], parent: number): Proc {
-  const others = procs.filter((p) => p.pid !== parent);
-  expect(others.length, JSON.stringify(procs)).toBe(1);
-  expect(others[0]!.ppid).toBe(parent);
-  return others[0]!;
-}
+/** The run was one process: the PID the caller spawned (the --stack-size re-exec keeps it). */
+const oneProcess = (r: { pid: number; procs: Proc[] }) => expect(r.procs.map((p) => p.pid), JSON.stringify(r.procs)).toEqual([r.pid]);
 /** Milliseconds in the timing lines vary run to run; everything else must be byte-identical. */
 const timing = (s: string) => s.replace(/elapsed=\d+ms/g, "elapsed=<n>ms");
 
 describe("snapshot-probe watchdog", () => {
-  test("a compile that never returns: the watchdog SIGKILLs the child, prints exactly one FAIL line, exits 1 and leaves no scratch dir", () => {
+  test("a compile that never returns: one FAIL line, then the probe's own PID dies of SIGKILL, and no scratch dir is left", () => {
     const c = caseDir();
     const t0 = Date.now();
     const r = run([...baseArgs(), "--watchdog-ms", "1500"], c, { FAKE_LEAN_MODE: "hang" });
-    expect(r.signal).toBeNull();
-    expect(r.status).toBe(1);
+    expect([r.status, r.signal]).toEqual([null, "SIGKILL"]);
     expect(Date.now() - t0).toBeGreaterThanOrEqual(1500);
     const lines = r.stderr.split("\n").filter(Boolean);
     expect(lines).toEqual([WATCHDOG_LINE(1500)]);
     expect(SPECS["snapshot-probe"]!.markers.find((m) => m.id === "watchdog")!.regex.test(lines[0]!)).toBe(true);
     expect(SPECS["snapshot-probe"]!.markers.find((m) => m.id === "fail")!.regex.test(lines[0]!)).toBe(true);
     expect(reservedHit(lines[0]!)).toBeNull();
-    // the child printed its lines up to the hung call, the supervisor nothing on stdout
+    // the probe printed its lines up to the hung call
     expect(r.stdout.split("\n").filter(Boolean)).toEqual([
       "== load snapshot: probe-input.snap (19 bytes) ==",
       expect.stringMatching(/^load: tag=0 scalar=0 elapsed=\d+ms$/),
       "== compile the probe against the seeded environment ==",
     ]);
-    const child = childOf(r.procs, r.pid);
-    expect(alive(child.pid)).toBe(false);
+    oneProcess(r);
+    expect(alive(r.pid)).toBe(false);
     expect(fs.readdirSync(c.tmpdir)).toEqual([]);
   });
 
-  test("the child's exit code is the probe's: 0 PASS, 1 FAIL, 2 a path-rule refusal in the child, 3 an abort", () => {
+  test("a verdict printed before the deadline wins: an exit that stalls past it is not reported as the watchdog", () => {
+    const c = caseDir();
+    const r = run([...baseArgs(), "--watchdog-ms", "1000"], c, { FAKE_LEAN_MODE: "slow-exit", FAKE_EXIT_DELAY_MS: "2000" });
+    expect([r.status, r.signal], r.stderr).toEqual([0, null]);
+    expect(r.stdout).toMatch(/\nSNAPSHOT PROBE PASS\n$/);
+    expect(r.stderr).toBe("");
+    oneProcess(r);
+    expect(fs.readdirSync(c.tmpdir)).toEqual([]);
+  });
+
+  test("exit codes are the probe's, in one process: 0 PASS, 1 FAIL, 2 a path-rule refusal, 3 an abort", () => {
     const cases: [string, string[], number, Record<string, string>][] = [
       ["pass", baseArgs(), 0, { FAKE_LEAN_MODE: "pass" }],
       ["error", baseArgs(), 1, { FAKE_LEAN_MODE: "error" }],
@@ -136,11 +145,10 @@ describe("snapshot-probe watchdog", () => {
       const c = caseDir();
       const r = run(args, c, extra);
       expect([name, r.status], r.stderr).toEqual([name, code]);
-      childOf(r.procs, r.pid); // every case ran in the supervised child
-      expect(r.stderr, name).not.toMatch(/watchdog|killed by/);
+      oneProcess(r);
+      expect(r.stderr, name).not.toMatch(/watchdog/);
       expect(fs.readdirSync(c.tmpdir), name).toEqual([]);
       if (name === "no artifact") {
-        // the refusal is printed once, by the child, and the supervisor adds nothing
         expect(r.stderr.split("\n").filter(Boolean)).toEqual([
           expect.stringMatching(/^snapshot-probe: no --artifact given and QED64_LEAN_ARTIFACT is unset; the deprecated default .* — pass --artifact <dir> or set QED64_LEAN_ARTIFACT$/),
           `usage: ${SPECS["snapshot-probe"]!.synopsis}`,
@@ -150,16 +158,16 @@ describe("snapshot-probe watchdog", () => {
     }
   });
 
-  test("--help, a missing required flag and a malformed --watchdog-ms never spawn a child", () => {
+  test("--help, a missing required flag and a malformed --watchdog-ms exit before any side effect", () => {
     const help = caseDir();
     const h = run([...baseArgs(), "--help"], help);
     expect([h.status, h.stdout, h.stderr]).toEqual([0, `${formatHelp("snapshot-probe")}\n`, ""]);
-    expect(h.procs.map((p) => p.pid)).toEqual([h.pid]);
+    oneProcess(h);
 
     const usage = caseDir();
     const u = run(["--snap", snap, "--artifact", art], usage);
     expect([u.status, u.stdout, u.stderr]).toEqual([2, "", `usage: ${SPECS["snapshot-probe"]!.synopsis}\n`]);
-    expect(u.procs.map((p) => p.pid)).toEqual([u.pid]);
+    oneProcess(u);
 
     for (const bad of ["-1", "1.5", "soon"]) {
       const c = caseDir();
@@ -170,113 +178,72 @@ describe("snapshot-probe watchdog", () => {
         `usage: ${SPECS["snapshot-probe"]!.synopsis}`,
       ]);
       expect(reservedHit(r.stderr)).toBeNull();
-      expect(r.procs.map((p) => p.pid)).toEqual([r.pid]);
+      oneProcess(r);
       expect(fs.readdirSync(c.tmpdir)).toEqual([]);
     }
   });
 
-  test("--watchdog-ms 0 and QED64_PROBE_CHILD=1 run the probe in-process (no child)", () => {
-    for (const [args, extra] of [[[...baseArgs(), "--watchdog-ms", "0"], {}], [baseArgs(), { QED64_PROBE_CHILD: "1" }]] as const) {
-      const c = caseDir();
-      const r = run([...args], c, { ...extra });
-      expect(r.status, r.stderr).toBe(0);
-      expect(r.stdout).toMatch(/\nSNAPSHOT PROBE PASS\n$/);
-      expect(r.procs.map((p) => p.pid)).toEqual([r.pid]);
-      expect(fs.readdirSync(c.tmpdir)).toEqual([]);
-    }
+  test("--watchdog-ms 0: no watchdog, a hung compile stays hung until the caller kills it", () => {
+    const c = caseDir();
+    const r = spawnSync(process.execPath, ["--stack-size=8192", probe, ...baseArgs(), "--watchdog-ms", "0"], {
+      cwd: c.d, encoding: "utf8", timeout: 2500, killSignal: "SIGKILL", env: envFor(c, { FAKE_LEAN_MODE: "hang" }),
+    });
+    expect([r.status, r.signal]).toEqual([null, "SIGKILL"]);
+    expect(r.stderr).toBe("");
+    expect(r.stdout).toMatch(/== compile the probe against the seeded environment ==\n$/);
   });
 
-  test("stdout and stderr of a normal run are byte-identical supervised and in-process (timings aside)", () => {
+  test("stdout and stderr of a normal run are byte-identical with and without the watchdog (timings aside)", () => {
     for (const mode of ["pass", "error"]) {
       const args = [...baseArgs(), "--dump-messages", "--bogus-flag", "--budget-ms", "5000", "--budget-ms=1"];
-      const supervised = run(args, caseDir(), { FAKE_LEAN_MODE: mode });
-      const inProcess = run([...args, "--watchdog-ms", "0"], caseDir(), { FAKE_LEAN_MODE: mode });
-      const asChild = run(args, caseDir(), { FAKE_LEAN_MODE: mode, QED64_PROBE_CHILD: "1" });
-      expect(supervised.status, mode).toBe(mode === "pass" ? 0 : 1);
-      childOf(supervised.procs, supervised.pid);
-      for (const other of [inProcess, asChild]) {
-        expect(other.status, mode).toBe(supervised.status);
-        expect(timing(other.stdout), mode).toBe(timing(supervised.stdout));
-      }
-      // The argument WARNINGs are printed once (the supervisor's); the child drops its repeat.
-      expect(timing(supervised.stderr), mode).toBe(timing(inProcess.stderr));
-      expect(supervised.stderr.split("\n").filter((l) => l.includes("WARNING"))).toEqual([
+      const watched = run(args, caseDir(), { FAKE_LEAN_MODE: mode });
+      const unwatched = run([...args, "--watchdog-ms", "0"], caseDir(), { FAKE_LEAN_MODE: mode });
+      expect(watched.status, mode).toBe(mode === "pass" ? 0 : 1);
+      expect(unwatched.status, mode).toBe(watched.status);
+      expect(timing(unwatched.stdout), mode).toBe(timing(watched.stdout));
+      expect(timing(unwatched.stderr), mode).toBe(timing(watched.stderr));
+      expect(watched.stderr.split("\n").filter((l) => l.includes("WARNING"))).toEqual([
         "snapshot-probe: WARNING — unknown flag --bogus-flag ignored",
         "snapshot-probe: WARNING — flag --budget-ms repeated; the first value wins",
       ]);
-      expect(supervised.stdout).toContain('[lean:stdout] {"severity":"information"');
+      expect(watched.stdout).toContain('[lean:stdout] {"severity":"information"');
     }
   });
 
-  test("started without --stack-size: re-exec in place, then the child runs with --stack-size=8192", () => {
+  test("started without --stack-size: re-exec in place, still one process", () => {
     const c = caseDir();
     const r = run(baseArgs(), c, {}, []);
     expect(r.status, r.stderr).toBe(0);
     expect(r.stderr).toBe("");
-    const parent = r.procs.find((p) => p.pid === r.pid)!;
-    expect(parent.execArgv).toEqual(["--stack-size=8192"]);
-    expect(childOf(r.procs, r.pid).execArgv).toEqual(["--stack-size=8192"]);
+    oneProcess(r);
+    expect(r.procs[0]!.execArgv).toEqual(["--stack-size=8192"]);
   });
 });
 
-describe("snapshot-probe watchdog: signals", () => {
-  /** Start a supervised hung probe; resolves once its child is up. */
-  async function startHung(c: ReturnType<typeof caseDir>) {
-    const proc = spawn(process.execPath, ["--stack-size=8192", probe, ...baseArgs(), "--watchdog-ms", "60000"], {
-      cwd: c.d, env: envFor(c, { FAKE_LEAN_MODE: "hang" }), stdio: ["ignore", "pipe", "pipe"],
-    });
-    let stderr = "";
-    proc.stderr!.on("data", (d) => { stderr += d; });
-    proc.stdout!.on("data", () => {});
-    const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => proc.on("exit", (code, signal) => resolve({ code, signal })));
-    const deadline = Date.now() + 20_000;
-    let child: Proc | undefined;
-    while (!child && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 50));
-      child = processes(c.log).find((p) => p.pid !== proc.pid);
-    }
-    // the child is up; give it time to reach the hung call (its stdout says when)
-    await new Promise((r) => setTimeout(r, 300));
-    return { proc, child: child!, exited, stderr: () => stderr };
-  }
-  const kill = (pid: number | undefined) => { if (pid) try { process.kill(pid, "SIGKILL"); } catch {} };
-
-  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
-    test(`${signal} to the supervisor is passed on: the child dies of it, one FAIL line, exit 1`, async () => {
+describe("snapshot-probe watchdog: a caller's signal reaches the probe itself", () => {
+  for (const signal of ["SIGTERM", "SIGKILL"] as const) {
+    test(`${signal} to the spawned PID ends the hung probe, with nothing left behind`, async () => {
       const c = caseDir();
-      const h = await startHung(c);
+      const proc = spawn(process.execPath, ["--stack-size=8192", probe, ...baseArgs(), "--watchdog-ms", "60000"], {
+        cwd: c.d, env: envFor(c, { FAKE_LEAN_MODE: "hang" }), stdio: ["ignore", "pipe", "pipe"],
+      });
+      let stdout = "";
+      let stderr = "";
+      proc.stdout!.on("data", (d) => { stdout += d; });
+      proc.stderr!.on("data", (d) => { stderr += d; });
+      const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => proc.on("close", (code, sig) => resolve({ code, signal: sig })));
       try {
-        expect(h.child, "the supervised child never started").toBeDefined();
-        h.proc.kill(signal);
-        const { code, signal: died } = await h.exited;
-        expect([code, died]).toEqual([1, null]);
-        expect(h.stderr().split("\n").filter(Boolean)).toEqual([`SNAPSHOT PROBE FAIL: the probe process was killed by ${signal} (${signal} passed on by the supervisor)`]);
-        expect(alive(h.child.pid)).toBe(false);
-        expect(fs.readdirSync(c.tmpdir)).toEqual([]);
+        const deadline = Date.now() + 20_000;
+        while (!stdout.includes("== compile the probe") && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+        expect(stdout).toContain("== compile the probe");
+        proc.kill(signal);
+        // 'close': every stdio pipe closed, so no other process holds them
+        expect(await closed).toEqual({ code: null, signal });
+        expect(stderr).toBe("");
+        expect(processes(c.log).map((p) => p.pid)).toEqual([proc.pid]);
       } finally {
-        kill(h.child?.pid);
-        kill(h.proc.pid);
+        try { process.kill(proc.pid!, "SIGKILL"); } catch {}
       }
     });
   }
-
-  test("a supervisor that is SIGKILLed cannot pass it on: its hung child kills itself within a second", async () => {
-    const c = caseDir();
-    const h = await startHung(c);
-    try {
-      expect(h.child, "the supervised child never started").toBeDefined();
-      h.proc.kill("SIGKILL");
-      await h.exited;
-      const deadline = Date.now() + 5000;
-      while (alive(h.child.pid) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
-      expect(alive(h.child.pid)).toBe(false);
-    } finally {
-      kill(h.child?.pid);
-    }
-  });
-});
-
-test("the compiler battery, which kills a hung probe itself, runs it in-process (--watchdog-ms 0): its SIGKILL must not orphan a child", () => {
-  const src = fs.readFileSync(path.join(root, "tests/adversarial/compiler-battery.mjs"), "utf8");
-  expect(src).toMatch(/"--watchdog-ms", "0"/);
 });
