@@ -1,16 +1,64 @@
 # Testing
 
-## Layers
+## Gates and lanes
 
-| Layer | Command | What it proves |
-|---|---|---|
-| Unit (~600 tests) | `npm test` | manifest validation incl. hostile inputs; segmentation plan/build byte-exactness; installer stream failure classes (rejecting sink, hanging sink, corrupted part, zip-bomb); diagnostic parsing incl. multi-line goals (real worker source in a VM); Lean IO-result decoding; Memory64 probing; pack round-trip on real oleans; snapshot index matching; the LSP front door reducer (real worker source in a VM) and the byte-exact framer; the relay against a fake session (document hash after every scenario, orphaned requests answered, no timers, stale deaths ignored); the ring writer; artifact discipline; the adversarial harness's pure helpers |
-| Integration | `npm run test:integration` | the real wasm64 runtime under Node: prelude parse, Init import + `numBits=64` + kernel-checked `rfl`, positioned errors + run verdicts (judged by output through `supervised-run`: the CLI never exits since patch 0020), `sorry` semantics, and the full persistent-path probe (init sequence, 26 ms resident recheck, error-count return, survival after failure) |
-| Slow tier | `QED64_SLOW=1 npm run test:integration` | 2,308-module `import Lean` closure; snapshot bake produces a valid compacted region |
-| Snapshot | `node --stack-size=8192 pipeline/snapshot/snapshot-probe.mjs --snap <file> --probe-file <lean>` | a baked snapshot loads via `lean_wasm_load_snapshot` (the worker's exact path) and the follow-up compile is an env-cache hit within a time budget — a wrong cache key would silently re-import for minutes |
-| Release | `npm run verify:release` | every digest the browser will trust, re-derived from bytes, including the multi-GB raw packs WebCrypto can't stream |
-| Consumer (G2) | `npm run test:consumer` | the packed tarball alone suffices: `npm pack` into a temp dir, every `exports` key resolved by Node's resolver from a temp consumer whose `node_modules/qed64` is the extracted package (paths outside `exports` refused), `qed64/edge` and the olean reader loaded, and `tests/consumer/fixture/` (a page on `qed64/embed`, the headless boot of docs/EMBEDDING.md §6.1, a Worker on `qed64/edge`) type-checked and built with the repo's tsc and vite; nothing written in the repo or its node_modules (`--work <dir>` outside the repo, `--keep`) |
-| Live browser | manual / e2e spec | the full product loop (see docs/ARCHITECTURE.md for the current live-verified numbers) |
+Three gates:
+- **G0** (every change; no artifacts, no browser): `npx tsc --noEmit && npm
+  test && npm run -s typecheck:site && npm run -s build:site && node
+  pipeline/snapshot/cli.mjs --check-preludes && npm pack --dry-run --json >
+  /dev/null`.
+- **G1** (end to end; the fetched artifacts, a real browser): `npm run
+  test:adversarial`, the page lanes, and the integration tier, from the
+  table below.
+- **G2** (the consumer's view): `npm run test:consumer`.
+
+**Browser lanes run one at a time.** Each starts a Chromium that boots a
+multi-GB runtime. Where several sessions share one machine, run every lane
+marked "lock" through the host's browser lock (a FIFO wrapper outside this
+repository that admits one browser lane at a time) and never `resident-gate.sh`,
+which kills whatever listens on :5184. On a machine of your own, running them
+one after another is enough. Between lanes the harness's cool-down
+(`harness.mjs cooldown`, below) refuses while a headless Chromium is alive.
+
+**What a lane is pointed at.** "Dev" means the Vite dev server, `npm run dev`
+(http://localhost:5184/), or one started on another port with `PORT=<port>
+npm run dev`. The lanes' default URLs are their historical ports, so pass
+`--url`. "Served build" means `npm run build:site && npm run preview:prod`
+(http://localhost:5185/, the live Worker's own code over `dist/` and
+`public/`). Both need `npm run fetch:artifacts` first. Node lanes need the
+paired build outputs of "Environment" below.
+
+| Lane | Command | What it proves | Needs | Lock | Pass line (exit 0) |
+|---|---|---|---|---|---|
+| Unit (G0) | `npm test` | manifest validation with hostile inputs; pack and segmentation byte-exactness; installer stream failure classes; diagnostic parsing, the LSP front door and the framer (the real worker source in a VM); the relay against a fake session; artifact discipline; the CLI contract and the path rule; the edge worker; the package contract; the adversarial harness's pure helpers | nothing (`frontend/node_modules` for its `typecheck:site` pretest) | no | vitest `Test Files … passed` |
+| Integration | `npm run test:integration` | the real wasm64 runtime under Node: prelude parse, Init import + `numBits=64` + kernel-checked `rfl`, positioned errors and run verdicts (through `supervised-run`), `sorry`, the persistent path (init sequence, resident recheck, error-count return, survival after failure), the FileWorker exit hook | `QED64_LEAN_ARTIFACT`, `QED64_INIT_SNAP` (it skips, naming the variable, without them) | no (one heavy wasm Node at a time) | vitest `passed`, nothing skipped |
+| Slow tier | `QED64_SLOW=1 npm run test:integration` | the 2,308-module `import Lean` closure; a snapshot bake produces a valid compacted region | as Integration | no | as Integration |
+| Snapshot probe | `node pipeline/snapshot/snapshot-probe.mjs --artifact <dir> --lib <tree> --snap <file> --probe-file <lean>` | a baked snapshot loads through `lean_wasm_load_snapshot` (the worker's path) and the follow-up compile is an env-cache hit within a budget | a stage1 dir, a raw `.snap` and its tree | no | `SNAPSHOT PROBE PASS` |
+| Release audit | `npm run verify:release` | every digest the browser will trust, re-derived from the bytes in `public/`, including the multi-GB raw packs | fetched artifacts | no | `RELEASE VERIFIED` |
+| Mutation | `node tests/mutation/edit-coalescer-mutants.mjs [--only <substring>]` | every back-pressure rule of `lib/edit-coalescer.ts` is pinned: each deliberate wrong rule, applied to a copy under `work/embed/mutants`, fails the coalescer's and the session adapter's suites | nothing | no | `edit-coalescer-mutants: N/N killed` (1 = a survivor, 3 = the baseline fails) |
+| Consumer (G2) | `npm run test:consumer -- --work <dir outside the repo>` | the packed tarball alone suffices: every `exports` key resolves from the extracted package (paths outside `exports` refused), `qed64/edge` and the olean reader load, and `tests/consumer/fixture/` (a `qed64/embed` page, docs/EMBEDDING.md §6.1's headless boot and worker staging, a `qed64/edge` Worker) type-checks and builds with the repo's tsc and Vite; the repo and its node_modules stay untouched | nothing (`--keep` keeps the run dir) | no | `CONSUMER CHECK PASS` |
+| Suite | `npm run test:adversarial [-- --skip-compiler]` (`tests/adversarial/run.mjs`) | pretest (`typecheck:site`), its own Vite on :5187, preflight, the compiler battery, a cool-down, then e2e; one report directory per run | fetched artifacts; the battery's pairing (or `--skip-compiler`) | lock | `report: …/report.md`, exit 0 (3 = a lane refused, 1 = product failures) |
+| Preflight | `node pipeline/release/preflight.mjs --url <page url> [--no-boot]` | the pairing the URL boots: manifest, every chunk (HEAD size, non-HTML type), the snapshot index and files, each entry's `runtime` against the manifest's `buildId`, the profile index, and one headless boot smoke | dev or served build | lock (no browser with `--no-boot`) | `PREFLIGHT OK buildId=… mode=… snapshots=…` (3 = `PREFLIGHT REFUSED: …`) |
+| Compiler battery | `node tests/adversarial/compiler-battery.mjs [--snap <file> --artifact <dir> --lib <tree>] [--jobs 3]` | the corpus's must-succeed, must-error and golden-message cases against the Mathlib snapshot under Node, on the runtime the browser ships (`snapshot-probe --via-mem`, a bounded pool), with no PANIC anywhere | `QED64_MATHLIB_SNAP`, `QED64_LEAN_ARTIFACT`, `QED64_LIB_TREE` (else exit 2, a `REFUSED` record) | no browser (heavy: `--jobs` wasm Nodes) | `compiler battery: N/N passed` (3 = infra only) |
+| e2e | `node tests/adversarial/e2e.mjs --url <dev url> [--only <name>]` | boot, golden message batteries, UI-glitch checks, editor action storms with recovery, the worker-kill drill, memory telemetry, speed budgets | dev | lock | `e2e: 23/23 passed` |
+| Editing latency | `node tests/adversarial/editing-latency.mjs --url <dev url> [--rounds 3]` | header-switch, admit, body-edit, completion and error-clear times, read from `qed64.status()` facts only | dev | lock | `SUMMARY {…}` (3 = no header fact) |
+| Crash gauntlet | `node tests/adversarial/crash-gauntlet.mjs <url> [minutes] [mixed\|imports]` | sustained example switches, garbage bursts and header flips: the page survives and the breaker does not halt | dev | lock | the step log, exit 0 (1 = page crash, 2 = halted) |
+| Liveness faults | `node tests/adversarial/liveness-faults.mjs --url <dev url> [--only <scenario>]` | HARDENING #52's mailbox, kick, liveness probe and exit hook, each by fault injection into the live worker: mailbox-mode, idle-no-probes, long-silent-command, lost-wakeups-healed, wedge-recovery, exit-detected | dev | lock | `liveness-faults: 6/6 pass` |
+| Page API | `node tests/adversarial/page-api.mjs --url <dev url> [--only <scenario>]` | `qed64.api` as an embedder uses it (docs/EMBEDDING.md §2–§4): code-top-level, embed-code, embed-setdoc, events, restart, bad-param | dev or served build (both answer `/embed-host.html`) | lock | `page-api: 6/6 pass` |
+| InfoView actions | `node tests/adversarial/infoview-actions.mjs --url <dev url> [--only <scenario>]` | the InfoView's editor RPC on the real page (HARDENING #56): capability-flag, try-this-apply, conv-generate, foreign-show | dev | lock | `infoview-actions: 4/4 pass` |
+| Reload storm | `node tests/adversarial/reload-storm.mjs --url <url> [--runs 5] [--embed] [--headed]` | five reloads 3 s apart per run, a fresh browser per run, `ready` again after them; a crash is classified by the V8 OOM line (HARDENING #53, #55); `--embed` reloads a same-origin host page around the frame | dev or served build (stock and `--embed`) | lock | `RELOAD-STORM <tag>: 0/N crashed …` (1 = a crash, 3 = nothing booted) |
+| Edit storm | `node tests/adversarial/edit-storm.mjs --url <served url> [--reps 2] [--scenarios …]` | an edit per keystroke over work that ignores cancellation: no crash, death or reboot, ready at the last version, the pool within tolerance (HARDENING #59; `?edithold=0` is the control arm) | served build | lock | `edit-storm: N/N pass` |
+| Boot card | `node tests/adversarial/boot-card.mjs --url <served url> [--scenario slow-link\|check-fallback\|all]` | a cold first visit over a shaped link: the boot card shows progress the whole way, and the check fallback appears while an Init-only buffer elaborates (HARDENING #54) | served build | lock | `boot-card: N/N passed` |
+| Unpaired snapshot | `node tests/adversarial/unpaired-snapshot.mjs --url <served url>` | a snapshot of another runtime is refused before the runtime starts and before a byte of it downloads (HARDENING #62) | served build | lock | `unpaired-snapshot: PASS (n/n checks)` |
+| Deep recursion | `node tests/adversarial/deep-recursion.mjs --url <served url> [--scenarios seeded,typing]` | deep `decide` recursion ends in Lean's own error with the checker alive, not a pthread JS-stack overflow (HARDENING #60) | served build | lock | `deep-recursion: 2/2 pass`. It FAILS on the served runtime until the kernel's #60 patch lands: it is that patch's acceptance check |
+| Resident gate | `tests/adversarial/resident-gate.sh` | the post-rebuild gate: typecheck, a restarted dev server on :5184, preflight, e2e, latency, battery, with cool-downs | the staged pairing (`resident-url.sh`) | not on a shared host (it kills the :5184 listener) | each lane's line; `GATE-REFUSED: …` exit 3 |
+
+Helpers, not lanes: `tests/adversarial/harness.mjs run-dir|cooldown` (the run
+directory, the cool-down), `resident-url.sh` (the dev URL of the staged
+pairing), `buffer-probe.cjs <url> <file> <line> <regex> …` (type files into
+the served editor and match the InfoView), `renderer-sampler.py`,
+`reload-storm-summary.py` and `reload-storm-timeline.py` (the reload storm's
+process sampling and A/B statistics).
 
 ## Environment: where the lanes find the runtime and the snapshots
 
@@ -22,16 +70,16 @@ and the variable, and an integration test skips naming the variable
 project's checkout. From a worktree without build outputs, point the
 variables at the main checkout's.
 
-| Variable | Used by | Deprecated default (this checkout) |
-|---|---|---|
-| `QED64_LEAN_ARTIFACT` | `npm run test:integration` (all three files), node-runner, snapshot-probe, persistent-probe, bake-snapshot, `gate.mjs`, the compiler battery, resident-probe | `pipeline/toolchain/work/build/stage1` when it has `bin/lean.js` (node-runner, snapshot-probe, persistent-probe, resident-probe) or `bin/lean.wasm` (bake-snapshot, the compiler battery); `gate.mjs`: the cwd when it has `bin/lean.js` |
-| `QED64_INIT_SNAP` | `tests/integration/fileworker-exit.test.ts` | `work/snapshot/init.snap` |
-| `QED64_MATHLIB_SNAP` | the compiler battery (`--snap`; `run.mjs --snap` forwards) | `work/snapshot/mathlib.snap` |
-| `QED64_LIB_TREE` | the compiler battery (`--lib`: the tree the snapshot was baked from), snapshot-probe | `work/lib-tree-slim` (battery), `work/lib-tree` (snapshot-probe) |
-| `QED64_SNAP_DIR` | resident-probe (`--snap-dir`) | `work/snapshot` |
-| `QED64_WORK` | bake-snapshot and node-runner (`--work`) | `work/snapshot` (bake), `work/runner` (runner) |
-| `QED64_STAGING` | bake-snapshot and chunk-runtime (`--out` = `<it>/<buildId>/{snapshots,runtime}`) | `work/staging/<buildId>/…` |
-| `QED64_SLOW` | `npm run test:integration` | unset: the slow tier is off |
+| Variable | Used by | After a release adoption (`$W` = `work/adopt/<id>`) | Deprecated default (this checkout) |
+|---|---|---|---|
+| `QED64_LEAN_ARTIFACT` | `npm run test:integration` (all three files), node-runner, snapshot-probe, persistent-probe, bake-snapshot, `gate.mjs`, the compiler battery, resident-probe | `$W/artifact` (the release runtime, its `lean-lib` as `lib/lean`) | `pipeline/toolchain/work/build/stage1` when it has `bin/lean.js` (node-runner, snapshot-probe, persistent-probe, resident-probe) or `bin/lean.wasm` (bake-snapshot, the compiler battery); `gate.mjs`: the cwd when it has `bin/lean.js` |
+| `QED64_INIT_SNAP` | `tests/integration/fileworker-exit.test.ts` | `$W/snapshot/init.snap` | `work/snapshot/init.snap` |
+| `QED64_MATHLIB_SNAP` | the compiler battery (`--snap`; `run.mjs --snap` forwards) | `$W/snapshot/mathlib.snap` | `work/snapshot/mathlib.snap` |
+| `QED64_LIB_TREE` | the compiler battery (`--lib`: the tree the snapshot was baked from), snapshot-probe | `$W/lib-tree-slim` (the battery's; snapshot-probe of the mathlib snapshot too) | `work/lib-tree-slim` (battery), `work/lib-tree` (snapshot-probe) |
+| `QED64_SNAP_DIR` | resident-probe (`--snap-dir`) | `$W/snapshot` | `work/snapshot` |
+| `QED64_WORK` | bake-snapshot and node-runner (`--work`) | a scratch dir of your own (a bake for another runtime must not use the paired set) | `work/snapshot` (bake), `work/runner` (runner) |
+| `QED64_STAGING` | bake-snapshot and chunk-runtime (`--out` = `<it>/<buildId>/{snapshots,runtime}`) | `work/staging` (adopt-release.sh stages into `work/staging/<buildId>/`) | `work/staging/<buildId>/…` |
+| `QED64_SLOW` | `npm run test:integration` | — | unset: the slow tier is off |
 
 **After a release adoption** (`pipeline/release/adopt-release.sh`, docs/REBUILD.md
 §3) the paired build outputs are the adoption's, under `work/adopt/<id>/`
@@ -227,8 +275,8 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   failed; kept in `reload-storm-<tag>-<n>.browser.log`). `--headed` is
   Chrome for Testing in a window — V2 is a headed-Chrome crash and
   chrome-headless-shell almost never shows it. `--embed` loads the page as
-  the only iframe of the dev server's `public/embed-host.html` (same origin,
-  same COOP/COEP) and reloads the host, as an embedding site does.
+  the only iframe of `public/embed-host.html` (served by the dev server and,
+  locally only, by `scripts/serve-dist.mjs`; same origin, same COOP/COEP) and reloads the host, as an embedding site does.
   `--sample-ms` runs `renderer-sampler.py` (per child process: RSS,
   footprint, threads — a Worker's thread exits only when its isolate is
   disposed — and the macOS pressure level). For an A/B, interleave arms with
