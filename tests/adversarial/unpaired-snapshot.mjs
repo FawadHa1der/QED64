@@ -29,9 +29,10 @@
 // reply, logged by the language client), "QED64: checker halted after
 // repeated crashes" (the breaker's reply to a request that reaches the relay
 // after the halt) and "Error: ?snapshots=<dir>: …" (main()'s catch); any
-// other is listed and FAILS the run, except "Session disposed." (the
-// showcase's known N2: the heap meter's telemetry request rejected by a
-// disposal), listed as known. log/info/debug lines are printed, not judged.
+// other is listed and FAILS the run, except the known lines, listed as known:
+// "Session disposed." (the showcase's N2: the heap meter's telemetry request
+// rejected by a disposal) and two shapes of every page load (lean4monaco's
+// "unsupported" pageerror, the InfoView webview's es-module-shims JSON.parse warning). log/info/debug lines are printed, not judged.
 // With the early refusal the relay halts about 3 s after it is constructed
 // (three rejections, two 1.5 s settles), often before the language client
 // sends `initialize`: then no request is pending at a death, the died
@@ -59,7 +60,10 @@ if (!/^https?:\/\//.test(url) || !Number.isFinite(WAIT) || !/^wasm64-[0-9a-f]{16
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const ALLOWED = [/^QED64: the Lean checker died \(bootFailed\)/, /^QED64: checker halted after repeated crashes/, /^Error: \?snapshots=(?:snapshots\/)?[A-Za-z0-9][A-Za-z0-9._-]{0,63}: /];
-const KNOWN_N2 = /^Session disposed\.$/;
+// Known boot noise of every page load, not of this failure (the showcase allowlists the same shapes in
+// tests/ux/selectors.json, and QED64's infoview-actions and crash-gauntlet lanes ignore the first):
+// lean4monaco's "unsupported" pageerror and the InfoView webview's es-module-shims JSON.parse warning.
+const KNOWN_N2 = /^Session disposed\.$|^unsupported(?:\s|$)|^TODO: catch JSON\.parse failure: +SyntaxError: Unexpected token 'e', "esms,true,/;
 
 const browser = await chromium.launch({ headless: !HEADED, args: ["--enable-features=SharedArrayBuffer"] });
 let row;
