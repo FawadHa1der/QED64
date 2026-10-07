@@ -13,11 +13,11 @@
 // environment passes its own snapshot map and a tighter memory cap). The
 // header text the policy reads is the document this session will serve:
 // the initial text at first boot, the relay's last full text on a reboot.
-import { ensureProfile, loadSnapshotByName, refuseUnpairedSnapshot, type Qed64Artifacts, type Qed64Session, type StatusSink } from "./qed64-boot";
+import { downloadBeforeBoot, ensureProfile, loadSnapshotByName, noteBootNetworkFailure, refuseUnpairedSnapshot, type Qed64Artifacts, type Qed64Session, type StatusSink } from "./qed64-boot";
 import type { RelaySession, RestartOptions } from "./lsp-relay";
 import { LeanSession, memoryCandidates, type JsonRpcMessage, type LibraryPack, type WorkerStatus } from "./client";
 import { installProfile } from "./profiles";
-import { deathCause, failureCauseOf, stageOfWorkerPhase, stepOfInstallPhase, type BootStage } from "./failure";
+import { deathCause, failureCauseOf, stageOfWorkerPhase, stepOfInstallPhase, type BootStage, type FailureCause } from "./failure";
 import { chooseSnapshots, initialBytesForEntries, type SnapshotIndex } from "./snapshots";
 import { CANCELLED, createEditCoalescer, DEFAULT_EDIT_COALESCE_MS, type BackPressureEvent, type BackPressureOptions, type EditCoalescer } from "./edit-coalescer";
 
@@ -287,7 +287,10 @@ export class ResidentSession implements RelaySession {
       await this.#boot();
     } catch (err) {
       const subject = this.#installing ?? this.#loading;
-      throw failedAt(err, { stage: this.#installing ? "profile" : this.#bootStage ?? "files", ...(subject ? { subject } : {}) });
+      const failed = failedAt(err, { stage: this.#installing ? "profile" : this.#bootStage ?? "files", ...(subject ? { subject } : {}) });
+      // HARDENING #63: the relay's reboot of this page downloads these first.
+      if ((failed.cause as FailureCause).kind === "network") noteBootNetworkFailure(this.artifacts, this.snapshots);
+      throw failed;
     }
   }
 
@@ -302,6 +305,20 @@ export class ResidentSession implements RelaySession {
       const cause = refuseUnpairedSnapshot(a, name, ui);
       if (cause) throw Object.assign(new Error(`snapshot '${name}' failed to load`), { cause });
     }
+    // The previous boot of this page failed with a network-kind cause
+    // (HARDENING #63): download each pre-open snapshot the cache lacks BEFORE
+    // the runtime, and reject with the download's network cause before any
+    // runtime exists. The relay's reboots of a lasting cut each booted a 2 GiB
+    // runtime that died at its first snapshot. A first attempt, and a
+    // snapshot already cached, boot as before.
+    this.#bootStage = "snapshot";
+    for (const name of this.snapshots) {
+      this.#loading = name;
+      const cause = await downloadBeforeBoot(a, name, ui, this.#busyWaitMs !== undefined ? { busyWaitMs: this.#busyWaitMs } : {});
+      this.#loading = null;
+      if (cause) throw Object.assign(new Error(`snapshot '${name}' failed to load`), { cause });
+    }
+    this.#bootStage = "runtime";
     // "Load exact imports" (§3 row 8; HARDENING #43): the header is imported
     // from oleans below, so the ~1 GB olean pack must be installed BEFORE
     // boot — LEAN_PATH and the mounts are boot inputs, and a running worker

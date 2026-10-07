@@ -1,0 +1,265 @@
+// A lasting network failure during the snapshot download costs no runtime
+// per retry (HARDENING #63). The widgets showcase's C11 (pin bf9d947) cut
+// every .snapz response: each session booted its runtime (the Memory64
+// reservation and its glue isolates), then the download failed, start()
+// rejected, and the relay's reboot booted a NEW runtime while the network was
+// still down: three runtimes in 26 s, and a reload right after the halt
+// crashed the renderer (the pointer-cage limit of #55). Now a session whose
+// page's previous boot failed with a network-kind cause downloads its
+// pre-open snapshots BEFORE it boots; a first attempt and a cached snapshot
+// boot as before, and the relay and its breaker are unchanged.
+//
+// Over a fake Worker, a spied LeanSession and a spied raw-cache prefetch (the
+// harness of unpaired-early.test.ts): no wasm, no browser.
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("../../lib/raw-cache", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../../lib/raw-cache")>();
+  return { ...real, prefetchRaw: vi.fn(async () => ({ status: "done", bytes: 100 })) };
+});
+
+import { clearNetworkFailure, NETWORK_FAILURE_MEMORY_MS, networkFailedRecently, noteNetworkFailure, prefetchRaw, type PrefetchRawResult } from "../../lib/raw-cache";
+import { downloadBeforeBoot, noteBootNetworkFailure, type ProgressInfo, type Qed64Artifacts, type StatusSink } from "../../lib/qed64-boot";
+import { ResidentSession } from "../../lib/resident-session";
+import { LspRelay, type RestartOptions } from "../../lib/lsp-relay";
+import { deathInfo } from "../../frontend/src/page-api";
+import type { FailureCause } from "../../lib/failure";
+import type { RuntimeManifest } from "../../lib/client";
+
+const BOOTED = "wasm64-3ab1c6a9da03bc29";
+const runtime = { buildId: BOOTED, leanVersion: "4.34.0", files: { "lean.js": { bytes: 0, sha256: "", chunks: [] }, "lean.wasm": { bytes: 0, sha256: "", chunks: [] } } } as RuntimeManifest;
+const snap = (name: string, hex: string) => ({ name, url: `/snapshots/${name}.x.snapz`, bytes: 100, transfer: 50, digest: `sha256:${hex.repeat(32)}`, imports: [], runtime: BOOTED });
+const INIT = snap("init", "ab");
+const MATHLIB = snap("mathlib", "cd");
+const artifacts = (): Qed64Artifacts => ({
+  runtime,
+  index: { schema: "qed64.profile-index/v1", profiles: [] } as unknown as Qed64Artifacts["index"],
+  installed: new Map(),
+  snapshots: { schema: "qed64.snapshot-index/v1", snapshots: [INIT, MATHLIB] } as unknown as Qed64Artifacts["snapshots"],
+});
+/** What the prefetch worker's failure becomes for a cut stream (raw-cache.ts runWorker: failureCauseOf of its message). */
+const CUT: FailureCause = { kind: "network", stage: "snapshot", subject: "mathlib", message: "network error" };
+const cutResult = (subject = "mathlib"): PrefetchRawResult => ({ status: "error", error: { ...CUT, subject } });
+/** The Lean worker's own stream, cut (what loadSnapshotByName classifies as the boot's cause today). */
+const workerCut = () => Object.assign(new Error("network error"), { code: "SNAPSHOT_FAILED" });
+
+/** The Lean worker: records what the session posts (a `boot` request would start the runtime). */
+class FakeLeanWorker {
+  static posted: Array<{ type?: string }> = [];
+  constructor(_url: string) {}
+  addEventListener() {}
+  postMessage(m: { type?: string }) { FakeLeanWorker.posted.push(m); }
+  terminate() {}
+}
+
+let calls: Array<{ kind: "busy" | "progress"; label: string; info?: ProgressInfo }>;
+let ui: StatusSink;
+beforeEach(() => {
+  FakeLeanWorker.posted = [];
+  vi.stubGlobal("Worker", FakeLeanWorker);
+  vi.stubGlobal("navigator", {});
+  vi.stubGlobal("fetch", vi.fn(async () => new Response("Not Found", { status: 404 })));
+  vi.mocked(prefetchRaw).mockReset();
+  vi.mocked(prefetchRaw).mockResolvedValue({ status: "done", bytes: 100 });
+  clearNetworkFailure(INIT);
+  clearNetworkFailure(MATHLIB);
+  vi.spyOn(console, "warn").mockImplementation(() => {}); // today's "raw prefetch error … stream it instead" line
+  calls = [];
+  ui = { busy: (label, info) => calls.push({ kind: "busy", label, info }), progress: (label, info) => calls.push({ kind: "progress", label, info }), idle() {} };
+});
+afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+/** A session whose worker calls are spied; boot, loads and arm succeed unless told otherwise. */
+function session(a: Qed64Artifacts = artifacts(), opts: RestartOptions = { snapshots: ["init", "mathlib"] }) {
+  const s = new ResidentSession({ artifacts: a, ui, headerText: "import Mathlib\n" }, opts);
+  const boot = vi.spyOn(s.lean, "boot").mockResolvedValue({} as never);
+  const loadSnapshot = vi.spyOn(s.lean, "loadSnapshot").mockResolvedValue({ success: true, elapsedMs: 1 });
+  vi.spyOn(s.lean, "arm").mockResolvedValue(undefined);
+  return { s, boot, loadSnapshot };
+}
+const prefetchedNames = () => vi.mocked(prefetchRaw).mock.calls.map(([e]) => e.name);
+/** A prefetch the test settles by hand. */
+function deferredPrefetch() {
+  let settle!: (r: PrefetchRawResult) => void;
+  vi.mocked(prefetchRaw).mockImplementationOnce(() => new Promise<PrefetchRawResult>((r) => { settle = r; }));
+  return (r: PrefetchRawResult) => settle(r);
+}
+const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+
+describe("the shared memory of a network failure (raw-cache.ts)", () => {
+  it("is per entry, expires after NETWORK_FAILURE_MEMORY_MS and is cleared by hand", () => {
+    expect(NETWORK_FAILURE_MEMORY_MS).toBe(60_000);
+    expect(networkFailedRecently(MATHLIB)).toBe(false);
+    const t = 1_000_000;
+    noteNetworkFailure(MATHLIB, t);
+    expect(networkFailedRecently(MATHLIB, t + 59_999)).toBe(true);
+    expect(networkFailedRecently(INIT, t + 1)).toBe(false);
+    expect(networkFailedRecently(MATHLIB, t + 60_000)).toBe(false);
+    expect(networkFailedRecently(MATHLIB, t + 1)).toBe(false); // expired means forgotten
+    noteNetworkFailure(MATHLIB);
+    expect(networkFailedRecently(MATHLIB)).toBe(true);
+    clearNetworkFailure(MATHLIB);
+    expect(networkFailedRecently(MATHLIB)).toBe(false);
+  });
+
+  it("a session's network-kind boot failure notes every snapshot it loads before opening; another kind notes none", async () => {
+    const a = session();
+    a.loadSnapshot.mockRejectedValueOnce(workerCut()); // init's own stream, cut
+    await expect(a.s.start()).rejects.toMatchObject({ message: "snapshot 'init' failed to load", cause: { kind: "network", stage: "snapshot", subject: "init" } });
+    expect(networkFailedRecently(INIT)).toBe(true);
+    expect(networkFailedRecently(MATHLIB)).toBe(true); // never reached, and it would cost the next runtime the same way
+    clearNetworkFailure(INIT); clearNetworkFailure(MATHLIB);
+    const b = session();
+    b.loadSnapshot.mockRejectedValueOnce(new Error("snapshot is not a compacted-region file"));
+    await expect(b.s.start()).rejects.toMatchObject({ cause: { kind: "corrupt" } });
+    expect(networkFailedRecently(INIT) || networkFailedRecently(MATHLIB)).toBe(false);
+  });
+
+  it("noteBootNetworkFailure skips a name the index does not list", () => {
+    noteBootNetworkFailure(artifacts(), ["nope", "mathlib"]);
+    expect(networkFailedRecently(MATHLIB)).toBe(true);
+    expect(networkFailedRecently(INIT)).toBe(false);
+  });
+});
+
+describe("ResidentSession.start(): the download before the boot, after a network failure", () => {
+  it("a first attempt keeps today's order: the runtime boots first, then each snapshot is prefetched and loaded", async () => {
+    const { s, boot, loadSnapshot } = session();
+    await s.start();
+    expect(boot).toHaveBeenCalledTimes(1);
+    expect(prefetchedNames()).toEqual(["init", "mathlib"]);
+    expect(boot.mock.invocationCallOrder[0]!).toBeLessThan(vi.mocked(prefetchRaw).mock.invocationCallOrder[0]!);
+    expect(loadSnapshot).toHaveBeenCalledTimes(2);
+  });
+
+  it("after a network failure the boot waits for the download to resolve, then boots once and loads from the cache", async () => {
+    noteBootNetworkFailure(artifacts(), ["init", "mathlib"]);
+    vi.mocked(prefetchRaw).mockResolvedValueOnce({ status: "cached", bytes: 100 }); // init: already complete, no wait
+    const settleMathlib = deferredPrefetch();
+    const { s, boot, loadSnapshot } = session();
+    const started = s.start();
+    await flush();
+    expect(prefetchedNames()).toEqual(["init", "mathlib"]);
+    expect(boot).not.toHaveBeenCalled(); // mathlib's download is still running
+    expect(FakeLeanWorker.posted.filter((m) => m.type === "boot")).toEqual([]);
+    settleMathlib({ status: "done", bytes: 100 });
+    await started;
+    expect(boot).toHaveBeenCalledTimes(1);
+    expect(boot.mock.invocationCallOrder[0]!).toBeGreaterThan(vi.mocked(prefetchRaw).mock.invocationCallOrder[1]!);
+    expect(loadSnapshot).toHaveBeenCalledTimes(2);
+    // The memory is cleared by the completed downloads: the next session boots as a first attempt.
+    expect(networkFailedRecently(INIT) || networkFailedRecently(MATHLIB)).toBe(false);
+  });
+
+  it("a download that fails with a network cause rejects start() with it before any runtime exists", async () => {
+    noteBootNetworkFailure(artifacts(), ["init", "mathlib"]);
+    vi.mocked(prefetchRaw).mockResolvedValueOnce({ status: "done", bytes: 100 }).mockResolvedValueOnce(cutResult());
+    const { s, boot, loadSnapshot } = session();
+    await expect(s.start()).rejects.toMatchObject({ message: "snapshot 'mathlib' failed to load", cause: CUT });
+    expect(boot).not.toHaveBeenCalled();
+    expect(loadSnapshot).not.toHaveBeenCalled();
+    expect(FakeLeanWorker.posted.filter((m) => m.type === "boot")).toEqual([]);
+    expect(prefetchedNames()).toEqual(["init", "mathlib"]); // one request each: the relay's reboots are the retries
+    // Reported on the sink as a failed load is; and the failure is remembered again for the next reboot.
+    expect(calls).toContainEqual({ kind: "progress", label: "mathlib snapshot failed: network error", info: { stage: "snapshot", subject: "mathlib", error: CUT } });
+    expect(networkFailedRecently(MATHLIB)).toBe(true);
+    expect(networkFailedRecently(INIT)).toBe(true);
+  });
+
+  it("a cached snapshot never waits for a download, and the boot goes on", async () => {
+    noteBootNetworkFailure(artifacts(), ["init", "mathlib"]);
+    vi.mocked(prefetchRaw).mockResolvedValue({ status: "cached", bytes: 100 });
+    const { s, boot } = session();
+    await s.start();
+    expect(boot).toHaveBeenCalledTimes(1);
+    expect(networkFailedRecently(MATHLIB)).toBe(false);
+  });
+
+  it("a prefetch that cannot decide (no OPFS, another tab, silence, a non-network error) boots as a first attempt does", async () => {
+    for (const r of [{ status: "unavailable" }, { status: "busy" }, { status: "silent" }, { status: "error", error: { kind: "storage", message: "QuotaExceededError" } }] as PrefetchRawResult[]) {
+      noteBootNetworkFailure(artifacts(), ["mathlib"]);
+      vi.mocked(prefetchRaw).mockReset();
+      vi.mocked(prefetchRaw).mockResolvedValueOnce(r).mockResolvedValue({ status: "done", bytes: 100 });
+      const { s, boot, loadSnapshot } = session(artifacts(), { snapshots: ["mathlib"] });
+      await s.start();
+      expect(boot, r.status).toHaveBeenCalledTimes(1);
+      expect(loadSnapshot, r.status).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("an expired memory boots as a first attempt does", async () => {
+    noteNetworkFailure(MATHLIB, Date.now() - NETWORK_FAILURE_MEMORY_MS - 1);
+    const { s, boot } = session(artifacts(), { snapshots: ["mathlib"] });
+    await s.start();
+    expect(boot.mock.invocationCallOrder[0]!).toBeLessThan(vi.mocked(prefetchRaw).mock.invocationCallOrder[0]!);
+  });
+
+  it("the checker's own successful stream clears the memory too", async () => {
+    noteBootNetworkFailure(artifacts(), ["mathlib"]);
+    vi.mocked(prefetchRaw).mockResolvedValue({ status: "unavailable" }); // no OPFS: the checker streams it
+    const { s, loadSnapshot } = session(artifacts(), { snapshots: ["mathlib"] });
+    await s.start();
+    expect(loadSnapshot).toHaveBeenCalledTimes(1);
+    expect(networkFailedRecently(MATHLIB)).toBe(false);
+  });
+});
+
+describe("through the relay: a download that always fails", () => {
+  it("halts after its usual three bootFailed deaths with the network cause, and only the first attempt boots a runtime", async () => {
+    vi.mocked(prefetchRaw).mockResolvedValue(cutResult());
+    const boots: Array<ReturnType<typeof vi.fn>> = [];
+    const statuses: string[] = [];
+    const relay = new LspRelay(() => {
+      const x = session();
+      x.loadSnapshot.mockRejectedValue(workerCut()); // today's path: the checker streams it itself, and that is cut too
+      boots.push(x.boot as never);
+      return x.s;
+    }, { status: (st) => statuses.push(st.relay) }, () => Promise.resolve());
+    await vi.waitFor(() => expect(relay.state.kind).toBe("halted"));
+    expect(relay.stats).toMatchObject({ workerDeaths: 3, breakerTrips: 1, reboots: 2 });
+    expect(relay.lastDeath).toMatchObject({ reason: "bootFailed", message: "snapshot 'init' failed to load", seq: 3, cause: { kind: "network", stage: "snapshot", subject: "init" } });
+    expect(relay.status()).toMatchObject({ phase: "halted", relay: "halted" });
+    expect(deathInfo(relay.status().lastDeath)).toMatchObject({ reason: "bootFailed", cause: { kind: "network" } });
+    expect(boots).toHaveLength(3);
+    expect(boots.map((b) => b.mock.calls.length)).toEqual([1, 0, 0]); // was [1, 1, 1]: a runtime per retry
+    // Every retry is a real request (the showcase's lasting cut counts more than one cut): the first attempt's
+    // prefetch of init, then one pre-boot request per reboot.
+    expect(prefetchedNames()).toEqual(["init", "init", "init"]);
+    expect(statuses.at(-1)).toBe("halted");
+    relay.clientPort.close();
+  });
+
+  it("an edit's re-arm after the network returns boots normally and the memory clears", async () => {
+    vi.mocked(prefetchRaw).mockResolvedValue(cutResult());
+    let networkBack = false;
+    const boots: Array<ReturnType<typeof vi.fn>> = [];
+    const relay = new LspRelay(() => {
+      const x = session();
+      if (!networkBack) x.loadSnapshot.mockRejectedValue(workerCut());
+      boots.push(x.boot as never);
+      return x.s;
+    }, { status() {} }, () => Promise.resolve());
+    await vi.waitFor(() => expect(relay.state.kind).toBe("halted"));
+    networkBack = true;
+    vi.mocked(prefetchRaw).mockResolvedValue({ status: "done", bytes: 100 });
+    expect(relay.rearm()).toBe(true);
+    await vi.waitFor(() => expect(relay.state.kind).toBe("serving"));
+    expect(boots.map((b) => b.mock.calls.length)).toEqual([1, 0, 0, 1]);
+    expect(networkFailedRecently(INIT) || networkFailedRecently(MATHLIB)).toBe(false);
+    relay.clientPort.close();
+  });
+});
+
+describe("downloadBeforeBoot", () => {
+  it("does nothing without a remembered failure or for an entry the index does not list", async () => {
+    await expect(downloadBeforeBoot(artifacts(), "mathlib", ui)).resolves.toBeNull();
+    await expect(downloadBeforeBoot(artifacts(), "nope", ui)).resolves.toBeNull();
+    expect(prefetchRaw).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
+  });
+  it("passes the session's busyWaitMs to the prefetch (another tab's write is waited for, as the load does)", async () => {
+    noteNetworkFailure(MATHLIB);
+    await expect(downloadBeforeBoot(artifacts(), "mathlib", ui, { busyWaitMs: 1234 })).resolves.toBeNull();
+    expect(vi.mocked(prefetchRaw).mock.calls[0]![1]).toMatchObject({ onBusy: "wait", busyWaitMs: 1234 });
+  });
+});

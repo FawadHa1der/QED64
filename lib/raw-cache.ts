@@ -52,6 +52,29 @@ async function cacheDir(create: boolean): Promise<FileSystemDirectoryHandle | nu
   } catch { return null; }
 }
 
+/** How long a network-kind boot failure is remembered (HARDENING #63). */
+export const NETWORK_FAILURE_MEMORY_MS = 60_000;
+/** Module state every session of this page shares, never the relay's: per
+ * cache key (else URL), when a session's boot last failed with a
+ * network-kind cause while this entry was among its pre-open loads. A session
+ * that finds its entry here downloads the region BEFORE it boots its runtime
+ * (qed64-boot.ts downloadBeforeBoot), so a lasting network failure costs the
+ * relay's retries no runtime. A completed download clears it; it expires
+ * after NETWORK_FAILURE_MEMORY_MS; a reload forgets it. */
+const networkFailures = new Map<string, number>();
+/** @internal Remember that a boot loading `entry` failed with a network-kind cause at `at`. */
+export function noteNetworkFailure(entry: SnapshotEntry, at: number = Date.now()): void { networkFailures.set(snapshotCacheKey(entry), at); }
+/** @internal Did a boot loading `entry` fail with a network-kind cause in the last NETWORK_FAILURE_MEMORY_MS? */
+export function networkFailedRecently(entry: SnapshotEntry, now: number = Date.now()): boolean {
+  const key = snapshotCacheKey(entry), at = networkFailures.get(key);
+  if (at === undefined) return false;
+  if (now - at < NETWORK_FAILURE_MEMORY_MS) return true;
+  networkFailures.delete(key);
+  return false;
+}
+/** @internal Forget it: the region downloaded (or loaded) completely. */
+export function clearNetworkFailure(entry: SnapshotEntry): void { networkFailures.delete(snapshotCacheKey(entry)); }
+
 /** Is the entry's raw region complete in OPFS? (null: no OPFS here) */
 export async function isRawCached(entry: SnapshotEntry): Promise<boolean | null> {
   const name = rawRegionName(entry);
