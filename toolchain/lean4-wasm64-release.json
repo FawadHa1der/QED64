@@ -1,6 +1,6 @@
 {
   "schema": "lean4-wasm64.release/v1",
-  "id": "lean-v4.34.0-a8817d0",
+  "id": "lean-v4.34.0-41ec565",
   "lean": {
     "version": "4.34.0",
     "upstreamTag": "v4.34.0"
@@ -8,29 +8,29 @@
   "kernel": {
     "repo": "https://github.com/FawadHa1der/lean4",
     "branch": "qed64-wasm64",
-    "commit": "a8817d01f97227b1b04cc7d661b9e396f6ca8f34",
-    "patch": "0035b"
+    "commit": "41ec56530df541dcfb1d612a876fdc992d7ab8f5",
+    "patch": "0036"
   },
   "gate": {
     "passed": true,
-    "commit": "a8817d01f97227b1b04cc7d661b9e396f6ca8f34",
-    "wasmSha256": "3ab1c6a9da03bc29d0b29a81fe03673f2b2341b55f51c893525766b99dde1f17",
-    "checks": 13
+    "commit": "41ec56530df541dcfb1d612a876fdc992d7ab8f5",
+    "wasmSha256": "57ae00dc5f6ce9585579b4326db4805f2aea7ef0273292751146950f0497653f",
+    "checks": 16
   },
   "runtime": {
-    "buildId": "wasm64-3ab1c6a9da03bc29",
+    "buildId": "wasm64-57ae00dc5f6ce958",
     "manifest": "runtime/runtime-manifest.json",
     "target": "wasm64-unknown-emscripten",
-    "sourceRevision": "qed64-wasm64@a8817d01f9 (upstream v4.34.0, HARDENING #52/#53 task-manager fix, no parked threads)",
+    "sourceRevision": "qed64-wasm64@41ec56530d (upstream v4.34.0)",
     "files": {
       "lean.js": {
-        "bytes": 48972033,
-        "sha256": "77a9b6d19226a03708f551c0622b2cfb102480fe10b25f2eb59819454f2dd737",
+        "bytes": 48973198,
+        "sha256": "e0b8397a43ae51a86b989d82afb21155ed8ffa3e4c6a681d6598af1f6db44dca",
         "chunks": 3
       },
       "lean.wasm": {
-        "bytes": 109875453,
-        "sha256": "3ab1c6a9da03bc29d0b29a81fe03673f2b2341b55f51c893525766b99dde1f17",
+        "bytes": 109877359,
+        "sha256": "57ae00dc5f6ce9585579b4326db4805f2aea7ef0273292751146950f0497653f",
         "chunks": 7
       }
     },
@@ -100,15 +100,16 @@
       "mathlib": {
         "commit": "5ed2965256430c3649e86755f9576b54eca72435",
         "tag": "v4.34.0"
-      }
+      },
+      "note": "transport copied from served bytes, not re-packed"
     },
     {
       "id": "lean-lib",
       "manifest": "profiles/lean-lib.manifest.json",
-      "release": "lean-lib-4.34.0-wasm64-3ab1c6a9da03bc29",
+      "release": "lean-lib-4.34.0-wasm64-57ae00dc5f6ce958",
       "modules": 2520,
-      "rawBytes": 2129303794,
-      "rawSha256": "01240fbda16d01f994ae3720373b6039b726c29c9f9ce831e8b1eb53a28c6346",
+      "rawBytes": 2129320563,
+      "rawSha256": "9faccacf310eece94c367efae7765d254f8a8957f7096df286f9d63adf265967",
       "roots": [
         "Init",
         "Std",
@@ -121,8 +122,8 @@
       ],
       "lean": {
         "version": "4.34.0",
-        "compiler": "a8817d01f97227b1b04cc7d661b9e396f6ca8f34",
-        "gitRevision": "a8817d01f972"
+        "compiler": "41ec56530df541dcfb1d612a876fdc992d7ab8f5",
+        "gitRevision": "41ec56530df5"
       }
     }
   ],
@@ -135,7 +136,7 @@
   "docker": {
     "tag": "qed64-toolchain:emsdk-6.0.5",
     "recipeCommit": "974ee228b0c368f1d74f55ed4794ef60c15de4c2",
-    "imageId": "sha256:8228ea564e7b5979330540a521879275d57f5a3bb270ef45eb2cabb648fe2842",
+    "imageId": "sha256:5708c2dbf5a1f5745b469450029016303419ab6e3cc8ed205e2bd33c4653d121",
     "base": "emscripten/emsdk:6.0.5@sha256:76a44fff907397784decc435115d07fcb9587a4f1504977f39f3745e538e3a1e"
   },
   "mathlib": {
@@ -166,15 +167,14 @@
   },
   "tools": {
     "package": "lean4-wasm64",
-    "version": "4.34.0-a8817d0",
-    "tgz": "tools/lean4-wasm64-4.34.0-a8817d0.tgz",
-    "commit": "097ffa64501995493855ba9e04c912095ca2080c"
+    "version": "4.34.0-41ec565",
+    "tgz": "tools/lean4-wasm64-4.34.0-41ec565.tgz",
+    "commit": "712e371a062673eb47dd1b3e2a0d87096c38ea35"
   },
   "notes": [
-    "Runtime: the gated a8817d01f9 build (patch 0035b) that QED64 has served since 2026-10-03 as wasm64-3ab1c6a9da03bc29; its runtime manifest and every chunk are byte-identical to the served ones.",
-    "lean-core and mathlib-essential are the bytes QED64 serves (transport copied, not re-packed), written by the v4.34.0 import's compilers: wasm 8d91aadcda (lean-core) and native 857544b439 (Mathlib, Lean, Std). Re-packing that import reproduces both raw packs byte for byte; only part 000 of each transport differs, in the gzip header's OS byte.",
-    "Patch 0034, which a8817d01f9 contains, changed Lean/Environment, Lean/Elab/Import, Lean/Language/Lean and Lean/Shell after the import: those modules' oleans in mathlib-essential predate it. Harmless (the runtime executes its own compiled code for them); lean-lib carries the current oleans.",
-    "mathlib-game-extra is re-cut from the import's extra-tree with /profiles/ part URLs: the same raw pack (sha256 7252fb7e...) as QED64's never-served staging copy. lean-lib is new: the a8817d01f9 build's own lib/lean, the tree the release gate passed on."
+    "Runtime: the gated 41ec56530d build (patch 0036, qed64 HARDENING #60). Deep recursion now fails with Lean's own error at the browser engine's stack limit instead of killing the thread with 'RangeError: Maximum call stack size exceeded'. Meta: 'maximum recursion depth has been reached: the WebAssembly runtime's stack is exhausted (…)'; kernel: '(kernel) the WebAssembly engine's stack is exhausted: …'. The session survives either way.",
+    "Runtime-only release: lean-core, mathlib-essential and mathlib-game-extra are byte-identical to lean-v4.34.0-a8817d0's (transport copied, not re-packed); native64 and the lists are the import's. Apps re-pair (rebake snapshots) against this runtime's build id.",
+    "Patch 0036 changed Lean/CoreM: in the browser packs, Lean.CoreM's olean lacks Lean.Core.nativeStackOk and checkNativeStack and keeps the old checkSystem body until the next import (as with 0034). Harmless: only compiled code calls the two, and interpreted callers reach the compiled checkSystem through its exported wrapper. Against the import build, only Lean/CoreM.c (0036) and the 0034 modules changed in the stdlib's generated C, with names added and none removed or reused. Naming Lean.Core.nativeStackOk in user code reports an unknown constant. lean-lib is the 41ec56530d build's own lib/lean, the tree the release gate passed on."
   ],
   "files": [
     {
@@ -249,18 +249,18 @@
     },
     {
       "path": "profiles/lean-lib.manifest.json",
-      "bytes": 5931636,
-      "sha256": "6ff1e487ccbaffe337c07ba70ee994fccd4334875d408b75b392875db245ae11"
+      "bytes": 5931638,
+      "sha256": "a93bec81085d126f2e7f5d3b9e1faa6e8155fe2f9a552eceaa049bf7a3b608d2"
     },
     {
-      "path": "profiles/lean-lib.pack.gzip.04b3edb6b0f86d2ebac1.part-016",
+      "path": "profiles/lean-lib.pack.gzip.08b5216952e09b39c70e.part-021",
       "bytes": 16777216,
-      "sha256": "04b3edb6b0f86d2ebac1c62338ba84952435e865103c8a649d52a3cf19be45ac"
+      "sha256": "08b5216952e09b39c70ed178c91421e6256510fdbe28723c25753050c102930e"
     },
     {
-      "path": "profiles/lean-lib.pack.gzip.0bf069d0871c65a8b9c2.part-028",
+      "path": "profiles/lean-lib.pack.gzip.16325cb413b3c15a8d02.part-024",
       "bytes": 16777216,
-      "sha256": "0bf069d0871c65a8b9c24bd5ca0b49c5ab8fab2702d9280211768eb0c19b5725"
+      "sha256": "16325cb413b3c15a8d0225cc9160357278027d0ce9bb257f350041bbfffd3f44"
     },
     {
       "path": "profiles/lean-lib.pack.gzip.1a2a12eb3e5d5316bef9.part-001",
@@ -268,19 +268,9 @@
       "sha256": "1a2a12eb3e5d5316bef934d5e37bdb592810411f76039ffad0a15ac439246b86"
     },
     {
-      "path": "profiles/lean-lib.pack.gzip.1efe5e0f5fca90ee30e1.part-011",
+      "path": "profiles/lean-lib.pack.gzip.1b7b9470681b9baa63e9.part-019",
       "bytes": 16777216,
-      "sha256": "1efe5e0f5fca90ee30e10d7e20c988fceeb3ddde81642ea2c5f25c250638a9cb"
-    },
-    {
-      "path": "profiles/lean-lib.pack.gzip.2645b1ee16e230001d9d.part-012",
-      "bytes": 16777216,
-      "sha256": "2645b1ee16e230001d9d8e2b6008ea8fc6c74cdf82f6b04d947da6778cbe6bfe"
-    },
-    {
-      "path": "profiles/lean-lib.pack.gzip.2ed611ec50fc76a00ce4.part-023",
-      "bytes": 16777216,
-      "sha256": "2ed611ec50fc76a00ce4d77e8c223b682d0ecc3a7de7a2b45b08a844b9a2779d"
+      "sha256": "1b7b9470681b9baa63e930e1ee1a5753c10410dc24668bf827323534a1e456c2"
     },
     {
       "path": "profiles/lean-lib.pack.gzip.2f43c2664944a9b05ab0.part-007",
@@ -288,9 +278,14 @@
       "sha256": "2f43c2664944a9b05ab090f2d4beba26940215f81cedf73b2c11b8fa226848b0"
     },
     {
-      "path": "profiles/lean-lib.pack.gzip.360bedb6cc14f376457e.part-033",
+      "path": "profiles/lean-lib.pack.gzip.35dd34c9872cd75b03fd.part-023",
       "bytes": 16777216,
-      "sha256": "360bedb6cc14f376457e8fecea09474bda2c29e761f4125669d4e4b194e6919a"
+      "sha256": "35dd34c9872cd75b03fd9f521ae679da497109659cbc6db53c26e871a4469e97"
+    },
+    {
+      "path": "profiles/lean-lib.pack.gzip.43a372cfb8a5a8a5d44a.part-010",
+      "bytes": 16777216,
+      "sha256": "43a372cfb8a5a8a5d44a978b48e5dce4d4d104935bf566ae8bdf167845e3adea"
     },
     {
       "path": "profiles/lean-lib.pack.gzip.44b9ccf5c79cdeaa2a07.part-009",
@@ -298,34 +293,29 @@
       "sha256": "44b9ccf5c79cdeaa2a070aae823e585e541d7042c512ee958103fb6c8ea5b800"
     },
     {
-      "path": "profiles/lean-lib.pack.gzip.4df139cf62073b56b03a.part-030",
-      "bytes": 16777216,
-      "sha256": "4df139cf62073b56b03a5f7d64d0c8d26284c33b9d70375d94053888bf97e598"
+      "path": "profiles/lean-lib.pack.gzip.48a18a13f2fc99c8571c.part-034",
+      "bytes": 11265410,
+      "sha256": "48a18a13f2fc99c8571cb0c70fbd3bcc033bd51fe9d5649a520b217be57be4ac"
     },
     {
-      "path": "profiles/lean-lib.pack.gzip.5448a07409c5c1908b77.part-027",
+      "path": "profiles/lean-lib.pack.gzip.60583ec91916eda827c0.part-016",
       "bytes": 16777216,
-      "sha256": "5448a07409c5c1908b778918f4cd4d42640ba749c3ba0a27fc2cd263f39d5408"
+      "sha256": "60583ec91916eda827c06a9b171e6df41d6b150ff839c20e6d6abce03b54f01e"
     },
     {
-      "path": "profiles/lean-lib.pack.gzip.5728fc8ec4083c0800b8.part-021",
+      "path": "profiles/lean-lib.pack.gzip.60b4dc803ad686570edd.part-028",
       "bytes": 16777216,
-      "sha256": "5728fc8ec4083c0800b85a759965dd676a536959a99f6bbfc186ff4bef7888a8"
+      "sha256": "60b4dc803ad686570edd99a9eb81f9a75a211438458e3913475029ec35daa022"
     },
     {
-      "path": "profiles/lean-lib.pack.gzip.5c207389a8740b541c87.part-017",
+      "path": "profiles/lean-lib.pack.gzip.6316167f2c40cb08a3d2.part-032",
       "bytes": 16777216,
-      "sha256": "5c207389a8740b541c871fb1da5ab268b49c9f4b5f4284d2c5ee82080485e841"
+      "sha256": "6316167f2c40cb08a3d25c026944f3ecf8a2330787bb853160c8a330d506971b"
     },
     {
-      "path": "profiles/lean-lib.pack.gzip.5d2307c569e01a90f1cb.part-019",
+      "path": "profiles/lean-lib.pack.gzip.63fd111d583f6f736455.part-026",
       "bytes": 16777216,
-      "sha256": "5d2307c569e01a90f1cbbf653f2930c87377fbd0bd3010fd1435a8d7137c238a"
-    },
-    {
-      "path": "profiles/lean-lib.pack.gzip.686f6b40022aba6e9981.part-022",
-      "bytes": 16777216,
-      "sha256": "686f6b40022aba6e9981977711da6fdcc3ce1e5b2ab79823402ea03b7ba92bcf"
+      "sha256": "63fd111d583f6f73645571faf0ff52dcc9cdbe73fab24300da3b70ed65f18581"
     },
     {
       "path": "profiles/lean-lib.pack.gzip.68dc524c2498ae2064ac.part-000",
@@ -333,24 +323,9 @@
       "sha256": "68dc524c2498ae2064acaa7c42002a6c93cb61fc0b255877e36169127183d306"
     },
     {
-      "path": "profiles/lean-lib.pack.gzip.782a48b22eb8f15919fb.part-024",
-      "bytes": 16777216,
-      "sha256": "782a48b22eb8f15919fb4ef435101830f3b0c96d49572f42a5839d40ce3ac945"
-    },
-    {
-      "path": "profiles/lean-lib.pack.gzip.7e52e8ba5c10c52bdc80.part-026",
-      "bytes": 16777216,
-      "sha256": "7e52e8ba5c10c52bdc80d896eb17788c7a23ab988a2b99382fc103937dc618e2"
-    },
-    {
       "path": "profiles/lean-lib.pack.gzip.814c5b938052613b3180.part-003",
       "bytes": 16777216,
       "sha256": "814c5b938052613b3180492a856222cd9fd3c3d12a56b70cd1c7c9fcaf1485e9"
-    },
-    {
-      "path": "profiles/lean-lib.pack.gzip.8622ad3952b90e70cb40.part-015",
-      "bytes": 16777216,
-      "sha256": "8622ad3952b90e70cb405b0562c418601d2894c047b4827ab8e393708dd8fb3f"
     },
     {
       "path": "profiles/lean-lib.pack.gzip.89e3b0f9cb9300774759.part-002",
@@ -358,9 +333,34 @@
       "sha256": "89e3b0f9cb93007747593da604453bd5fabc6f12434363fbe972dd9dfa4e8c22"
     },
     {
-      "path": "profiles/lean-lib.pack.gzip.a456cc82d341e68eaa4a.part-014",
+      "path": "profiles/lean-lib.pack.gzip.8ca665cb817819e8938e.part-029",
       "bytes": 16777216,
-      "sha256": "a456cc82d341e68eaa4a3102dfe37bc6c4001e5f8dbe2434c629bc311d61b0a3"
+      "sha256": "8ca665cb817819e8938ef8154e0bc9829cecb8f1245789408f8eb64148c659ca"
+    },
+    {
+      "path": "profiles/lean-lib.pack.gzip.8ccbc365f72cba3d0b5b.part-014",
+      "bytes": 16777216,
+      "sha256": "8ccbc365f72cba3d0b5b5bda992b5ea9ecab102341357b2937e7e25f2b574cdf"
+    },
+    {
+      "path": "profiles/lean-lib.pack.gzip.9567a0842e86b69e26aa.part-031",
+      "bytes": 16777216,
+      "sha256": "9567a0842e86b69e26aa1ccadd7d78b6a407a670e37e0096f6b6eb14f9bfb6f5"
+    },
+    {
+      "path": "profiles/lean-lib.pack.gzip.95b87bca883a342bdc68.part-020",
+      "bytes": 16777216,
+      "sha256": "95b87bca883a342bdc68ff48ff8b2df589fcb36619bdc00c661136833a8bc68f"
+    },
+    {
+      "path": "profiles/lean-lib.pack.gzip.9670bfb793709c2410e3.part-011",
+      "bytes": 16777216,
+      "sha256": "9670bfb793709c2410e38343d83eed3d64d0b8d88d7afcdc7c1150371a7e3b79"
+    },
+    {
+      "path": "profiles/lean-lib.pack.gzip.9cebc6d17094848982fc.part-022",
+      "bytes": 16777216,
+      "sha256": "9cebc6d17094848982fc844231b1fffa8129424ce03a8c1b4fab30c0ef90fc8d"
     },
     {
       "path": "profiles/lean-lib.pack.gzip.a7f8a6bdc37c406f3890.part-005",
@@ -368,34 +368,39 @@
       "sha256": "a7f8a6bdc37c406f3890b5668412fc5906c2bbe96b1cb78792f575db7f1481e7"
     },
     {
-      "path": "profiles/lean-lib.pack.gzip.ad7a5031ce6f0679e19e.part-010",
+      "path": "profiles/lean-lib.pack.gzip.b0da5ad75e4f174db827.part-033",
       "bytes": 16777216,
-      "sha256": "ad7a5031ce6f0679e19e8870a4a3ce56c88827a3e00f2e0e404be9d86346c330"
+      "sha256": "b0da5ad75e4f174db82731819f3bcd148fddeb44f435f8e7e36f5d11f1f41520"
     },
     {
-      "path": "profiles/lean-lib.pack.gzip.bc2f0d7b21dc3f72594b.part-032",
+      "path": "profiles/lean-lib.pack.gzip.be1f918f82658764e387.part-017",
       "bytes": 16777216,
-      "sha256": "bc2f0d7b21dc3f72594b40ce999ede3e89c1cf56ae0e77763bf8265a0d8e03ef"
+      "sha256": "be1f918f82658764e38786b579749b1e6bf535ff496711d1e9352b1ddc7c43b1"
     },
     {
-      "path": "profiles/lean-lib.pack.gzip.c4be86b469f3580e4609.part-025",
+      "path": "profiles/lean-lib.pack.gzip.c84c6f2eadf5a877247e.part-030",
       "bytes": 16777216,
-      "sha256": "c4be86b469f3580e460990c63fe69280cdf7730e85b7d29b16c72c4d26013720"
+      "sha256": "c84c6f2eadf5a877247e8d7ff9b205eee37fdc7f293a5fc910f6b8d0cfb3bc9b"
     },
     {
-      "path": "profiles/lean-lib.pack.gzip.c8cef26cb5f340226533.part-013",
+      "path": "profiles/lean-lib.pack.gzip.c86fd14a20f606dcbed8.part-015",
       "bytes": 16777216,
-      "sha256": "c8cef26cb5f3402265338b192384a16cc504e7b0d6d80d856bdde0705579d323"
+      "sha256": "c86fd14a20f606dcbed8507735d857e6381c992c0824a1ce5248dddeafbfbe78"
     },
     {
-      "path": "profiles/lean-lib.pack.gzip.eb5c9208802ea26a5777.part-018",
+      "path": "profiles/lean-lib.pack.gzip.ccbb6a495220ac610f79.part-018",
       "bytes": 16777216,
-      "sha256": "eb5c9208802ea26a577749c272f4f5dc11ca4e1ed67b1a84edeb09c2c467a55b"
+      "sha256": "ccbb6a495220ac610f7951267880c27a28202a1930c468965cf01573401cd5ca"
     },
     {
-      "path": "profiles/lean-lib.pack.gzip.f0d8399180a41188d97a.part-020",
+      "path": "profiles/lean-lib.pack.gzip.df75835bee9a1700edc3.part-013",
       "bytes": 16777216,
-      "sha256": "f0d8399180a41188d97a0cf18c0938f1a26e81d343aa768b49e67d443e5ec415"
+      "sha256": "df75835bee9a1700edc378d0b9d9be7887845882a9a23e8c0351d1ad0c5ce43e"
+    },
+    {
+      "path": "profiles/lean-lib.pack.gzip.ef38d20896a36f54beda.part-025",
+      "bytes": 16777216,
+      "sha256": "ef38d20896a36f54beda863256a69b549c08f9f8bba296fb4a709f8086244a19"
     },
     {
       "path": "profiles/lean-lib.pack.gzip.f594cddcdb5719430720.part-006",
@@ -403,29 +408,24 @@
       "sha256": "f594cddcdb571943072037070ba0a42970e1c7c30bc5b800136df2392ed86d2b"
     },
     {
+      "path": "profiles/lean-lib.pack.gzip.f6a2f0ad4af49c14a34b.part-027",
+      "bytes": 16777216,
+      "sha256": "f6a2f0ad4af49c14a34b7abf96a4ec73265365034ebcf5eeff6658135e49bd96"
+    },
+    {
       "path": "profiles/lean-lib.pack.gzip.f70abf78a9003c6c45dd.part-004",
       "bytes": 16777216,
       "sha256": "f70abf78a9003c6c45dd3aad50cb29d1b4e620986aac447d3304400b30df37da"
     },
     {
-      "path": "profiles/lean-lib.pack.gzip.f857329ca99f5a467578.part-034",
-      "bytes": 11242029,
-      "sha256": "f857329ca99f5a46757803840fbbabd8b83c4aea0e65e316c2484717553f541a"
-    },
-    {
-      "path": "profiles/lean-lib.pack.gzip.f8cd954b3d4fd11eb07e.part-031",
+      "path": "profiles/lean-lib.pack.gzip.f8e2fa1cfac10abcf4de.part-012",
       "bytes": 16777216,
-      "sha256": "f8cd954b3d4fd11eb07e78c8f585258c49ffa9541e42214034e596ca43c2822c"
+      "sha256": "f8e2fa1cfac10abcf4deb479171496ff93122601d3c1c71dcf7bd8b04efb8930"
     },
     {
       "path": "profiles/lean-lib.pack.gzip.fe72b7e169168d46e8fa.part-008",
       "bytes": 16777216,
       "sha256": "fe72b7e169168d46e8fa58c83d92d6557d8e3cab18e23ff5806258017259f3e3"
-    },
-    {
-      "path": "profiles/lean-lib.pack.gzip.ff74196c3f0508e21c12.part-029",
-      "bytes": 16777216,
-      "sha256": "ff74196c3f0508e21c12eec990535f29cfadfa5e141c95968ee63a9f0240faf3"
     },
     {
       "path": "profiles/mathlib-essential.manifest.json",
@@ -808,70 +808,70 @@
       "sha256": "07c96082b95fce057ed9656cc80da50477d596250973cfdd414f74e7631eb56d"
     },
     {
-      "path": "runtime/chunks/lean.js.0a0ba72346c9095b11f8.part-002",
-      "bytes": 15417601,
-      "sha256": "0a0ba72346c9095b11f8bdd5d90f3d90ea1c4a9602ff7676ac1e7b362e3dd7ca"
-    },
-    {
-      "path": "runtime/chunks/lean.js.9fa5a1028802b53d56b2.part-001",
+      "path": "runtime/chunks/lean.js.148ecdb5ac0c6a9d2872.part-001",
       "bytes": 16777216,
-      "sha256": "9fa5a1028802b53d56b2271349dc244978db23885ac2e6c952b7fec78d746c86"
+      "sha256": "148ecdb5ac0c6a9d2872b49fb2ec53ac8322e5e8f17fad6ac1d31653f3950f80"
     },
     {
-      "path": "runtime/chunks/lean.js.d8e86e9db2392e9b5cc9.part-000",
+      "path": "runtime/chunks/lean.js.3b54d26ad47472bb296a.part-000",
       "bytes": 16777216,
-      "sha256": "d8e86e9db2392e9b5cc95a9354719477f5c4d893d2e75482774ed37dbde86a94"
+      "sha256": "3b54d26ad47472bb296af0f86472abb88d5082dba6e587465283236d60b1d0e8"
     },
     {
-      "path": "runtime/chunks/lean.wasm.5500c87fb8f37d2e273a.part-000",
+      "path": "runtime/chunks/lean.js.8f86ecd999a20187e251.part-002",
+      "bytes": 15418766,
+      "sha256": "8f86ecd999a20187e2512c09494e9ec7b71e00a99e641eea15b371e0fd2a1b69"
+    },
+    {
+      "path": "runtime/chunks/lean.wasm.1a217673be940f72276b.part-003",
       "bytes": 16777216,
-      "sha256": "5500c87fb8f37d2e273a41a0fe0110fa037d51eeaf7352fa6268244972b9ea22"
+      "sha256": "1a217673be940f72276b97f2ca99dc3fb253c3f3b8100378ca71b8e30b48e6eb"
     },
     {
-      "path": "runtime/chunks/lean.wasm.638ce8f85fa0ff916882.part-004",
+      "path": "runtime/chunks/lean.wasm.36dee9f971f4b55c671e.part-004",
       "bytes": 16777216,
-      "sha256": "638ce8f85fa0ff916882331fec0f9b0c6ed05591031486e84a91b6bbf089027a"
+      "sha256": "36dee9f971f4b55c671ea577dc467e388c23a1aa8ad13da7860ba70e4b7b70df"
     },
     {
-      "path": "runtime/chunks/lean.wasm.6f6da9e2f881d6080a68.part-006",
-      "bytes": 9212157,
-      "sha256": "6f6da9e2f881d6080a688df423bfa02daf9f223d1632d8d530fc2f7efede860a"
-    },
-    {
-      "path": "runtime/chunks/lean.wasm.8acb3212ff26b3eb2825.part-003",
+      "path": "runtime/chunks/lean.wasm.54c3c3c82050af350ecf.part-002",
       "bytes": 16777216,
-      "sha256": "8acb3212ff26b3eb28252b240592e84198b77ce50c9a42f69bd2da436f0b4dfa"
+      "sha256": "54c3c3c82050af350ecff40f7808f123344f1b2eb06632e2c8d3e0b081cc8a66"
     },
     {
-      "path": "runtime/chunks/lean.wasm.b42172b3b020cb450d69.part-002",
-      "bytes": 16777216,
-      "sha256": "b42172b3b020cb450d698febc570f149c6855caee412ba8b2e65d0479a73c68a"
+      "path": "runtime/chunks/lean.wasm.85a21a0118a96a6b8b92.part-006",
+      "bytes": 9214063,
+      "sha256": "85a21a0118a96a6b8b925fffeb3f6e1e81c2807e7b5772b44e49caa99a233561"
     },
     {
-      "path": "runtime/chunks/lean.wasm.c85fc2e88c59b35b6b2e.part-001",
+      "path": "runtime/chunks/lean.wasm.86850b8d3701dc580561.part-001",
       "bytes": 16777216,
-      "sha256": "c85fc2e88c59b35b6b2e75fd4e023683dc1539f92597ae222636d3e040568ba3"
+      "sha256": "86850b8d3701dc5805610aecbf2b02c5c503365e5eee9e14a6a569eb21377671"
     },
     {
-      "path": "runtime/chunks/lean.wasm.df8c34c0703f0e3166a7.part-005",
+      "path": "runtime/chunks/lean.wasm.b4a19232aadd82c2d700.part-000",
       "bytes": 16777216,
-      "sha256": "df8c34c0703f0e3166a7fdff8220ced70e0175bb65ecb93a535352cd34372003"
+      "sha256": "b4a19232aadd82c2d700cb10eed3c2c4941082dc0f68cd59fd900547c1d6f0ed"
+    },
+    {
+      "path": "runtime/chunks/lean.wasm.b57b2a5b5cec98ea902d.part-005",
+      "bytes": 16777216,
+      "sha256": "b57b2a5b5cec98ea902de07795a41990d5d3681bf81beb76dbbd5a4537e43797"
     },
     {
       "path": "runtime/runtime-manifest.json",
-      "bytes": 2858,
-      "sha256": "5cfa0488915e0c64cd17b3cb80930e72a001160c19243f6418441425dd2b659e"
+      "bytes": 2803,
+      "sha256": "b74567bda62c0108316f4fd12380437dd6e0ca83fbccab94614e683ace808cc2"
     },
     {
-      "path": "runtime/runtime-manifest.wasm64-3ab1c6a9da03bc29.json",
-      "bytes": 2858,
-      "sha256": "5cfa0488915e0c64cd17b3cb80930e72a001160c19243f6418441425dd2b659e"
+      "path": "runtime/runtime-manifest.wasm64-57ae00dc5f6ce958.json",
+      "bytes": 2803,
+      "sha256": "b74567bda62c0108316f4fd12380437dd6e0ca83fbccab94614e683ace808cc2"
     },
     {
-      "path": "tools/lean4-wasm64-4.34.0-a8817d0.tgz",
-      "bytes": 67958,
-      "sha256": "7a72395a3adb713db1bc3e4128518472185148320ac4abf1aa1acbee07c601dc"
+      "path": "tools/lean4-wasm64-4.34.0-41ec565.tgz",
+      "bytes": 69577,
+      "sha256": "c8864d60166f58cbba7f0c4bfbe8aaa9a4eb4274e2a300e3b0aaac07fa2b5efe"
     }
   ],
-  "digest": "sha256:39f028762e8d48bdf5080d98f3d3c6d7eff8de7853aaac303cd3804174a98de5"
+  "digest": "sha256:f958ba7508317a4ceed42e1a13cbd78b716209e2e2a86fe1a7f6a93a607888ee"
 }

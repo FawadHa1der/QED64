@@ -1,7 +1,7 @@
 {
   "schema": "qed64.profile-index/v1",
   "runtime": {
-    "buildId": "wasm64-3ab1c6a9da03bc29",
+    "buildId": "wasm64-57ae00dc5f6ce958",
     "leanVersion": "4.34.0"
   },
   "profiles": [
