@@ -1604,7 +1604,13 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   runtime boot (`downloadBeforeBoot`, lib/qed64-boot.ts): a download that
   fails with a `network` cause rejects `start()` with `snapshot '<name>'
   failed to load` and that cause before any runtime exists; a completed
-  download or load clears the memory. A first attempt, a cached snapshot
+  download or load clears the memory; a cached region is probed first and
+  shows no label, and a pre-boot prefetch that cannot decide (silence,
+  another tab, a non-network error) is not run again by the boot's load
+  (the checker streams it at once). The step's progress label carries
+  `loaded: 0`, `total` and `unit: "bytes"`, so it never has the shape of the
+  "waiting for another tab" call (`step: "download"` without `loaded`). A
+  first attempt, a cached snapshot
   and a memory older than 60 s boot as before, and a single cut is still
   absorbed with 0 deaths. The relay, its breaker, the `Death` projection
   and the console lines are unchanged; a lasting cut now shows the same
