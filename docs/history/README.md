@@ -32,7 +32,9 @@ the living description is [ARCHITECTURE.md](../ARCHITECTURE.md) "Transport".
 a 24-agent inventory (2026-09-04) answering whether the older "pump" transport
 (a header-probe shim with in-place restarts) could be removed. The answer was
 yes, in three steps. The page-side deletion landed the same day; the kernel
-retired its pump entry points at the 4.34.0 pairing (patch 0033). Superseded by
+retired its pump entry points at the next pairing bump, patch 0033
+(2026-09-07, runtime `wasm64-c645477e817ac857`, still Lean 4.33.0-pre).
+Superseded by
 [RESIDENT-WORKER-PLAN.md](../RESIDENT-WORKER-PLAN.md), which records both
 removals.
 
