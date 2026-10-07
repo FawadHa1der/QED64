@@ -428,11 +428,48 @@ usage: snapshot-probe.mjs (--snap <file> | --fresh-import --lib <tree>) (--probe
 | `--init-flags <n>` | `1` | Replay-control flags for `--via-mem` (patch 0016). |
 | `--workspace <dir>` | — | Mounted at `/workspace`, the compile's cwd. Game probes need `.lake/gamedata`. |
 | `--dump-messages` | off | Echoes every line Lean prints on stdout as `[lean:stdout] <line>`. |
+| `--watchdog-ms <ms>` | `--budget-ms` + `120000` | The wall-clock limit of the run, kept by a worker thread (below). Past it the probe prints the `watchdog` line and SIGKILLs itself. `0`: no watchdog thread, as before the watchdog. Not a whole number: exit 2. |
 
 - **Environment:** `QED64_LEAN_ARTIFACT`, `QED64_LIB_TREE` (the path rule),
   `QED64_PROFILE_INIT`.
 - **Inputs:** the `.snap`, the probe, the `--lib` tree and the artifact.
 - **Outputs:** stdout and stderr only.
+
+**The watchdog.** From the kernel's patch 0037 on, `lean_wasm_compile`
+returns only after every task still recorded for a command has finished, so
+a task that never finishes (a timed sleep inside an async proof) hangs the
+call (HARDENING #61). The call blocks the probe's main thread, so no timer on
+it can fire. Unless `--watchdog-ms 0`, snapshot-probe therefore starts **one
+worker thread** right after it creates its scratch dir (so after `--help`,
+the usage checks and the path rule, which exit before it). The worker has its
+own event loop; past `--watchdog-ms`, measured from the argument checks, it:
+
+1. removes the scratch dir (a SIGKILL skips the exit hook, side effect 5);
+2. writes exactly one stderr line, `SNAPSHOT PROBE FAIL: watchdog: no verdict
+   within <ms> ms (lean_wasm_compile did not return; a task that never
+   finishes hangs it from kernel 0037 on)` (the `watchdog` marker, a `fail`
+   line too);
+3. SIGKILLs its own process. The exit status is therefore **killed by
+   SIGKILL** (a shell's `137`; Node's `signal === "SIGKILL"`), not an exit
+   code: nothing on the blocked main thread can run to exit 1. Treat it as a
+   FAIL, as any status other than 0 is.
+
+The verdict and the watchdog claim one shared cell, so a run prints either
+its own verdict (`SNAPSHOT PROBE PASS`, `SNAPSHOT PROBE FAIL: …` or
+`ABORT: …`, with its exit code) or the `watchdog` line, never both: a
+verdict reached before the deadline wins even if the exit after it is slow.
+
+Nothing else changes. It is the same process: the PID, the stdio, every line
+and its stream, the exit code of a run that reaches a verdict, and every
+per-PID measure (`/usr/bin/time -l`'s maximum resident set size and peak
+memory footprint, rusage, `proc_pid_rusage`) are the probe's own, the worker
+adding a few MB. A caller's signals reach the probe itself, as before, and a
+caller that SIGKILLs it and waits for its pipes to close (the compiler
+battery) sees them close at once.
+
+The default, `--budget-ms` + 120000 ms, is the compile budget plus a load
+allowance; a probe with a slow `--via-memfs` or `--fresh-import` load passes
+a larger one.
 
 | Marker | Stream | Regex |
 |---|---|---|
@@ -441,6 +478,7 @@ usage: snapshot-probe.mjs (--snap <file> | --fresh-import --lib <tree>) (--probe
 | compile | stdout | `^compile: tag=(\d+) elapsed=(\d+)ms errors=(\d+)$` |
 | pass | stdout | `^SNAPSHOT PROBE PASS$` |
 | fail | stderr | `^SNAPSHOT PROBE FAIL: (.*)$` |
+| watchdog | stderr | `^SNAPSHOT PROBE FAIL: watchdog: no verdict within (\d+) ms \(lean_wasm_compile did not return; a task that never finishes hangs it from kernel 0037 on\)$` (the watchdog thread's; a `fail` line too; the process then dies of SIGKILL) |
 | lean-stdout | stdout | `^\[lean:stdout\] (.*)$` (with `--dump-messages`; Lean's JSON messages) |
 | abort | stderr | `^ABORT: (.*)$` |
 | deprecated-default | stderr | `^(\S+): WARNING — the default --(\S+) (.+) \((.+)\) is deprecated; use --\S+ \S+ or set (\w+) \(docs\/CLI-CONTRACT\.md\)$` (`--artifact`, `--lib`) |
@@ -450,12 +488,15 @@ usage: snapshot-probe.mjs (--snap <file> | --fresh-import --lib <tree>) (--probe
 |---|---|
 | 0 | `SNAPSHOT PROBE PASS`. |
 | 1 | `SNAPSHOT PROBE FAIL`: the load failed, the probe has errors, or it blew the budget. Also a crash before the runtime started, such as an unreadable `--probe-file` or a missing `lean.js`. |
-| 2 | Usage: no snapshot source, or no probe; or no `--artifact` / `--lib`, its variable unset and no deprecated default (`no-path`). |
+| 2 | Usage: no snapshot source, or no probe; a `--watchdog-ms` that is not a whole number; or no `--artifact` / `--lib`, its variable unset and no deprecated default (`no-path`). |
 | 3 | The wasm runtime aborted (the legacy overload). |
+| killed by SIGKILL | The watchdog fired (after its one `watchdog` line), or the caller killed the probe. |
 
 Known limitation (docs/HARDENING.md #61, the kernel's patch 0037): `lean_wasm_compile` drops the messages of a declaration elaborated with `Elab.async=true`, so a wrong proof under `set_option Elab.async true` (or inside a command whose scope turns it on, like lean4game's `Runner`) gives `errors=0` and `SNAPSHOT PROBE PASS`. Plain top-level declarations and nested `elabCommand` without `Elab.async` are reported correctly.
 
-**Side effects:**
+**Side effects:** unless `--watchdog-ms 0`, one worker thread (the watchdog
+above), no child process. Past the deadline it removes the scratch dir before
+the SIGKILL, so a watchdog kill leaves no hard link behind.
 
 1. `mkdtemp <os.tmpdir()>/qed64-snap-probe-*`.
 2. **Hard-links** `--snap` into that dir. `--snap` must therefore be on the
@@ -474,7 +515,9 @@ Known limitation (docs/HARDENING.md #61, the kernel's patch 0037): `lean_wasm_co
   parses `SNAPSHOT PROBE FAIL`, `ABORT:`, `compile: tag=` and the JSON
   messages.
 - The showcase's `scripts/headless/exact-header.mjs` (from the submodule) parses pass
-  and fail, `^ABORT:`, `load:`, `compile:` and `[lean:stdout]`.
+  and fail, `^ABORT:`, `load:`, `compile:` and `[lean:stdout]`, and runs the
+  probe under `/usr/bin/time -l` for its peak memory footprint (E1), which the
+  watchdog leaves the probe's own (one process).
 - lean4game's `build-from-source.sh --verify-snapshots` (vendored).
 
 ### supervised-run
@@ -1115,7 +1158,7 @@ script by `tests/unit/cli-contract.test.ts`); each flag is in its SPEC.
 | `--name --artifact --lib --reserve --work --out --probe`, and `--roots --label --initial-bytes --allow-legacy-imports` | bake-snapshot | the showcase's `scripts/bake.sh` (the first seven, absolute paths); lean4game's `build-from-source.sh` bake lane (`--name --artifact --lib --reserve --out`) |
 | `QED64_ALLOW_LEGACY_IMPORTS=1`, the equivalent of `--allow-legacy-imports` | bake-snapshot (inherited by its runner), node-runner | both consumers' bake lanes set it |
 | the `baked` line, and exit 0 meaning "baked" (not a Lean verdict) | bake-snapshot | the showcase's `scripts/judge-bake.mjs` J3; QED64's `adopt-release.sh` (`^baked`) |
-| `--snap --fresh-import --probe-file --probe --lib --artifact --budget-ms --via-mem --init-flags --workspace --dump-messages` | snapshot-probe | the showcase's `scripts/headless/exact-header.mjs`; lean4game `--verify-snapshots`; the compiler battery |
+| `--snap --fresh-import --probe-file --probe --lib --artifact --budget-ms --via-mem --init-flags --workspace --dump-messages`, and `--watchdog-ms` | snapshot-probe | the showcase's `scripts/headless/exact-header.mjs`; lean4game `--verify-snapshots`; the compiler battery (the first eleven; none passes `--watchdog-ms` yet) |
 | `SNAPSHOT PROBE PASS` (exit 0), `SNAPSHOT PROBE FAIL: …`, `load:`, `compile:`, `[lean:stdout] …`, `ABORT: …` | snapshot-probe | `exact-header.mjs` (verdict, fail reason, load and compile times, the JSON messages, the abort); the compiler battery; lean4game |
 | `--target --quiet-ms --stable-ms --give-up-ms --`, and the runner arguments after `--` verbatim | supervised-run | the showcase's `scripts/headless/run-e2.sh`; `adopt-release.sh --rebuild-umbrella`; `runtime-smoke.test.ts` |
 | the last line `supervised-run: <why> (<n> s)` (`^supervised-run: `) and exits 0 / 1 / 2 | supervised-run | `run-e2.sh` (`grep -E '^supervised-run: ' … \| tail -1`); `runtime-smoke.test.ts` |
@@ -1214,6 +1257,7 @@ as QED64's own gate did.
 | 3 | 2026-10-06 | **`pipeline/toolchain/KERNEL-PIN` is deleted** (plan B2c) in the commit that first ships `toolchain.kernel.commit`, as the widgets showcase asked: its pin tool reads the release manifest's `toolchain.kernel.commit` and `toolchain.releaseId` from such a commit, and `git show <commit>:pipeline/toolchain/KERNEL-PIN` only for older pins. `adopt-helper.mjs kernel-pin` and adopt-release's kernel-pin step go with it; the landing copies `$W/base-tree.json` to `embedding/base-tree.json` instead. No contract tool read the file. | removed (a tracked file; no tool change) |
 | 3 | 2026-10-06 | Plan step B2c, **write-bundle**, a new tier 3 tool, not shipped (`pipeline/release/write-bundle.mjs --commit <rev> --dist <dir> --umbrella <dir> --out <dir> [--repo <dir>]`, Node built-ins and `./release-manifest.mjs`): writes `release.json`, `qed64-shell.tar.gz`, `qed64-manifests.tar.gz`, `umbrella/QED64/…` and `SHA256SUMS`, byte-reproducible (Node-written ustar, pinned gzip header). Exit 1 on a refusal (one `write-bundle: REFUSED:` line), 2 on usage or an occupied `--out`. | additive (a new tool) |
 | 3 | 2026-10-06 | Plan step A5, **docs/config only: no tool changed**. A consistency pass over this document: chunk-runtime's tier row and the tier-3 list mark every forward (`chunk-runtime`, `unpack`, `inspect`, `gate.mjs`) and the `gen-exports.py` stub; no Consumers list names a deleted script or the old README any more (node-runner's no longer lists QED64's `gate.mjs`, which forwards to the package's gate; unpack's no longer lists the README); the Runtime notes say which gates spawn node-runner. The repository's `.claude/launch.json` dev entry matches Vite's port 5184 (`strictPort`). | docs/config only |
+| 3 | 2026-10-06 | **snapshot-probe's watchdog** (the QED64 side of the kernel's patch 0037, HARDENING #61): from 0037 on a task that never finishes hangs `lean_wasm_compile`, which blocks the probe's main thread. A worker thread in the probe process now keeps a wall-clock deadline, new flag `--watchdog-ms <ms>` (default `--budget-ms` + 120000; `0` = no watchdog, as before): past it, one new `watchdog` line (also a `fail` line), then the process SIGKILLs itself (the status is killed by SIGKILL, not an exit code). A malformed `--watchdog-ms` is exit 2. No child process: the PID, the stdio, every line of a run that reaches a verdict, its exit code and per-PID measures (`/usr/bin/time -l`) are unchanged, and a verdict reached before the deadline is never followed by the `watchdog` line. | additive (a flag, a marker, a kill status) |
 
 ## Open decisions
 

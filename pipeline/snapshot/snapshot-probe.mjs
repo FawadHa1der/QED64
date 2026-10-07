@@ -13,6 +13,9 @@
 // --artifact / --lib: else $QED64_LEAN_ARTIFACT / $QED64_LIB_TREE, else the
 // deprecated repo-relative default with one WARNING, else exit 2. Started
 // without --stack-size, it re-execs itself with --stack-size=8192 (same PID).
+// Unless --watchdog-ms 0, a worker thread ends the probe past a wall-clock
+// deadline (the watchdog below): kernel patch 0037 makes a task that never
+// finishes hang lean_wasm_compile, which blocks the main thread.
 // (--help lists every flag; the contract is docs/CLI-CONTRACT.md)
 
 import fs from "node:fs";
@@ -21,6 +24,7 @@ import path from "node:path";
 import vm from "node:vm";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { Worker } from "node:worker_threads";
 import { ensureStackSize, resolveToolPath } from "../toolchain/artifact-paths.mjs";
 
 // First, before the contract prints anything: replaces this process (same PID) when
@@ -35,7 +39,7 @@ ensureStackSize("snapshot-probe");
 // --flag=value is rewritten to the two-token form this script reads, with the later values
 // of a repeated flag dropped so the first wins here too (docs/CLI-CONTRACT.md).
 {
-  const spec = {"tool":"snapshot-probe","usage":"snapshot-probe.mjs (--snap <file> | --fresh-import --lib <tree>) (--probe-file <file> | --probe <source>)","flags":{"snap":1,"fresh-import":0,"probe-file":1,"probe":1,"lib":1,"artifact":1,"budget-ms":1,"via-mem":0,"via-memfs":0,"init-flags":1,"workspace":1,"dump-messages":0},"required":[["snap","fresh-import"],["probe-file","probe"]],"passthrough":null,"passthroughRequired":false};
+  const spec = {"tool":"snapshot-probe","usage":"snapshot-probe.mjs (--snap <file> | --fresh-import --lib <tree>) (--probe-file <file> | --probe <source>)","flags":{"snap":1,"fresh-import":0,"probe-file":1,"probe":1,"lib":1,"artifact":1,"budget-ms":1,"via-mem":0,"via-memfs":0,"init-flags":1,"workspace":1,"dump-messages":0,"watchdog-ms":1},"required":[["snap","fresh-import"],["probe-file","probe"]],"passthrough":null,"passthroughRequired":false};
   spec.help = [
     "usage: snapshot-probe.mjs (--snap <file> | --fresh-import --lib <tree>) (--probe-file <file> | --probe <source>)",
     "Load a baked snapshot through the worker's exact export (lean_wasm_load_snapshot, or _mem with --via-mem), then compile a probe whose header matches it: it must be error-free and within the budget (an env-cache hit).",
@@ -54,6 +58,7 @@ ensureStackSize("snapshot-probe");
     "  --init-flags <n>     replay-control flags passed with --via-mem (patch 0016) (default: 1)",
     "  --workspace <dir>    host dir mounted at /workspace, the compile's cwd (game probes need .lake/gamedata)",
     "  --dump-messages      echo every line Lean prints on stdout as `[lean:stdout] <line>`",
+    "  --watchdog-ms <ms>   wall-clock limit of the run, kept by a worker thread: past it one watchdog FAIL line and the probe SIGKILLs itself (a hung lean_wasm_compile, kernel 0037 on); 0 for no watchdog (default: --budget-ms + 120000)",
     "  -h, --help           print this help and exit 0, before any side effect",
     "",
     "environment:",
@@ -64,7 +69,7 @@ ensureStackSize("snapshot-probe");
     "exit codes:",
     "  0  SNAPSHOT PROBE PASS",
     "  1  SNAPSHOT PROBE FAIL (load failed, the probe has errors or blew the budget), or a crash before the runtime started (an unreadable --probe-file, a missing lean.js)",
-    "  2  usage: no snapshot source or no probe; or no --artifact / --lib, its variable unset and no deprecated default",
+    "  2  usage: no snapshot source or no probe; a --watchdog-ms that is not a whole number; or no --artifact / --lib, its variable unset and no deprecated default",
     "  3  the wasm runtime aborted (legacy overload of class 3)",
     "",
     "tier 1 (downstream-stable). Contract: docs/CLI-CONTRACT.md",
@@ -145,6 +150,53 @@ if ((!snapHost && !freshImport) || !probeSource) {
 }
 // After the usage check, before any side effect (the scratch dir below).
 const USAGE = "snapshot-probe.mjs (--snap <file> | --fresh-import --lib <tree>) (--probe-file <file> | --probe <source>)";
+
+// The watchdog (docs/CLI-CONTRACT.md §snapshot-probe). From kernel patch 0037 on,
+// lean_wasm_compile returns only after every task a command recorded has finished, so a task
+// that never finishes (a timed sleep inside an async proof) hangs the call, and the call blocks
+// the main thread: no timer on it can fire. A worker thread has its own event loop, so it keeps
+// the deadline: past --watchdog-ms it removes the scratch dir, prints one FAIL line and SIGKILLs
+// this process. Same process, so the PID, the stdio, the exit status of a run that reaches a
+// verdict and every per-PID measure (rusage, /usr/bin/time -l's peak memory footprint) are the
+// probe's own, and a caller's signal reaches the probe directly. The verdict and the watchdog
+// claim one shared cell (0 running, 1 verdict, 2 watchdog), so a run prints one or the other.
+// --watchdog-ms 0 starts no worker, as before the watchdog.
+const watchdogArg = arg("watchdog-ms", null);
+const watchdogMs = watchdogArg === null ? Math.ceil(Number.isFinite(budgetMs) ? budgetMs : 90000) + 120000 : Number(watchdogArg);
+if (!Number.isSafeInteger(watchdogMs) || watchdogMs < 0) {
+  console.error(`snapshot-probe: --watchdog-ms takes a whole number of ms, 0 for no watchdog (got ${watchdogArg})`);
+  console.error(`usage: ${USAGE}`);
+  process.exit(2);
+}
+const watchdogDeadline = Date.now() + watchdogMs;
+const verdictCell = watchdogMs > 0 ? new Int32Array(new SharedArrayBuffer(4)) : null;
+/** Call before printing a verdict: returns when the verdict is this thread's, else waits for the watchdog's SIGKILL. */
+function claimVerdict() {
+  if (verdictCell && Atomics.compareExchange(verdictCell, 0, 0, 1) === 2) for (;;) Atomics.wait(verdictCell, 0, 2);
+}
+/** Start the watchdog thread once the scratch dir exists (it removes it: a SIGKILL skips the exit hook). */
+function startWatchdog(scratchDir) {
+  if (!verdictCell) return;
+  const line = `SNAPSHOT PROBE FAIL: watchdog: no verdict within ${watchdogMs} ms (lean_wasm_compile did not return; a task that never finishes hangs it from kernel 0037 on)`;
+  // fs.writeSync(2), not console: a worker's console goes through the (blocked) main thread.
+  // setTimeout clamps a delay over 2^31-1 ms to 1 ms, so the deadline is re-armed in steps.
+  const guard = new Worker(
+    `const fs = require("node:fs");
+    const { cell, deadline, scratchDir, line } = require("node:worker_threads").workerData;
+    const tick = () => {
+      const left = deadline - Date.now();
+      if (left > 0) { setTimeout(tick, Math.min(left, 2 ** 31 - 1)); return; }
+      if (Atomics.compareExchange(cell, 0, 0, 2) !== 0) return;
+      try { fs.rmSync(scratchDir, { recursive: true, force: true }); } catch {}
+      try { fs.writeSync(2, line + "\\n"); } catch {}
+      process.kill(process.pid, "SIGKILL");
+    };
+    tick();`,
+    { eval: true, workerData: { cell: verdictCell, deadline: watchdogDeadline, scratchDir, line } },
+  );
+  guard.on("error", () => {});
+  guard.unref();
+}
 const artifactDir = resolveToolPath({
   tool: "snapshot-probe", flag: "artifact", placeholder: "<dir>", value: arg("artifact", null), env: "QED64_LEAN_ARTIFACT",
   legacy: path.join(repoRoot, "pipeline/toolchain/work/build/stage1"), legacyLabel: "pipeline/toolchain/work/build/stage1 under the repo root",
@@ -161,6 +213,7 @@ const leanJs = path.join(artifactDir, "bin/lean.js");
 // Removed on every exit, a failed link included (an unreadable or cross-device --snap).
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "qed64-snap-probe-"));
 process.on("exit", () => fs.rmSync(scratch, { recursive: true, force: true }));
+startWatchdog(scratch);
 if (!freshImport) {
   fs.linkSync(snapHost, path.join(scratch, "probe.snap"));
   fs.writeFileSync(path.join(scratch, "probe.snap.deps"), "[]");
@@ -320,15 +373,18 @@ globalThis.Module = {
             "the snapshot likely seeded the WRONG import-set cache key and the compile re-imported the closure",
         );
       }
+      claimVerdict();
       console.log("SNAPSHOT PROBE PASS");
       process.exit(0);
     } catch (error) {
+      claimVerdict();
       console.error("SNAPSHOT PROBE FAIL:", error.message || error);
       for (const l of captured.slice(-12)) console.error(`  [lean:${l.stream}] ${l.text.slice(0, 160)}`);
       process.exit(1);
     }
   },
   onAbort(what) {
+    claimVerdict();
     console.error("ABORT:", what);
     process.exit(3);
   },
