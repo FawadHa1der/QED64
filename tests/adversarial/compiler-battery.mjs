@@ -157,10 +157,13 @@ async function main() {
       fs.writeFileSync(file, src.endsWith("\n") ? src : src + "\n");
       const budget = Math.min(item.expect.budgetMs ?? 20000, 120000);
       const t0 = Date.now();
+      // --watchdog-ms 0: the probe runs in this child, not under its own supervisor, because the
+      // killer below SIGKILLs this PID; a supervisor cannot pass a SIGKILL on, and its child would
+      // hold the pipes open, so 'close' would never fire.
       const child = spawn("node", ["--stack-size=8192", path.join(root, "pipeline/snapshot/snapshot-probe.mjs"),
         "--snap", snap, "--probe-file", file, "--budget-ms", String(budget + 30000),
         "--via-mem", "--init-flags", "1", "--artifact", artifact,
-        "--lib", lib, "--dump-messages"], { cwd: root });
+        "--lib", lib, "--dump-messages", "--watchdog-ms", "0"], { cwd: root });
       let out = "";
       let spawnError = null;
       child.stdout.on("data", (d) => { out += d; });

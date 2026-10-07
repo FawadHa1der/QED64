@@ -13,20 +13,32 @@
 // --artifact / --lib: else $QED64_LEAN_ARTIFACT / $QED64_LIB_TREE, else the
 // deprecated repo-relative default with one WARNING, else exit 2. Started
 // without --stack-size, it re-execs itself with --stack-size=8192 (same PID).
+// Unless --watchdog-ms 0, the probe runs as one supervised child process (the
+// watchdog below, after the usage checks): kernel patch 0037 makes a task that
+// never finishes hang lean_wasm_compile, and only another process can end it.
 // (--help lists every flag; the contract is docs/CLI-CONTRACT.md)
 
+import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import vm from "node:vm";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { Worker } from "node:worker_threads";
 import { ensureStackSize, resolveToolPath } from "../toolchain/artifact-paths.mjs";
 
 // First, before the contract prints anything: replaces this process (same PID) when
 // started without --stack-size, so every line below is printed once.
 ensureStackSize("snapshot-probe");
 
+// The supervised child (QED64_PROBE_CHILD=1, the watchdog below) parses the arguments its
+// supervisor already parsed and warned about: it drops the repeat of those WARNING lines
+// (only those), so each is printed once.
+const supervisedChild = process.env.QED64_PROBE_CHILD === "1";
+const consoleError = console.error;
+if (supervisedChild) console.error = (...a) => { if (!String(a[0]).startsWith("snapshot-probe: WARNING — ")) consoleError(...a); };
 // <cli-contract> generated from SPECS["snapshot-probe"] in pipeline/snapshot/cli.mjs. Do not edit:
 // `node pipeline/snapshot/cli.mjs --write-preludes` rewrites it and tests/unit/cli-contract.test.ts
 // fails on drift. Inline, not imported, because downstream vendors this file without cli.mjs.
@@ -35,7 +47,7 @@ ensureStackSize("snapshot-probe");
 // --flag=value is rewritten to the two-token form this script reads, with the later values
 // of a repeated flag dropped so the first wins here too (docs/CLI-CONTRACT.md).
 {
-  const spec = {"tool":"snapshot-probe","usage":"snapshot-probe.mjs (--snap <file> | --fresh-import --lib <tree>) (--probe-file <file> | --probe <source>)","flags":{"snap":1,"fresh-import":0,"probe-file":1,"probe":1,"lib":1,"artifact":1,"budget-ms":1,"via-mem":0,"via-memfs":0,"init-flags":1,"workspace":1,"dump-messages":0},"required":[["snap","fresh-import"],["probe-file","probe"]],"passthrough":null,"passthroughRequired":false};
+  const spec = {"tool":"snapshot-probe","usage":"snapshot-probe.mjs (--snap <file> | --fresh-import --lib <tree>) (--probe-file <file> | --probe <source>)","flags":{"snap":1,"fresh-import":0,"probe-file":1,"probe":1,"lib":1,"artifact":1,"budget-ms":1,"via-mem":0,"via-memfs":0,"init-flags":1,"workspace":1,"dump-messages":0,"watchdog-ms":1},"required":[["snap","fresh-import"],["probe-file","probe"]],"passthrough":null,"passthroughRequired":false};
   spec.help = [
     "usage: snapshot-probe.mjs (--snap <file> | --fresh-import --lib <tree>) (--probe-file <file> | --probe <source>)",
     "Load a baked snapshot through the worker's exact export (lean_wasm_load_snapshot, or _mem with --via-mem), then compile a probe whose header matches it: it must be error-free and within the budget (an env-cache hit).",
@@ -54,17 +66,20 @@ ensureStackSize("snapshot-probe");
     "  --init-flags <n>     replay-control flags passed with --via-mem (patch 0016) (default: 1)",
     "  --workspace <dir>    host dir mounted at /workspace, the compile's cwd (game probes need .lake/gamedata)",
     "  --dump-messages      echo every line Lean prints on stdout as `[lean:stdout] <line>`",
+    "  --watchdog-ms <ms>   wall-clock limit of the supervised probe process (one child, QED64_PROBE_CHILD=1): past it the child is SIGKILLed and the run fails (a hung lean_wasm_compile, kernel 0037 on); 0 runs the probe in this process with no watchdog (default: --budget-ms + 120000)",
     "  -h, --help           print this help and exit 0, before any side effect",
     "",
     "environment:",
     "  QED64_LEAN_ARTIFACT  stage1 artifact dir (bin/lean.js, bin/lean.wasm, lib/lean) used when --artifact is absent (empty = unset)",
     "  QED64_LIB_TREE       the olean tree mounted at /lib/lean (the tree the probed snapshot was baked from) used when --lib is absent",
     "  QED64_PROFILE_INIT   when set, forwarded into the wasm environment to profile the [init] replay",
+    "  QED64_PROBE_CHILD    internal: \"1\" marks the probe process snapshot-probe's watchdog supervises (it runs the probe in-process and does not repeat the argument WARNINGs); snapshot-probe sets it for its child",
+    "  QED64_PROBE_SCRATCH  internal, read only with QED64_PROBE_CHILD=1: the scratch dir the supervised probe process creates, named by its supervisor, which removes it even when the child is killed",
     "",
     "exit codes:",
     "  0  SNAPSHOT PROBE PASS",
-    "  1  SNAPSHOT PROBE FAIL (load failed, the probe has errors or blew the budget), or a crash before the runtime started (an unreadable --probe-file, a missing lean.js)",
-    "  2  usage: no snapshot source or no probe; or no --artifact / --lib, its variable unset and no deprecated default",
+    "  1  SNAPSHOT PROBE FAIL (load failed, the probe has errors or blew the budget; the watchdog: no verdict within --watchdog-ms; the probe process killed by a signal), or a crash before the runtime started (an unreadable --probe-file, a missing lean.js)",
+    "  2  usage: no snapshot source or no probe; a --watchdog-ms that is not a whole number; or no --artifact / --lib, its variable unset and no deprecated default",
     "  3  the wasm runtime aborted (legacy overload of class 3)",
     "",
     "tier 1 (downstream-stable). Contract: docs/CLI-CONTRACT.md",
@@ -110,6 +125,7 @@ ensureStackSize("snapshot-probe");
   if (normalized.join("\0") !== args.join("\0")) process.argv.splice(2, args.length, ...normalized);
 }
 // </cli-contract>
+console.error = consoleError;
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "../..");
@@ -145,6 +161,95 @@ if ((!snapHost && !freshImport) || !probeSource) {
 }
 // After the usage check, before any side effect (the scratch dir below).
 const USAGE = "snapshot-probe.mjs (--snap <file> | --fresh-import --lib <tree>) (--probe-file <file> | --probe <source>)";
+
+// The watchdog (docs/CLI-CONTRACT.md §snapshot-probe). From kernel patch 0037 on,
+// lean_wasm_compile returns only after every task a command recorded has finished, so a task
+// that never finishes (a timed sleep inside an async proof) hangs the call, and the call blocks
+// this thread: no timer of this process can fire. So, unless QED64_PROBE_CHILD is "1", this
+// process supervises: it runs the probe as ONE child (this script, the same Node flags with
+// --stack-size kept, the same arguments, QED64_PROBE_CHILD=1, stdio inherited, so every line is
+// the child's and a normal run prints nothing more) and exits with the child's code. Past
+// --watchdog-ms it SIGKILLs the child and prints one FAIL line; SIGINT/SIGTERM/SIGHUP are passed
+// on. --watchdog-ms 0 runs the probe in this process, as before the watchdog.
+const watchdogArg = arg("watchdog-ms", null);
+const watchdogMs = watchdogArg === null ? Math.ceil(Number.isFinite(budgetMs) ? budgetMs : 90000) + 120000 : Number(watchdogArg);
+if (!Number.isSafeInteger(watchdogMs) || watchdogMs < 0) {
+  console.error(`snapshot-probe: --watchdog-ms takes a whole number of ms, 0 for no watchdog (got ${watchdogArg})`);
+  console.error(`usage: ${USAGE}`);
+  process.exit(2);
+}
+if (watchdogMs > 0 && !supervisedChild) process.exit(await superviseProbe(watchdogMs));
+
+/** Run this probe as one supervised child; resolves with the exit code to pass on. */
+function superviseProbe(ms) {
+  // One line, written synchronously: process.exit follows at once.
+  const fail = (line) => { try { fs.writeSync(2, `${line}\n`); } catch {} };
+  // The child's scratch dir (it creates it) is named here and removed here on exit too, so a
+  // child that dies by a signal (the watchdog's SIGKILL) leaves no hard link to the snapshot.
+  const childScratch = path.join(os.tmpdir(), `qed64-snap-probe-${randomBytes(6).toString("hex")}`);
+  process.on("exit", () => fs.rmSync(childScratch, { recursive: true, force: true }));
+  const execArgv = process.execArgv.some((a) => /^--stack-size(=|$)/.test(a)) ? process.execArgv : [...process.execArgv, "--stack-size=8192"];
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [...execArgv, ...process.argv.slice(1)], {
+      stdio: "inherit",
+      env: { ...process.env, QED64_PROBE_CHILD: "1", QED64_PROBE_SCRATCH: childScratch },
+    });
+    let settled = false;
+    let watchdogFired = false;
+    let forwarded = null;
+    const timers = [];
+    const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
+    // Passed on; a child still alive 5 s later (its thread blocked in wasm) is SIGKILLed.
+    const forward = (signal) => {
+      forwarded ??= signal;
+      try { child.kill(signal); } catch {}
+      timers.push(setTimeout(() => { try { child.kill("SIGKILL"); } catch {} }, 5000));
+    };
+    const settle = (code) => {
+      if (settled) return;
+      settled = true;
+      for (const t of timers) clearTimeout(t);
+      for (const s of SIGNALS) process.off(s, forward);
+      resolve(code);
+    };
+    // A deadline, re-armed in steps: setTimeout clamps a delay over 2^31-1 ms to 1 ms.
+    const deadline = Date.now() + ms;
+    const arm = () => {
+      const left = deadline - Date.now();
+      if (left > 0) { timers.push(setTimeout(arm, Math.min(left, 2 ** 31 - 1))); return; }
+      watchdogFired = true;
+      try { child.kill("SIGKILL"); } catch {}
+    };
+    arm();
+    for (const s of SIGNALS) process.on(s, forward);
+    child.on("error", (e) => {
+      fail(`SNAPSHOT PROBE FAIL: could not start the probe process (${e?.code ?? e?.message})`);
+      settle(1);
+    });
+    child.on("exit", (code, signal) => {
+      if (watchdogFired) {
+        fail(`SNAPSHOT PROBE FAIL: watchdog: no verdict within ${ms} ms (lean_wasm_compile did not return; a task that never finishes hangs it from kernel 0037 on)`);
+        settle(1);
+      } else if (signal) {
+        fail(`SNAPSHOT PROBE FAIL: the probe process was killed by ${signal}${forwarded ? ` (${forwarded} passed on by the supervisor)` : ""}`);
+        settle(1);
+      } else settle(code ?? 1);
+    });
+  });
+}
+
+// The supervised child dies with its supervisor: a supervisor that is itself SIGKILLed (a
+// caller's timeout) cannot pass that on, and this thread may be blocked inside
+// lean_wasm_compile, so a worker thread watches the parent PID and SIGKILLs this process when
+// it changes (the parent died and the child was re-parented).
+if (supervisedChild) {
+  const guard = new Worker(
+    'const { workerData } = require("node:worker_threads"); setInterval(() => { if (process.ppid !== workerData) process.kill(process.pid, "SIGKILL"); }, 250);',
+    { eval: true, workerData: process.ppid },
+  );
+  guard.on("error", () => {});
+  guard.unref();
+}
 const artifactDir = resolveToolPath({
   tool: "snapshot-probe", flag: "artifact", placeholder: "<dir>", value: arg("artifact", null), env: "QED64_LEAN_ARTIFACT",
   legacy: path.join(repoRoot, "pipeline/toolchain/work/build/stage1"), legacyLabel: "pipeline/toolchain/work/build/stage1 under the repo root",
@@ -159,7 +264,10 @@ const leanJs = path.join(artifactDir, "bin/lean.js");
 // The runtime expects a .deps sidecar next to the snapshot (the worker writes
 // "[]"); stage both into a scratch dir so the real snapshot dir stays clean.
 // Removed on every exit, a failed link included (an unreadable or cross-device --snap).
-const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "qed64-snap-probe-"));
+// The supervised child creates the dir its supervisor named (QED64_PROBE_SCRATCH), which the
+// supervisor removes too when this process is killed.
+const namedScratch = supervisedChild ? process.env.QED64_PROBE_SCRATCH : "";
+const scratch = namedScratch ? (fs.mkdirSync(namedScratch, { mode: 0o700 }), namedScratch) : fs.mkdtempSync(path.join(os.tmpdir(), "qed64-snap-probe-"));
 process.on("exit", () => fs.rmSync(scratch, { recursive: true, force: true }));
 if (!freshImport) {
   fs.linkSync(snapHost, path.join(scratch, "probe.snap"));
