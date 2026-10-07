@@ -13,7 +13,7 @@
 // environment passes its own snapshot map and a tighter memory cap). The
 // header text the policy reads is the document this session will serve:
 // the initial text at first boot, the relay's last full text on a reboot.
-import { downloadBeforeBoot, ensureProfile, loadSnapshotByName, noteBootNetworkFailure, refuseUnpairedSnapshot, type Qed64Artifacts, type Qed64Session, type StatusSink } from "./qed64-boot";
+import { downloadBeforeBoot, ensureProfile, loadSnapshotForBoot, noteBootNetworkFailure, refuseUnpairedSnapshot, type Qed64Artifacts, type Qed64Session, type StatusSink } from "./qed64-boot";
 import type { RelaySession, RestartOptions } from "./lsp-relay";
 import { LeanSession, memoryCandidates, type JsonRpcMessage, type LibraryPack, type WorkerStatus } from "./client";
 import { installProfile } from "./profiles";
@@ -311,12 +311,17 @@ export class ResidentSession implements RelaySession {
     // runtime exists. The relay's reboots of a lasting cut each booted a 2 GiB
     // runtime that died at its first snapshot. A first attempt, and a
     // snapshot already cached, boot as before.
+    // A pre-boot prefetch that could not decide (silence, another tab's
+    // write, a non-network error) is not run again by the load below: the
+    // checker streams the region at once instead of a second 3 min wait.
+    const prefetched = new Set<string>();
     this.#bootStage = "snapshot";
     for (const name of this.snapshots) {
       this.#loading = name;
-      const cause = await downloadBeforeBoot(a, name, ui, this.#busyWaitMs !== undefined ? { busyWaitMs: this.#busyWaitMs } : {});
+      const r = await downloadBeforeBoot(a, name, ui, this.#busyWaitMs !== undefined ? { busyWaitMs: this.#busyWaitMs } : {});
       this.#loading = null;
-      if (cause) throw Object.assign(new Error(`snapshot '${name}' failed to load`), { cause });
+      if (r === "undecided") prefetched.add(name);
+      else if (r) throw Object.assign(new Error(`snapshot '${name}' failed to load`), { cause: r });
     }
     this.#bootStage = "runtime";
     // "Load exact imports" (§3 row 8; HARDENING #43): the header is imported
@@ -366,7 +371,7 @@ export class ResidentSession implements RelaySession {
     this.#bootStage = "snapshot";
     for (const name of this.snapshots) {
       this.#loading = name;
-      const ok = await loadSnapshotByName(a, qs, name, ui, this.#busyWaitMs !== undefined ? { busyWaitMs: this.#busyWaitMs } : {});
+      const ok = await loadSnapshotForBoot(a, qs, name, ui, this.#busyWaitMs !== undefined ? { busyWaitMs: this.#busyWaitMs } : {}, prefetched.has(name));
       this.#loading = null;
       if (!ok) {
         throw Object.assign(new Error(`snapshot '${name}' failed to load`), {

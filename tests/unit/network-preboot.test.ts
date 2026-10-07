@@ -15,10 +15,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../lib/raw-cache", async (importOriginal) => {
   const real = await importOriginal<typeof import("../../lib/raw-cache")>();
-  return { ...real, prefetchRaw: vi.fn(async () => ({ status: "done", bytes: 100 })) };
+  return { ...real, prefetchRaw: vi.fn(async () => ({ status: "done", bytes: 100 })), isRawCached: vi.fn(async () => false) };
 });
 
-import { clearNetworkFailure, NETWORK_FAILURE_MEMORY_MS, networkFailedRecently, noteNetworkFailure, prefetchRaw, type PrefetchRawResult } from "../../lib/raw-cache";
+import { clearNetworkFailure, isRawCached, NETWORK_FAILURE_MEMORY_MS, networkFailedRecently, noteNetworkFailure, prefetchRaw, type PrefetchRawResult } from "../../lib/raw-cache";
 import { downloadBeforeBoot, noteBootNetworkFailure, type ProgressInfo, type Qed64Artifacts, type StatusSink } from "../../lib/qed64-boot";
 import { ResidentSession } from "../../lib/resident-session";
 import { LspRelay, type RestartOptions } from "../../lib/lsp-relay";
@@ -61,6 +61,8 @@ beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn(async () => new Response("Not Found", { status: 404 })));
   vi.mocked(prefetchRaw).mockReset();
   vi.mocked(prefetchRaw).mockResolvedValue({ status: "done", bytes: 100 });
+  vi.mocked(isRawCached).mockReset();
+  vi.mocked(isRawCached).mockResolvedValue(false); // OPFS present, the region not complete
   clearNetworkFailure(INIT);
   clearNetworkFailure(MATHLIB);
   vi.spyOn(console, "warn").mockImplementation(() => {}); // today's "raw prefetch error … stream it instead" line
@@ -84,6 +86,10 @@ function deferredPrefetch() {
   vi.mocked(prefetchRaw).mockImplementationOnce(() => new Promise<PrefetchRawResult>((r) => { settle = r; }));
   return (r: PrefetchRawResult) => settle(r);
 }
+/** Progress calls shaped like onBusyWait's "waiting for another tab" (a "snapshot"/"download" call
+ * without `loaded`: what lean4game's stageLabel reads as the wait). */
+const waitShaped = () => calls.filter((c) => c.kind === "progress" && c.info?.stage === "snapshot" && c.info.step === "download" && c.info.loaded === undefined);
+const PREBOOT_LABEL = "preparing the mathlib environment before the checker starts (the last attempt lost the network)";
 const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
 
 describe("the shared memory of a network failure (raw-cache.ts)", () => {
@@ -137,18 +143,42 @@ describe("ResidentSession.start(): the download before the boot, after a network
     vi.mocked(prefetchRaw).mockResolvedValueOnce({ status: "cached", bytes: 100 }); // init: already complete, no wait
     const settleMathlib = deferredPrefetch();
     const { s, boot, loadSnapshot } = session();
+    let booted!: () => void;
+    boot.mockImplementationOnce(() => new Promise((r) => { booted = () => r({} as never); }));
     const started = s.start();
     await flush();
     expect(prefetchedNames()).toEqual(["init", "mathlib"]);
     expect(boot).not.toHaveBeenCalled(); // mathlib's download is still running
     expect(FakeLeanWorker.posted.filter((m) => m.type === "boot")).toEqual([]);
+    expect(networkFailedRecently(MATHLIB)).toBe(true);
     settleMathlib({ status: "done", bytes: 100 });
+    await vi.waitFor(() => expect(boot).toHaveBeenCalledTimes(1));
+    // The memory is cleared by the completed downloads themselves, before the runtime is up and a load ran.
+    expect(loadSnapshot).not.toHaveBeenCalled();
+    expect(networkFailedRecently(INIT) || networkFailedRecently(MATHLIB)).toBe(false);
+    booted();
     await started;
-    expect(boot).toHaveBeenCalledTimes(1);
     expect(boot.mock.invocationCallOrder[0]!).toBeGreaterThan(vi.mocked(prefetchRaw).mock.invocationCallOrder[1]!);
     expect(loadSnapshot).toHaveBeenCalledTimes(2);
-    // The memory is cleared by the completed downloads: the next session boots as a first attempt.
-    expect(networkFailedRecently(INIT) || networkFailedRecently(MATHLIB)).toBe(false);
+  });
+
+  it("a completed pre-boot download clears the memory even when the boot then fails another way (oom)", async () => {
+    noteBootNetworkFailure(artifacts(), ["mathlib"]);
+    const { s, boot, loadSnapshot } = session(artifacts(), { snapshots: ["mathlib"] });
+    boot.mockRejectedValueOnce(new Error("could not allocate memory"));
+    await expect(s.start()).rejects.toMatchObject({ cause: { kind: "oom" } });
+    expect(prefetchedNames()).toEqual(["mathlib"]);
+    expect(loadSnapshot).not.toHaveBeenCalled();
+    expect(networkFailedRecently(MATHLIB)).toBe(false); // the next reboot does not run the pre-boot step again
+  });
+
+  it("the pre-boot label carries byte facts, so it never reads as the wait for another tab; only onBusyWait's does", async () => {
+    noteBootNetworkFailure(artifacts(), ["mathlib"]);
+    vi.mocked(prefetchRaw).mockImplementationOnce(async (_e, o) => { o?.onBusyWait?.(); return { status: "done", bytes: 100 }; });
+    const { s } = session(artifacts(), { snapshots: ["mathlib"] });
+    await s.start();
+    expect(calls).toContainEqual({ kind: "progress", label: PREBOOT_LABEL, info: { phase: "snapshot", loaded: 0, total: 100, unit: "bytes", stage: "snapshot", subject: "mathlib", step: "download" } });
+    expect(waitShaped().map((c) => c.label)).toEqual(["waiting for another tab to finish preparing the mathlib environment"]);
   });
 
   it("a download that fails with a network cause rejects start() with it before any runtime exists", async () => {
@@ -168,14 +198,19 @@ describe("ResidentSession.start(): the download before the boot, after a network
 
   it("a cached snapshot never waits for a download, and the boot goes on", async () => {
     noteBootNetworkFailure(artifacts(), ["init", "mathlib"]);
+    vi.mocked(isRawCached).mockResolvedValue(true);
     vi.mocked(prefetchRaw).mockResolvedValue({ status: "cached", bytes: 100 });
     const { s, boot } = session();
     await s.start();
     expect(boot).toHaveBeenCalledTimes(1);
-    expect(networkFailedRecently(MATHLIB)).toBe(false);
+    // Probed, not prefetched, before the boot; and no download label flashes on the card.
+    expect(boot.mock.invocationCallOrder[0]!).toBeLessThan(vi.mocked(prefetchRaw).mock.invocationCallOrder[0]!);
+    expect(calls.filter((c) => c.label.includes("before the checker starts"))).toEqual([]);
+    expect(waitShaped()).toEqual([]);
+    expect(networkFailedRecently(INIT) || networkFailedRecently(MATHLIB)).toBe(false);
   });
 
-  it("a prefetch that cannot decide (no OPFS, another tab, silence, a non-network error) boots as a first attempt does", async () => {
+  it("a prefetch that cannot decide (another tab, silence, a non-network error, storage refused) boots, and the load does not prefetch again", async () => {
     for (const r of [{ status: "unavailable" }, { status: "busy" }, { status: "silent" }, { status: "error", error: { kind: "storage", message: "QuotaExceededError" } }] as PrefetchRawResult[]) {
       noteBootNetworkFailure(artifacts(), ["mathlib"]);
       vi.mocked(prefetchRaw).mockReset();
@@ -184,7 +219,21 @@ describe("ResidentSession.start(): the download before the boot, after a network
       await s.start();
       expect(boot, r.status).toHaveBeenCalledTimes(1);
       expect(loadSnapshot, r.status).toHaveBeenCalledTimes(1);
+      // One prefetch, the pre-boot one: a second would wait out another silence (3 min) or busyWaitMs.
+      expect(prefetchRaw, r.status).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(prefetchRaw).mock.invocationCallOrder[0]!, r.status).toBeLessThan(boot.mock.invocationCallOrder[0]!);
     }
+  });
+
+  it("without OPFS the pre-boot step does not apply: the boot goes first, as a first attempt's", async () => {
+    noteBootNetworkFailure(artifacts(), ["mathlib"]);
+    vi.mocked(isRawCached).mockResolvedValue(null);
+    vi.mocked(prefetchRaw).mockResolvedValue({ status: "unavailable" });
+    const { s, boot } = session(artifacts(), { snapshots: ["mathlib"] });
+    await s.start();
+    expect(prefetchRaw).toHaveBeenCalledTimes(1);
+    expect(boot.mock.invocationCallOrder[0]!).toBeLessThan(vi.mocked(prefetchRaw).mock.invocationCallOrder[0]!);
+    expect(waitShaped()).toEqual([]);
   });
 
   it("an expired memory boots as a first attempt does", async () => {
@@ -196,6 +245,7 @@ describe("ResidentSession.start(): the download before the boot, after a network
 
   it("the checker's own successful stream clears the memory too", async () => {
     noteBootNetworkFailure(artifacts(), ["mathlib"]);
+    vi.mocked(isRawCached).mockResolvedValue(null);
     vi.mocked(prefetchRaw).mockResolvedValue({ status: "unavailable" }); // no OPFS: the checker streams it
     const { s, loadSnapshot } = session(artifacts(), { snapshots: ["mathlib"] });
     await s.start();
@@ -261,5 +311,21 @@ describe("downloadBeforeBoot", () => {
     noteNetworkFailure(MATHLIB);
     await expect(downloadBeforeBoot(artifacts(), "mathlib", ui, { busyWaitMs: 1234 })).resolves.toBeNull();
     expect(vi.mocked(prefetchRaw).mock.calls[0]![1]).toMatchObject({ onBusy: "wait", busyWaitMs: 1234 });
+  });
+  it("resolves \"undecided\" for a busy or silent prefetch, and logs today's warning once for silence", async () => {
+    noteNetworkFailure(MATHLIB);
+    vi.mocked(prefetchRaw).mockResolvedValueOnce({ status: "busy" }).mockResolvedValueOnce({ status: "silent" });
+    await expect(downloadBeforeBoot(artifacts(), "mathlib", ui)).resolves.toBe("undecided");
+    await expect(downloadBeforeBoot(artifacts(), "mathlib", ui)).resolves.toBe("undecided");
+    expect(vi.mocked(console.warn).mock.calls.map(([m]) => m)).toEqual(["[qed64] raw prefetch silent for 180 s — the checker will stream it instead"]);
+    expect(waitShaped()).toEqual([]);
+  });
+  it("a cached region resolves null without a prefetch or a label, and clears the memory", async () => {
+    noteNetworkFailure(MATHLIB);
+    vi.mocked(isRawCached).mockResolvedValue(true);
+    await expect(downloadBeforeBoot(artifacts(), "mathlib", ui)).resolves.toBeNull();
+    expect(prefetchRaw).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
+    expect(networkFailedRecently(MATHLIB)).toBe(false);
   });
 });

@@ -9,7 +9,7 @@ import { fetchProfileIndex, installProfile, type InstalledProfile, type ProfileI
 import { entryLabel, fetchSnapshotIndex, loadSnapshotIndex, snapshotCacheKey, type SnapshotEntry, type SnapshotIndex } from "./snapshots";
 import { NO_OVERRIDES, parseBootParams, validateBootOverrides, type BootOverrides } from "./params";
 import { failureCauseOf, stepOfInstallPhase, type BootStage, type BootStep, type FailureCause } from "./failure";
-import { clearNetworkFailure, networkFailedRecently, noteNetworkFailure, PREFETCH_SILENCE_MS, prefetchRaw, type PrefetchRawResult } from "./raw-cache";
+import { clearNetworkFailure, isRawCached, networkFailedRecently, noteNetworkFailure, PREFETCH_SILENCE_MS, prefetchRaw, type PrefetchRawResult } from "./raw-cache";
 
 export interface Qed64Artifacts {
   runtime: RuntimeManifest;
@@ -243,10 +243,14 @@ async function prefetchForBoot(entry: SnapshotEntry, name: string, ui: StatusSin
   return r;
 }
 
-async function ensureRawSnapshotCached(entry: SnapshotEntry, name: string, ui: StatusSink, opts: LoadSnapshotOptions): Promise<void> {
-  const r = await prefetchForBoot(entry, name, ui, opts);
+/** The one warning a prefetch that left the region to the checker logs. */
+function warnCheckerStreams(r: PrefetchRawResult): void {
   if (r.status === "silent") console.warn(`[qed64] raw prefetch silent for ${PREFETCH_SILENCE_MS / 1000} s — the checker will stream it instead`);
   else if (r.error) console.warn(`[qed64] raw prefetch ${r.status}: ${r.error.message} — the checker will stream it instead`);
+}
+
+async function ensureRawSnapshotCached(entry: SnapshotEntry, name: string, ui: StatusSink, opts: LoadSnapshotOptions): Promise<void> {
+  warnCheckerStreams(await prefetchForBoot(entry, name, ui, opts));
 }
 
 /** HARDENING #63: a boot that loads `names` before it opens failed with a
@@ -261,24 +265,41 @@ export function noteBootNetworkFailure(artifacts: Pick<Qed64Artifacts, "snapshot
   }
 }
 
+/** @internal What `downloadBeforeBoot` decided: a network cause (the caller
+ * rejects before any runtime exists); "undecided" (the prefetch ran and left
+ * the region to the checker: the boot's load must not prefetch it again,
+ * `loadSnapshotForBoot`); or null (the step did not apply, or the region is
+ * complete). */
+export type PreBootDownload = FailureCause | "undecided" | null;
+
 /** HARDENING #63, the step a session runs before it boots its runtime: when a
  * boot of this page that loaded `name` failed with a network-kind cause in
- * the last NETWORK_FAILURE_MEMORY_MS (raw-cache.ts), download the region to
- * completion first (the raw prefetch, its size and magic checked as always;
- * once: the relay's reboots are the retries). Resolves the download's network
- * cause, reported on the sink as a failed load reports it, when it failed
- * with one: the caller rejects before any runtime exists. Resolves null when
- * the step does not apply (no such failure, or no entry), when the region is
- * complete (cached, or downloaded now: the memory is cleared), and when the
- * prefetch could not decide (no OPFS, another tab's write, silence, a
- * non-network error): the boot then goes on as a first attempt does, the
- * checker streaming the region itself if the cache is still empty. */
-export async function downloadBeforeBoot(artifacts: Pick<Qed64Artifacts, "snapshots">, name: string, ui: StatusSink, opts: LoadSnapshotOptions = {}): Promise<FailureCause | null> {
+ * the last NETWORK_FAILURE_MEMORY_MS (raw-cache.ts) and the region is not
+ * complete in the raw cache, download it to completion first (the raw
+ * prefetch, its size and magic checked as always; once: the relay's reboots
+ * are the retries). Resolves the download's network cause, reported on the
+ * sink as a failed load reports it, when it failed with one. Resolves null
+ * when the step does not apply (no such failure, no entry, no OPFS) and when
+ * the region is complete (cached, or downloaded now: the memory is cleared).
+ * Resolves "undecided" when the prefetch could not decide (another tab's
+ * write, silence, a non-network error, storage refused): the boot then goes
+ * on, and its load lets the checker stream the region without a second
+ * prefetch (a second silence or busy wait would double the cost). */
+export async function downloadBeforeBoot(artifacts: Pick<Qed64Artifacts, "snapshots">, name: string, ui: StatusSink, opts: LoadSnapshotOptions = {}): Promise<PreBootDownload> {
   const entry = artifacts.snapshots?.snapshots.find((s) => s.name === name);
   if (!entry || !networkFailedRecently(entry)) return null;
-  ui.progress(`preparing the ${name} environment before the checker starts (the last attempt lost the network)`, { phase: "snapshot", stage: "snapshot", subject: name, step: "download" });
+  // Probed first, so a cached region shows no download label at all.
+  const cached = await isRawCached(entry);
+  if (cached === null) return null; // no OPFS: the load's prefetch answers at once, the checker streams
+  if (cached) { clearNetworkFailure(entry); return null; }
+  // A download label with byte facts (loaded 0 of the region), so an embedder
+  // that reads a "snapshot"/"download" call without `loaded` as onBusyWait's
+  // "waiting for another tab" (lean4game's stageLabel) does not misread it.
+  ui.progress(`preparing the ${name} environment before the checker starts (the last attempt lost the network)`,
+    { phase: "snapshot", loaded: 0, total: entry.bytes, unit: "bytes", stage: "snapshot", subject: name, step: "download" });
   const r = await prefetchForBoot(entry, name, ui, opts);
-  if (r.status !== "error" || r.error?.kind !== "network") return null;
+  if (r.status === "done" || r.status === "cached") return null;
+  if (r.status !== "error" || r.error?.kind !== "network") { warnCheckerStreams(r); return "undecided"; }
   const cause: FailureCause = { ...r.error, stage: "snapshot", subject: name };
   ui.progress(`${name} snapshot failed: ${cause.message}`, { stage: "snapshot", subject: name, error: cause });
   return cause;
@@ -290,6 +311,20 @@ export async function loadSnapshotByName(
   name: string,
   ui: StatusSink,
   opts: LoadSnapshotOptions = {},
+): Promise<boolean> {
+  return loadSnapshotForBoot(artifacts, qs, name, ui, opts, false);
+}
+
+/** @internal `loadSnapshotByName`, with `prefetched`: this boot's
+ * `downloadBeforeBoot` already ran the raw prefetch for `name` and it ended
+ * "undecided", so the checker streams the region without a second one. */
+export async function loadSnapshotForBoot(
+  artifacts: Qed64Artifacts,
+  qs: Qed64Session,
+  name: string,
+  ui: StatusSink,
+  opts: LoadSnapshotOptions,
+  prefetched: boolean,
 ): Promise<boolean> {
   if (qs.loadedSnapshots.has(name)) return true;
   const entry = artifacts.snapshots?.snapshots.find((s) => s.name === name);
@@ -304,7 +339,7 @@ export async function loadSnapshotByName(
     qs.lastFailure = unpaired;
     return false;
   }
-  await ensureRawSnapshotCached(entry, name, ui, opts);
+  if (!prefetched) await ensureRawSnapshotCached(entry, name, ui, opts);
   const gib = (entry.bytes / 1073741824).toFixed(1);
   ui.busy(`loading the ${entryLabel(entry)} environment (${gib} GiB unpacked — cached in your browser after the first visit)`,
     { stage: "snapshot", subject: name, step: "load" });
