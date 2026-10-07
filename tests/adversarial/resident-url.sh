@@ -2,7 +2,7 @@
 # Prints the dev URL for the pairing the dev server actually serves (the page
 # has one transport, so only the ?runtime= / ?snapshots= overrides remain):
 # public/snapshots-0031 is a symlink into work/staging/<runtime-id>/snapshots,
-# and that directory name is the runtime id the page must boot (KERNEL-PIN:
+# and that directory name is the runtime id the page must boot (the pairing invariant:
 # snapshots are binary-paired to one runtime). Falls back to the newest
 # chunker log only when the symlink is absent.
 PORT=${1:-5184}

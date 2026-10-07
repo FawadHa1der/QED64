@@ -65,6 +65,8 @@
     "pipeline/release/fetch-artifacts.mjs",
     "pipeline/release/fetch-artifacts.d.mts",
     "pipeline/release/verify-release.mjs",
+    "pipeline/release/release-manifest.mjs",
+    "pipeline/release/release-manifest.d.mts",
     "tests/adversarial/kernel-probes/is-module.lean",
     "tests/adversarial/kernel-probes/module-file.lean",
     "tests/adversarial/kernel-probes/private-default.lean",

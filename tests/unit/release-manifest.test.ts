@@ -21,6 +21,7 @@ import {
   commitSource,
   listingOf,
   manifestDigest,
+  recordDigest,
   serializeManifest,
   treeSource,
   type ReleaseManifest,
@@ -44,13 +45,15 @@ const json = (b: Buffer | string) => JSON.parse(b.toString());
 const OTHER_ID = "wasm64-0000000000000000";
 
 let tmp: string;
-let tree: string; // a doctorable copy of HEAD's tracked inputs: <tree>/KERNEL-PIN, <tree>/public/...
+let tree: string; // a doctorable copy of HEAD's tracked inputs: <tree>/toolchain/…, <tree>/embedding/…, <tree>/public/…
 let head: string;
 let buildId: string;
 let inputPaths: string[];
-const treeOpts = () => ({ publicDir: path.join(tree, "public"), kernelPin: path.join(tree, "KERNEL-PIN") });
-const treeFile = (repoPath: string) =>
-  repoPath === "pipeline/toolchain/KERNEL-PIN" ? path.join(tree, "KERNEL-PIN") : path.join(tree, repoPath);
+const RECORD = "toolchain/lean4-wasm64-release.json";
+const BASE_TREE = "embedding/base-tree.json";
+const treeOpts = () => ({ publicDir: path.join(tree, "public"), toolchainRecord: path.join(tree, RECORD), baseTree: path.join(tree, BASE_TREE) });
+const treeFile = (repoPath: string) => path.join(tree, repoPath);
+const treeArgs = () => ["--worktree", "--public", path.join(tree, "public"), "--toolchain-record", path.join(tree, RECORD), "--base-tree", path.join(tree, BASE_TREE)];
 
 /** Refusal message of a build, asserting it IS a refusal and one line. */
 function refusal(build: () => unknown): string {
@@ -73,6 +76,8 @@ function doctored(repoPath: string, edit: (text: string) => string, body: () => 
   try { body(); } finally { fs.writeFileSync(file, original); }
 }
 const editJson = (fn: (o: any) => void) => (text: string) => { const o = JSON.parse(text); fn(o); return JSON.stringify(o, null, 2); };
+/** Edit the release record and re-cut its self-digest, as a (wrong) record that is internally consistent. */
+const editRecord = (fn: (o: any) => void) => editJson((o) => { fn(o); o.digest = recordDigest(o); });
 
 beforeAll(() => {
   if (!hasGit) return;
@@ -87,12 +92,13 @@ beforeAll(() => {
     "public/profiles/index.json",
     ...profileIndex.profiles.map((p: { manifest: string }) => `public${p.manifest}`),
     ...workers,
+    RECORD,
+    BASE_TREE,
   ];
   for (const p of inputPaths) {
     fs.mkdirSync(path.dirname(path.join(tree, p)), { recursive: true });
     fs.writeFileSync(path.join(tree, p), atHead(p));
   }
-  fs.writeFileSync(path.join(tree, "KERNEL-PIN"), atHead("pipeline/toolchain/KERNEL-PIN"));
   buildId = json(atHead("public/runtime/runtime-manifest.json")).buildId;
 });
 afterAll(() => { if (tmp) fs.rmSync(tmp, { recursive: true, force: true }); });
@@ -113,7 +119,9 @@ describe.skipIf(!hasGit)("release-manifest.mjs CLI", () => {
   });
 
   test("usage errors exit 2", () => {
-    for (const args of [["--bogus"], ["--commit"], ["--commit", "HEAD", "--worktree"], ["--out", "a", "--check", "b"], ["--public", "x"]]) {
+    const cases = [["--bogus"], ["--commit"], ["--commit", "HEAD", "--worktree"], ["--out", "a", "--check", "b"], ["--public", "x"],
+      ["--toolchain-record", "x"], ["--base-tree", "x"], ["--worktree", "--kernel-pin", "x"], ["--repo"]];
+    for (const args of cases) {
       const r = run(args);
       expect(r.status, args.join(" ")).toBe(2);
       expect(r.stderr).toMatch(/^release-manifest: /);
@@ -129,7 +137,7 @@ describe.skipIf(!hasGit)("release-manifest.mjs CLI", () => {
     const text = fs.readFileSync(out, "utf8");
     const m: ReleaseManifest = JSON.parse(text);
     expect(text).toBe(`${JSON.stringify(m, null, 2)}\n`);
-    expect(Object.keys(m)).toEqual(["schema", "digest", "releaseId", "artifactSetId", "qed64", "lean", "kernel", "runtime", "snapshots", "profiles", "shell"]);
+    expect(Object.keys(m)).toEqual(["schema", "digest", "releaseId", "artifactSetId", "qed64", "lean", "kernel", "toolchain", "hosting", "baseTree", "runtime", "snapshots", "profiles", "shell"]);
     expect(m.schema).toBe("qed64.release/v1");
     expect(m.releaseId).toBe(`qed64-${head.slice(0, 7)}`);
     const seconds = Number(git("show", "-s", "--format=%ct", "HEAD").stdout.toString().trim());
@@ -139,9 +147,40 @@ describe.skipIf(!hasGit)("release-manifest.mjs CLI", () => {
 
     const rtBytes = atHead("public/runtime/runtime-manifest.json");
     const rt = json(rtBytes);
-    const pin = atHead("pipeline/toolchain/KERNEL-PIN").toString();
+    const recBytes = atHead(RECORD);
+    const rec = json(recBytes);
     expect(m.lean).toEqual({ version: rt.leanVersion, target: rt.target });
-    expect(m.kernel).toEqual({ repo: "FawadHa1der/lean4", branch: "qed64-wasm64", commit: pin.split(/\s/)[0], sourceRevision: rt.sourceRevision });
+    // `kernel` keeps its shape; the commit is the pinned record's (KERNEL-PIN retired 2026-10).
+    expect(m.kernel).toEqual({ repo: "FawadHa1der/lean4", branch: "qed64-wasm64", commit: rec.kernel.commit, sourceRevision: rt.sourceRevision });
+    expect(m.kernel.commit).toMatch(/^[0-9a-f]{40}$/);
+    expect(m.toolchain).toEqual({
+      releaseId: rec.id,
+      digest: rec.digest,
+      record: { path: RECORD, sha256: sha(recBytes), gitBlob: blobAtHead(RECORD) },
+      kernel: { commit: rec.kernel.commit, patch: rec.kernel.patch },
+      runtimeBuildId: rt.buildId,
+      packs: rec.packs.map((p: any) => ({ id: p.id, rawSha256: p.rawSha256 })),
+      tools: { package: rec.tools.package, version: rec.tools.version, tgz: rec.tools.tgz },
+    });
+    expect(m.toolchain.digest).toBe(recordDigest(rec));
+    expect(m.hosting).toEqual({
+      toolchainPrefix: `lean4-wasm64/${rec.id}/`,
+      siteOwned: rec.hosting.siteOwned,
+      rule: "a path under runtime/ or profiles/ that is not site-owned is stored at <toolchainPrefix><path>; every other path at <path>",
+    });
+    const btBytes = atHead(BASE_TREE);
+    const bt = json(btBytes);
+    const bare = (packs: any[]) => packs.map((p) => ({ id: p.id, release: p.release, rawSha256: p.rawSha256.replace(/^sha256:/, "") }));
+    expect(Object.keys(m.baseTree)).toEqual(["path", "sha256", "gitBlob", "schema", "releaseId", "releaseDigest", "runtime", "packs", "slim", "umbrella", "umbrellaSource", "initLib", "digestRule", "trees", "umbrellaFiles"]);
+    expect(m.baseTree).toMatchObject({
+      path: BASE_TREE, sha256: sha(btBytes), gitBlob: blobAtHead(BASE_TREE), schema: "qed64.base-tree/v1", releaseId: bt.releaseId, releaseDigest: bt.releaseDigest,
+      runtime: bt.runtime, packs: bare(bt.packs), slim: bt.slim, umbrella: bt.umbrella, umbrellaSource: bt.umbrellaSource, initLib: bt.initLib, digestRule: bt.digestRule,
+    });
+    for (const [name, t] of Object.entries<any>(bt.trees)) expect(m.baseTree.trees[name]).toEqual({ ...t, packs: bare(t.packs) });
+    const union = new Map<string, unknown>();
+    for (const u of [...bt.umbrella, ...Object.values<any>(bt.trees).flatMap((t) => t.umbrella)]) union.set(u.path, u);
+    expect(m.baseTree.umbrellaFiles).toEqual([...union.keys()].sort().map((k) => union.get(k)));
+    expect(m.baseTree.umbrellaFiles.map((u) => u.path)).toEqual(expect.arrayContaining(["QED64/Essential.olean", "QED64/Essential.olean.server"]));
     expect(m.runtime.buildId).toBe(rt.buildId);
     expect(m.runtime.manifest).toEqual({
       path: "runtime/runtime-manifest.json", sha256: sha(rtBytes), gitBlob: blobAtHead("public/runtime/runtime-manifest.json"),
@@ -210,12 +249,23 @@ describe.skipIf(!hasGit)("release-manifest.mjs CLI", () => {
     expect(bad.status).toBe(1);
     expect(bad.stderr).toMatch(/differs from the manifest regenerated from commit/);
     expect(bad.stderr).toMatch(/file: +"releaseId": "qed64-0000000"/);
+    // The worktree form round-trips too (record and base tree read from the given files), byte for byte.
+    const wt = path.join(tmp, "check-worktree.json");
+    expect(run([...treeArgs(), "--out", wt]).status).toBe(0);
+    expect(fs.readFileSync(wt, "utf8")).toBe(fs.readFileSync(file, "utf8").replace('"releaseId": "qed64-0000000"', `"releaseId": "qed64-${head.slice(0, 7)}"`)
+      .replace('"source": "commit"', '"source": "worktree"').replace(/"digest": "sha256:[0-9a-f]{64}",\n  "releaseId"/, `"digest": "${json(fs.readFileSync(wt)).digest}",\n  "releaseId"`));
+    expect(run(["--check", wt, ...treeArgs()]).status).toBe(0);
+    doctored(BASE_TREE, (t) => t.replace('"slim": true', '"slim": false'), () => {
+      const drift = run(["--check", wt, ...treeArgs()]);
+      expect(drift.status).toBe(1);
+      expect(drift.stderr).toMatch(/differs from the manifest regenerated from the working tree/);
+    });
   });
 
   test("a refusal is exit 1, one line on stderr, and no output file", () => {
     doctored("public/snapshots/index.json", editJson((o) => { o.snapshots[0].runtime = OTHER_ID; }), () => {
       const out = path.join(tmp, "refused.json");
-      const r = run(["--worktree", "--public", path.join(tree, "public"), "--kernel-pin", path.join(tree, "KERNEL-PIN"), "--out", out]);
+      const r = run([...treeArgs(), "--out", out]);
       expect(r.status).toBe(1);
       expect(r.stdout).toBe("");
       expect(r.stderr.trimEnd().split("\n")).toHaveLength(1);
@@ -245,11 +295,12 @@ describe.skipIf(!hasGit)("artifactSetId", () => {
 
   test("moves when any artifact digest moves (and the tree reports dirty)", () => {
     const before = buildReleaseManifest(commitSource("HEAD"));
-    doctored("public/runtime/runtime-manifest.json", editJson((rt) => {
-      const file = rt.files[Object.keys(rt.files)[0]!];
+    // A snapshot (site-owned: a runtime chunk that moves must move in the pinned record too, see the hosting checks).
+    doctored("public/snapshots/index.json", editJson((si) => {
+      const e = si.snapshots[0];
       const fresh = "f".repeat(64);
-      file.chunks[0].url = file.chunks[0].url.replace(/\.[0-9a-f]{20}\.part-/, `.${fresh.slice(0, 20)}.part-`);
-      file.chunks[0].sha256 = fresh;
+      e.url = e.url.replace(/\.[0-9a-f]{16}\.snapz$/, `.${fresh.slice(0, 16)}.snapz`);
+      e.digest = `sha256:${fresh}`;
     }), () => {
       const after = buildReleaseManifest(treeSource(treeOpts()));
       expect(after.qed64.dirty).toBe(true);
@@ -266,19 +317,156 @@ describe.skipIf(!hasGit)("cross-checks refuse doctored inputs", () => {
     expect(build().runtime.buildId).toBe(buildId);
   });
 
-  test("sourceRevision built from another kernel commit than KERNEL-PIN", () => {
+  test("sourceRevision built from another kernel commit than the record's kernel.commit", () => {
     doctored("public/runtime/runtime-manifest.json", editJson((rt) => { rt.sourceRevision = "qed64-wasm64@deadbeef00 (somewhere else)"; }), () => {
-      expect(refusal(build)).toMatch(/was built from kernel deadbeef00 \(sourceRevision\), KERNEL-PIN pins [0-9a-f]{12}/);
+      expect(refusal(build)).toMatch(/was built from kernel deadbeef00 \(sourceRevision\), lean-v\S+ names kernel [0-9a-f]{12} — the record and the served binary disagree/);
     });
     doctored("public/runtime/runtime-manifest.json", editJson((rt) => { rt.sourceRevision = "local build"; }), () => {
       expect(refusal(build)).toMatch(/sourceRevision "local build" names no kernel commit/);
     });
+    // The record moves to another kernel commit (re-cut, so its own digest holds).
+    doctored(RECORD, editRecord((r) => { r.kernel.commit = "0".repeat(40); }), () => {
+      expect(refusal(build)).toMatch(/names kernel 000000000000 — the record and the served binary disagree/);
+    });
   });
 
-  test("KERNEL-PIN that does not name the buildId", () => {
-    doctored("pipeline/toolchain/KERNEL-PIN", (t) => t.split(buildId).join(OTHER_ID), () => {
-      expect(refusal(build)).toMatch(new RegExp(`KERNEL-PIN does not name the served runtime ${buildId}`));
+  test("the toolchain record: schema, its own digest, the fields read", () => {
+    doctored(RECORD, editJson((r) => { r.schema = "lean4-wasm64.release/v0"; }), () => {
+      expect(refusal(build)).toMatch(/toolchain\/lean4-wasm64-release\.json: schema is "lean4-wasm64\.release\/v0", expected lean4-wasm64\.release\/v1/);
     });
+    // Edited without re-cutting the digest: the record is no longer the one the release published.
+    doctored(RECORD, editJson((r) => { r.kernel.patch = "0099"; }), () => {
+      expect(refusal(build)).toMatch(/digest sha256:[0-9a-f]+… is not its own content's sha256:[0-9a-f]+… — the record was edited after it was cut/);
+    });
+    // Whitespace alone changes nothing the digest covers (2-space JSON of the parsed record), and the build passes.
+    doctored(RECORD, (t) => JSON.stringify(JSON.parse(t)), () => { expect(build().toolchain.digest).toMatch(/^sha256:/); });
+    doctored(RECORD, editRecord((r) => { r.kernel.patch = "35b"; }), () => { expect(refusal(build)).toMatch(/kernel\.patch "35b" is malformed/); });
+    doctored(RECORD, editRecord((r) => { r.kernel.branch = "master"; }), () => {
+      expect(refusal(build)).toMatch(/kernel is master @ https:\/\/github\.com\/FawadHa1der\/lean4, this generator records qed64-wasm64 @ FawadHa1der\/lean4/);
+    });
+    doctored(RECORD, editRecord((r) => { r.id = "lean-v4.34.0/../x"; }), () => { expect(refusal(build)).toMatch(/: id "lean-v4\.34\.0\/\.\.\/x" is malformed/); });
+    doctored(RECORD, editRecord((r) => { r.hosting.mount = { "/runtime/": "rt/", "/profiles/": "profiles/" }; }), () => {
+      expect(refusal(build)).toMatch(/hosting\.mount .* is not .*the mounts this generator's hosting rule describes/);
+    });
+    doctored(RECORD, editRecord((r) => { delete r.tools.tgz; }), () => { expect(refusal(build)).toMatch(/tools\.tgz undefined is malformed/); });
+  });
+
+  test("a record that names another runtime than the served buildId", () => {
+    doctored(RECORD, editRecord((r) => { r.runtime.buildId = OTHER_ID; }), () => {
+      expect(refusal(build)).toMatch(new RegExp(`names runtime ${OTHER_ID}, the served runtime is ${buildId}`));
+    });
+  });
+
+  test("a served runtime or profile manifest that is not the record's file (the hosting rule stores it under the release prefix)", () => {
+    doctored(RECORD, editRecord((r) => { r.files.find((f: any) => f.path === "runtime/runtime-manifest.json").sha256 = "e".repeat(64); }), () => {
+      expect(refusal(build)).toMatch(/the served runtime manifest runtime\/runtime-manifest\.json is [0-9a-f]{16}… \(\d+ B\), lean-v\S+'s files say eeeeeeeeeeeeeeee… .* — the served tree and the pinned record disagree/);
+    });
+    const first = json(fs.readFileSync(treeFile("public/profiles/index.json"))).profiles[0];
+    const manifest = first.manifest.slice(1);
+    doctored(RECORD, editRecord((r) => { r.files.find((f: any) => f.path === manifest).bytes += 1; }), () => {
+      expect(refusal(build)).toMatch(new RegExp(`the served profile ${first.id} manifest ${manifest.replace(/\./g, "\\.")} is .*'s files say`));
+    });
+    doctored(RECORD, editRecord((r) => { r.files = r.files.filter((f: any) => f.path !== manifest); }), () => {
+      expect(refusal(build)).toMatch(new RegExp(`${manifest.replace(/\./g, "\\.")} is not in lean-v\\S+'s files, but the hosting rule stores it under lean4-wasm64/`));
+    });
+    // A chunk the record does not carry, and profiles/index.json made toolchain-hosted (no longer site-owned).
+    doctored(RECORD, editRecord((r) => { r.files = r.files.filter((f: any) => !f.path.startsWith("runtime/chunks/lean.wasm.")); }), () => {
+      expect(refusal(build)).toMatch(/runtime lean\.wasm chunk runtime\/chunks\/lean\.wasm\.\S+ is not in/);
+    });
+    // The per-build runtime manifest (the pinned shell fetches it first, from the release prefix):
+    // the record must carry it with the default one's bytes, and an absent entry is refused too.
+    const perBuild = `runtime/runtime-manifest.${buildId}.json`;
+    doctored(RECORD, editRecord((r) => { r.files.find((f: any) => f.path === perBuild).sha256 = "e".repeat(64); }), () => {
+      expect(refusal(build)).toMatch(/the per-build runtime manifest .* runtime\/runtime-manifest\.wasm64-[0-9a-f]{16}\.json is [0-9a-f]{16}… .*'s files say eeeeeeeeeeeeeeee… .* — the served tree and the pinned record disagree/);
+    });
+    doctored(RECORD, editRecord((r) => { r.files = r.files.filter((f: any) => f.path !== perBuild); }), () => {
+      expect(refusal(build)).toMatch(/the per-build runtime manifest .* runtime\/runtime-manifest\.wasm64-[0-9a-f]{16}\.json is not in lean-v\S+'s files/);
+    });
+    // A pack part the record does not carry, or carries with other bytes.
+    const part = json(fs.readFileSync(treeFile(`public${first.manifest}`))).content.pack.transport.parts[0].url.slice(1);
+    doctored(RECORD, editRecord((r) => { r.files = r.files.filter((f: any) => f.path !== part); }), () => {
+      expect(refusal(build)).toMatch(new RegExp(`profile ${first.id} part ${part.replace(/\./g, "\\.")} is not in lean-v\\S+'s files`));
+    });
+    doctored(RECORD, editRecord((r) => { r.files.find((f: any) => f.path === part).bytes += 1; }), () => {
+      expect(refusal(build)).toMatch(new RegExp(`profile ${first.id} part ${part.replace(/\./g, "\\.")} is .*'s files say`));
+    });
+    doctored(RECORD, editRecord((r) => { r.hosting.siteOwned = ["/snapshots/"]; }), () => {
+      expect(refusal(build)).toMatch(/the profile index profiles\/index\.json is not in lean-v\S+'s files/);
+    });
+  });
+
+  test("base-tree.json: schema, the release it names, the served packs, the umbrella", () => {
+    const editBt = (fn: (o: any) => void) => editJson(fn);
+    const Z = (c: string) => `sha256:${c.repeat(64)}`;
+    doctored(BASE_TREE, editBt((o) => { o.schema = "qed64.base-tree/v0"; }), () => { expect(refusal(build)).toMatch(/embedding\/base-tree\.json: schema is "qed64\.base-tree\/v0"/); });
+    // The pristine file names the record's own release: its digest and runtime are the record's.
+    const ok = build().baseTree;
+    const rec = json(fs.readFileSync(treeFile(RECORD)));
+    expect([ok.releaseId, ok.releaseDigest, ok.runtime]).toEqual([rec.id, rec.digest, rec.runtime.buildId]);
+    // Another release whose packs are the same raw bytes: accepted (a runtime-only release keeps the trees),
+    // and its digest and runtime, which the record cannot vouch for, are recorded as null.
+    doctored(BASE_TREE, editBt((o) => { o.releaseId = "lean-v4.34.0-0000000"; o.releaseDigest = Z("9"); o.runtime = OTHER_ID; }), () => {
+      const bt = build().baseTree;
+      expect([bt.releaseId, bt.releaseDigest, bt.runtime]).toEqual(["lean-v4.34.0-0000000", null, null]);
+    });
+    // Another release with other packs: refused.
+    doctored(BASE_TREE, editBt((o) => { o.releaseId = "lean-v4.34.0-0000000"; o.trees["core-lib-slim"].packs[0].rawSha256 = Z("1"); }), () => {
+      expect(refusal(build)).toMatch(/embedding\/base-tree\.json \(release lean-v4\.34\.0-0000000\): trees\.core-lib-slim\.packs names lean-lib raw 1111111111111111…, the record lean-v\S+ carries [0-9a-f]{16}…/);
+    });
+    // The SAME release: every pack, at the top and in every tree, is still checked against the record.
+    doctored(BASE_TREE, editBt((o) => { o.trees["core-lib-slim"].packs[0].rawSha256 = Z("0"); }), () => {
+      expect(refusal(build)).toMatch(/\(release lean-v\S+\): trees\.core-lib-slim\.packs names lean-lib raw 0000000000000000…, the record lean-v\S+ carries/);
+    });
+    doctored(BASE_TREE, editBt((o) => { o.trees["lib-tree-slim"].packs[1].rawSha256 = Z("0"); }), () => {
+      expect(refusal(build)).toMatch(/: trees\.lib-tree-slim\.packs names mathlib-essential raw 0000000000000000…, the record lean-v\S+ carries/);
+    });
+    doctored(BASE_TREE, editBt((o) => { o.packs[1].rawSha256 = Z("2"); }), () => {
+      expect(refusal(build)).toMatch(/: packs names mathlib-essential raw 2222222222222222…, the record lean-v\S+ carries/);
+    });
+    doctored(BASE_TREE, editBt((o) => { o.trees["lib-tree"].packs.push({ id: "mathlib-bogus", rawSha256: Z("4") }); }), () => {
+      expect(refusal(build)).toMatch(/: trees\.lib-tree\.packs names mathlib-bogus, which lean-v\S+ does not carry/);
+    });
+    doctored(BASE_TREE, editBt((o) => { o.trees["lib-tree-slim"].packs[0].release = "lean-core-4.99.0-wasm64-0000000000000000"; }), () => {
+      expect(refusal(build)).toMatch(/: trees\.lib-tree-slim\.packs lean-core is release lean-core-4\.99\.0-wasm64-0000000000000000, lean-v\S+ carries lean-core-/);
+    });
+    // The same release with another releaseDigest or runtime.
+    doctored(BASE_TREE, editBt((o) => { o.releaseDigest = Z("5"); }), () => {
+      expect(refusal(build)).toMatch(/: releaseDigest sha256:5555555555555555… is not lean-v\S+'s sha256:[0-9a-f]{16}…/);
+    });
+    doctored(BASE_TREE, editBt((o) => { o.runtime = OTHER_ID; }), () => {
+      expect(refusal(build)).toMatch(new RegExp(`: runtime "${OTHER_ID}" is not lean-v\\S+'s ${buildId}`));
+    });
+    // The top-level packs are exactly the served packs: a record pack that is not served, one served pack missing.
+    const game = rec.packs.find((p: any) => p.id === "mathlib-game-extra");
+    doctored(BASE_TREE, editBt((o) => { o.packs[1] = { id: game.id, rawSha256: `sha256:${game.rawSha256}` }; }), () => {
+      expect(refusal(build)).toMatch(/: the base trees were unpacked from mathlib-game-extra, which is not served \(the profile index has no profiles\/mathlib-game-extra\.manifest\.json\)/);
+    });
+    doctored(BASE_TREE, editBt((o) => { o.packs = o.packs.filter((p: any) => p.id !== "mathlib-essential"); }), () => {
+      expect(refusal(build)).toMatch(/: packs does not list mathlib-essential, a served pack/);
+    });
+    // Every tree but core-lib-slim carries the umbrella pair.
+    doctored(BASE_TREE, editBt((o) => { o.trees["lib-tree-slim"].umbrella = []; }), () => {
+      expect(refusal(build)).toMatch(/: trees\.lib-tree-slim\.umbrella does not list QED64\/Essential\.olean \(every tree but core-lib-slim carries the pair\)/);
+    });
+    doctored(BASE_TREE, editBt((o) => { o.trees["lib-tree"].umbrella = o.trees["lib-tree"].umbrella.filter((u: any) => !u.path.endsWith(".server")); }), () => {
+      expect(refusal(build)).toMatch(/: trees\.lib-tree\.umbrella does not list QED64\/Essential\.olean\.server/);
+    });
+    doctored(BASE_TREE, editBt((o) => { o.umbrella = o.umbrella.filter((u: any) => !u.path.endsWith(".server")); }), () => {
+      expect(refusal(build)).toMatch(/umbrella does not list QED64\/Essential\.olean\.server/);
+    });
+    doctored(BASE_TREE, editBt((o) => { o.trees["lib-tree-slim"].umbrella[0].sha256 = "3".repeat(64); }), () => {
+      expect(refusal(build)).toMatch(/QED64\/Essential\.olean is listed with two contents/);
+    });
+    doctored(BASE_TREE, editBt((o) => { o.umbrella[0].path = "../Essential.olean"; }), () => { expect(refusal(build)).toMatch(/umbrella\[\] .* is malformed/); });
+  });
+
+  test("--repo names the checkout: a directory that is not one refuses (the shipped copy reads a QED64 clone)", () => {
+    const r = run(["--repo", tmp, "--commit", "HEAD"], tmp);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(new RegExp(`^release-manifest: REFUSED: HEAD is not a commit in ${tmp.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+    const ok = run(["--repo", root, "--commit", "HEAD"], tmp);
+    expect(ok.status).toBe(0);
+    expect(ok.stdout).toBe(run(["--commit", "HEAD"]).stdout);
   });
 
   test("a snapshot paired with another runtime", () => {
@@ -407,6 +595,15 @@ describe.skipIf(!hasGit)("--dist: the shell section", () => {
     const m = withDist(d)();
     expect(m.shell!.shellId).toBe(before.shell!.shellId);
     expect(m.shell!.files.some((f) => f.path === "qed64-build.json")).toBe(false);
+    expect(before.shell).toMatchObject({ apiRevision: null, embedApiRevision: null }); // no build-info file: unknown
+    expect(m.shell).toMatchObject({ apiRevision: null, embedApiRevision: null }); // a file without the keys: unknown
+    // The two revisions the build stamps (page API, qed64/embed barrel) are recorded, in this key order.
+    fs.writeFileSync(path.join(d, "qed64-build.json"), JSON.stringify({ schema: "qed64.build/v1", buildId, shell: before.shell!.shellId, apiRevision: "1.2.3", embedApiRevision: "4.5.6-pre.7" }));
+    const stamped = withDist(d)();
+    expect(Object.keys(stamped.shell!)).toEqual(["shellId", "listingSha256", "bytes", "apiRevision", "embedApiRevision", "bundle", "files"]);
+    expect(stamped.shell).toMatchObject({ shellId: before.shell!.shellId, apiRevision: "1.2.3", embedApiRevision: "4.5.6-pre.7" });
+    fs.writeFileSync(path.join(d, "qed64-build.json"), JSON.stringify({ schema: "qed64.build/v1", buildId, shell: before.shell!.shellId, apiRevision: 7 }));
+    expect(refusal(withDist(d))).toMatch(/qed64-build\.json apiRevision 7 is not a revision string/);
     info("shell-0000000000000000");
     expect(refusal(withDist(d))).toMatch(/qed64-build\.json names shell-0000000000000000, the tree is shell-/);
     info(before.shell!.shellId, OTHER_ID);

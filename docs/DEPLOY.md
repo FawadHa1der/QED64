@@ -199,10 +199,11 @@ Promote checklist, in order:
 
 0. For a new toolchain release: `pipeline/release/adopt-release.sh … --public
    <isolated tree>` (run `--dry-run` first), then its printed landing steps:
-   `toolchain/lean4-wasm64-release.json` ← the adopted `release.json`,
-   `pipeline/toolchain/KERNEL-PIN` ← the generated `work/adopt/<id>/KERNEL-PIN`
-   (release-manifest checks its commit against the runtime's
-   `sourceRevision`), the three tracked manifests from the isolated tree,
+   `toolchain/lean4-wasm64-release.json` ← the adopted `release.json`
+   (release-manifest checks its `kernel.commit` against the runtime's
+   `sourceRevision`, and its `runtime.buildId` and files against the served
+   manifests), `embedding/base-tree.json` ← `work/adopt/<id>/base-tree.json`,
+   the three tracked manifests from the isolated tree,
    and the devDependency re-pinned to the release's tgz once published.
 1. Commit the new `public/runtime/runtime-manifest.json` (paired with the
    rebaked snapshots) together with the release record it belongs to
@@ -221,8 +222,8 @@ Optional, after step 1: `node pipeline/release/release-manifest.mjs --commit
 HEAD --out release.json` writes the `qed64.release/v1` manifest of the
 release. The manifest names every served object by sha256 and gives the
 release three ids: `releaseId`, `artifactSetId` and `shellId`. The generator
-refuses when KERNEL-PIN, the runtime manifest, the snapshot index and the
-profiles disagree about the pairing. docs/RELEASE-BUNDLE.md covers the
+refuses when the pinned toolchain record, the base tree, the runtime
+manifest, the snapshot index and the profiles disagree about the pairing. docs/RELEASE-BUNDLE.md covers the
 manifest, how a downstream verifies a bundle with it, and a proposed CI
 publishing step that has not been applied.
 

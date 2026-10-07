@@ -163,6 +163,23 @@ describe("embedding/closure.json", () => {
     expect(gate).not.toMatch(/node:child_process|"pipeline\/[\w/.-]+\.mjs"|kernel-probes/);
   });
 
+  it("every export of a shipped pipeline .mjs with a .d.mts beside it is declared there", () => {
+    // Exported for the module's own tests only, not yet type surface: declare one before a caller needs it.
+    const UNDECLARED: Record<string, string[]> = { "pipeline/release/fetch-artifacts.mjs": ["openSource", "releaseResolver"] };
+    const exported = (source: string) => new Set([
+      ...[...source.matchAll(/^export\s+(?:declare\s+)?(?:async\s+)?(?:const|let|function\*?|class|interface|type)\s+([A-Za-z_$][\w$]*)/gm)].map((m) => m[1]!),
+      ...[...source.matchAll(/^export\s*\{([^}]*)\}/gm)].flatMap((m) => m[1]!.split(",").map((s) => s.trim().split(/\s+as\s+/).pop()!).filter(Boolean)),
+    ]);
+    const pairs = closure.pipeline.filter((p) => p.endsWith(".d.mts")).map((d) => [d.replace(/\.d\.mts$/, ".mjs"), d] as const);
+    expect(pairs.map(([m]) => m)).toContain("pipeline/release/release-manifest.mjs");
+    for (const [m, d] of pairs) {
+      expect(closure.pipeline, `${d} ships without ${m}`).toContain(m);
+      const declared = exported(read(d));
+      const missing = [...exported(read(m))].filter((n) => !declared.has(n) && !(UNDECLARED[m] ?? []).includes(n));
+      expect(missing, `${m} exports what ${d} does not declare`).toEqual([]);
+    }
+  });
+
   it("the edge-worker library (qed64/edge) imports nothing: one dependency-free ES module plus its types", () => {
     expect([...closure.infra].sort()).toEqual(["infra/edge-worker.d.ts", "infra/edge-worker.js"]);
     for (const f of closure.infra) {

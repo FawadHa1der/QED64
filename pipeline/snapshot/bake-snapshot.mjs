@@ -193,7 +193,7 @@ if (!fs.existsSync(runner)) {
 // The raw .snap lands here. The default, work/snapshot, is the PAIRED set the
 // Node probes and the compiler battery load against the served binary — a
 // bake for any other runtime (a version import, an experiment) must pass
-// --work <dir> or it silently unpairs them (KERNEL-PIN invariant).
+// --work <dir> or it silently unpairs them (the binary-pairing invariant, docs/REBUILD.md §3).
 const work = resolveToolPath({
   tool: "bake-snapshot", flag: "work", placeholder: "<dir>", value: arg("work", null), base: root, env: "QED64_WORK",
   legacy: path.join(root, "work/snapshot"), legacyLabel: "work/snapshot under the repo root", usage: USAGE,
