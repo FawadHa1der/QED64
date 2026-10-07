@@ -1,5 +1,5 @@
 // The L3 relay (lib/lsp-relay.ts) against a FakeSession — the
-// invariants docs/ARCHITECTURE-REEVALUATION-2-2026-09-02.md §2.3 names:
+// invariants docs/history/ARCHITECTURE-REEVALUATION-2-2026-09-02.md §2.3 names:
 // `hash(fake.lastFullText) === hash(lastText)` after every scenario, zero
 // client-facing messages synthesized except responses to failed in-flight
 // ids and the breaker's one halted note (PUMP-REMOVAL-ASSESSMENT gap 5),

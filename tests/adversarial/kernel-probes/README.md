@@ -11,7 +11,7 @@ a `module` header). `browser-check.sh <url>` runs all four through the real
 resident FileWorker (the prebuilt-environment branch, which the compile path
 of the battery does not exercise).
 
-| file | expected (stock Lean) | served wasm64-36a96239e08fd2e0 |
+| file | expected (stock Lean) | wasm64-36a96239e08fd2e0 (served 2026-09-22 to 2026-09-30) |
 |---|---|---|
 | `is-module.lean` | `isModule=false` | `isModule=true` |
 | `private-default.lean` | `plainDef` public, `pubDef` public (no `_private` prefix) | `plainDef`, `plainThm` are `_private.«…».0.*`; only `pubDef` public |
@@ -19,6 +19,8 @@ of the battery does not exercise).
 | `module-file.lean` | `isModule=true` | (must stay true after the fix) |
 
 ## Adding them to the battery (with the fixing pairing bump, not before)
+
+Done: patch 0034 (runtime `wasm64-4b025db7729c5f89`, served from 2026-09-30) fixed #51, and the three battery cases of `corpus-cases.json` are in `tests/adversarial/corpus.json`. The recipe below is how they were merged.
 
 They are RED on the served pairing by definition, so they are kept beside the
 corpus until the fixed runtime is staged; then merge and run the battery

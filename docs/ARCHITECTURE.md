@@ -183,7 +183,7 @@ pack no longer in the index is dropped from `LEAN_PATH` rather than mounted
 empty. Three deaths inside 120 s trip the breaker instead of looping. (The
 batch app and its probe-compile gate, `src/app.ts`, were retired with the
 pump transport on 2026-09-04; its `isStaleStorageError` classifier,
-`src/runtime/errors.ts`, has no remaining consumer.)
+`src/runtime/errors.ts`, was deleted with it, having no other consumer.)
 
 ### wasm64 pointer discipline
 
@@ -221,7 +221,7 @@ L0  the Lean fork (release record kernel.commit; patches 0031/0032) — FileWork
 ```
 
 **The front door** (`public/workers/lsp-front-door.js`; design
-docs/ARCHITECTURE-REEVALUATION-2-2026-09-02.md §2.4) is one pure reducer,
+docs/history/ARCHITECTURE-REEVALUATION-2-2026-09-02.md §2.4) is one pure reducer,
 `step(state, frame) → {state, ringWrites, replies, startLoop, statusDelta}`,
 run under vitest exactly as it runs in the worker, which only performs the
 effects it returns. Frames are `{kind:"client", msg, replay?}`,

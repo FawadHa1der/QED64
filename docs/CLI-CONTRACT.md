@@ -50,12 +50,15 @@ node pipeline/snapshot/cli.mjs --write-preludes  # regenerate the inline prelude
 | [olean-imports](#olean-imports---audit----entries) | `pipeline/artifacts/olean-imports.mjs` | — | 1 | inline prelude (inside the main-module check) |
 | [node-runner](#node-runner) | `pipeline/snapshot/node-runner.mjs` | `runner` | 2 | inline prelude |
 | [persistent-probe](#persistent-probe) | `pipeline/snapshot/persistent-probe.mjs` | — | 2 | inline prelude |
-| [chunk-runtime](#chunk-runtime) | `pipeline/toolchain/chunk-runtime.mjs` (leaving for the fork: `lean4-wasm64 chunk`, B2a) | — | 2 | inline prelude |
+| [chunk-runtime](#chunk-runtime) | `pipeline/toolchain/chunk-runtime.mjs` — forward to `lean4-wasm64 chunk` (contract 3, plan B2a) | — | 2 | inline prelude, then the forward |
 | [pack](#pack) | `pipeline/artifacts/pack.mjs` (leaving for the fork: `lean4-wasm64 pack`, later) | `pack` | 2 | inline prelude |
 | [unpack](#unpack) | `pipeline/artifacts/unpack.mjs` — forward to `lean4-wasm64 unpack` (contract 3) | — | 2 | inline prelude, then the forward |
 
 Tier 3 tools: `pipeline/snapshot/{thread-storm-probe,fileworker-exit-probe,resident-probe}.mjs`,
 `pipeline/artifacts/inspect.mjs` (a forward to `lean4-wasm64 inspect` since contract 3),
+`pipeline/toolchain/gate.mjs` (a forward to `lean4-wasm64 gate` since contract 3; both in
+[the forwards](#lean4-wasm64-the-forwards)), `pipeline/toolchain/gen-exports.py` (a stub that
+exits 2 for one cycle: moved to the fork's `wasm64-build/`),
 `pipeline/release/release-manifest.mjs` (shipped since plan B2c) and
 `pipeline/release/write-bundle.mjs` (not shipped). The last two write
 `qed64.release/v1`, whose stable field paths are a contract of their own
@@ -84,12 +87,14 @@ resident-probe, was folded into it on 2026-10-05 as `--snapshots <a,b>`,
   to run it as `node --stack-size=8192 …` and the tool continues as before.
   bake-snapshot and supervised-run start their runner with the flag
   themselves, so a plain `node` is enough for them; the re-exec is for direct
-  runs, `npm run runner`, and `gate.mjs`, which spawns node-runner and
-  persistent-probe without it.
+  runs, `npm run runner`, and gates that spawn node-runner and
+  persistent-probe without it (lean4game's vendored `gate.mjs`, pinned
+  before contract 3; QED64's `gate.mjs` forwards to the package's since).
 - Since toolchain patches 0020 and 0031, the one-shot Lean CLI does its work
   and then **never exits** (HARDENING #47). Whatever runs node-runner judges
   the job by its output and reaps the process. bake-snapshot and
-  supervised-run do this; `gate.mjs` uses a timeout.
+  supervised-run do this; the gates (the package's, lean4game's vendored
+  one) use a timeout.
 
 ### Argument grammar
 
@@ -699,7 +704,7 @@ way immediately. Rerunning resumes: files already verified are `present`.
 Existing files that no manifest names are never touched or deleted, except
 the dead process's temp files of step 2.
 
-**Consumers:** the README's quick start and docs/TESTING.md ("a fresh clone
+**Consumers:** the README's "Build from source" and docs/TESTING.md ("a fresh clone
 runs G1 after fetch:artifacts"); `tests/unit/fetch-artifacts.test.ts`;
 `tests/consumer/check-consumer.mjs` (`--help` through the package symlink,
 and the no-manifests refusal). Neither downstream calls it yet.
@@ -797,10 +802,11 @@ usage: node-runner.mjs [--artifact <dir>] [--work <dir>] [--lib <dir>] [--] <lea
    host path inside the VFS.
 4. Does not exit after `main` returns.
 
-**Consumers:** bake-snapshot, supervised-run, `pipeline/toolchain/gate.mjs`,
+**Consumers:** bake-snapshot, supervised-run,
 `tests/integration/runtime-smoke.test.ts` (through supervised-run, with
 node-runner's own flags after `--`), and lean4game (vendored, through its gate
-and bakes).
+and bakes). QED64's `pipeline/toolchain/gate.mjs` no longer runs it: it
+forwards to the package's gate, which has its own runner (contract 3).
 
 ### persistent-probe
 
@@ -1033,8 +1039,8 @@ are checked against it where it is installed).
 
 **Consumers:**
 
-- The README. (`import-packs.sh` is deleted; `adopt-release.sh` runs the
-  package's `unpack` directly.)
+- None of QED64's lanes: `adopt-release.sh` runs the package's `unpack`
+  directly (`import-packs.sh`, which called this script, is deleted).
 - lean4game's `build-from-source.sh` trees lane (vendored).
 - The showcase (from the submodule; no script of it calls unpack today,
   checked 2026-10-06).
@@ -1207,6 +1213,7 @@ as QED64's own gate did.
 | 3 | 2026-10-06 | Plan step B2c, **release-manifest ships** (tier 3, `pipeline/release/release-manifest.mjs` and `.d.mts` in `files` and closure.json `pipeline`; relative and `node:` imports only). Its output `qed64.release/v1` gains `toolchain`, `hosting` and `baseTree` after `kernel`, and `shell.apiRevision`/`shell.embedApiRevision` (additive keys; `kernel` keeps its shape, its commit now the record's `kernel.commit`); its inputs are `toolchain/lean4-wasm64-release.json` and `embedding/base-tree.json` instead of `pipeline/toolchain/KERNEL-PIN`, with new refusals (docs/RELEASE-BUNDLE.md). Flags: `--toolchain-record` and `--base-tree` (with `--worktree`) and `--repo <checkout>` (the shipped copy reads a QED64 clone) are new; `--kernel-pin` is removed (now an unknown argument, exit 2). G2 runs the shipped copy through the consumer's symlink. | additive (output keys, a shipped tool); a flag removed (tier 3) |
 | 3 | 2026-10-06 | **`pipeline/toolchain/KERNEL-PIN` is deleted** (plan B2c) in the commit that first ships `toolchain.kernel.commit`, as the widgets showcase asked: its pin tool reads the release manifest's `toolchain.kernel.commit` and `toolchain.releaseId` from such a commit, and `git show <commit>:pipeline/toolchain/KERNEL-PIN` only for older pins. `adopt-helper.mjs kernel-pin` and adopt-release's kernel-pin step go with it; the landing copies `$W/base-tree.json` to `embedding/base-tree.json` instead. No contract tool read the file. | removed (a tracked file; no tool change) |
 | 3 | 2026-10-06 | Plan step B2c, **write-bundle**, a new tier 3 tool, not shipped (`pipeline/release/write-bundle.mjs --commit <rev> --dist <dir> --umbrella <dir> --out <dir> [--repo <dir>]`, Node built-ins and `./release-manifest.mjs`): writes `release.json`, `qed64-shell.tar.gz`, `qed64-manifests.tar.gz`, `umbrella/QED64/…` and `SHA256SUMS`, byte-reproducible (Node-written ustar, pinned gzip header). Exit 1 on a refusal (one `write-bundle: REFUSED:` line), 2 on usage or an occupied `--out`. | additive (a new tool) |
+| 3 | 2026-10-06 | Plan step A5, **docs/config only: no tool changed**. A consistency pass over this document: chunk-runtime's tier row and the tier-3 list mark every forward (`chunk-runtime`, `unpack`, `inspect`, `gate.mjs`) and the `gen-exports.py` stub; no Consumers list names a deleted script or the old README any more (node-runner's no longer lists QED64's `gate.mjs`, which forwards to the package's gate; unpack's no longer lists the README); the Runtime notes say which gates spawn node-runner. The repository's `.claude/launch.json` dev entry matches Vite's port 5184 (`strictPort`). | docs/config only |
 
 ## Open decisions
 
