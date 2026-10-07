@@ -183,7 +183,7 @@ pack no longer in the index is dropped from `LEAN_PATH` rather than mounted
 empty. Three deaths inside 120 s trip the breaker instead of looping. (The
 batch app and its probe-compile gate, `src/app.ts`, were retired with the
 pump transport on 2026-09-04; its `isStaleStorageError` classifier,
-`src/runtime/errors.ts`, has no remaining consumer.)
+`src/runtime/errors.ts`, was deleted with it, having no other consumer.)
 
 ### wasm64 pointer discipline
 

@@ -362,7 +362,7 @@
         "budgetMs": 20000,
         "mustError": true
       },
-      "rationale": "Entirely bogus root namespaces, including near-miss roots (Mathlib2, Batteries2) that must not fuzzy-match the real roots or the Batteries alias (alias set audit-confirmed in src/runtime/umbrella.ts). Must fail cleanly as imports incomplete, no env-setup panic."
+      "rationale": "Entirely bogus root namespaces, including near-miss roots (Mathlib2, Batteries2) that must not fuzzy-match the real roots or the Batteries alias (alias set audit-confirmed in src/runtime/umbrella.ts (removed 2026-09)). Must fail cleanly as imports incomplete, no env-setup panic."
     },
     {
       "name": "header-huge-import-list-57",
@@ -384,7 +384,7 @@
         "budgetMs": 20000,
         "mustSucceed": true
       },
-      "rationale": "All three aggregator aliases at once (Mathlib.Tactic, Batteries, MIL.Common) — audit confirmed the alias set in src/runtime/umbrella.ts UMBRELLA_ALIAS_MODULES and the rewriteHeaderToUmbrella product path that serves them from the umbrella snapshot. Must resolve and run a tactic from the aggregator."
+      "rationale": "All three aggregator aliases at once (Mathlib.Tactic, Batteries, MIL.Common) — audit confirmed the alias set in src/runtime/umbrella.ts UMBRELLA_ALIAS_MODULES (removed 2026-09) and the rewriteHeaderToUmbrella product path that serves them from the umbrella snapshot. Must resolve and run a tactic from the aggregator."
     },
     {
       "name": "header-duplicate-imports",
@@ -464,7 +464,7 @@
         "budgetMs": 20000,
         "mustSucceed": true
       },
-      "rationale": "The canonical happy path: full 'import Mathlib' umbrella alias plus a real proof body using ring. Must succeed end-to-end — resolves via the resident umbrella snapshot (audit confirmed the QED64.Essential rewrite path in src/app.ts:761 / src/runtime/umbrella.ts) and elaborates within budget. Baseline that catches any header-handling regression breaking normal use."
+      "rationale": "The canonical happy path: full 'import Mathlib' umbrella alias plus a real proof body using ring. Must succeed end-to-end — resolves via the resident umbrella snapshot (audit confirmed the QED64.Essential rewrite path in src/app.ts:761 (removed 2026-09) / src/runtime/umbrella.ts (removed 2026-09)) and elaborates within budget. Baseline that catches any header-handling regression breaking normal use."
     },
     {
       "name": "header-mixed-real-and-bogus",
@@ -475,7 +475,7 @@
         "budgetMs": 20000,
         "mustError": true
       },
-      "rationale": "Two real modules plus one bogus one: per src/app.ts (audit-confirmed: 'the umbrella cannot mask a nonexistent import' — unknown imports poison the whole set), this must report imports incomplete rather than partially loading — and the otherwise-valid body must not leave stale success diagnostics. Probes the stale-diagnostics and didChange-replay regression classes."
+      "rationale": "Two real modules plus one bogus one: per src/app.ts (removed 2026-09) (audit-confirmed: 'the umbrella cannot mask a nonexistent import' — unknown imports poison the whole set), this must report imports incomplete rather than partially loading — and the otherwise-valid body must not leave stale success diagnostics. Probes the stale-diagnostics and didChange-replay regression classes."
     },
     {
       "name": "calm-human-control",

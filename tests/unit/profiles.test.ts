@@ -73,7 +73,7 @@ describe("real manifest invariants", () => {
   const manifest = loadRealManifest();
 
   // Structural, not literal: the served manifest changes at every library
-  // import (4.33: 629 modules / 3145 files), and deploy.yml gates on this suite.
+  // import (4.33: 629 modules / 3145 files; 4.34.0: 649 modules), and deploy.yml gates on this suite.
   test("the Init closure, every module with an .olean, one WORKERFS file per artifact", () => {
     const modules = Object.values(manifest.content.modules) as unknown as { artifacts: Record<string, unknown> }[];
     expect(modules.length).toBeGreaterThan(600);
