@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Direct imports of a module, read from its `.olean` (64-bit compacted region).
 //
-// Layout (src/runtime/object.h + the compactor, 64-bit little-endian):
+// Layout (Lean's src/runtime/object.h + the compactor, 64-bit little-endian):
 //   [0,5) "olean" · [5] version · [6] flags · [7,40) Lean version · [40,80) githash
 //   [80,88) base address the region expects to be mapped at
 //   [88,96) pointer to the root object (ModuleData); every pointer in the file

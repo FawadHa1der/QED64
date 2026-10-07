@@ -642,8 +642,8 @@ describe("no tracked file points at another project's checkout", () => {
     const needle = ["wasm64", "lean", "codex"].join("-");
     let hits: string[] = [];
     try { hits = execFileSync("git", ["grep", "-l", "-F", needle], { cwd: root, encoding: "utf8" }).split("\n").filter(Boolean); } catch { hits = []; }
-    // docs/UPSTREAM-NOTES.md: the provenance record; lean.worker.js: its Apache-2.0 attribution comment.
-    expect(hits.sort()).toEqual(["docs/UPSTREAM-NOTES.md", "public/workers/lean.worker.js"]);
+    // docs/history/UPSTREAM-NOTES.md: the provenance record; lean.worker.js: its Apache-2.0 attribution comment.
+    expect(hits.sort()).toEqual(["docs/history/UPSTREAM-NOTES.md", "public/workers/lean.worker.js"]);
     for (const f of hits) {
       const text = fs.readFileSync(path.join(root, f), "utf8");
       expect(text, f).not.toMatch(new RegExp(`\\.\\./${needle}|${needle}/experiments`));

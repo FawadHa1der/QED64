@@ -25,7 +25,7 @@
 //
 // Usage:
 //   node pipeline/toolchain/chunk-runtime.mjs --bin <dir with lean.js+lean.wasm> \
-//        [--lean-version 4.33.0-pre] [--revision <githash>] [--upstream-base 5732b84] \
+//        [--lean-version <x.y.z>] [--revision <githash>] [--upstream-base 5732b84] \
 //        [--out work/staging/<buildId>/runtime]
 //
 // --lean-version is what the product bar shows and what promote-staging pairs

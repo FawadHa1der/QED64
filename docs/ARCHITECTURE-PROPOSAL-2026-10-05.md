@@ -5,6 +5,8 @@
 Strategy proposal, 2026-10-05. For the owner and the kernel, QED64, lean4game and widgets sessions. No implementation yet.
 
 > **Retired 2026-10 (plan B2c):** `pipeline/toolchain/KERNEL-PIN`, which this document cites, is deleted; the kernel pin is the pinned release record's `kernel.commit` (`toolchain/lean4-wasm64-release.json`, and `toolchain.kernel.commit` in `qed64.release/v1`, docs/RELEASE-BUNDLE.md).
+>
+> **Executed on QED64's side, 2026-10-06 (docs/ARCHITECTURE-PLAN-QED64.md):** the toolchain lane this document describes in the present tense is deleted: `pipeline/toolchain/{build.sh,finish.sh,setup-source.sh,README.md}` and the patch copies in plan B1, `pipeline/release/import-packs.sh` and `bump-chain.sh` in plan B2a (replaced by `pipeline/release/adopt-release.sh`). Its `4.33.0-pre` mentions are that removed lane's defaults and lean4game's runtime of the day, not a served runtime. The pairing QED64 serves is in docs/PROVENANCE.md.
 
 How it was made: four read-only researchers mapped the kernel fork, QED64, lean4game and the widgets showcase; three candidate layerings were worked out and scored by three judges (a long-term maintainer, an outside Lean developer, a release engineer); twelve load-bearing claims of the winner were each checked adversarially against the repositories (six were corrected; the corrections are folded in below); the QED64 and widgets sessions answered a fact-and-view questionnaire (`peer-qed64.md`, `peer-widgets.md`). The full study (42 k words of evidence with file:line citations) is in `workflow-proposal.md`, `research.md`, `judgements.json` and `verified-claims.json` next to this file.
 

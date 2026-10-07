@@ -225,7 +225,7 @@ globalThis.Module = {
 
       console.log("== compile 3c: KNOWN RUNTIME DEFECT — parse errors are swallowed ==");
       // The shipped fork's wasmCompile collects messages after elabCommand,
-      // but Lean 4.33's elabCommandTopLevel resets the log first, so PARSER
+      // but Lean's elabCommandTopLevel (4.33, when this probe was written) resets the log first, so PARSER
       // messages (garbage text, unterminated decls) vanish. Elaboration
       // errors are unaffected. Marker consumed by the defect-tracking test;
       // when a fixed runtime reports these errors, the marker disappears.

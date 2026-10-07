@@ -1,11 +1,13 @@
 # Resident FileWorker — the plan (PATCH-BACKLOG #4, promoted)
 
+> Paths are as of each dated entry. Since plan A7 (2026-10-06) the library files this plan names under `frontend/src/` and `src/` live in `lib/` (the old paths are one-cycle shims). `finish.sh`, `bump-chain.sh`, `import-packs.sh` and `KERNEL-PIN` were removed in 2026-10 (plans B1, B2a and B2c): the toolchain build is the fork's `wasm64-build/`, and a release is adopted with `pipeline/release/adopt-release.sh`. The pairing served today is in docs/PROVENANCE.md.
+
 Status (2026-09-04): **resident is the page's only transport.** The
-second-review design is implemented (docs/ARCHITECTURE-REEVALUATION-2-2026-09-02.md,
+second-review design is implemented (docs/history/ARCHITECTURE-REEVALUATION-2-2026-09-02.md,
 phases 0–6 of its plan) and, as of 2026-09-04, phase 7 is done at the page,
 worker and test level: the pump shim, the umbrella rewrite, the batch app,
 the pump worker ops and the pump lanes of the harness are deleted
-(docs/PUMP-REMOVAL-ASSESSMENT-2026-09-04.md, step 1); the kernel-side pump
+(docs/history/PUMP-REMOVAL-ASSESSMENT-2026-09-04.md, step 1); the kernel-side pump
 entry points stay until the next pairing bump (step 3). Kernel patch 0032
 (single header resolver in `setupImports`, one environment registry, one
 normalized header key, `$/qed64/headerStatus`, exports generated at build) is
@@ -40,7 +42,7 @@ on later setups (the FileWorker binds the first `DocumentMeta` into
 `setupImports`; the UI keys on progress versions and the mode, so nothing
 user-visible depends on it). The lean4game port to the relay is that
 campaign's own (it vendors qed64 at a pin and stays frozen there until it
-ports; the adapter is `frontend/src/resident-session.ts` with policy hooks
+ports; the adapter is `lib/resident-session.ts` (at the time `frontend/src/resident-session.ts`) with policy hooks
 for it).
 
 **Promote rule (resident only, since 2026-09-04).** A staged pairing
@@ -212,7 +214,7 @@ Run the REAL, unmodified `lean --worker` main loop on an application pthread
 ## Phases
 
 > **Superseded on 2026-09-02 by the architecture re-evaluation**
-> (`docs/ARCHITECTURE-REEVALUATION-2026-09-02.md`, phases 0–8): harness trust
+> (`docs/history/ARCHITECTURE-REEVALUATION-2026-09-02.md`, phases 0–8): harness trust
 > and artifact discipline first (phases 0–1), then shipped-path shim safety
 > (full-text sync + session ids, phase 2), the phase enum and explicit faithful
 > action (3), two kernel rebuilds (build hygiene 4; single resolver with bounded
@@ -266,7 +268,7 @@ Run the REAL, unmodified `lean --worker` main loop on an application pthread
   pthread changes which stacks matter. Storm-test early (phase 1 harness).
 - **emscripten-exports.txt pinning**: the transport patch reshapes
   functions → mangled specializations rename → link errors (3 prior
-  incidents). Budget a finish.sh symbol-refresh pass.
+  incidents). Budget a finish.sh symbol-refresh pass (finish.sh removed 2026-10; the export list is the fork's `wasm64-build/gen-exports.py`).
 - **Snapshot pairing**: every stage1 rebuild in this campaign rebakes
   work/snapshot and, on promote, the served artifacts + full first-visit
   drill (HARDENING 25's content-addressing protects stale caches).
@@ -297,9 +299,9 @@ Two fixes landed on the way to parity: the front door fails import-line completi
 
 ## Relay contract addendum (2026-09-07, pump retirement step 1)
 
-The page-side pump deletion (docs/PUMP-REMOVAL-ASSESSMENT-2026-09-04.md) moved
+The page-side pump deletion (docs/history/PUMP-REMOVAL-ASSESSMENT-2026-09-04.md) moved
 four facts the pump shim used to own into the L3 relay
-(`frontend/src/lsp-relay.ts`), pinned in `tests/unit/relay.test.ts` under
+(`lib/lsp-relay.ts`, at the time `frontend/src/lsp-relay.ts`), pinned in `tests/unit/relay.test.ts` under
 "relay contract". The relay still owns no timer and no regex; the one text
 operation it gained is `text.split("\n")` plus `startsWith` over the lines
 (the lint permits exactly that split and nothing else), and the line budget
@@ -357,11 +359,11 @@ is now a hard cap of 220 (was 160) for the contract below.
   deferred and reload storms stack heaps again.
 Two fixes landed on the way to parity: the front door fails import-line completions fast by *position* (a status-based rule raced the keystroke's own header status and hid Monaco's suggest widget; HARDENING #45), and the pump shim stops counting kind-2 (fatalError) progress entries as in-flight work and lets every published header failure set the sticky flag the drain reads (HARDENING #46). `?resident=0` kept the pump reachable for this measurement; W5 is closed by attribution (HARDENING #44).
 
-**2026-09-04 (later still), the pump transport is removed at the page level.** The shim (`frontend/src/watchdog-shim.ts`), the umbrella rewrite (`src/runtime/umbrella.ts`), the batch app (`src/app.ts`), the worker's `lsp-init`/`lsp-send`/`lsp-threads` and dead `lsp-resident-*` ops, the client's compiling/ready mirror, the Node pump probe (`pipeline/lsp/lsp-pump-probe.mjs`) and the harness's pump lanes are deleted; `?resident=` is ignored. The table above is the last A/B measurement there will be. `ResidentSession` is a module (`frontend/src/resident-session.ts`, `ResidentPolicy {snapshotsFor?, initialBytesFor?, maximumBytes?}`) for the lean4game port; the relay carries `lastDeath` and remembers `restartOpts` across a crash reboot with an unchanged header; the breaker posts one in-document diagnostic. The kernel keeps its pump exports until the next pairing bump (docs/PUMP-REMOVAL-ASSESSMENT-2026-09-04.md, step 3; pipeline/toolchain/PATCHES.md "Retirement at the next pairing bump").
+**2026-09-04 (later still), the pump transport is removed at the page level.** The shim (`frontend/src/watchdog-shim.ts`), the umbrella rewrite (`src/runtime/umbrella.ts`), the batch app (`src/app.ts`), the worker's `lsp-init`/`lsp-send`/`lsp-threads` and dead `lsp-resident-*` ops, the client's compiling/ready mirror, the Node pump probe (`pipeline/lsp/lsp-pump-probe.mjs`) and the harness's pump lanes are deleted; `?resident=` is ignored. The table above is the last A/B measurement there will be. `ResidentSession` is a module (`frontend/src/resident-session.ts`, `ResidentPolicy {snapshotsFor?, initialBytesFor?, maximumBytes?}`) for the lean4game port; the relay carries `lastDeath` and remembers `restartOpts` across a crash reboot with an unchanged header; the breaker posts one in-document diagnostic. The kernel keeps its pump exports until the next pairing bump (docs/history/PUMP-REMOVAL-ASSESSMENT-2026-09-04.md, step 3; pipeline/toolchain/PATCHES.md "Retirement at the next pairing bump").
 
 **2026-09-07, after the page-level pump removal (main `cd04784`, served pairing unchanged):** gate e2e 23/23, header switch 323 ms, completion 346 ms, boot 12.6 s, battery 49/49, crash gauntlets mixed 227 steps / imports 74 steps with no crash. The six assessment gaps are closed (alias-only headers get no collision offer; boot failures show their reason; Init-only documents boot light on the init snapshot with 256 MiB and restart onto Mathlib once when the header first needs it; the first-library-search hint is back; a halted checker leaves one in-document note; the stdin ring is 64 MiB). Unit suite 214.
 
-**2026-09-07, kernel 0033 promoted (the pairing bump).** The kernel half of the pump removal is served: runtime `wasm64-c645477e817ac857` (`lean.wasm` 105,449,148 bytes, 98 KB smaller than 0032), slim snapshots rebaked byte-for-byte to the pin's sizes (init 121,481,845 raw / 32.6 MB wire; Mathlib 1,114,420,853 raw / 319 MB wire), KERNEL-PIN `37c3fc3adf`. Measured on the staged pairing before promotion: e2e 23/23, header switch 321 ms, completion 340 ms, boot 12.2 s, battery 49/49, gauntlets 226 / 72 steps clean; the bare default URL boots the promoted pairing. Two gate lessons landed on the way (HARDENING #47 keepalive vs the CLI smoke, #48 slim trees from the pin); `pipeline/release/bump-chain.sh` now encodes the sequence.
+**2026-09-07, kernel 0033 promoted (the pairing bump).** The kernel half of the pump removal is served: runtime `wasm64-c645477e817ac857` (`lean.wasm` 105,449,148 bytes, 98 KB smaller than 0032), slim snapshots rebaked byte-for-byte to the pin's sizes (init 121,481,845 raw / 32.6 MB wire; Mathlib 1,114,420,853 raw / 319 MB wire), KERNEL-PIN `37c3fc3adf`. Measured on the staged pairing before promotion: e2e 23/23, header switch 321 ms, completion 340 ms, boot 12.2 s, battery 49/49, gauntlets 226 / 72 steps clean; the bare default URL boots the promoted pairing. Two gate lessons landed on the way (HARDENING #47 keepalive vs the CLI smoke, #48 slim trees from the pin); `pipeline/release/bump-chain.sh` then encoded the sequence (removed 2026-10: `pipeline/release/adopt-release.sh`).
 
-**2026-09-22, Lean 4.34.0 promoted (the first version import).** Runtime `wasm64-36a96239e08fd2e0` (kernel `8d91aadcda`, upstream v4.34.0 over the wasm64 series), Mathlib `5ed2965` (v4.34.0) with 80 deprecated shims so pre-August module names still resolve; packs promoted in the same step as runtime + snapshots (core 649 modules, essential 4,354). Measured on the staged pairing with the staged packs before promotion: e2e 23/23, header switch 326 ms, completion 344 ms, boot 12.3 s, battery 49/49, gauntlets 225 / 72 steps clean; slim-vs-fat audit identical (fresh-import method, docs/SERVER-SLIM-REBAKE.md). Lane: `pipeline/release/import-packs.sh` (docs/REBUILD.md §3b).
+**2026-09-22, Lean 4.34.0 promoted (the first version import).** Runtime `wasm64-36a96239e08fd2e0` (kernel `8d91aadcda`, upstream v4.34.0 over the wasm64 series), Mathlib `5ed2965` (v4.34.0) with 80 deprecated shims so pre-August module names still resolve; packs promoted in the same step as runtime + snapshots (core 649 modules, essential 4,354). Measured on the staged pairing with the staged packs before promotion: e2e 23/23, header switch 326 ms, completion 344 ms, boot 12.3 s, battery 49/49, gauntlets 225 / 72 steps clean; slim-vs-fat audit identical (fresh-import method, docs/SERVER-SLIM-REBAKE.md). Lane: `pipeline/release/import-packs.sh` (removed 2026-10: a version import is now a fork release adopted with `pipeline/release/adopt-release.sh`, docs/REBUILD.md §3b).
 

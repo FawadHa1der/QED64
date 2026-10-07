@@ -12,7 +12,7 @@ carries the alias rule itself (the four aliases resolve as `covered` by
 (`src/runtime/umbrella.ts`) are gone. Nothing left to build.
 
 ## 2. Bake the library-search index into the snapshot (designed)
-See docs/LIBRARY-SEARCH-BAKE.md. First `exact?` drops from ~2 min to ~2 s.
+See docs/history/LIBRARY-SEARCH-BAKE.md. First `exact?` drops from ~2 min to ~2 s.
 
 ## 3. Cancel the old session in wasmLspInit before replacing it — OBSOLETE (2026-09-04)
 Was: the replaced pump session's elaboration/reporter tasks were abandoned,
@@ -23,7 +23,7 @@ change — `setupImports` re-runs in process and Lean's `cancelRec` discards
 the previous header task — so a header switch is 322 ms edit → ready on the
 served 0032 pairing with no session lifecycle at all. `wasmLspInit` and
 `teardownForReplacement` retire from the kernel at the next pairing bump
-(docs/PUMP-REMOVAL-ASSESSMENT-2026-09-04.md, step 3).
+(docs/history/PUMP-REMOVAL-ASSESSMENT-2026-09-04.md, step 3).
 
 ## 4. PROXY_TO_PTHREAD resident FileWorker — DONE (patches 0031/0032; the default and only page transport since 2026-09-04)
 The REAL, unmodified `lean --worker` main loop runs on an application
@@ -36,7 +36,7 @@ entry points and the regrouping of 0018/0023/0027/0024(a) and the Shell
 hunks of 0021/0025 at the next pairing bump, and a measurement of 0020
 (keepalive guard) before dropping it — resident still runs library-style
 calls (snapshot loads, the warm compile) before `main`
-(docs/PUMP-REMOVAL-ASSESSMENT-2026-09-04.md, step 3).
+(docs/history/PUMP-REMOVAL-ASSESSMENT-2026-09-04.md, step 3).
 
 ## 5. Single-read no-mmap region loader (~40 lines, upstream-worthy)
 Pinned `src/library/module.cpp` no-mmap path reads the 88-byte header, seeks

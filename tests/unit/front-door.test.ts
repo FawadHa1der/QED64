@@ -1,5 +1,5 @@
 // The resident LSP front door (public/workers/lsp-front-door.js) is the
-// worker-side machine of docs/ARCHITECTURE-REEVALUATION-2-2026-09-02.md §2.4,
+// worker-side machine of docs/history/ARCHITECTURE-REEVALUATION-2-2026-09-02.md §2.4,
 // exercised here as the pure reducer it is (§7 day 5 exit: queue-until-open,
 // re-open rebasing, allowlist, coalesce newest) plus the bug-class rows that
 // name it (§4 rows 6 and 8), and once through the REAL worker host in a vm

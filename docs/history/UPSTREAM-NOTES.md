@@ -60,7 +60,7 @@ Evidence paths reference `/Users/fawadhaider/code/wasm64-lean-codex` (read-only)
     (client-side tickler + response watchdog compensate).
 13. **Emscripten teardown at `checkMailbox`** (ours, patch 0020): a pthread's
     first sync-proxied op with keepalive==0 exits the runtime mid-proxy.
-    Report ready in docs/EMSDK-BUG-REPORT.md (user files it; do not file).
+    Report ready in docs/history/EMSDK-BUG-REPORT.md (user files it; do not file).
 
 ## Emscripten
 

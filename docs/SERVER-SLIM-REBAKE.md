@@ -3,7 +3,7 @@
 Branch: `experiment/server-slim-rebake`. The umbrella and init snapshots were
 rebaked against library trees with every `.olean.private` facet removed
 (Lean's importer opportunistically reads and retains them; elaboration never
-needs them at this Mathlib pin — see docs/UPSTREAM-NOTES.md #2).
+needs them at this Mathlib pin — see docs/history/UPSTREAM-NOTES.md #2).
 
 ## Measured results (same runtime `wasm64-0fdfd698a0e97fac`, same probes)
 
@@ -51,7 +51,15 @@ needs them at this Mathlib pin — see docs/UPSTREAM-NOTES.md #2).
    mounts); repacking the packs (core 370→124 MiB raw) is a separate
    follow-up that only affects real-import users' downloads.
 
-## How the slim trees are produced (reproduce for future bakes)
+## How the slim trees were produced (2026-08)
+
+Since plan B2a (2026-10) `pipeline/release/adopt-release.sh` produces the slim
+trees itself, with `unpack --slim` from the release's packs into
+`work/adopt/<id>/{core-lib-slim,lib-tree-slim}`, and bakes both snapshots from
+them (docs/REBUILD.md §3). The commands below are the original method, kept
+as the record. They read the toolchain working directory
+`pipeline/toolchain/work/build/stage1`, which QED64 no longer builds (the
+compiler is the fork's release; `--artifact` names any stage1 dir).
 
 ```sh
 # Umbrella tree (from the profile lib tree):
@@ -77,7 +85,7 @@ runtime real-imports consistent with the bake.
 ## Promote checklist (when merging this branch)
 
 1. Merge; the only code delta is the 2048 MiB pre-commit in
-   `frontend/src/qed64-boot.ts` (sized to the 1.11 GiB region + headroom).
+   `frontend/src/qed64-boot.ts` (now `lib/qed64-boot.ts`) (sized to the 1.11 GiB region + headroom).
 2. Copy `work/slim-snapshots/*.snapz` + merge index into `public/snapshots`.
 3. `scripts/upload-artifacts.sh` (additive; old snapshots stay for the
    currently-deployed shell), then push — the pinned-manifest scheme keeps

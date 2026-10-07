@@ -3,41 +3,115 @@
 Everything the browser executes or mounts arrives through a digest chain:
 
 ```
-runtime-manifest.json ──sha256──► lean.js/lean.wasm chunks (10) ──whole-file sha256──► importScripts
-profile manifest      ──sha256──► gzip transport parts (8+60) ──gunzip──► raw pack
-                                    │                                        │
-                                    └── byteLength + part digests            └── raw digest re-derived
-                                        verified in-browser                      by verify-release (CI)
+runtime-manifest.json ──sha256──► lean.js/lean.wasm chunks (3 + 7) ──whole-file sha256──► importScripts
+profile manifest      ──sha256──► gzip transport parts (8 + 61) ──gunzip──► raw pack
+                                    │                                         │
+                                    └── byteLength + part digests             └── raw digest re-derived
+                                        verified in-browser                       by verify-release
+snapshot index        ──sha256──► <name>.<digest16>.snapz ──runtime field──► refused unless it names the served buildId
 ```
 
-| Artifact | Identity | Source |
-|---|---|---|
-| **Runtime `wasm64-7a2879deebfbc2c7` (served)** | lean.wasm `7a2879de…` | QED64 clean-room build: `cauli/lean4@5732b84` + the 17-patch series (embedded githash matches HEAD of `work/lean4`). Adds 0016 (replay-control flags on `lean_wasm_load_snapshot_mem`) and 0017 (interpreter dlsym probes gated on the wasm export table — the ~100× snapshot-load fix). Emscripten 6.0.5 Docker, full gate incl. THE PARSE GATE |
-| Runtime `wasm64-b33e19ecb8121edc` (previous) | lean.wasm `b33e19ec…` | 15-patch series (adds 0014 stage telemetry + streamed init progress, 0015 multi-arch emsdk image); superseded by the dlsym-gate build |
-| Runtime `wasm64-2c197d38d7fbe922` (previous) | lean.wasm `2c197d38…` | 13-patch series; first umbrella-capable runtime, superseded by the telemetry build |
-| Runtime `wasm64-bc6ede1a5ed48460`, `wasm64-f0a78c3352dff1a0` (interim, dev only) | — | Same series at patches 0011 and 0012 respectively; gate-passed, used to bake and validate the umbrella under Node, superseded |
-| Runtime `wasm64-3d1f8042960a65a9` (interim, dev only) | lean.wasm `3d1f8042…` (105,927,492 B) | Same series + a 128 MB main-stack patch that chased a misdiagnosed crash; gate-passed and briefly served on the dev server, never baked against, superseded |
-| **Runtime `wasm64-36a96239e08fd2e0` (served, Lean 4.34.0)** | lean.js `dc8a8dc0…` (48,971,105 B), lean.wasm `36a96239…` (109,869,533 B) | `FawadHa1der/lean4@8d91aadcda` on `qed64-wasm64` = upstream `v4.34.0` merged over the wasm64 series (resident transport 0031, resolver 0032, pump entry points retired 0033; exports generated as boxed ∪ initializers ∪ cells); built in the kernel repo's own `wasm64-build/` lane, gate 4/4; imported by `pipeline/release/import-packs.sh` on 2026-09-21 |
-| Runtime `wasm64-c645477e817ac857` (previous, Lean 4.33.0-pre) | lean.wasm `c645477e…` (105,449,148 B) | series through 0033 on `cauli/lean4@5732b84`; the last 4.33 pairing |
-| `lean-core` (4.34.0) | pack `1c5c75db…` (390,065,102 B), 649 modules × 5 facets | the runtime's own `stage1/lib/lean` (Init closure), packed by the import lane; native64 core facets verified byte-identical to it (12,592/12,592, header excepted) |
-| `mathlib-essential` (4.34.0) | pack `eeab078f…` (3,568,001,947 B), 4,354 modules | Mathlib `5ed2965` (tag `v4.34.0`) + its Lake deps + the kernel's `Lean`/`Std`: closure of `Manifold.IsManifold.Basic`, `Manifold.Instances.Sphere`, `SpecialFunctions.Complex.Circle`, `Lean`, `Std`, plus the 80 `deprecated_module` shims whose imports are inside that closure (so pre-2026-08 module names still resolve); built natively by the same kernel commit configured as `wasm64-unknown-emscripten`/`USE_GMP=OFF` |
-| `mathlib-game-extra` (4.34.0, lean4game only, not served here) | pack `7252fb7e…` (656,766,956 B), 737 modules | closure of the game's tactic roots minus essential minus Init; staged beside the profiles, consumed by the lean4game port |
-| Snapshots (4.34.0) | init `22072ed1…` (122,364,149 B raw), mathlib `b6e7f7d0…` (1,127,273,069 B raw) | slim bakes (no `*.olean.private`) of the packs above against `wasm64-36a96239e08fd2e0`; the umbrella imports all 4,354 essential modules incl. the shims |
-| Runtime `wasm64-189b7d28d16f62d5` (previous) | lean.js `008adf61…` (48,089,166 B), lean.wasm `189b7d28…` (105,927,487 B) | QED64 clean-room build: `cauli/lean4@5732b84` + the 10-patch series (tree `73573e1e…`; the binary embeds pre-rebase commit `26ee909`, whose tree is identical). Emscripten 6.0.5 Docker, full gate incl. THE PARSE GATE, accepted in the live pane |
-| Runtime `wasm64-02e0ac24cced25d8` (previous) | lean.js `032ea876…` (48,089,166 B), lean.wasm `b7ae8a6b…` (105,923,507 B) | Browser64 workspace, accepted in real Chromium (629-module and 4,821-module proof gates); was restorable via the retired `sync:artifacts` copy |
-| `lean-core` | pack `9f17a688…` (388,523,072 B), 629 modules × 5 facets | same producer, native64 artifacts of the exact fork revision |
-| `mathlib-essential` | pack `642cf207…` (3,492,342,248 B), 4,192 modules | same producer, Mathlib `de3a9cf` + pinned compat patch |
+## Where the served pairing comes from
 
-Toolchain identity (served): Lean `4.34.0`, target `wasm64-unknown-emscripten`,
-source `FawadHa1der/lean4@8d91aadcda` (`qed64-wasm64`, upstream `v4.34.0` +
-the wasm64 series), `USE_GMP=OFF`, `USE_MIMALLOC=OFF`. Before 2026-09-21:
-Lean `4.33.0-pre`, `cauli/lean4@5732b84bb744…+browser64.1`. Profiles are
-only compatible with this exact triple — native x86-64 oleans or a rebuilt
-runtime with a different function table must ship their own packs/snapshots.
+QED64 compiles nothing. The served runtime and the two served library packs
+are a release of the Lean fork, pinned by the record
+`toolchain/lean4-wasm64-release.json`, which is a byte copy of that release's
+`release.json` (schema `lean4-wasm64.release/v1`). The snapshots are QED64's
+own bakes against that runtime. Four tracked files hold the whole identity:
+
+- `toolchain/lean4-wasm64-release.json`: the release id, its digest,
+  `kernel.commit` and `kernel.patch`, `runtime.buildId`, and every pack's raw
+  digest.
+- `public/runtime/runtime-manifest.json` and `public/profiles/*.json`: every
+  chunk and transport part of the runtime and the packs, by sha256.
+- `public/snapshots/index.json`: every snapshot's digest and the `runtime`
+  that baked it.
+- `embedding/base-tree.json` (`qed64.base-tree/v1`): the olean trees the
+  snapshots were baked from (per-tree pack ids, raw digests, the umbrella
+  module's bytes and the tree digests).
+
+| Served now (since 2026-10-02, QED64 3b42714) | Identity | Source |
+|---|---|---|
+| **Release** | `lean-v4.34.0-a8817d0`, digest `sha256:39f02876…` | GitHub release on FawadHa1der/lean4, mirrored in R2 at `lean4-wasm64/lean-v4.34.0-a8817d0/` (docs/DEPLOY.md "The toolchain release prefix") |
+| **Kernel** | `FawadHa1der/lean4@a8817d01f97227b1b04cc7d661b9e396f6ca8f34`, branch `qed64-wasm64`, patch level `0035b` | upstream `v4.34.0` with the wasm64 series (the series is the fork's `wasm64-build/PATCHES.md`); its release gate passed 13/13 checks on this commit |
+| **Runtime `wasm64-3ab1c6a9da03bc29`** | lean.js `77a9b6d1…` (48,972,033 B, 3 chunks), lean.wasm `3ab1c6a9…` (109,875,453 B, 7 chunks) | the release's `runtime/`, byte-identical to the served chunks; the buildId is `wasm64-` + the first 16 hex of sha256(lean.wasm) |
+| `lean-core` (4.34.0) | pack release `lean-core-4.34.0-wasm64-36a96239e08fd2e0`, raw `1c5c75db…` (390,065,102 B), 649 modules | the release's pack, written by the v4.34.0 import's wasm compiler `8d91aadcda`; unchanged since 2026-09-22, so its name still carries that import's runtime id |
+| `mathlib-essential` (4.34.0) | pack release `mathlib-essential-5ed2965-wasm64-36a96239e08fd2e0`, raw `eeab078f…` (3,568,001,947 B), 4,354 modules | Mathlib `5ed2965` (tag `v4.34.0`) and its Lake dependencies plus the kernel's `Lean`/`Std`, built natively by `857544b439`; the closure of three roots plus the 80 `deprecated_module` shims inside it, so pre-2026-08 module names still resolve |
+| Snapshots | init `b6d945e3…` (122,364,117 B raw), mathlib `265cd10c…` (1,127,272,685 B raw) | slim bakes (no `*.olean.private`) against `wasm64-3ab1c6a9da03bc29`: init from the release's `lean-lib` tree, mathlib (the `QED64.Essential` umbrella over all 4,354 essential modules) from lean-core + mathlib-essential (`embedding/base-tree.json`) |
+
+The release also carries `lean-lib` (the runtime's own `lib/lean`, 2,520
+modules, the tree the init snapshot is baked from) and `mathlib-game-extra`
+(lean4game's, not served here). Toolchain identity: Lean `4.34.0`, target
+`wasm64-unknown-emscripten`, `USE_GMP=OFF`, `USE_MIMALLOC=OFF`. Packs and
+snapshots are only compatible with this exact triple: native x86-64 oleans,
+or a rebuilt runtime with a different function table, must ship their own
+packs and snapshots.
+
+## How to verify it
+
+- `node pipeline/release/release-manifest.mjs --commit HEAD` derives the
+  `qed64.release/v1` manifest of a commit from its tracked files
+  (docs/RELEASE-BUNDLE.md). It refuses, with exit 1 and a one-line reason,
+  unless the record's self-digest holds and the record, the runtime manifest,
+  every snapshot's `runtime`, the base tree's packs and every
+  toolchain-hosted file agree. Its `toolchain` section is this page's table
+  as data.
+- `npm run verify:release` re-derives, from the bytes in `public/`, every
+  digest the browser will trust, including the multi-GB raw packs WebCrypto
+  cannot stream-compute.
+- `tests/unit/toolchain-pin.test.ts` (in `npm test`) pins the record to the
+  tracked manifests: the record's digest, the runtime and snapshot buildIds,
+  and every Worker-routed file byte for byte.
+- The release itself: `node <lean4-wasm64>/cli.mjs verify --release <release
+  dir>` (the fork's package, as `pipeline/release/adopt-release.sh` runs it)
+  checks a fetched release against its `release.json`, and
+  `npm run fetch:artifacts -- --release <dir|url>` checks every file it takes
+  from one against the release's `files[]`.
 
 `npm run promote:staging` verifies every byte against these manifests as it
-publishes (the retired `npm run sync:artifacts`, removed 2026-10, did the same
-for copies from the owner's sibling checkout); `npm run verify:release`
-re-derives the raw pack digests the browser cannot stream-compute. Trust
-therefore never rests on file paths or names — only on digests recorded in
-manifests served from the same origin.
+publishes (the retired `npm run sync:artifacts`, removed 2026-10, did the
+same for copies from the owner's sibling checkout), and the worker
+re-verifies every chunk before `importScripts`. Trust therefore never rests
+on file paths or names, only on digests recorded in manifests served from the
+same origin.
+
+## Earlier served runtimes
+
+| Runtime | Served | Kernel |
+|---|---|---|
+| `wasm64-4b025db7729c5f89` | 2026-09-30 to 2026-10-01, and again for a few hours on 2026-10-02 | `9fbb45afcb`, patch 0034 (HARDENING #51) |
+| `wasm64-2c18773ecfba45bb` | 2026-10-01 to 2026-10-02, withdrawn (HARDENING #53: page-reload OOM with parked threads) | `3ae65d36f9`, patch 0035 |
+| `wasm64-36a96239e08fd2e0` | 2026-09-22 to 2026-09-30, the first Lean 4.34.0 pairing (packs cut then, still served) | `8d91aadcda` |
+| `wasm64-c645477e817ac857` | 2026-09-07 to 2026-09-22, the last Lean `4.33.0-pre` pairing | series through 0033 on `cauli/lean4@5732b84` |
+| `wasm64-5dcdda005a7c5ae0` | 2026-09-03 to 2026-09-07 | patch 0032 on `cauli/lean4@5732b84` |
+
+Before 2026-09-03, the runtimes were QED64's clean-room builds of
+`cauli/lean4@5732b84` plus the 10- to 31-patch series, with the core and
+Mathlib `de3a9cf` packs of that time. This file's git history before 2026-10
+lists them with their digests.
+
+## What Lean 4.34.0 changed for users (2026-09-22)
+
+The playground has served Lean `4.34.0` and Mathlib at tag `v4.34.0` since
+2026-09-22 (this section moved here from the README in 2026-10). Visible
+differences from the earlier 4.33 pairing:
+
+- **Module renames.** Mathlib moved its most-imported modules under
+  `Mathlib.Basic.*` (`Mathlib.Data.Real.Basic` → `Mathlib.Basic.Real.Basic`,
+  `Data.Complex.Basic` → `Basic.Complex.Basic`, …). The old names still
+  resolve here, because the library ships upstream's deprecated shims, but a
+  few were removed outright with no shim (`Mathlib.Logic.Basic` →
+  `Mathlib.Basic.Logic.Basic`), exactly as on live.lean-lang.org. A header
+  served from the preloaded Mathlib environment does not show upstream's
+  deprecation warning for an old name.
+- **`deriving Fintype` needs an option.** Upstream Lean 4.34 turned
+  `backward.isDefEq.respectTransparency` on by default and Mathlib's
+  `Fintype` deriving handler was not adapted, so
+  `inductive Foo | a | b deriving Fintype` fails in any file
+  ("Application type mismatch … `Foo.enumList.Nodup`"). Write
+  `set_option backward.isDefEq.respectTransparency false in` before the
+  `inductive`, as Mathlib's own tests do. Not a playground defect; the
+  compiler battery pins both behaviours.
+- **`norm_num` for primality** (`Nat.Prime 37`) needs
+  `Mathlib.Tactic.NormNum.Prime`, which is outside the preloaded environment,
+  as it was before; `decide` and `norm_num` on arithmetic are unaffected.

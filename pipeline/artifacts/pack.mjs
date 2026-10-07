@@ -13,7 +13,7 @@
 //
 // Usage:
 //   node pipeline/artifacts/pack.mjs --lib <dir> --id <name> --out <dir> \
-//        [--mount /lib/lean/library] [--lean-version 4.33.0-pre] \
+//        [--mount /lib/lean/library] [--lean-version <x.y.z>] \
 //        [--revision <githash>] [--roots Mod1,Mod2] \
 //        [--url-prefix /profiles/] [--release <string>] [--no-imports]
 //
