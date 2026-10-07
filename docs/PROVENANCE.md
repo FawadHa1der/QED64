@@ -41,3 +41,29 @@ for copies from the owner's sibling checkout); `npm run verify:release`
 re-derives the raw pack digests the browser cannot stream-compute. Trust
 therefore never rests on file paths or names — only on digests recorded in
 manifests served from the same origin.
+
+## What Lean 4.34.0 changed for users (2026-09-22)
+
+The playground has served Lean `4.34.0` and Mathlib at tag `v4.34.0` since
+2026-09-22 (this section moved here from the README in 2026-10). Visible
+differences from the earlier 4.33 pairing:
+
+- **Module renames.** Mathlib moved its most-imported modules under
+  `Mathlib.Basic.*` (`Mathlib.Data.Real.Basic` → `Mathlib.Basic.Real.Basic`,
+  `Data.Complex.Basic` → `Basic.Complex.Basic`, …). The old names still
+  resolve here, because the library ships upstream's deprecated shims, but a
+  few were removed outright with no shim (`Mathlib.Logic.Basic` →
+  `Mathlib.Basic.Logic.Basic`), exactly as on live.lean-lang.org. A header
+  served from the preloaded Mathlib environment does not show upstream's
+  deprecation warning for an old name.
+- **`deriving Fintype` needs an option.** Upstream Lean 4.34 turned
+  `backward.isDefEq.respectTransparency` on by default and Mathlib's
+  `Fintype` deriving handler was not adapted, so
+  `inductive Foo | a | b deriving Fintype` fails in any file
+  ("Application type mismatch … `Foo.enumList.Nodup`"). Write
+  `set_option backward.isDefEq.respectTransparency false in` before the
+  `inductive`, as Mathlib's own tests do. Not a playground defect; the
+  compiler battery pins both behaviours.
+- **`norm_num` for primality** (`Nat.Prime 37`) needs
+  `Mathlib.Tactic.NormNum.Prime`, which is outside the preloaded environment,
+  as it was before; `decide` and `norm_num` on arithmetic are unaffected.

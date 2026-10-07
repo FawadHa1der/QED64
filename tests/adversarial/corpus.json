@@ -2130,7 +2130,7 @@
         "mustSucceed": true,
         "containsMsgs": []
       },
-      "rationale": "The documented workaround (README, 'What changed for users with Lean 4.34.0'): the same derive under `set_option backward.isDefEq.respectTransparency false in` compiles clean and `Fintype.card Foo = 2 := rfl` closes — the environment carries the derive handler and the instances users rely on."
+      "rationale": "The documented workaround (docs/PROVENANCE.md, 'What Lean 4.34.0 changed for users'): the same derive under `set_option backward.isDefEq.respectTransparency false in` compiles clean and `Fintype.card Foo = 2 := rfl` closes — the environment carries the derive handler and the instances users rely on."
     },
     {
       "name": "env-legacy-file-is-not-a-module",
