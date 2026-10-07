@@ -1,6 +1,6 @@
 {
   "schema": "lean4-wasm64.release/v1",
-  "id": "lean-v4.34.0-41ec565",
+  "id": "lean-v4.34.0-e1a79c1",
   "lean": {
     "version": "4.34.0",
     "upstreamTag": "v4.34.0"
@@ -8,29 +8,29 @@
   "kernel": {
     "repo": "https://github.com/FawadHa1der/lean4",
     "branch": "qed64-wasm64",
-    "commit": "41ec56530df541dcfb1d612a876fdc992d7ab8f5",
-    "patch": "0036"
+    "commit": "e1a79c1ce9f8db856ea572078b52e441e484dd55",
+    "patch": "0037"
   },
   "gate": {
     "passed": true,
-    "commit": "41ec56530df541dcfb1d612a876fdc992d7ab8f5",
-    "wasmSha256": "57ae00dc5f6ce9585579b4326db4805f2aea7ef0273292751146950f0497653f",
-    "checks": 16
+    "commit": "e1a79c1ce9f8db856ea572078b52e441e484dd55",
+    "wasmSha256": "f69cca24d0878a58df4c8467ac949515a94de0f9d18f49e7a2ea15381be7b2b7",
+    "checks": 33
   },
   "runtime": {
-    "buildId": "wasm64-57ae00dc5f6ce958",
+    "buildId": "wasm64-f69cca24d0878a58",
     "manifest": "runtime/runtime-manifest.json",
     "target": "wasm64-unknown-emscripten",
-    "sourceRevision": "qed64-wasm64@41ec56530d (upstream v4.34.0)",
+    "sourceRevision": "qed64-wasm64@e1a79c1ce9 (upstream v4.34.0)",
     "files": {
       "lean.js": {
-        "bytes": 48973198,
-        "sha256": "e0b8397a43ae51a86b989d82afb21155ed8ffa3e4c6a681d6598af1f6db44dca",
+        "bytes": 48975090,
+        "sha256": "9eff6320efea17d585ae91328a51af1a1d6968c905433fa549c0ab3c7c8ba282",
         "chunks": 3
       },
       "lean.wasm": {
-        "bytes": 109877359,
-        "sha256": "57ae00dc5f6ce9585579b4326db4805f2aea7ef0273292751146950f0497653f",
+        "bytes": 109885165,
+        "sha256": "f69cca24d0878a58df4c8467ac949515a94de0f9d18f49e7a2ea15381be7b2b7",
         "chunks": 7
       }
     },
@@ -106,10 +106,10 @@
     {
       "id": "lean-lib",
       "manifest": "profiles/lean-lib.manifest.json",
-      "release": "lean-lib-4.34.0-wasm64-57ae00dc5f6ce958",
+      "release": "lean-lib-4.34.0-wasm64-f69cca24d0878a58",
       "modules": 2520,
-      "rawBytes": 2129320563,
-      "rawSha256": "9faccacf310eece94c367efae7765d254f8a8957f7096df286f9d63adf265967",
+      "rawBytes": 2129417251,
+      "rawSha256": "4e89a3eef5d0b558638ace711283e85740714d5d43136f6062f0b358232c77fd",
       "roots": [
         "Init",
         "Std",
@@ -122,8 +122,8 @@
       ],
       "lean": {
         "version": "4.34.0",
-        "compiler": "41ec56530df541dcfb1d612a876fdc992d7ab8f5",
-        "gitRevision": "41ec56530df5"
+        "compiler": "e1a79c1ce9f8db856ea572078b52e441e484dd55",
+        "gitRevision": "e1a79c1ce9f8"
       }
     }
   ],
@@ -136,7 +136,7 @@
   "docker": {
     "tag": "qed64-toolchain:emsdk-6.0.5",
     "recipeCommit": "974ee228b0c368f1d74f55ed4794ef60c15de4c2",
-    "imageId": "sha256:5708c2dbf5a1f5745b469450029016303419ab6e3cc8ed205e2bd33c4653d121",
+    "imageId": "sha256:0de79b891eb9f3e17f7070749754a175a14604ffab4f79c64903d737d1814b72",
     "base": "emscripten/emsdk:6.0.5@sha256:76a44fff907397784decc435115d07fcb9587a4f1504977f39f3745e538e3a1e"
   },
   "mathlib": {
@@ -167,14 +167,14 @@
   },
   "tools": {
     "package": "lean4-wasm64",
-    "version": "4.34.0-41ec565",
-    "tgz": "tools/lean4-wasm64-4.34.0-41ec565.tgz",
-    "commit": "712e371a062673eb47dd1b3e2a0d87096c38ea35"
+    "version": "4.34.0-e1a79c1",
+    "tgz": "tools/lean4-wasm64-4.34.0-e1a79c1.tgz",
+    "commit": "7ad32d88c73c6b16cdf64c59771385d807a0d51f"
   },
   "notes": [
-    "Runtime: the gated 41ec56530d build (patch 0036, qed64 HARDENING #60). Deep recursion now fails with Lean's own error at the browser engine's stack limit instead of killing the thread with 'RangeError: Maximum call stack size exceeded'. Meta: 'maximum recursion depth has been reached: the WebAssembly runtime's stack is exhausted (…)'; kernel: '(kernel) the WebAssembly engine's stack is exhausted: …'. The session survives either way.",
-    "Runtime-only release: lean-core, mathlib-essential and mathlib-game-extra are byte-identical to lean-v4.34.0-a8817d0's (transport copied, not re-packed); native64 and the lists are the import's. Apps re-pair (rebake snapshots) against this runtime's build id.",
-    "Patch 0036 changed Lean/CoreM: in the browser packs, Lean.CoreM's olean lacks Lean.Core.nativeStackOk and checkNativeStack and keeps the old checkSystem body until the next import (as with 0034). Harmless: only compiled code calls the two, and interpreted callers reach the compiled checkSystem through its exported wrapper. Against the import build, only Lean/CoreM.c (0036) and the 0034 modules changed in the stdlib's generated C, with names added and none removed or reused. Naming Lean.Core.nativeStackOk in user code reports an unknown constant. lean-lib is the 41ec56530d build's own lib/lean, the tree the release gate passed on."
+    "Runtime: the gated e1a79c1ce9 build (patches 0036 and 0037). 0037: lean_wasm_compile, the one-shot compile behind snapshot probes and compiler batteries, now reports every message of the tasks a command starts (Elab.async proofs, kernel checks, linters) once each, in the native frontend's order. Before, a false proof elaborated with Elab.async, such as one run by lean4game's GameServer Runner, compiled with errors=0. The call now returns only after every task still recorded for a command has finished, so call it on a thread that can block and supervise it with a wall-clock limit. 0036 (deep recursion fails with Lean's error at the browser engine's stack limit) is unchanged from lean-v4.34.0-41ec565.",
+    "Runtime-only release: lean-core, mathlib-essential and mathlib-game-extra are byte-identical to lean-v4.34.0-a8817d0's and lean-v4.34.0-41ec565's (transport copied, not re-packed); native64 and the lists are the import's. Apps re-pair (rebake snapshots) against this runtime's build id.",
+    "Since the import, patches 0034 (Lean/Environment, Elab/Import, Language/Lean, Shell), 0036 (Lean/CoreM: two new functions) and 0037 (Lean/Shell: wasmCompile's loop) changed stdlib sources, so the browser packs' oleans of those modules predate them until the next import. This is harmless: the runtime runs its own compiled code for them. Against the import build, only those modules' generated C differs: 0036 only added names, and 0037 renumbered Shell's private specializations, none reused and none referenced from any other module. lean-lib is the e1a79c1ce9 build's own lib/lean, the tree the release gate passed on."
   ],
   "files": [
     {
@@ -250,12 +250,22 @@
     {
       "path": "profiles/lean-lib.manifest.json",
       "bytes": 5931638,
-      "sha256": "a93bec81085d126f2e7f5d3b9e1faa6e8155fe2f9a552eceaa049bf7a3b608d2"
+      "sha256": "c175a7ae89375b6b8e7e3fe5299037824db60f770ed796a14aa22b531cae8146"
     },
     {
       "path": "profiles/lean-lib.pack.gzip.08b5216952e09b39c70e.part-021",
       "bytes": 16777216,
       "sha256": "08b5216952e09b39c70ed178c91421e6256510fdbe28723c25753050c102930e"
+    },
+    {
+      "path": "profiles/lean-lib.pack.gzip.105b909993636b6cd864.part-028",
+      "bytes": 16777216,
+      "sha256": "105b909993636b6cd864436521192e923cf31be7237b14f392ad2cf6f57dbfd6"
+    },
+    {
+      "path": "profiles/lean-lib.pack.gzip.111fbb42ba8dddc91308.part-033",
+      "bytes": 16777216,
+      "sha256": "111fbb42ba8dddc9130818629a98eb789bf84e230df71f40c483ae12e929cff5"
     },
     {
       "path": "profiles/lean-lib.pack.gzip.16325cb413b3c15a8d02.part-024",
@@ -271,6 +281,11 @@
       "path": "profiles/lean-lib.pack.gzip.1b7b9470681b9baa63e9.part-019",
       "bytes": 16777216,
       "sha256": "1b7b9470681b9baa63e930e1ee1a5753c10410dc24668bf827323534a1e456c2"
+    },
+    {
+      "path": "profiles/lean-lib.pack.gzip.2e84915941579f6833c1.part-032",
+      "bytes": 16777216,
+      "sha256": "2e84915941579f6833c1fe0468a64a7b72ee33183bf57a6a7256e33255d7f514"
     },
     {
       "path": "profiles/lean-lib.pack.gzip.2f43c2664944a9b05ab0.part-007",
@@ -293,24 +308,9 @@
       "sha256": "44b9ccf5c79cdeaa2a070aae823e585e541d7042c512ee958103fb6c8ea5b800"
     },
     {
-      "path": "profiles/lean-lib.pack.gzip.48a18a13f2fc99c8571c.part-034",
-      "bytes": 11265410,
-      "sha256": "48a18a13f2fc99c8571cb0c70fbd3bcc033bd51fe9d5649a520b217be57be4ac"
-    },
-    {
       "path": "profiles/lean-lib.pack.gzip.60583ec91916eda827c0.part-016",
       "bytes": 16777216,
       "sha256": "60583ec91916eda827c06a9b171e6df41d6b150ff839c20e6d6abce03b54f01e"
-    },
-    {
-      "path": "profiles/lean-lib.pack.gzip.60b4dc803ad686570edd.part-028",
-      "bytes": 16777216,
-      "sha256": "60b4dc803ad686570edd99a9eb81f9a75a211438458e3913475029ec35daa022"
-    },
-    {
-      "path": "profiles/lean-lib.pack.gzip.6316167f2c40cb08a3d2.part-032",
-      "bytes": 16777216,
-      "sha256": "6316167f2c40cb08a3d25c026944f3ecf8a2330787bb853160c8a330d506971b"
     },
     {
       "path": "profiles/lean-lib.pack.gzip.63fd111d583f6f736455.part-026",
@@ -323,6 +323,16 @@
       "sha256": "68dc524c2498ae2064acaa7c42002a6c93cb61fc0b255877e36169127183d306"
     },
     {
+      "path": "profiles/lean-lib.pack.gzip.6b3b927b488163f2871f.part-034",
+      "bytes": 11290954,
+      "sha256": "6b3b927b488163f2871f1979241536d45a6999a8791cff72f1f57871a20054c5"
+    },
+    {
+      "path": "profiles/lean-lib.pack.gzip.767fac4dbd00913ee7c7.part-029",
+      "bytes": 16777216,
+      "sha256": "767fac4dbd00913ee7c70b81456779a20a92e7cef2c0eba0a1e244c000378d7e"
+    },
+    {
       "path": "profiles/lean-lib.pack.gzip.814c5b938052613b3180.part-003",
       "bytes": 16777216,
       "sha256": "814c5b938052613b3180492a856222cd9fd3c3d12a56b70cd1c7c9fcaf1485e9"
@@ -333,19 +343,14 @@
       "sha256": "89e3b0f9cb93007747593da604453bd5fabc6f12434363fbe972dd9dfa4e8c22"
     },
     {
-      "path": "profiles/lean-lib.pack.gzip.8ca665cb817819e8938e.part-029",
-      "bytes": 16777216,
-      "sha256": "8ca665cb817819e8938ef8154e0bc9829cecb8f1245789408f8eb64148c659ca"
-    },
-    {
       "path": "profiles/lean-lib.pack.gzip.8ccbc365f72cba3d0b5b.part-014",
       "bytes": 16777216,
       "sha256": "8ccbc365f72cba3d0b5b5bda992b5ea9ecab102341357b2937e7e25f2b574cdf"
     },
     {
-      "path": "profiles/lean-lib.pack.gzip.9567a0842e86b69e26aa.part-031",
+      "path": "profiles/lean-lib.pack.gzip.9064d6d09e6c9d39037f.part-030",
       "bytes": 16777216,
-      "sha256": "9567a0842e86b69e26aa1ccadd7d78b6a407a670e37e0096f6b6eb14f9bfb6f5"
+      "sha256": "9064d6d09e6c9d39037fa096ae30d896331d7f67e46fcfe8b4a71473f2f69459"
     },
     {
       "path": "profiles/lean-lib.pack.gzip.95b87bca883a342bdc68.part-020",
@@ -368,19 +373,14 @@
       "sha256": "a7f8a6bdc37c406f3890b5668412fc5906c2bbe96b1cb78792f575db7f1481e7"
     },
     {
-      "path": "profiles/lean-lib.pack.gzip.b0da5ad75e4f174db827.part-033",
-      "bytes": 16777216,
-      "sha256": "b0da5ad75e4f174db82731819f3bcd148fddeb44f435f8e7e36f5d11f1f41520"
-    },
-    {
       "path": "profiles/lean-lib.pack.gzip.be1f918f82658764e387.part-017",
       "bytes": 16777216,
       "sha256": "be1f918f82658764e38786b579749b1e6bf535ff496711d1e9352b1ddc7c43b1"
     },
     {
-      "path": "profiles/lean-lib.pack.gzip.c84c6f2eadf5a877247e.part-030",
+      "path": "profiles/lean-lib.pack.gzip.beac968c4c37dea40f71.part-031",
       "bytes": 16777216,
-      "sha256": "c84c6f2eadf5a877247e8d7ff9b205eee37fdc7f293a5fc910f6b8d0cfb3bc9b"
+      "sha256": "beac968c4c37dea40f7184dc07e00140190431ed00fd1c571cb682c17705fb27"
     },
     {
       "path": "profiles/lean-lib.pack.gzip.c86fd14a20f606dcbed8.part-015",
@@ -808,70 +808,70 @@
       "sha256": "07c96082b95fce057ed9656cc80da50477d596250973cfdd414f74e7631eb56d"
     },
     {
-      "path": "runtime/chunks/lean.js.148ecdb5ac0c6a9d2872.part-001",
+      "path": "runtime/chunks/lean.js.4b41d6542249784efb38.part-000",
       "bytes": 16777216,
-      "sha256": "148ecdb5ac0c6a9d2872b49fb2ec53ac8322e5e8f17fad6ac1d31653f3950f80"
+      "sha256": "4b41d6542249784efb385d9be1fd4a9b48762994b8c33dfc26660c54df59f3b3"
     },
     {
-      "path": "runtime/chunks/lean.js.3b54d26ad47472bb296a.part-000",
+      "path": "runtime/chunks/lean.js.7461f98fa0cc179a16c2.part-002",
+      "bytes": 15420658,
+      "sha256": "7461f98fa0cc179a16c2c739889b744d9a7a65acb53bf15c95820c5c2f4ac54d"
+    },
+    {
+      "path": "runtime/chunks/lean.js.b4af10f133609401ed18.part-001",
       "bytes": 16777216,
-      "sha256": "3b54d26ad47472bb296af0f86472abb88d5082dba6e587465283236d60b1d0e8"
+      "sha256": "b4af10f133609401ed1820e896bea794bb32b0fe2dcc6bba5411411ef4aa15cc"
     },
     {
-      "path": "runtime/chunks/lean.js.8f86ecd999a20187e251.part-002",
-      "bytes": 15418766,
-      "sha256": "8f86ecd999a20187e2512c09494e9ec7b71e00a99e641eea15b371e0fd2a1b69"
-    },
-    {
-      "path": "runtime/chunks/lean.wasm.1a217673be940f72276b.part-003",
+      "path": "runtime/chunks/lean.wasm.1112d32c67ec7f0218f5.part-004",
       "bytes": 16777216,
-      "sha256": "1a217673be940f72276b97f2ca99dc3fb253c3f3b8100378ca71b8e30b48e6eb"
+      "sha256": "1112d32c67ec7f0218f59254e5a7f91b400ea79e84fc9f5f9941d3e7472078ce"
     },
     {
-      "path": "runtime/chunks/lean.wasm.36dee9f971f4b55c671e.part-004",
+      "path": "runtime/chunks/lean.wasm.3372976fa86f286b6880.part-006",
+      "bytes": 9221869,
+      "sha256": "3372976fa86f286b688092d5bb8196393a7457643d97701886be2e69ba700d28"
+    },
+    {
+      "path": "runtime/chunks/lean.wasm.536995daab1867fcb105.part-000",
       "bytes": 16777216,
-      "sha256": "36dee9f971f4b55c671ea577dc467e388c23a1aa8ad13da7860ba70e4b7b70df"
+      "sha256": "536995daab1867fcb105f8ad7b91f1f212c7a36172805d64dae86b573f04505c"
     },
     {
-      "path": "runtime/chunks/lean.wasm.54c3c3c82050af350ecf.part-002",
+      "path": "runtime/chunks/lean.wasm.7eaf62380f049ba6fa85.part-001",
       "bytes": 16777216,
-      "sha256": "54c3c3c82050af350ecff40f7808f123344f1b2eb06632e2c8d3e0b081cc8a66"
+      "sha256": "7eaf62380f049ba6fa8593cf5be57d745f3e2bf23e23aba15ea98d827c8ea8d0"
     },
     {
-      "path": "runtime/chunks/lean.wasm.85a21a0118a96a6b8b92.part-006",
-      "bytes": 9214063,
-      "sha256": "85a21a0118a96a6b8b925fffeb3f6e1e81c2807e7b5772b44e49caa99a233561"
-    },
-    {
-      "path": "runtime/chunks/lean.wasm.86850b8d3701dc580561.part-001",
+      "path": "runtime/chunks/lean.wasm.c86c27354c8b2288fbcd.part-003",
       "bytes": 16777216,
-      "sha256": "86850b8d3701dc5805610aecbf2b02c5c503365e5eee9e14a6a569eb21377671"
+      "sha256": "c86c27354c8b2288fbcde0e541c2251a11e3067f6dac937e78de186e9cccfd46"
     },
     {
-      "path": "runtime/chunks/lean.wasm.b4a19232aadd82c2d700.part-000",
+      "path": "runtime/chunks/lean.wasm.e100b9620a92c61b6b87.part-002",
       "bytes": 16777216,
-      "sha256": "b4a19232aadd82c2d700cb10eed3c2c4941082dc0f68cd59fd900547c1d6f0ed"
+      "sha256": "e100b9620a92c61b6b87f3f039fcea60907c06db08850caf4c6da7b97411ad96"
     },
     {
-      "path": "runtime/chunks/lean.wasm.b57b2a5b5cec98ea902d.part-005",
+      "path": "runtime/chunks/lean.wasm.f7ec1a67802c8bc20445.part-005",
       "bytes": 16777216,
-      "sha256": "b57b2a5b5cec98ea902de07795a41990d5d3681bf81beb76dbbd5a4537e43797"
+      "sha256": "f7ec1a67802c8bc20445c1317a8eeebe27544251c74b3072672a94c50d4647b6"
     },
     {
       "path": "runtime/runtime-manifest.json",
       "bytes": 2803,
-      "sha256": "b74567bda62c0108316f4fd12380437dd6e0ca83fbccab94614e683ace808cc2"
+      "sha256": "9cbfbe15295e115c491fe15fb9c4a07fdd8325a9526587980ac1a0eee26f6f1b"
     },
     {
-      "path": "runtime/runtime-manifest.wasm64-57ae00dc5f6ce958.json",
+      "path": "runtime/runtime-manifest.wasm64-f69cca24d0878a58.json",
       "bytes": 2803,
-      "sha256": "b74567bda62c0108316f4fd12380437dd6e0ca83fbccab94614e683ace808cc2"
+      "sha256": "9cbfbe15295e115c491fe15fb9c4a07fdd8325a9526587980ac1a0eee26f6f1b"
     },
     {
-      "path": "tools/lean4-wasm64-4.34.0-41ec565.tgz",
-      "bytes": 69577,
-      "sha256": "c8864d60166f58cbba7f0c4bfbe8aaa9a4eb4274e2a300e3b0aaac07fa2b5efe"
+      "path": "tools/lean4-wasm64-4.34.0-e1a79c1.tgz",
+      "bytes": 76481,
+      "sha256": "65445d21bc64d51995442a2f51d08557131d628f90ebc56283e4b30c33cfc151"
     }
   ],
-  "digest": "sha256:f958ba7508317a4ceed42e1a13cbd78b716209e2e2a86fe1a7f6a93a607888ee"
+  "digest": "sha256:bd71636b04dca47a1ecbb3c1d5beaca47576e4750cc51105543c346d5b5cebcd"
 }

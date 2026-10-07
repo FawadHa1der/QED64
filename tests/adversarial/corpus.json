@@ -2176,6 +2176,59 @@
         "containsMsgs": []
       },
       "rationale": "HARDENING #51: @[server_rpc_method], attribute [tactic …] and @[app_unexpander] on plain defs are accepted in a legacy file (stock Lean); the served pairing rejected them with 'must be marked as `meta`'. Guards the widgets showcase (RPC methods defined in the buffer). Header is `import Mathlib.Tactic` so the battery serves it from the umbrella snapshot (the alias rewrite); `import Lean` alone would re-import 1,218 modules per worker."
+    },
+    {
+      "name": "async_wrong_proof_unknown_id",
+      "category": "elab/async-messages",
+      "source": "import Mathlib\n\nset_option Elab.async true in\ntheorem async_bad_id : 1 = 2 := by exact foo\n",
+      "expect": {
+        "panicFree": true,
+        "mustError": true,
+        "containsMsgs": [
+          "Unknown identifier"
+        ],
+        "budgetMs": 20000
+      },
+      "rationale": "HARDENING #61: before kernel patch 0037, lean_wasm_compile dropped every message of a declaration elaborated with Elab.async=true, so this wrong proof compiled with errors=0 (QED64 probe N6, 2026-10-06). Native lean reports it; from 0037 on the one-shot compile waits for the command's snapshot tasks and reports their diagnostics."
+    },
+    {
+      "name": "async_unsolved_goal",
+      "category": "elab/async-messages",
+      "source": "import Mathlib\n\nset_option Elab.async true in\ntheorem async_unsolved (n : Nat) : n = n + 1 := by skip\n",
+      "expect": {
+        "panicFree": true,
+        "mustError": true,
+        "containsMsgs": [
+          "unsolved goals"
+        ],
+        "budgetMs": 20000
+      },
+      "rationale": "HARDENING #61 (probe N6b): an unsolved goal under Elab.async=true was reported as errors=0 before kernel patch 0037."
+    },
+    {
+      "name": "async_nested_scope_runner_shape",
+      "category": "elab/async-messages",
+      "source": "import Mathlib\n\nopen Lean Elab Command in\nelab \"probe_async_scope\" : command => do\n  withScope (fun s => { s with opts := s.opts.setBool `Elab.async true }) do\n    elabCommand (← `(command| theorem inner7 : 1 = 2 := by exact foo))\n\nprobe_async_scope\n",
+      "expect": {
+        "panicFree": true,
+        "mustError": true,
+        "containsMsgs": [
+          "Unknown identifier"
+        ],
+        "budgetMs": 30000
+      },
+      "rationale": "HARDENING #61 (probe N7): lean4game's GameServer Runner shape, a command elaborating another declaration under a scope that turns Elab.async on. Before 0037 its error was dropped (errors=0); lean4game's snapshot probe could not tell a wrong level proof from a right one."
+    },
+    {
+      "name": "async_valid_twin",
+      "category": "elab/async-messages",
+      "source": "import Mathlib\n\nset_option Elab.async true in\ntheorem async_ok : 1 + 1 = 2 := by rfl\n",
+      "expect": {
+        "panicFree": true,
+        "mustSucceed": true,
+        "budgetMs": 20000
+      },
+      "rationale": "HARDENING #61 (probe P8): the valid twin of the async cases above; it must stay error-free after kernel patch 0037."
     }
   ]
 }

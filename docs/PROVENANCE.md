@@ -30,14 +30,14 @@ own bakes against that runtime. Four tracked files hold the whole identity:
   snapshots were baked from (per-tree pack ids, raw digests, the umbrella
   module's bytes and the tree digests).
 
-| Served from this landing on (lean-v4.34.0-41ec565, adopted 2026-10-06) | Identity | Source |
+| Served from this landing on (lean-v4.34.0-e1a79c1, adopted 2026-10-07) | Identity | Source |
 |---|---|---|
-| **Release** | `lean-v4.34.0-41ec565`, digest `sha256:f958ba75…` | GitHub release on FawadHa1der/lean4, mirrored in R2 at `lean4-wasm64/lean-v4.34.0-41ec565/` (docs/DEPLOY.md "The toolchain release prefix") |
-| **Kernel** | `FawadHa1der/lean4@41ec56530df541dcfb1d612a876fdc992d7ab8f5`, branch `qed64-wasm64`, patch level `0036` (the deep-recursion fix, HARDENING #60) | upstream `v4.34.0` with the wasm64 series (the series is the fork's `wasm64-build/PATCHES.md`); its release gate passed 16/16 checks on this commit, the three deep-recursion checks included |
-| **Runtime `wasm64-57ae00dc5f6ce958`** | lean.js `e0b8397a…` (48,973,198 B, 3 chunks), lean.wasm `57ae00dc…` (109,877,359 B, 7 chunks) | the release's `runtime/`, byte-identical to the served chunks; the buildId is `wasm64-` + the first 16 hex of sha256(lean.wasm) |
+| **Release** | `lean-v4.34.0-e1a79c1`, digest `sha256:bd71636b…` | GitHub release on FawadHa1der/lean4, mirrored in R2 at `lean4-wasm64/lean-v4.34.0-e1a79c1/` (docs/DEPLOY.md "The toolchain release prefix") |
+| **Kernel** | `FawadHa1der/lean4@e1a79c1ce9f8db856ea572078b52e441e484dd55`, branch `qed64-wasm64`, patch level `0037` (the one-shot compile reports `Elab.async` messages, HARDENING #61; on top of 0036, the deep-recursion fix, #60) | upstream `v4.34.0` with the wasm64 series (the series is the fork's `wasm64-build/PATCHES.md`); its release gate passed 33/33 checks on this commit (the deep-recursion checks and 13 async probes with their synchronous twins included) |
+| **Runtime `wasm64-f69cca24d0878a58`** | lean.js `9eff6320…` (48,975,090 B, 3 chunks), lean.wasm `f69cca24…` (109,885,165 B, 7 chunks) | the release's `runtime/`, byte-identical to the served chunks; the buildId is `wasm64-` + the first 16 hex of sha256(lean.wasm) |
 | `lean-core` (4.34.0) | pack release `lean-core-4.34.0-wasm64-36a96239e08fd2e0`, raw `1c5c75db…` (390,065,102 B), 649 modules | the release's pack, written by the v4.34.0 import's wasm compiler `8d91aadcda`; unchanged since 2026-09-22, so its name still carries that import's runtime id |
 | `mathlib-essential` (4.34.0) | pack release `mathlib-essential-5ed2965-wasm64-36a96239e08fd2e0`, raw `eeab078f…` (3,568,001,947 B), 4,354 modules | Mathlib `5ed2965` (tag `v4.34.0`) and its Lake dependencies plus the kernel's `Lean`/`Std`, built natively by `857544b439`; the closure of three roots plus the 80 `deprecated_module` shims inside it, so pre-2026-08 module names still resolve |
-| Snapshots | init `c185aafb…` (122,364,117 B raw), mathlib `bfda2b55…` (1,127,272,685 B raw) | slim bakes (no `*.olean.private`) against `wasm64-57ae00dc5f6ce958` by `pipeline/release/adopt-release.sh`: init from the release's `lean-lib` tree, mathlib (the `QED64.Essential` umbrella over all 4,354 essential modules) from lean-core + mathlib-essential (`embedding/base-tree.json`) |
+| Snapshots | init `fcbe485f…` (122,364,117 B raw), mathlib `6ca0fa64…` (1,127,272,685 B raw) | slim bakes (no `*.olean.private`) against `wasm64-f69cca24d0878a58` by `pipeline/release/adopt-release.sh`: init from the release's `lean-lib` tree, mathlib (the `QED64.Essential` umbrella over all 4,354 essential modules) from lean-core + mathlib-essential (`embedding/base-tree.json`) |
 
 The release also carries `lean-lib` (the runtime's own `lib/lean`, 2,520
 modules, the tree the init snapshot is baked from) and `mathlib-game-extra`
@@ -79,6 +79,7 @@ same origin.
 
 | Runtime | Served | Kernel |
 |---|---|---|
+| `wasm64-57ae00dc5f6ce958` | the lean-v4.34.0-41ec565 landing (feature/land-41ec565), superseded by this one; snapshots init `c185aafb…`, mathlib `bfda2b55…` | `41ec56530d`, patch 0036 |
 | `wasm64-3ab1c6a9da03bc29` | 2026-10-02 (QED64 3b42714) until this landing; release `lean-v4.34.0-a8817d0` (gate 13/13), snapshots init `b6d945e3…`, mathlib `265cd10c…` | `a8817d01f9`, patch 0035b |
 | `wasm64-4b025db7729c5f89` | 2026-09-30 to 2026-10-01, and again for a few hours on 2026-10-02 | `9fbb45afcb`, patch 0034 (HARDENING #51) |
 | `wasm64-2c18773ecfba45bb` | 2026-10-01 to 2026-10-02, withdrawn (HARDENING #53: page-reload OOM with parked threads) | `3ae65d36f9`, patch 0035 |
