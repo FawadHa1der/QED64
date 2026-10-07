@@ -7,7 +7,7 @@
 // NotFoundError and the compile failed with no recovery path.
 
 import { describe, expect, it } from "vitest";
-import { readCached, type PackMeta } from "../../src/install/profiles";
+import { readCached, type PackMeta } from "../../lib/profiles";
 
 // -- readCached probe --------------------------------------------------------
 

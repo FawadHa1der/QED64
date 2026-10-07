@@ -18,7 +18,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
-import { WORKER_URLS } from "../../frontend/src/embed/urls";
+import { WORKER_URLS } from "../../lib/urls";
 import { SPECS } from "../../pipeline/snapshot/cli.mjs";
 
 const root = path.resolve(__dirname, "../..");
@@ -125,7 +125,7 @@ describe("embedding/closure.json", () => {
     // Everything listed is reachable from the entry (no dead weight), and the
     // embed directory has no module outside the list.
     expect([...reached].sort()).toEqual([...listed].sort());
-    for (const f of tracked) if (f.startsWith("frontend/src/embed/") && f.endsWith(".ts")) expect(listed.has(f), `${f} ships (frontend/src/embed/ is in files) but is not in closure.embed`).toBe(true);
+    for (const f of tracked) if (f.startsWith("lib/") && f.endsWith(".ts")) expect(listed.has(f), `${f} ships (lib/ is in files) but is not in closure.embed`).toBe(true);
   });
 
   it("no unguarded Vite-only globals in the embed closure", () => {
@@ -163,6 +163,23 @@ describe("embedding/closure.json", () => {
     expect(gate).not.toMatch(/node:child_process|"pipeline\/[\w/.-]+\.mjs"|kernel-probes/);
   });
 
+  it("every export of a shipped pipeline .mjs with a .d.mts beside it is declared there", () => {
+    // Exported for the module's own tests only, not yet type surface: declare one before a caller needs it.
+    const UNDECLARED: Record<string, string[]> = { "pipeline/release/fetch-artifacts.mjs": ["openSource", "releaseResolver"] };
+    const exported = (source: string) => new Set([
+      ...[...source.matchAll(/^export\s+(?:declare\s+)?(?:async\s+)?(?:const|let|function\*?|class|interface|type)\s+([A-Za-z_$][\w$]*)/gm)].map((m) => m[1]!),
+      ...[...source.matchAll(/^export\s*\{([^}]*)\}/gm)].flatMap((m) => m[1]!.split(",").map((s) => s.trim().split(/\s+as\s+/).pop()!).filter(Boolean)),
+    ]);
+    const pairs = closure.pipeline.filter((p) => p.endsWith(".d.mts")).map((d) => [d.replace(/\.d\.mts$/, ".mjs"), d] as const);
+    expect(pairs.map(([m]) => m)).toContain("pipeline/release/release-manifest.mjs");
+    for (const [m, d] of pairs) {
+      expect(closure.pipeline, `${d} ships without ${m}`).toContain(m);
+      const declared = exported(read(d));
+      const missing = [...exported(read(m))].filter((n) => !declared.has(n) && !(UNDECLARED[m] ?? []).includes(n));
+      expect(missing, `${m} exports what ${d} does not declare`).toEqual([]);
+    }
+  });
+
   it("the edge-worker library (qed64/edge) imports nothing: one dependency-free ES module plus its types", () => {
     expect([...closure.infra].sort()).toEqual(["infra/edge-worker.d.ts", "infra/edge-worker.js"]);
     for (const f of closure.infra) {
@@ -191,10 +208,10 @@ describe("embedding/closure.json", () => {
     // fails here instead of leaving a pattern that matches nothing.
     const served = closure.workers.map((w) => w.serveAs);
     const sites = closure.embed.flatMap((f) => (read(f).match(/new Worker\(/g) ?? []).map(() => f));
-    expect(sites.sort()).toEqual(["frontend/src/embed/raw-cache.ts", "src/runtime/client.ts"]);
-    const prefetch = read("frontend/src/embed/raw-cache.ts").match(/new Worker\(opts\.workerUrl \?\? "(\/workers\/[^"]+)"\)/);
+    expect(sites.sort()).toEqual(["lib/client.ts", "lib/raw-cache.ts"]);
+    const prefetch = read("lib/raw-cache.ts").match(/new Worker\(opts\.workerUrl \?\? "(\/workers\/[^"]+)"\)/);
     expect(prefetch && served.includes(prefetch[1]!), "prefetchRaw's default worker URL").toBe(true);
-    const lean = read("src/runtime/client.ts").match(/workerUrl = "(\/workers\/[^"]+)"/);
+    const lean = read("lib/client.ts").match(/workerUrl = "(\/workers\/[^"]+)"/);
     expect(lean && served.includes(lean[1]!), "LeanSession's default worker URL").toBe(true);
     // What an offline cache warms (embed/urls.ts, docs/EMBEDDING.md §7.5) is exactly what ships.
     expect([...WORKER_URLS].sort()).toEqual([...served].sort());
@@ -225,7 +242,7 @@ describe("the worker protocol ledger (docs/EMBEDDING.md §7.7)", () => {
   it("lists exactly the requests the worker answers, and the page protocol number", () => {
     const src = read("public/workers/lean.worker.js");
     expect(src).toContain(`const WORKER_REQUESTS = Object.freeze(${JSON.stringify(c.workerProtocol.requests).replace(/,/g, ", ")});`);
-    expect(read("src/runtime/client.ts")).toContain(`export const PROTOCOL = ${c.workerProtocol.protocol};`);
+    expect(read("lib/client.ts")).toContain(`export const PROTOCOL = ${c.workerProtocol.protocol};`);
     expect(Array.isArray(c.workerProtocol.deprecated)).toBe(true);
   });
   // The floor is checked against the pinned release record (toolchain/lean4-wasm64-release.json, a

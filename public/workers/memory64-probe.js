@@ -2,7 +2,7 @@
  *
  * Two consumers load this same file: the classic Lean worker
  * (`importScripts("memory64-probe.js")`, for its capabilities report) and the
- * page library (`src/runtime/client.ts`, `import "…/memory64-probe.js"`, a
+ * page library (`lib/client.ts`, `import "…/memory64-probe.js"`, a
  * side-effect import that `qed64/embed` re-exports as MEMORY64_PROBE and
  * probeMemory64). Like lsp-frames.js it therefore uses no `export` and no
  * `require`: it publishes itself as `globalThis.Qed64Memory64`, valid in a

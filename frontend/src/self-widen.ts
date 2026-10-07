@@ -13,9 +13,9 @@
 // past widens outlived the session that earned it: once a reboot had dropped
 // the umbrella (the header changed, then a crash), the same Mathlib header
 // was never widened again.
-import type { LspRelay, RelayStatus } from "./lsp-relay";
-import { importedModulesOf, type ResidentSession } from "./resident-session";
-import { BASE_SNAPSHOTS, LEGACY_UMBRELLA_ROOTS, coversModule, widenTarget, type SnapshotEntry, type SnapshotIndex } from "../../src/runtime/snapshots";
+import type { LspRelay, RelayStatus } from "../../lib/lsp-relay";
+import { importedModulesOf, type ResidentSession } from "../../lib/resident-session";
+import { BASE_SNAPSHOTS, LEGACY_UMBRELLA_ROOTS, coversModule, widenTarget, type SnapshotEntry, type SnapshotIndex } from "../../lib/snapshots";
 
 /** The relay status sink that widens. `relay` is read per status (the page
  * assigns it after building this closure); `onWiden` runs before the restart,

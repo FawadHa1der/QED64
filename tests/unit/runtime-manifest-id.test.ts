@@ -8,10 +8,10 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { PROTOCOL, runtimeIdOf, runtimeManifestIdFault, type RuntimeManifest } from "../../src/runtime/client";
-import { failureCauseOf } from "../../frontend/src/embed/failure";
-import { resolveRuntimeManifest } from "../../frontend/src/qed64-boot";
-import { NO_OVERRIDES } from "../../frontend/src/embed/params";
+import { PROTOCOL, runtimeIdOf, runtimeManifestIdFault, type RuntimeManifest } from "../../lib/client";
+import { failureCauseOf } from "../../lib/failure";
+import { resolveRuntimeManifest } from "../../lib/qed64-boot";
+import { NO_OVERRIDES } from "../../lib/params";
 
 const sha = "3ab1c6a9da03bc29" + "f".repeat(48);
 const file = (bytes: number, sha256: string) => ({ bytes, sha256, chunks: [{ url: `/runtime/chunks/${sha256}.0`, bytes, sha256 }] });

@@ -9,7 +9,7 @@
 // watch reads the relay's status, the page renders the prompt.
 //
 // Pure: unit-tested under node.
-import type { RelayStatus } from "./lsp-relay";
+import type { RelayStatus } from "../../lib/lsp-relay";
 
 /** What the stock page says beside its Reload button. */
 export const STALE_NOTICE = "QED64 was updated while this page was open — reload to use the new version";

@@ -96,15 +96,16 @@ docs/CLI-CONTRACT.md.
 
 | Path | What lives there |
 |---|---|
-| `frontend/` | the deployed shell: lean4monaco (Monaco + the vscode-lean4 InfoView) over the in-browser LSP — page (`main.ts`), relay, session adapter, import completion |
-| `src/` | shared runtime code: worker RPC client (`runtime/`), OPFS installer (`install/`) |
+| `lib/` | the library, `qed64/embed` (`index.ts` is the barrel; docs/EMBEDDING.md §6–§7): worker RPC client (`client.ts`), OPFS installer (`profiles.ts`), snapshot index (`snapshots.ts`), boot (`qed64-boot.ts`), session adapter (`resident-session.ts`), relay (`lsp-relay.ts`), raw snapshot cache, edit coalescer, causes, parameters |
+| `frontend/` | the deployed shell, which imports `lib/`: lean4monaco (Monaco + the vscode-lean4 InfoView) over the in-browser LSP — page (`main.ts`), page API, import completion, self-widen |
+| `src/`, `frontend/src/embed/`, `frontend/src/{qed64-boot,resident-session,lsp-relay}.ts` | one-cycle shims at the library's old paths (plan step A7; each re-exports its `lib/` file) |
 | `public/workers/lean.worker.js` | the Lean worker: verified runtime materialization, Memory64 heap, WORKERFS mounts, persistent compile loop |
 | `public/runtime`, `public/profiles` | content-addressed artifacts: the manifests are tracked, the bytes are fetched (`npm run fetch:artifacts`), never committed |
 | `pipeline/release` | `fetch-artifacts` (fill `public/` with the pinned bytes), `adopt-release.sh` (adopt a lean4-wasm64 release: trees, bakes, staging, an isolated promote) / `promote-staging` (publish a staged pairing), `verify-release` (out-of-band digest audit) |
 | `pipeline/artifacts` | deterministic packer + deep inspector for profile packs |
 | `public/snapshots` | baked environment snapshots + `index.json` (baked per runtime; the index is tracked, the `.snapz` files are fetched, never committed) |
 | `pipeline/snapshot` | Node runner for the wasm64 binary + `--incr-header-save` snapshot baking (`--lib` mounts an unpacked olean tree; upserts the snapshot index); `cli.mjs` is the pipeline CLI contract (every tool's `--help`, flags, exit codes, stable output: docs/CLI-CONTRACT.md) |
-| `pipeline/toolchain` | `artifact-paths.mjs` (the path rule, the lean4-wasm64 locator and forwards), the `chunk-runtime` and `gate.mjs` forwards, `KERNEL-PIN`; the build recipe is the fork's `wasm64-build/` (docs/REBUILD.md §1) |
+| `pipeline/toolchain` | `artifact-paths.mjs` (the path rule, the lean4-wasm64 locator and forwards), the `chunk-runtime` and `gate.mjs` forwards (the kernel pin is `toolchain/lean4-wasm64-release.json` `kernel.commit`; `KERNEL-PIN` retired 2026-10); the build recipe is the fork's `wasm64-build/` (docs/REBUILD.md §1) |
 | `tests/` | unit suite (pure logic + real-manifest invariants) and integration suite (the real runtime under Node) |
 
 ## Testing
@@ -235,9 +236,9 @@ through a futex ring, and a pure front door (`public/workers/lsp-front-door.js`)
 answers `initialize` and shapes what the worker sees. Header changes are
 resolved in-kernel against the environments loaded at boot (exact key,
 else the umbrella that covers it, else refused with the missing modules
-named); the page relay (`frontend/src/lsp-relay.ts`) only re-establishes
+named); the page relay (`lib/lsp-relay.ts`) only re-establishes
 the document on a fresh session, fails requests a death orphaned, and
-breaks crash loops. The session adapter (`frontend/src/resident-session.ts`)
+breaks crash loops. The session adapter (`lib/resident-session.ts`)
 turns the page's artifacts into a booted worker behind a small per-host
 policy — which snapshots to load and how much memory to commit, read from
 the document's import lines — so an embedder (lean4game) passes its own.

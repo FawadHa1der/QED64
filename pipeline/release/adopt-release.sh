@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Adopt a lean4-wasm64 release (plan step B2a): fetch and verify it, unpack the base trees, bake
 # the two snapshots against its runtime, stage runtime + snapshots (+ packs when they change) under
-# work/staging/<buildId>, promote them into an ISOLATED served tree and write the generated
-# KERNEL-PIN. Replaces import-packs.sh and bump-chain.sh: the release already did packing, the
+# work/staging/<buildId>, promote them into an ISOLATED served tree and write base-tree.json.
+# Replaces import-packs.sh and bump-chain.sh: the release already did packing, the
 # pair/closure checks, the gate, chunking and the build id (docs/REBUILD.md §3).
 #
 #   pipeline/release/adopt-release.sh --id <lean-vX.Y.Z-hash> --digest sha256:<hex>
@@ -117,7 +117,6 @@ plan for $ID: runtime $BID, Lean $LEANVER, kernel $KCOMMIT (patch $PATCH, floor 
   pairing         the staged runtime manifest and both snapshot entries name $BID, Lean $LEANVER
   promote         node pipeline/release/promote-staging.mjs --staging $STAGING --public $PUB --dry-run, then without --dry-run
                   node pipeline/release/verify-release.mjs --public $PUB; cmp $PUB/runtime/runtime-manifest.json $W/release/runtime/runtime-manifest.json
-  kernel-pin      node pipeline/release/adopt-helper.mjs kernel-pin → $W/KERNEL-PIN
   next            print the operator's landing steps (not performed)$([ "$MODE" = packs-change ] && echo ", led by the required slim-bake audit")
 EOF
 if [ $DRY = 1 ]; then echo "DRY RUN — inputs valid, nothing was fetched or written"; exit 0; fi
@@ -187,7 +186,6 @@ step promote-dry node pipeline/release/promote-staging.mjs --staging "$STAGING" 
 step promote node pipeline/release/promote-staging.mjs --staging "$STAGING" --public "$PUB"; tail -3 "$L/promote.log"
 step verify-public node pipeline/release/verify-release.mjs --public "$PUB"; tail -2 "$L/verify-public.log"
 cmp "$PUB/runtime/runtime-manifest.json" "$W/release/runtime/runtime-manifest.json" || fail "the promoted runtime manifest is not the release's bytes"
-say kernel-pin; step kernel-pin "${H[@]}" kernel-pin --work "$W" --release "$W/release/release.json" --init-lib "$INITLIB" --staging "work/staging/$BID/{runtime,snapshots$([ "$MODE" = runtime-only ] || echo ,profiles)}"; cat "$L/kernel-pin.log"
 [ $KEEP = 1 ] || rm -rf "$W/release/runtime/chunks" "$R"/*.part-[0-9]*
 cat <<EOF
 
@@ -211,11 +209,14 @@ UPDIR=$(dirname "$PUB"); if [ "$(basename "$PUB")" = public ] && [ -x "$UPDIR/sc
 else UPLOAD="first promote the same staging into the uploading checkout's own real public/ (node pipeline/release/promote-staging.mjs --staging $STAGING --public <checkout>/public: verified, additive), then scripts/upload-artifacts.sh there"; fi
 cat <<EOF
  1. cp $W/release/release.json toolchain/lean4-wasm64-release.json
- 2. cp $W/KERNEL-PIN pipeline/toolchain/KERNEL-PIN
+ 2. cp $W/base-tree.json embedding/base-tree.json   (release-manifest.mjs reads both; the record's kernel.commit is the kernel pin)
  3. cp $PUB/runtime/runtime-manifest.json public/runtime/; cp $PUB/snapshots/index.json public/snapshots/; cp $PUB/profiles/index.json public/profiles/$([ "$MODE" = runtime-only ] || echo " (+ the two pack manifests)")
  4. once published: npm install --package-lock-only -D https://github.com/FawadHa1der/lean4/releases/download/$ID/lean4-wasm64-$TV.tgz
  5. nothing more for the Worker: infra/worker.js imports the record of step 1 (plan B2b); check: npx vitest run tests/unit/toolchain-pin.test.ts
+    and node pipeline/release/release-manifest.mjs --worktree > /dev/null (refuses a record, base tree and served manifests that disagree)
  6. USER: the release's owner uploads lean4-wasm64/$ID/ to R2 first; then upload, then push and deploy. scripts/upload-artifacts.sh
     reads only its own checkout's public/ and uploads the site-owned files (the new snapshots, profiles/index.json; runtime/ and
     profiles/ too only with --legacy-root), so they must be there: $UPLOAD
+ 7. the release bundle, after the landing commit and npm run build:site at it, clean (write-bundle refuses another dist; docs/RELEASE-BUNDLE.md; hosting is the user's decision 7):
+    node pipeline/release/write-bundle.mjs --commit <landing commit> --dist dist --umbrella $W/$([ $FAT = 1 ] && echo lib-tree || echo lib-tree-slim) --out <empty dir>
 EOF

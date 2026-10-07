@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 // The release manifest: ONE document naming everything a QED64 release
-// serves — the qed64 commit, the kernel commit that built the runtime, every
-// runtime chunk, snapshot and pack part by sha256, and (with --dist) the app
-// shell — so a downstream can pin a release by id and verify any copy of it.
+// serves — the qed64 commit, the lean4-wasm64 toolchain release (and so the
+// kernel commit) that built the runtime, every runtime chunk, snapshot and
+// pack part by sha256, the base trees the snapshots were baked from, and
+// (with --dist) the app shell — so a downstream can pin a release by id and
+// verify any copy of it.
 // docs/RELEASE-BUNDLE.md is the reader's guide; this header is the contract.
 //
 // PURE FUNCTION OF ITS INPUTS. `--commit <rev>` reads every tracked input
@@ -10,8 +12,10 @@
 // prints), never from the working tree, so the same commit always yields the
 // same bytes, on any machine, without network: no artifact is downloaded,
 // digests and sizes come from the tracked manifests (the digest roots the
-// browser already trusts). `--worktree` reads public/ (and KERNEL-PIN) as they
-// are on disk instead — the state right after a promote, before the commit —
+// browser already trusts), the pinned toolchain record
+// toolchain/lean4-wasm64-release.json and embedding/base-tree.json.
+// `--worktree` reads public/ and those two files as they are on disk instead
+// — the state right after an adoption's landing, before the commit —
 // and records whether any input it read differs from HEAD (`qed64.dirty`;
 // with --dist that includes public/workers/*, a worker the tree lacks too).
 //
@@ -22,15 +26,28 @@
 //   artifactSetId = "set-" + sha256(JSON.stringify({ runtime, snapshots, profiles }))[:16]
 //   releaseId     = "qed64-" + qed64.commit[:7]
 //   shell.shellId = "shell-" + shell.listingSha256[:16]
-// Fields named `sha256` are bare hex; fields named `digest`/`contentDigest`
+// Fields named `sha256` or `<x>Sha256` are bare hex; `digest`/`contentDigest`
 // keep the "sha256:" prefix (the convention of pack.mjs and the indexes).
-// Every `path` is relative to the served origin root, which is also the R2
-// bucket root and public/ in git (gitBlob = git's blob id of public/<path>).
+// Every `path` is relative to the served origin root, which is public/ in git
+// (gitBlob = git's blob id of public/<path>), except toolchain.record.path and
+// baseTree.path (repo paths of unserved files) and the umbrella paths inside
+// baseTree (relative to a base tree's root). R2 keys follow hosting.rule.
 //
 // REFUSALS (exit 1, one line on stderr): the pairing facts the browser cannot
-// check are checked here — the runtime manifest's sourceRevision commit is
-// not a prefix of the KERNEL-PIN commit; KERNEL-PIN does not name the
-// runtime's buildId; a snapshot entry or the profile index is paired with
+// check are checked here — the toolchain record is not a self-consistent
+// lean4-wasm64.release/v1 (schema, its own digest, the fields read); it names
+// another runtime than the served buildId; the runtime manifest's
+// sourceRevision commit is not a prefix of the record's kernel.commit; a
+// runtime/ or profiles/ file the hosting rule stores under the toolchain
+// prefix (the runtime manifest and its per-build copy
+// runtime/runtime-manifest.<buildId>.json, every profile manifest but the
+// index, every chunk and part) is not in the record's files with that sha256 and size;
+// base-tree.json names a pack (at the top or in any tree) the record does not
+// carry or with other raw bytes, names the record's id with another
+// releaseDigest or runtime, does not list exactly the served packs at the
+// top, or has a tree other than core-lib-slim without the umbrella pair; with
+// another release id its releaseDigest and runtime are recorded as null (the
+// record cannot vouch for them); a snapshot entry or the profile index is paired with
 // another runtime; a pack was built for another Lean version; the per-build
 // manifest public/runtime/runtime-manifest.<buildId>.json (when tracked, or
 // present with --worktree) is not byte-identical to the default one; with
@@ -52,10 +69,15 @@ export const SCHEMA = "qed64.release/v1";
 export const QED64_REPO = "FawadHa1der/QED64";
 export const KERNEL_REPO = "FawadHa1der/lean4";
 export const KERNEL_BRANCH = "qed64-wasm64";
+export const RECORD_SCHEMA = "lean4-wasm64.release/v1";
+export const BASE_TREE_SCHEMA = "qed64.base-tree/v1";
+/** The R2 key rule of decision 3 (docs/DEPLOY.md, "The toolchain release prefix"), recorded verbatim as hosting.rule. */
+export const HOSTING_RULE = "a path under runtime/ or profiles/ that is not site-owned is stored at <toolchainPrefix><path>; every other path at <path>";
 /** Repo-relative paths of the tracked inputs (the per-pack manifests are
  * named by the profile index). */
 export const INPUTS = Object.freeze({
-  kernelPin: "pipeline/toolchain/KERNEL-PIN",
+  toolchainRecord: "toolchain/lean4-wasm64-release.json",
+  baseTree: "embedding/base-tree.json",
   runtimeManifest: "public/runtime/runtime-manifest.json",
   snapshotIndex: "public/snapshots/index.json",
   profileIndex: "public/profiles/index.json",
@@ -70,9 +92,11 @@ Writes the qed64.release/v1 manifest of one release (docs/RELEASE-BUNDLE.md).
 
 source (one of; default --commit HEAD, or for --check the file's own source):
   --commit <rev>         read every tracked input from that commit (git cat-file; ignores the working tree)
-  --worktree             read public/ and pipeline/toolchain/KERNEL-PIN as they are on disk
-    --public <dir>       (worktree only) another public/ tree            [default: public]
-    --kernel-pin <file>  (worktree only) another KERNEL-PIN               [default: pipeline/toolchain/KERNEL-PIN]
+  --worktree             read public/, the toolchain record and base-tree.json as they are on disk
+    --public <dir>             (worktree only) another public/ tree        [default: public]
+    --toolchain-record <file>  (worktree only) another release record      [default: toolchain/lean4-wasm64-release.json]
+    --base-tree <file>         (worktree only) another base-tree.json      [default: embedding/base-tree.json]
+  --repo <dir>           the QED64 git checkout to read (commit objects, HEAD) [default: the checkout this script is in]
 
   --dist <dir>           add the app-shell section from a built dist/ (vite build output, artifacts pruned)
   --out <file>           write the manifest there (atomically) and print a one-line summary; default: stdout
@@ -170,11 +194,18 @@ export function commitSource(rev, { repo = repoRoot } = {}) {
   };
 }
 
-/** public/ (and KERNEL-PIN) as they are on disk; HEAD names the commit and
- * `dirty` says whether any input differs from (or is absent in) HEAD. */
-export function treeSource({ publicDir = path.join(repoRoot, "public"), kernelPin = path.join(repoRoot, INPUTS.kernelPin), repo = repoRoot } = {}) {
+/** public/, the toolchain record and base-tree.json as they are on disk; HEAD
+ * names the commit and `dirty` says whether any input differs from (or is
+ * absent in) HEAD. */
+export function treeSource({
+  repo = repoRoot,
+  publicDir = path.join(repo, "public"),
+  toolchainRecord = path.join(repo, INPUTS.toolchainRecord),
+  baseTree = path.join(repo, INPUTS.baseTree),
+} = {}) {
   const toFile = (repoPath) => {
-    if (repoPath === INPUTS.kernelPin) return kernelPin;
+    if (repoPath === INPUTS.toolchainRecord) return toolchainRecord;
+    if (repoPath === INPUTS.baseTree) return baseTree;
     if (repoPath === "public" || repoPath.startsWith("public/")) return path.join(publicDir, repoPath.slice("public".length));
     return refuse(`internal: ${repoPath} is not a release input`);
   };
@@ -235,6 +266,185 @@ function requireContentAddressed(p, sha, what) {
   if (!path.posix.basename(p).includes(sha.slice(0, 16))) refuse(`${what}: ${p} does not carry its sha256 (${sha.slice(0, 16)}…) in its name — not content-addressed`);
 }
 
+// -------------------------------------------------------- the two records --
+/** "sha256:" + sha256 of the record without `digest`, two-space JSON: lean4-wasm64's
+ * releaseDigest, recomputed here (decision 10: the package is never imported). */
+export function recordDigest(record) {
+  const { digest: _ignored, ...rest } = record;
+  return `sha256:${sha256Hex(JSON.stringify(rest, null, 2))}`;
+}
+
+const RELEASE_ID = /^lean-v\d+\.\d+\.\d+[A-Za-z0-9.+-]*$/;
+const PATCH_ID = /^\d{4}[a-z]?$/;
+/** The identity mounts the hosting rule (HOSTING_RULE) describes. */
+const IDENTITY_MOUNTS = { "/runtime/": "runtime/", "/profiles/": "profiles/" };
+/** "https://github.com/FawadHa1der/lean4(.git)" or "FawadHa1der/lean4" → "FawadHa1der/lean4". */
+const repoSlug = (repo) => (typeof repo === "string" ? repo.replace(/^https:\/\/github\.com\//, "").replace(/\.git$/, "") : null);
+
+/**
+ * Validate the pinned lean4-wasm64.release/v1 record (the fields this manifest
+ * reads, and its own digest) and return it with `siteOwned(path)` and
+ * `toolchainHosted(path)` for origin-relative paths.
+ */
+export function toolchainRecordOf(r) {
+  const at = INPUTS.toolchainRecord;
+  if (r?.schema !== RECORD_SCHEMA) refuse(`${at}: schema is ${JSON.stringify(r?.schema)}, expected ${RECORD_SCHEMA}`);
+  const self = recordDigest(r);
+  if (r.digest !== self) refuse(`${at}: digest ${String(r.digest).slice(0, 23)}… is not its own content's ${self.slice(0, 23)}… — the record was edited after it was cut (land the release's release.json byte for byte)`);
+  const bad = (field, v) => refuse(`${at}: ${field} ${JSON.stringify(v)?.slice(0, 80)} is malformed`);
+  if (typeof r.id !== "string" || !RELEASE_ID.test(r.id)) bad("id", r.id);
+  if (typeof r.kernel?.commit !== "string" || !/^[0-9a-f]{40}$/.test(r.kernel.commit)) bad("kernel.commit", r.kernel?.commit);
+  if (typeof r.kernel.patch !== "string" || !PATCH_ID.test(r.kernel.patch)) bad("kernel.patch", r.kernel.patch);
+  if (repoSlug(r.kernel.repo) !== KERNEL_REPO || r.kernel.branch !== KERNEL_BRANCH) {
+    refuse(`${at}: kernel is ${r.kernel.branch} @ ${r.kernel.repo}, this generator records ${KERNEL_BRANCH} @ ${KERNEL_REPO}`);
+  }
+  if (typeof r.runtime?.buildId !== "string" || !BUILD_ID.test(r.runtime.buildId)) bad("runtime.buildId", r.runtime?.buildId);
+  if (!Array.isArray(r.packs) || r.packs.length === 0) bad("packs", r.packs);
+  const packIds = new Set();
+  for (const p of r.packs) {
+    if (typeof p?.id !== "string" || !p.id || packIds.has(p.id)) bad("packs[].id", p?.id);
+    packIds.add(p.id);
+    if (!HEX64.test(p.rawSha256 ?? "")) bad(`packs ${p.id} rawSha256`, p.rawSha256);
+  }
+  for (const k of ["package", "version", "tgz"]) if (typeof r.tools?.[k] !== "string" || !r.tools[k]) bad(`tools.${k}`, r.tools?.[k]);
+  const h = r.hosting;
+  if (h?.layout !== "served") bad("hosting.layout", h?.layout);
+  const mounts = h.mount && typeof h.mount === "object" ? Object.entries(h.mount) : [];
+  if (mounts.length !== 2 || mounts.some(([k, v]) => IDENTITY_MOUNTS[k] !== v)) {
+    refuse(`${at}: hosting.mount ${JSON.stringify(h.mount)} is not ${JSON.stringify(IDENTITY_MOUNTS)}, the mounts this generator's hosting rule describes`);
+  }
+  if (!Array.isArray(h.siteOwned) || h.siteOwned.some((e) => typeof e !== "string" || !e.startsWith("/"))) bad("hosting.siteOwned", h.siteOwned);
+  if (!Array.isArray(r.files) || r.files.some((f) => typeof f?.path !== "string" || !HEX64.test(f.sha256 ?? "") || !Number.isSafeInteger(f.bytes) || f.bytes < 0)) {
+    refuse(`${at}: files is not a list of {path, bytes, sha256}`);
+  }
+  const siteOwned = (p) => h.siteOwned.some((e) => (e.endsWith("/") ? `/${p}`.startsWith(e) : `/${p}` === e));
+  const toolchainHosted = (p) => (p.startsWith("runtime/") || p.startsWith("profiles/")) && !siteOwned(p);
+  return { ...r, siteOwned, toolchainHosted };
+}
+
+const TREE_ORDER = ["core-lib-slim", "lib-tree-slim", "lib-tree"];
+const UMBRELLA_PATH = /^QED64\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const UMBRELLA_PAIR = ["QED64/Essential.olean", "QED64/Essential.olean.server"];
+/** The init library's tree (adopt-release.sh): the one tree without the umbrella. */
+const CORE_TREE = "core-lib-slim";
+
+/**
+ * Validate embedding/base-tree.json (qed64.base-tree/v1, adopt-helper.mjs
+ * base-tree) against the record and the served packs, and return the
+ * manifest's `baseTree` section, built literally: the file's identity, its
+ * fields, and `umbrellaFiles`, the union of every umbrella file the trees
+ * carry (what a bundle ships at umbrella/<path>).
+ */
+export function baseTreeOf(bt, { record, packs, tracked }) {
+  const at = INPUTS.baseTree;
+  if (bt?.schema !== BASE_TREE_SCHEMA) refuse(`${at}: schema is ${JSON.stringify(bt?.schema)}, expected ${BASE_TREE_SCHEMA}`);
+  const bad = (field, v) => refuse(`${at}: ${field} ${JSON.stringify(v)?.slice(0, 80)} is malformed`);
+  const packList = (list, field) => {
+    if (!Array.isArray(list) || list.length === 0) bad(field, list);
+    return list.map((p) => {
+      if (typeof p?.id !== "string" || !p.id || !strip(p.rawSha256)) bad(`${field}[]`, p);
+      return { id: p.id, release: typeof p.release === "string" ? p.release : null, rawSha256: strip(p.rawSha256) };
+    });
+  };
+  const umbrellaList = (list, field) => {
+    if (!Array.isArray(list)) bad(field, list);
+    const seen = new Set();
+    return list.map((u) => {
+      if (typeof u?.path !== "string" || !UMBRELLA_PATH.test(u.path) || seen.has(u.path) || !HEX64.test(u.sha256 ?? "") || !isSize(u.bytes)) bad(`${field}[]`, u);
+      seen.add(u.path);
+      return { path: u.path, sha256: u.sha256, bytes: u.bytes };
+    });
+  };
+  if (typeof bt.releaseId !== "string" || !RELEASE_ID.test(bt.releaseId)) bad("releaseId", bt.releaseId);
+  if (typeof bt.slim !== "boolean") bad("slim", bt.slim);
+  const top = packList(bt.packs, "packs");
+  const umbrella = umbrellaList(bt.umbrella, "umbrella");
+  for (const p of UMBRELLA_PAIR) if (!umbrella.some((u) => u.path === p)) refuse(`${at}: umbrella does not list ${p} (the pair every base tree carries)`);
+  if (!bt.trees || typeof bt.trees !== "object" || Array.isArray(bt.trees)) bad("trees", bt.trees);
+  const names = Object.keys(bt.trees).sort((a, b) => {
+    const ia = TREE_ORDER.indexOf(a) === -1 ? TREE_ORDER.length : TREE_ORDER.indexOf(a);
+    const ib = TREE_ORDER.indexOf(b) === -1 ? TREE_ORDER.length : TREE_ORDER.indexOf(b);
+    return ia - ib || byteOrder(a, b);
+  });
+  const trees = {};
+  for (const name of names) {
+    const t = bt.trees[name];
+    if (!SAFE_BASENAME.test(name) || typeof t?.slim !== "boolean" || !Number.isSafeInteger(t.files) || !Number.isSafeInteger(t.bytes) || !strip(t.digest)) bad(`trees.${name}`, t);
+    trees[name] = { slim: t.slim, packs: packList(t.packs, `trees.${name}.packs`), umbrella: umbrellaList(t.umbrella, `trees.${name}.umbrella`), files: t.files, bytes: t.bytes, digest: t.digest };
+  }
+
+  // Every pack it names, at the top and in every tree, is one of the record's
+  // packs with the record's raw bytes (and release, when given), whatever
+  // release it names: the record is the only authority on a pack's bytes, and
+  // these are the fields a downstream rebuilds the trees from.
+  const recordPacks = new Map(record.packs.map((p) => [p.id, p]));
+  const listed = [["packs", top], ...Object.entries(trees).map(([name, t]) => [`trees.${name}.packs`, t.packs])];
+  for (const [field, list] of listed) {
+    for (const p of list) {
+      const q = recordPacks.get(p.id);
+      if (!q) refuse(`${at}: ${field} names ${p.id}, which ${record.id} does not carry — land the adoption's $W/base-tree.json with its record`);
+      if (q.rawSha256 !== p.rawSha256) {
+        refuse(`${at} (release ${bt.releaseId}): ${field} names ${p.id} raw ${p.rawSha256.slice(0, 16)}…, the record ${record.id} carries ${q.rawSha256.slice(0, 16)}… — land the adoption's $W/base-tree.json with its record`);
+      }
+      if (p.release !== null && typeof q.release === "string" && p.release !== q.release) {
+        refuse(`${at}: ${field} ${p.id} is release ${p.release}, ${record.id} carries ${q.release}`);
+      }
+    }
+  }
+  // The same release: its digest and runtime are the record's. Another
+  // release (a runtime-only successor that kept the trees): the record cannot
+  // vouch for that release's digest or runtime, so the manifest records null.
+  const sameRelease = bt.releaseId === record.id;
+  if (sameRelease) {
+    if (bt.releaseDigest !== record.digest) refuse(`${at}: releaseDigest ${String(bt.releaseDigest).slice(0, 23)}… is not ${record.id}'s ${record.digest.slice(0, 23)}… — land the adoption's $W/base-tree.json with its record`);
+    if (bt.runtime !== record.runtime.buildId) refuse(`${at}: runtime ${JSON.stringify(bt.runtime)} is not ${record.id}'s ${record.runtime.buildId}`);
+  }
+  // The top-level packs are exactly the served packs (the snapshots were baked
+  // from trees unpacked from them). A record pack is served at its `manifest`
+  // path (the profile index's ids are QED64's own).
+  const servedIds = packs.map((s) => {
+    const q = record.packs.find((r) => r.manifest === s.manifest.path);
+    if (!q) refuse(`${at}: the served pack ${s.id} (${s.manifest.path}) is none of ${record.id}'s packs, so no base tree can name it`);
+    return q.id;
+  });
+  for (const p of top) {
+    const served = packs.find((s) => s.manifest.path === recordPacks.get(p.id).manifest);
+    if (!served) refuse(`${at}: the base trees were unpacked from ${p.id}, which is not served (the profile index has no ${recordPacks.get(p.id).manifest})`);
+    if (served.pack.sha256 !== p.rawSha256) {
+      refuse(`${at}: the base trees were unpacked from ${p.id} raw ${p.rawSha256.slice(0, 16)}…, the served ${p.id} pack is ${served.pack.sha256.slice(0, 16)}… — the snapshots were baked from other trees than the served packs make`);
+    }
+  }
+  for (const id of servedIds) if (!top.some((p) => p.id === id)) refuse(`${at}: packs does not list ${id}, a served pack — the base trees were not unpacked from the served packs`);
+  if (new Set(top.map((p) => p.id)).size !== top.length) refuse(`${at}: packs lists a pack twice`);
+  // Every tree but the core one carries the umbrella pair.
+  for (const [name, t] of Object.entries(trees)) {
+    if (name === CORE_TREE) continue;
+    for (const u of UMBRELLA_PAIR) if (!t.umbrella.some((x) => x.path === u)) refuse(`${at}: trees.${name}.umbrella does not list ${u} (every tree but ${CORE_TREE} carries the pair)`);
+  }
+  // One umbrella file, one content, in every tree that carries it.
+  const union = new Map();
+  for (const u of [...umbrella, ...Object.values(trees).flatMap((t) => t.umbrella)]) {
+    const seen = union.get(u.path);
+    if (seen && (seen.sha256 !== u.sha256 || seen.bytes !== u.bytes)) refuse(`${at}: ${u.path} is listed with two contents (${seen.sha256.slice(0, 16)}…, ${u.sha256.slice(0, 16)}…)`);
+    union.set(u.path, u);
+  }
+  return {
+    ...tracked,
+    schema: bt.schema,
+    releaseId: bt.releaseId,
+    releaseDigest: sameRelease ? record.digest : null,
+    runtime: sameRelease ? record.runtime.buildId : null,
+    packs: top,
+    slim: bt.slim,
+    umbrella,
+    umbrellaSource: typeof bt.umbrellaSource === "string" ? bt.umbrellaSource : null,
+    initLib: typeof bt.initLib === "string" ? bt.initLib : null,
+    digestRule: typeof bt.digestRule === "string" ? bt.digestRule : null,
+    trees,
+    umbrellaFiles: [...union.values()].sort((a, b) => byteOrder(a.path, b.path)).map((u) => ({ path: u.path, sha256: u.sha256, bytes: u.bytes })),
+  };
+}
+
 /**
  * Build the release manifest from a source. Throws ReleaseRefusal with a
  * one-line reason on any failed check; never touches the filesystem except to
@@ -257,13 +467,11 @@ export function buildReleaseManifest(source, { dist = null } = {}) {
   };
   const tracked = (repoPath, bytes) => ({ path: repoPath.slice("public/".length), sha256: sha256Hex(bytes), gitBlob: gitBlobId(bytes) });
 
-  // -- kernel pin
-  const pinText = need(INPUTS.kernelPin, "kernel pin").toString("utf8");
-  const pinLine = pinText.split("\n").find((l) => l.trim() && !l.trimStart().startsWith("#")) ?? "";
-  const pin = /^([0-9a-f]{40})\s+(\S+)\s+@\s+(\S+)/.exec(pinLine.trim());
-  if (!pin) refuse(`KERNEL-PIN: first line is not "<40-hex commit>  ${KERNEL_BRANCH} @ ${KERNEL_REPO}"`);
-  const [, kernelCommit, pinBranch, pinRepo] = pin;
-  if (pinBranch !== KERNEL_BRANCH || pinRepo !== KERNEL_REPO) refuse(`KERNEL-PIN names ${pinBranch} @ ${pinRepo}, this generator records ${KERNEL_BRANCH} @ ${KERNEL_REPO}`);
+  // -- the pinned toolchain release (lean4-wasm64.release/v1): the kernel, the
+  // runtime id, the packs and the hosting of runtime/ and profiles/
+  const recBytes = need(INPUTS.toolchainRecord, "toolchain record");
+  const record = toolchainRecordOf(parse(recBytes, INPUTS.toolchainRecord, "toolchain record"));
+  const kernelCommit = record.kernel.commit;
 
   // -- runtime
   const rtBytes = need(INPUTS.runtimeManifest, "runtime manifest");
@@ -276,10 +484,12 @@ export function buildReleaseManifest(source, { dist = null } = {}) {
   const sourceRevision = typeof rt.sourceRevision === "string" ? rt.sourceRevision : "";
   const built = /@([0-9a-f]{7,40})(?![0-9a-f])/.exec(sourceRevision);
   if (!built) refuse(`runtime ${buildId}: sourceRevision ${JSON.stringify(sourceRevision)} names no kernel commit ("${KERNEL_BRANCH}@<commit> …")`);
-  if (!kernelCommit.startsWith(built[1])) {
-    refuse(`runtime ${buildId} was built from kernel ${built[1]} (sourceRevision), KERNEL-PIN pins ${kernelCommit.slice(0, 12)} — the pin and the served binary disagree`);
+  if (record.runtime.buildId !== buildId) {
+    refuse(`${INPUTS.toolchainRecord} (${record.id}) names runtime ${record.runtime.buildId}, the served runtime is ${buildId} — land the adoption's runtime manifest with its record (docs/REBUILD.md §3)`);
   }
-  if (!pinText.includes(buildId)) refuse(`KERNEL-PIN does not name the served runtime ${buildId} — record the pairing there (docs/REBUILD.md) or serve the pinned runtime`);
+  if (!kernelCommit.startsWith(built[1])) {
+    refuse(`runtime ${buildId} was built from kernel ${built[1]} (sourceRevision), ${record.id} names kernel ${kernelCommit.slice(0, 12)} — the record and the served binary disagree`);
+  }
   const fileNames = Object.keys(rt.files ?? {}).sort(byteOrder);
   if (fileNames.length === 0) refuse("runtime manifest lists no files");
   const files = fileNames.map((name) => {
@@ -297,7 +507,7 @@ export function buildReleaseManifest(source, { dist = null } = {}) {
     if (sum !== f.bytes) refuse(`${what}: chunks sum to ${sum} bytes, the manifest says ${f.bytes}`);
     return { name, bytes: f.bytes, sha256: f.sha256, chunks };
   });
-  // The pinned shell fetches the per-build copy FIRST (frontend/src/qed64-boot.ts):
+  // The pinned shell fetches the per-build copy FIRST (lib/qed64-boot.ts):
   // if it exists it must be the same bytes, or the pinned and unpinned paths
   // boot different chunk digests. Not an input (it is gitignored), only a check.
   const pinnedRepoPath = `public/runtime/runtime-manifest.${buildId}.json`;
@@ -326,7 +536,7 @@ export function buildReleaseManifest(source, { dist = null } = {}) {
     requireContentAddressed(p, sha, what);
     if (!isSize(e.transfer) || !isSize(e.bytes)) refuse(`${what}: transfer/bytes malformed`);
     if (!Array.isArray(e.imports) || e.imports.some((m) => typeof m !== "string")) refuse(`${what}: imports is not a list of module names`);
-    if (e.runtime !== buildId) refuse(`${what} is paired with runtime ${e.runtime ?? "(none recorded)"}, the served runtime is ${buildId} — snapshots are binary-paired (KERNEL-PIN)`);
+    if (e.runtime !== buildId) refuse(`${what} is paired with runtime ${e.runtime ?? "(none recorded)"}, the served runtime is ${buildId} — snapshots are binary-paired (docs/REBUILD.md §3)`);
     return { name: e.name, path: p, sha256: sha, transferBytes: e.transfer, rawBytes: e.bytes, imports: [...e.imports], runtime: e.runtime };
   });
   const snapshots = { index: tracked(INPUTS.snapshotIndex, siBytes), entries };
@@ -387,6 +597,32 @@ export function buildReleaseManifest(source, { dist = null } = {}) {
   });
   const profiles = { index: tracked(INPUTS.profileIndex, piBytes), packs };
 
+  // -- the hosting rule: every runtime/ and profiles/ file that is not
+  // site-owned is served from the toolchain release's prefix, so the record
+  // must list it with these bytes (decision 3: QED64 uploads none of them).
+  const recordFiles = new Map(record.files.map((f) => [f.path, f]));
+  const hostedHere = (p, sha, bytes, what) => {
+    if (!record.toolchainHosted(p)) return;
+    const f = recordFiles.get(p);
+    if (!f) refuse(`${what} ${p} is not in ${record.id}'s files, but the hosting rule stores it under lean4-wasm64/${record.id}/ — serve the record's ${p} or mark it site-owned there`);
+    if (f.sha256 !== sha || (bytes !== null && f.bytes !== bytes)) {
+      refuse(`${what} ${p} is ${sha.slice(0, 16)}… (${bytes ?? "?"} B), ${record.id}'s files say ${f.sha256.slice(0, 16)}… (${f.bytes} B) — the served tree and the pinned record disagree`);
+    }
+  };
+  hostedHere(runtime.manifest.path, runtime.manifest.sha256, rtBytes.length, "the served runtime manifest");
+  // The pinned shell fetches the per-build copy first, from the same prefix: the record must carry it too.
+  hostedHere(runtime.manifest.pinnedPath, runtime.manifest.sha256, rtBytes.length, "the per-build runtime manifest (= the default one)");
+  for (const f of runtime.files) for (const c of f.chunks) hostedHere(c.path, c.sha256, c.bytes, `runtime ${f.name} chunk`);
+  hostedHere(profiles.index.path, profiles.index.sha256, piBytes.length, "the profile index");
+  for (const p of packs) {
+    hostedHere(p.manifest.path, p.manifest.sha256, inputs.get(`public/${p.manifest.path}`).length, `the served profile ${p.id} manifest`);
+    for (const part of p.transport.parts) hostedHere(part.path, part.sha256, part.bytes, `profile ${p.id} part`);
+  }
+
+  // -- the base trees the snapshots were baked from (adopt-helper.mjs base-tree)
+  const btBytes = need(INPUTS.baseTree, "base tree");
+  const baseTree = baseTreeOf(parse(btBytes, INPUTS.baseTree, "base tree"), { record, packs, tracked: { path: INPUTS.baseTree, sha256: sha256Hex(btBytes), gitBlob: gitBlobId(btBytes) } });
+
   // -- shell (optional): its workers are inputs too, each file and the directory
   const listed = new Set();
   const shell = dist === null ? null : shellSection(dist, { source, buildId, inputs, listed });
@@ -400,6 +636,17 @@ export function buildReleaseManifest(source, { dist = null } = {}) {
     qed64: { repo: QED64_REPO, commit, committedAt, source: source.kind, dirty },
     lean: { version: rt.leanVersion, target: rt.target },
     kernel: { repo: KERNEL_REPO, branch: KERNEL_BRANCH, commit: kernelCommit, sourceRevision },
+    toolchain: {
+      releaseId: record.id,
+      digest: record.digest,
+      record: { path: INPUTS.toolchainRecord, sha256: sha256Hex(recBytes), gitBlob: gitBlobId(recBytes) },
+      kernel: { commit: record.kernel.commit, patch: record.kernel.patch },
+      runtimeBuildId: record.runtime.buildId,
+      packs: record.packs.map((p) => ({ id: p.id, rawSha256: p.rawSha256 })),
+      tools: { package: record.tools.package, version: record.tools.version, tgz: record.tools.tgz },
+    },
+    hosting: { toolchainPrefix: `lean4-wasm64/${record.id}/`, siteOwned: [...record.hosting.siteOwned], rule: HOSTING_RULE },
+    baseTree,
     runtime,
     snapshots,
     profiles,
@@ -434,12 +681,21 @@ export function shellSection(distDir, { source, buildId, inputs = new Map(), lis
   // build-info file that disagrees with this tree is refused.
   const files = rels.filter((r) => r !== BUILD_INFO_FILE).map((r) => ({ path: r, sha256: sha256Hex(bytesOf.get(r)), bytes: bytesOf.get(r).length }));
   const listingSha256 = sha256Hex(listingOf(files));
+  // The two API revisions the build stamps (frontend/build/build-info.mjs): the
+  // page API's (globalThis.qed64.api.revision) and the qed64/embed barrel's.
+  let apiRevision = null;
+  let embedApiRevision = null;
   if (bytesOf.has(BUILD_INFO_FILE)) {
     let info = null;
     try { info = JSON.parse(bytesOf.get(BUILD_INFO_FILE).toString("utf8")); } catch { /* refused below */ }
     if (!info || info.schema !== "qed64.build/v1") refuse(`--dist: ${BUILD_INFO_FILE} is not a qed64.build/v1 file`);
     if (info.shell !== `shell-${listingSha256.slice(0, 16)}`) refuse(`--dist: ${BUILD_INFO_FILE} names ${info.shell}, the tree is shell-${listingSha256.slice(0, 16)} — files changed after the build`);
     if (info.buildId !== buildId) refuse(`--dist: ${BUILD_INFO_FILE} pairs runtime ${info.buildId}, the release runtime is ${buildId}`);
+    for (const k of ["apiRevision", "embedApiRevision"]) {
+      if (info[k] !== undefined && info[k] !== null && (typeof info[k] !== "string" || !info[k])) refuse(`--dist: ${BUILD_INFO_FILE} ${k} ${JSON.stringify(info[k])} is not a revision string`);
+    }
+    apiRevision = info.apiRevision ?? null;
+    embedApiRevision = info.embedApiRevision ?? null;
   }
 
   // The workers are copied verbatim from public/workers by the vite build;
@@ -484,6 +740,8 @@ export function shellSection(distDir, { source, buildId, inputs = new Map(), lis
     shellId: `shell-${listingSha256.slice(0, 16)}`,
     listingSha256,
     bytes: files.reduce((n, f) => n + f.bytes, 0),
+    apiRevision,
+    embedApiRevision,
     bundle: { entries, buildIds: [buildId] },
     files,
   };
@@ -514,7 +772,7 @@ export function serializeManifest(manifest) {
 }
 
 // ------------------------------------------------------------------- CLI --
-const VALUE_FLAGS = new Set(["--commit", "--public", "--kernel-pin", "--dist", "--out", "--check"]);
+const VALUE_FLAGS = new Set(["--commit", "--public", "--toolchain-record", "--base-tree", "--repo", "--dist", "--out", "--check"]);
 const BOOL_FLAGS = new Set(["--worktree", "--help"]);
 
 class UsageError extends Error {}
@@ -532,23 +790,26 @@ export function parseArgs(argv) {
     i += 1;
   }
   if (opts.commit !== undefined && opts.worktree) throw new UsageError("--commit and --worktree are exclusive");
-  if ((opts.public !== undefined || opts["kernel-pin"] !== undefined) && !opts.worktree) throw new UsageError("--public/--kernel-pin apply to --worktree only");
+  if (["public", "toolchain-record", "base-tree"].some((k) => opts[k] !== undefined) && !opts.worktree) throw new UsageError("--public/--toolchain-record/--base-tree apply to --worktree only");
   if (opts.out !== undefined && opts.check !== undefined) throw new UsageError("--out and --check are exclusive");
   return opts;
 }
 
 function sourceFor(opts, recorded) {
+  const repo = opts.repo === undefined ? repoRoot : path.resolve(opts.repo);
   if (opts.worktree) {
     return treeSource({
-      publicDir: path.resolve(opts.public ?? path.join(repoRoot, "public")),
-      kernelPin: path.resolve(opts["kernel-pin"] ?? path.join(repoRoot, INPUTS.kernelPin)),
+      repo,
+      publicDir: path.resolve(opts.public ?? path.join(repo, "public")),
+      toolchainRecord: path.resolve(opts["toolchain-record"] ?? path.join(repo, INPUTS.toolchainRecord)),
+      baseTree: path.resolve(opts["base-tree"] ?? path.join(repo, INPUTS.baseTree)),
     });
   }
-  if (opts.commit !== undefined) return commitSource(opts.commit);
+  if (opts.commit !== undefined) return commitSource(opts.commit, { repo });
   // --check with no explicit source re-derives the way the file says it was made.
-  if (recorded?.source === "worktree") return treeSource();
-  if (recorded?.source === "commit" && typeof recorded.commit === "string") return commitSource(recorded.commit);
-  return commitSource("HEAD");
+  if (recorded?.source === "worktree") return treeSource({ repo });
+  if (recorded?.source === "commit" && typeof recorded.commit === "string") return commitSource(recorded.commit, { repo });
+  return commitSource("HEAD", { repo });
 }
 
 function lineDiff(expected, actual, limit = 12) {

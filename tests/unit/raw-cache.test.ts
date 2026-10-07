@@ -1,4 +1,4 @@
-// The raw snapshot region cache (frontend/src/embed/raw-cache.ts;
+// The raw snapshot region cache (lib/raw-cache.ts;
 // docs/EMBEDDING.md §7.4): single-flight per cache key in the page (callers
 // share one worker, abort detaches only the caller, the last abort terminates),
 // the cross-tab Web Lock (busy "return" vs "wait" + re-probe, decided per
@@ -7,8 +7,8 @@
 // same-origin URLs only, and the exported cache helpers. Over a fake Worker,
 // OPFS and a LockManager that grants a task later, as browsers do.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { isCacheKeyOf, isRawCached, prefetchRaw, rawRegionName, removeRawRegion, SNAPSHOT_CACHE_DIR } from "../../frontend/src/embed/raw-cache";
-import { snapshotCacheKey, type SnapshotIndex } from "../../src/runtime/snapshots";
+import { isCacheKeyOf, isRawCached, prefetchRaw, rawRegionName, removeRawRegion, SNAPSHOT_CACHE_DIR } from "../../lib/raw-cache";
+import { snapshotCacheKey, type SnapshotIndex } from "../../lib/snapshots";
 
 class FakeWorker {
   static all: FakeWorker[] = [];

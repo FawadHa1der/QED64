@@ -3,7 +3,8 @@
 Everything a stranger with a fresh clone needs to reproduce the served
 runtime, library packs, and snapshots. Nothing lives only in a Docker
 image or on the original author's machine: the patched compiler is the
-commit named in `pipeline/toolchain/KERNEL-PIN` on branch `qed64-wasm64` of
+commit named by the pinned release record `toolchain/lean4-wasm64-release.json`
+(`kernel.commit`) on branch `qed64-wasm64` of
 `github.com/FawadHa1der/lean4` (real git history on top of
 `cauli/lean4@5732b84`; local checkout `~/code/wasm64-lean-kernel`), the
 build environment is the Dockerfile under `docker-wasm64/` in that tree, and
@@ -21,7 +22,8 @@ every downstream artifact is a deterministic function of those.
 | Thing | Lives in | Committed? |
 |---|---|---|
 | The toolchain release QED64 serves and tests against | `toolchain/lean4-wasm64-release.json` (a byte copy of that release's `release.json`, schema `lean4-wasm64.release/v1`) | yes |
-| The kernel commit to build | `pipeline/toolchain/KERNEL-PIN` (40-hex commit + the paired runtime id and raw snapshot sizes) | yes |
+| The kernel commit to build | the record's `kernel.commit` (40 hex) and `kernel.patch`; `qed64.release/v1` `toolchain.kernel.commit` (docs/RELEASE-BUNDLE.md). `pipeline/toolchain/KERNEL-PIN` was retired in 2026-10 (plan B2c; it is in git history) | yes |
+| The base trees the snapshots were baked from | `embedding/base-tree.json` (`qed64.base-tree/v1`, §3 step 6; the umbrella bytes ship in the release bundle, docs/RELEASE-BUNDLE.md) | yes |
 | Patch series | the fork: `wasm64-build/PATCHES.md` on branch `qed64-wasm64` (a release names its level in `release.json` `kernel.patch`). QED64's old copy (`pipeline/toolchain/patches/`) was deleted in plan B1 (it is in git history); `pipeline/toolchain/PATCHES.md` is now a pointer to the fork | in the fork |
 | Build environment (emsdk 6.0.5, cmake, ccache) | `docker-wasm64/` in the kernel tree | yes (in the kernel repo) |
 | Source checkout | your clone of the fork at `release.json` `kernel.commit` | no |
@@ -162,26 +164,25 @@ fetching and writing nothing):
    ```
 
    The raw `.snap` files land in `$W/snapshot`, never `work/snapshot` (the
-   set paired to the served runtime). The raw sizes recorded in KERNEL-PIN
-   are the check: for an unchanged library a bake within a few percent of
-   them is the right bake; a full-tree bake is 2.5x larger (HARDENING #48).
+   set paired to the served runtime). The raw sizes in the served
+   `public/snapshots/index.json` (`bytes`) are the check: for an unchanged
+   library a bake within a few percent of them is the right bake; a full-tree bake is 2.5x larger (HARDENING #48).
 9. **stage-runtime**: the release's `runtime-manifest.json` and `chunks/`
    copied to `work/staging/$BID/runtime` (no chunker, no restamp).
 10. **pairing**: the staged runtime manifest and both snapshot entries name
     `$BID` and the release's Lean version.
 11. **promote** into `--public` (dry run, then real), `verify-release.mjs
     --public`, and `cmp` of the promoted runtime manifest with the release's.
-12. **kernel-pin**: `$W/KERNEL-PIN` is GENERATED: the first line
-    `<kernel.commit>  qed64-wasm64 @ FawadHa1der/lean4` (release-manifest
-    checks it against the runtime's `sourceRevision` and buildId), comment
-    lines naming the release id and digest, `kernel.patch`, the buildId, the
-    raw snapshot sizes and the pack raw digests.
-13. **next**: the operator's landing steps, printed and not performed. For a
+12. **next**: the operator's landing steps, printed and not performed. For a
     packs change it starts with step 0, the SLIM-BAKE AUDIT (required at
     every Mathlib pin: §3b step 3). Then: copy
     `$W/release/release.json` to `toolchain/lean4-wasm64-release.json`,
-    `$W/KERNEL-PIN` to `pipeline/toolchain/KERNEL-PIN`, and the three tracked
-    manifests from the isolated tree into `public/`; `npm install
+    `$W/base-tree.json` to `embedding/base-tree.json`, and the three tracked
+    manifests from the isolated tree into `public/` (then
+    `release-manifest.mjs --worktree` checks that the record names the
+    served runtime and kernel, that it lists every runtime/profile file the
+    hosting rule stores under its prefix, and that the base tree came from
+    the served packs); `npm install
     --package-lock-only -D <release tgz URL>` once published; the wrangler
     variable (plan B2b); the user uploads, then pushes and deploys.
     `scripts/upload-artifacts.sh` takes no tree argument and reads only its
@@ -279,8 +280,8 @@ touches, in this order:
    digests mean new committed manifests under `public/profiles/`, a new
    `work/lib-tree`, and a regenerated + recompiled `QED64/Essential` umbrella
    (its module list is the essential manifest's).
-3. Snapshots: both bakes as above; the KERNEL-PIN sizes will legitimately
-   change — record the new ones. Both are baked from slim trees (no
+3. Snapshots: both bakes as above; the raw sizes (`bytes` in the snapshot
+   index) will legitimately change. Both are baked from slim trees (no
    `*.olean.private`), proved harmless at one Mathlib pin only: the
    SLIM-BAKE AUDIT adopt-release prints as landing step 0 (the umbrella
    import log, the `import all` audit, and a fat-versus-slim differential
@@ -291,7 +292,7 @@ touches, in this order:
    manifests, so they follow; the compiler battery's golden messages and the
    e2e corpus may need re-goldening where upstream changed message text.
 5. Records: `docs/PROVENANCE.md` (toolchain identity, Mathlib revision, pack
-   digests), the pinned release record and the generated KERNEL-PIN. The
+   digests), the pinned release record and `embedding/base-tree.json`. The
    release (the fork cuts it: packs, the pair checks, the gate, the chunks)
    is adopted with `pipeline/release/adopt-release.sh --rebuild-umbrella`
    (§3): it stages the new packs with the runtime and snapshots, bakes from

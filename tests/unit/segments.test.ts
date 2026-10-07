@@ -2,7 +2,7 @@
 // reassembly from arbitrary stream piece boundaries.
 
 import { describe, expect, test } from "vitest";
-import { planSegments, buildSegments, type WorkerfsFileEntry } from "../../src/install/profiles";
+import { planSegments, buildSegments, type WorkerfsFileEntry } from "../../lib/profiles";
 
 function files(sizes: number[], gap = 3): WorkerfsFileEntry[] {
   const out: WorkerfsFileEntry[] = [];

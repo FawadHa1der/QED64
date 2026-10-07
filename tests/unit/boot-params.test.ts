@@ -1,11 +1,11 @@
-// Boot parameters (frontend/src/embed/params.ts; docs/EMBEDDING.md §4): the
+// Boot parameters (lib/params.ts; docs/EMBEDDING.md §4): the
 // `?snapshots=` / `?profiles=` / `?runtime=` overrides are spliced into
 // artifact URLs, so every spelling that leaves the origin must be refused —
 // `/attacker.example/x` is protocol-relative once prefixed with "/" — and a
 // refusal must fail the boot BEFORE any fetch, naming the parameter.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { BootParamError, EDIT_HOLD_MAX_FREE_WORKERS, parseBootParams, parseEditHoldParam, validateBootOverrides } from "../../frontend/src/embed/params";
-import { installArtifacts, type StatusSink } from "../../frontend/src/qed64-boot";
+import { BootParamError, EDIT_HOLD_MAX_FREE_WORKERS, parseBootParams, parseEditHoldParam, validateBootOverrides } from "../../lib/params";
+import { installArtifacts, type StatusSink } from "../../lib/qed64-boot";
 
 const ORIGIN = "http://localhost:5199";
 

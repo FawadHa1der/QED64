@@ -9,17 +9,17 @@
 // fetch/cache path): no wasm, no browser.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../../frontend/src/embed/raw-cache", async (importOriginal) => {
-  const real = await importOriginal<typeof import("../../frontend/src/embed/raw-cache")>();
+vi.mock("../../lib/raw-cache", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../../lib/raw-cache")>();
   return { ...real, prefetchRaw: vi.fn(async () => ({ status: "done", bytes: 100 })) };
 });
 
-import { prefetchRaw } from "../../frontend/src/embed/raw-cache";
-import { loadSnapshotByName, snapshotPairingFault, type ProgressInfo, type Qed64Artifacts, type Qed64Session, type StatusSink } from "../../frontend/src/qed64-boot";
-import { ResidentSession, type ResidentHost } from "../../frontend/src/resident-session";
-import { LspRelay, type RestartOptions } from "../../frontend/src/lsp-relay";
+import { prefetchRaw } from "../../lib/raw-cache";
+import { loadSnapshotByName, snapshotPairingFault, type ProgressInfo, type Qed64Artifacts, type Qed64Session, type StatusSink } from "../../lib/qed64-boot";
+import { ResidentSession, type ResidentHost } from "../../lib/resident-session";
+import { LspRelay, type RestartOptions } from "../../lib/lsp-relay";
 import { deathInfo } from "../../frontend/src/page-api";
-import type { RuntimeManifest } from "../../src/runtime/client";
+import type { RuntimeManifest } from "../../lib/client";
 
 const BOOTED = "wasm64-3ab1c6a9da03bc29";
 const OTHER = "wasm64-0000000000000000";

@@ -6,7 +6,7 @@
 // Exercised through the real `loadSnapshotByName` over a scripted fake
 // prefetch Worker and an OPFS stub that has nothing cached.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { PREFETCH_SILENCE_MS, loadSnapshotByName, type Qed64Artifacts, type Qed64Session, type StatusSink } from "../../frontend/src/qed64-boot";
+import { PREFETCH_SILENCE_MS, loadSnapshotByName, type Qed64Artifacts, type Qed64Session, type StatusSink } from "../../lib/qed64-boot";
 
 class FakePrefetch {
   static instances: FakePrefetch[] = [];
