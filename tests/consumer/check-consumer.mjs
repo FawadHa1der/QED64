@@ -21,7 +21,9 @@
 //      headless.ts = docs/EMBEDDING.md §6.1's headless boot on qed64/embed,
 //      worker.ts on qed64/edge) copied into the consumer, plus snippet.ts =
 //      the §6.1 (a) code block verbatim from the packed EMBEDDING.md (top-level
-//      await, so built under §6.1 step 2's build.target), type-checked with the repo's
+//      await, so built under §6.1 step 2's build.target; the packed README.md's
+//      headless block, the ```ts block constructing `new LspRelay(`, must equal it),
+//      type-checked with the repo's
 //      tsc and built with the repo's vite (`vite build --config`), the built
 //      page still carries the probe script (package.json `sideEffects` keeps
 //      client.ts's side-effect import), and the built worker answered one
@@ -231,6 +233,14 @@ const sec61 = doc.slice(doc.indexOf("### 6.1 Minimal Vite consumer"), doc.indexO
 const snippet = /\*\*\(a\) Without the editor[\s\S]*?\n```ts\n([\s\S]*?)\n```\n/.exec(sec61)?.[1];
 if (!snippet || !snippet.includes('from "qed64/embed"')) fail("docs/EMBEDDING.md §6.1 (a): no ```ts block importing qed64/embed");
 if (!/^\s*build: \{ target: "es2022" \},/m.test(sec61)) fail('docs/EMBEDDING.md §6.1 step 2: the vite.config.js block does not set build: { target: "es2022" }');
+// README.md's "Without the editor" block is a copy of this one: they must not drift (the README's
+// is what a reader copies first, and a dropped `pagehide` unload() line stacks dead heaps on reload).
+{
+  const readme = fs.readFileSync(path.join(pkgDir, "README.md"), "utf8");
+  const copy = [...readme.matchAll(/\n```ts\n([\s\S]*?)\n```\n/g)].map((m) => m[1]).find((b) => b.includes("new LspRelay("));
+  if (copy !== snippet) fail("README.md: the ```ts block constructing new LspRelay( is not docs/EMBEDDING.md §6.1 (a) verbatim (copy it again)");
+  ok("README.md's headless block is docs/EMBEDDING.md §6.1 (a) verbatim");
+}
 fs.writeFileSync(path.join(consumer, "snippet.ts"), snippet + "\n");
 ok(`docs/EMBEDDING.md §6.1 (a) extracted from the tarball: snippet.ts, ${snippet.split("\n").length} lines`);
 sh(process.execPath, [path.join(root, "node_modules/typescript/bin/tsc"), "-p", path.join(consumer, "tsconfig.json")], { cwd: consumer });

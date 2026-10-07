@@ -84,10 +84,16 @@ Install QED64 as a git dependency pinned by a full commit (npm honours its
 ```
 
 You need four things ([docs/EMBEDDING.md](docs/EMBEDDING.md) §6.1). First,
-COOP/COEP on your page, and `optimizeDeps: { exclude: ["qed64"] }` in Vite.
-Second, the five workers that `embedding/closure.json` lists, copied to
-their `serveAs` paths before every build. Third, the artifacts at `/runtime/`,
-`/profiles/` and `/snapshots/` on your origin. Fourth, the code below. The
+COOP/COEP on your page, and in Vite `optimizeDeps: { exclude: ["qed64"] }`
+and `build: { target: "es2022" }` (the code below uses top-level `await`,
+which Vite's default target refuses). Second, the five workers that
+`embedding/closure.json` lists, copied to their `serveAs` paths before every
+build. Third, the artifacts at `/runtime/`, `/profiles/` and `/snapshots/` on
+your origin: the package does not ship the tracked manifests, so fetch
+QED64's served set with them from a QED64 checkout at your pin,
+`node node_modules/qed64/pipeline/release/fetch-artifacts.mjs --manifests
+<QED64 checkout>/public --out public --with-manifests` (EMBEDDING §6, §6.1
+step 4; without `--manifests` it refuses). Fourth, the code below. The
 workers step is a short `prebuild` script:
 
 ```js
@@ -103,31 +109,43 @@ for (const { path: from, serveAs } of closure.workers) {
 ```
 
 **Without the editor**, your code is the language client. It boots a session
-behind the relay and speaks JSON-RPC on one `MessagePort`:
+behind the relay and speaks JSON-RPC on one `MessagePort`. This is
+[docs/EMBEDDING.md](docs/EMBEDDING.md) §6.1 (a) verbatim (`npm run
+test:consumer` checks that the two copies match, then type-checks and builds
+it). It uses top-level `await`, hence the `build.target` above. The `pagehide`
+line is required: without it every reload leaves a dead multi-GiB Memory64
+heap behind until the renderer is killed (EMBEDDING §7.9, `unload()`):
 
 ```ts
 import { LspRelay, MEMORY64_PROBE, ResidentSession, installArtifacts, makeEditorPolicy, type StatusSink } from "qed64/embed";
 
 if (!crossOriginIsolated || !WebAssembly.validate(MEMORY64_PROBE)) throw new Error("needs COOP/COEP and Memory64");
-const ui: StatusSink = { busy: () => {}, progress: (label, i) => console.log(label, i?.loaded, i?.total), idle: () => {} };
-const artifacts = await installArtifacts(ui, { overrides: "none" });
-const policy = makeEditorPolicy(artifacts.snapshots);
-const text = "import Mathlib\n\nexample : 2 + 2 = 4 := by norm_num\n";
+const ui: StatusSink = {   // progress as data (§7.1)
+  busy: (label, info) => console.log("busy", label, info?.stage),
+  progress: (label, info) => console.log(label, info?.loaded, info?.total),
+  idle: (label) => console.log("idle", label),
+};
+const artifacts = await installArtifacts(ui, { overrides: "none" });   // manifest, snapshot index, core pack
+const policy = makeEditorPolicy(artifacts.snapshots);                    // snapshots and memory per header
+let current = "import Mathlib\n\nexample : 2 + 2 = 4 := by norm_num\n";   // what a (re)boot serves
 const relay = new LspRelay(
-  (opts) => new ResidentSession({ artifacts, ui, policy, headerText: text }, opts ?? {}),
-  { status: (s) => console.log(s.relay, s.phase) },
+  (opts) => new ResidentSession({ artifacts, ui, policy, headerText: current }, opts ?? {}),
+  { status: (s) => console.log(s.relay, s.phase, s.lastDeath?.cause?.kind ?? "") },   // deaths, §7.2
   () => new Promise((r) => setTimeout(r, 1500)),
 );
+addEventListener("pagehide", () => relay.unload(), { once: true });
+
 const port = relay.clientPort, uri = "file:///project/Probe.lean";
 port.onmessage = (e) => { if (e.data.method === "textDocument/publishDiagnostics") console.log(e.data.params.diagnostics); };
 port.postMessage({ jsonrpc: "2.0", id: 0, method: "initialize", params: { processId: null, rootUri: null, capabilities: {} } });
 port.postMessage({ jsonrpc: "2.0", method: "initialized", params: {} });
-port.postMessage({ jsonrpc: "2.0", method: "textDocument/didOpen", params: { textDocument: { uri, languageId: "lean4", version: 1, text } } });
+port.postMessage({ jsonrpc: "2.0", method: "textDocument/didOpen", params: { textDocument: { uri, languageId: "lean4", version: 1, text: current } } });
+// an edit: update `current`, then a full-text didChange (coalesced, §7.8)
 ```
 
-**With the editor**, boot the same way and hand `relay.clientPort` to
-lean4monaco instead of posting on it yourself, as QED64's own page does
-(`frontend/src/main.ts`):
+**With the editor**, boot the same way (the `pagehide` line included) and hand
+`relay.clientPort` to lean4monaco instead of posting on it yourself, as
+QED64's own page does (`frontend/src/main.ts`):
 
 ```ts
 await leanMonaco.start({
@@ -135,10 +153,16 @@ await leanMonaco.start({
 });
 ```
 
+The InfoView's static files are lean4monaco's to serve: copy
+`@leanprover/infoview/dist/*` and `lean4monaco/dist/webview/webview.js` to
+`/infoview/` on your origin, as `frontend/vite.config.ts` does, or the
+InfoView frame 404s (QED64's copy also patches `webview.js` so widget panels
+get their RPC right, [docs/HARDENING.md](docs/HARDENING.md) #56).
+
 The library API (progress, failure causes, deaths, overlays, edit
 coalescing) is [docs/EMBEDDING.md](docs/EMBEDDING.md) §7.
-`npm run test:consumer` builds a consumer like this from the packed tarball
-(`tests/consumer/fixture/`).
+`npm run test:consumer` builds a consumer from the packed tarball
+(`tests/consumer/fixture/` plus the block above).
 
 ### (c) `qed64/edge` in your own Cloudflare Worker
 
@@ -201,12 +225,30 @@ the whole adoption: fetch and verify, base trees, both snapshot bakes, staging,
 an isolated promote, and `base-tree.json`. `--dry-run` prints the plan and
 writes nothing ([docs/REBUILD.md](docs/REBUILD.md) §3).
 
-**Baking your own snapshots.** Snapshots are binary-paired: bake them with
-the exact runtime you serve. `npm run bake:snapshot -- --name <name> --artifact
-<stage1 dir> --lib <olean tree> --work <dir> --out work/staging/<buildId>/snapshots
---probe '<lean source>'` stages a `.snapz` and upserts that directory's
-`index.json`. It refuses any `--out` inside `public/`. Then `npm run
-promote:staging -- --staging work/staging/<buildId>` publishes the staged set.
+**Baking your own snapshots.** A snapshot is binary-paired: bake it with the
+exact runtime you serve. The bake reads a runtime directory (`bin/lean.wasm`)
+and an olean tree. Fetch the runtime from the pinned release (`id` and
+`digest` in `toolchain/lean4-wasm64-release.json`) with the fork's CLI, as
+`adopt-release.sh` does for its `$W/artifact`, then bake into a directory of
+your own:
+
+```sh
+node node_modules/lean4-wasm64/cli.mjs fetch --from https://github.com/FawadHa1der/lean4/releases/download/<id>/ \
+  --out <work>/artifact --only runtime --id <id> --digest sha256:<hex>
+npm run bake:snapshot -- --name <name> --artifact <work>/artifact --lib <olean tree> \
+  --work <work>/snap --out <work>/overlay --roots <A,B> --probe '<lean source>'
+```
+
+For an extra environment, serve that set as an overlay, with no promote: the
+page boots the base `init` plus at most one other entry
+([docs/EMBEDDING.md](docs/EMBEDDING.md) §8), so bake `init` into the same
+`--out` as well (REBUILD §3 step 8 has its command line), copy the directory
+to `public/snapshots/<overlay>/` (bake-snapshot refuses an `--out` inside
+`public/`) and open `/?snapshots=snapshots/<overlay>`. To replace the served
+pair itself, use `adopt-release.sh` above: it stages the runtime and both
+snapshots together. `npm run promote:staging` takes only such a complete
+staging (`runtime/runtime-manifest.json` and `chunks/`, and every snapshot of
+the pairing) and replaces the served index wholesale.
 Every pipeline tool, with its flags, exit codes and stable output lines, is in
 [docs/CLI-CONTRACT.md](docs/CLI-CONTRACT.md).
 
