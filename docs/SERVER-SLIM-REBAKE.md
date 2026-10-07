@@ -3,7 +3,7 @@
 Branch: `experiment/server-slim-rebake`. The umbrella and init snapshots were
 rebaked against library trees with every `.olean.private` facet removed
 (Lean's importer opportunistically reads and retains them; elaboration never
-needs them at this Mathlib pin — see docs/UPSTREAM-NOTES.md #2).
+needs them at this Mathlib pin — see docs/history/UPSTREAM-NOTES.md #2).
 
 ## Measured results (same runtime `wasm64-0fdfd698a0e97fac`, same probes)
 

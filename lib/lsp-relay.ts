@@ -1,4 +1,4 @@
-// L3 LSP relay (docs/ARCHITECTURE-REEVALUATION-2-2026-09-02.md §2.2 "L3", §2.3):
+// L3 LSP relay (docs/history/ARCHITECTURE-REEVALUATION-2-2026-09-02.md §2.2 "L3", §2.3):
 // three states, zero timers, zero regexes. The worker owns the document, the queue
 // and every header verdict (§2.4); this relay only remembers what re-establishes
 // the document on a fresh session (§2.3 data), fails requests a death orphaned

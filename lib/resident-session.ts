@@ -1,4 +1,4 @@
-// The resident session adapter (docs/ARCHITECTURE-REEVALUATION-2-2026-09-02.md
+// The resident session adapter (docs/history/ARCHITECTURE-REEVALUATION-2-2026-09-02.md
 // §2.2 L4; §7 day 5): one `LeanSession` behind the relay's `RelaySession`
 // contract. A Worker exists from construction — the relay always has a
 // target and a booting worker queues every frame (§6 amendment 20) — and

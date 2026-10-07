@@ -1,5 +1,5 @@
 /* QED64 resident LSP front door — the worker-side state machine of
- * docs/ARCHITECTURE-REEVALUATION-2-2026-09-02.md §2.4 (design: §2.2 "L1 (b)").
+ * docs/history/ARCHITECTURE-REEVALUATION-2-2026-09-02.md §2.4 (design: §2.2 "L1 (b)").
  *
  *   Loading(script) → Booting → Ready(loop closed, queue) → Open → Dead
  *

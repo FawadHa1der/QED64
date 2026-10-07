@@ -97,7 +97,7 @@ defaults, which the live site has not adopted.
 
 ## Adversarial suite (`npm run test:adversarial`, tests/adversarial/)
 
-Harness trust rules (docs/ARCHITECTURE-REEVALUATION-2026-09-02.md C7,
+Harness trust rules (docs/history/ARCHITECTURE-REEVALUATION-2026-09-02.md C7,
 HARDENING #32-#35): the harness must be able to tell infrastructure from
 product, and a run that cannot boot must refuse rather than fail scenarios.
 

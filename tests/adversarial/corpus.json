@@ -453,7 +453,7 @@
         "budgetMs": 20000,
         "mustError": true
       },
-      "rationale": "Unicode letterlike identifiers (Cyrillic, CJK, Greek) are lexically valid Lean module names but unresolvable, plus a guillemet-quoted atom whose name contains literal dots — unresolvable under both string-keyed and Name-structured resolution. Tests UTF-8 handling in header parsing and manifest lookup; must surface imports incomplete. [KNOWN UPSTREAM PANIC: HeaderSyntax.imports unreachable at Lean.Elab.Import:41 on unicode module names — tracked in docs/UPSTREAM-NOTES.md]"
+      "rationale": "Unicode letterlike identifiers (Cyrillic, CJK, Greek) are lexically valid Lean module names but unresolvable, plus a guillemet-quoted atom whose name contains literal dots — unresolvable under both string-keyed and Name-structured resolution. Tests UTF-8 handling in header parsing and manifest lookup; must surface imports incomplete. [KNOWN UPSTREAM PANIC: HeaderSyntax.imports unreachable at Lean.Elab.Import:41 on unicode module names — tracked in docs/history/UPSTREAM-NOTES.md]"
     },
     {
       "name": "header-umbrella-valid-body",

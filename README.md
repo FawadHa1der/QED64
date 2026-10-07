@@ -244,7 +244,7 @@ policy — which snapshots to load and how much memory to commit, read from
 the document's import lines — so an embedder (lean4game) passes its own.
 The older pump transport (a header-probe shim with in-place restarts) was
 removed on the page side in September 2026; see
-`docs/PUMP-REMOVAL-ASSESSMENT-2026-09-04.md` and `docs/RESIDENT-WORKER-PLAN.md`.
+`docs/history/PUMP-REMOVAL-ASSESSMENT-2026-09-04.md` and `docs/RESIDENT-WORKER-PLAN.md`.
 
 ## License
 

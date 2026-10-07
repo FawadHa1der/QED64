@@ -215,7 +215,7 @@ What is PROVEN, each by direct experiment:
 **STAGE 1 COMPLETE (2026-08-25 pm).** The blocker below was root-caused to an
 emscripten runtime bug, fixed at three levels (embedder keepalive in the
 worker and probes; a glue patch in the build image; an upstream-ready PR —
-see `docs/EMSDK-BUG-REPORT.md`), and the full LSP conversation now passes
+see `docs/history/EMSDK-BUG-REPORT.md`), and the full LSP conversation now passes
 against the real runtime: `initialize` → `didOpen` → `$/lean/fileProgress`
 stream → `publishDiagnostics` (correct `sorry` warning) →
 `waitForDiagnostics` → `$/lean/rpc/connect` → **`$/lean/rpc/call
