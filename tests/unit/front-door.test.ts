@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
 import "../../public/workers/lsp-front-door.js";
-import { deathCause } from "../../frontend/src/embed/failure";
+import { deathCause } from "../../lib/failure";
 
 type Msg = { jsonrpc: "2.0"; id?: number | string; method?: string; params?: unknown; result?: unknown; error?: unknown };
 type Frame = { kind: "client"; msg: Msg; replay?: boolean } | { kind: "server"; msg: Msg } | { kind: "booted" } | { kind: "ring"; busy: boolean } | { kind: "died" };

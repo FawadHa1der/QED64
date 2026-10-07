@@ -8,7 +8,7 @@
 // fake Worker.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { LeanSession, PROTOCOL, type CompileResult } from "../../src/runtime/client";
+import { LeanSession, PROTOCOL, type CompileResult } from "../../lib/client";
 
 interface Posted {
   protocol: number;

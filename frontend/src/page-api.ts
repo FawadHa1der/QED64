@@ -14,9 +14,9 @@
 // budget-capped, tests/unit/relay.test.ts).
 //
 // Pure of the DOM: unit-tested under node over a fake relay and editor.
-import type { BootStage, FailureCause } from "./embed/failure";
-import type { ProgressInfo } from "./qed64-boot";
-import type { RelayStatus, RestartOptions } from "./lsp-relay";
+import type { BootStage, FailureCause } from "../../lib/failure";
+import type { ProgressInfo } from "../../lib/qed64-boot";
+import type { RelayStatus, RestartOptions } from "../../lib/lsp-relay";
 import type { LspMessage, RelayTaps } from "./relay-taps";
 
 export const API_REVISION = "1.0.0";

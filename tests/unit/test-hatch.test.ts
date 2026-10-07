@@ -6,10 +6,10 @@
 // reply to the user as a notification). A timeout also sends `$/cancelRequest`,
 // as the editor's own client does, so Lean frees the task.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { LspRelay, type RelaySession } from "../../frontend/src/lsp-relay";
+import { LspRelay, type RelaySession } from "../../lib/lsp-relay";
 import { tapRelay, type LspMessage } from "../../frontend/src/relay-taps";
 import { createTestHatch, type TestHatch } from "../../frontend/src/test-hatch";
-import type { JsonRpcMessage as Msg, WorkerStatus } from "../../src/runtime/client";
+import type { JsonRpcMessage as Msg, WorkerStatus } from "../../lib/client";
 
 type Id = number | string;
 

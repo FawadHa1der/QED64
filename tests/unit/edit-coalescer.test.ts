@@ -1,4 +1,4 @@
-// Full-text edit coalescing (frontend/src/embed/edit-coalescer.ts; docs/EMBEDDING.md
+// Full-text edit coalescing (lib/edit-coalescer.ts; docs/EMBEDDING.md
 // §7.8, HARDENING #59): a burst of full-text didChanges reaches the worker at
 // most once per window, the newest last; while a change is held every other
 // frame waits behind it in order (a client's per-keystroke requests must not
@@ -7,7 +7,7 @@
 // behind a change that a newer change replaces is answered ContentModified,
 // as Lean would (the one reply Monaco rebases by its later edits).
 import { describe, expect, it } from "vitest";
-import { CANCELLED, DEFAULT_MAX_HOLD_MS, DEFAULT_MAX_IN_FLIGHT_REQUESTS, DEFAULT_MIN_FREE_WORKERS, DEFAULT_PRESSURE_MEMORY_MS, SUPERSEDED, SUPERSEDED_METHODS, createEditCoalescer, isFullTextChange, type BackPressureEvent, type PoolSample } from "../../frontend/src/embed/edit-coalescer";
+import { CANCELLED, DEFAULT_MAX_HOLD_MS, DEFAULT_MAX_IN_FLIGHT_REQUESTS, DEFAULT_MIN_FREE_WORKERS, DEFAULT_PRESSURE_MEMORY_MS, SUPERSEDED, SUPERSEDED_METHODS, createEditCoalescer, isFullTextChange, type BackPressureEvent, type PoolSample } from "../../lib/edit-coalescer";
 
 type Msg = { jsonrpc: "2.0"; id?: number; method?: string; params?: unknown };
 class Clock {

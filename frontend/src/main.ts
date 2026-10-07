@@ -8,12 +8,12 @@ import { LeanMonaco, LeanMonacoEditor, type LeanMonacoOptions } from "lean4monac
 import {
   LspRelay, ResidentSession, entryLabel, failureCauseOf, installArtifacts, makeEditorPolicy,
   type FailureCause, type ProgressInfo, type RelayStatus, type ResidentPolicy, type StatusSink,
-} from "./embed";
+} from "../../lib";
 import { registerImportCompletion } from "./import-completion";
 import { selfWiden } from "./self-widen";
 import { installInfoviewEditorApi, type EditsEditor } from "./editor/infoview-edits";
 import { codeFromHash, createPageApi, pageStatusSink, type EditorLike } from "./page-api";
-import { normalizeMemoryBytes, parseEditHoldParam, parseMemoryParam } from "./embed/params";
+import { normalizeMemoryBytes, parseEditHoldParam, parseMemoryParam } from "../../lib/params";
 import { tapRelay } from "./relay-taps";
 import { installWidgetSourceCache } from "./widget-source-cache";
 import { createTestHatch } from "./test-hatch";

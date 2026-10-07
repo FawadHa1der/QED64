@@ -507,7 +507,7 @@ export function buildReleaseManifest(source, { dist = null } = {}) {
     if (sum !== f.bytes) refuse(`${what}: chunks sum to ${sum} bytes, the manifest says ${f.bytes}`);
     return { name, bytes: f.bytes, sha256: f.sha256, chunks };
   });
-  // The pinned shell fetches the per-build copy FIRST (frontend/src/qed64-boot.ts):
+  // The pinned shell fetches the per-build copy FIRST (lib/qed64-boot.ts):
   // if it exists it must be the same bytes, or the pinned and unpinned paths
   // boot different chunk digests. Not an input (it is gitignored), only a check.
   const pinnedRepoPath = `public/runtime/runtime-manifest.${buildId}.json`;

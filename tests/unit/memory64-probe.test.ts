@@ -2,7 +2,7 @@
 // (docs/EMBEDDING.md §7.0): a classic script that publishes
 // globalThis.Qed64Memory64. public/workers/lean.worker.js importScripts it for
 // its capabilities report and refuses a copy of another revision (§7.7);
-// src/runtime/client.ts imports the same file for its side effect and
+// lib/client.ts imports the same file for its side effect and
 // re-exports MEMORY64_PROBE and probeMemory64 (and `qed64/embed` re-exports
 // those). So an embedder that refuses an incapable browser before spawning the
 // worker runs exactly the worker's test.
@@ -10,8 +10,8 @@ import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
 import { describe, expect, it } from "vitest";
-import { MEMORY64_PROBE, probeMemory64 } from "../../src/runtime/client";
-import * as embed from "../../frontend/src/embed/index";
+import { MEMORY64_PROBE, probeMemory64 } from "../../lib/client";
+import * as embed from "../../lib/index";
 
 const root = path.resolve(__dirname, "../..");
 const workers = path.join(root, "public/workers");
@@ -55,11 +55,12 @@ describe("MEMORY64_PROBE: one source", () => {
     expect(probeMemory64).toBe(published.probeMemory64);
     expect(embed.MEMORY64_PROBE).toBe(MEMORY64_PROBE);
     expect(embed.probeMemory64).toBe(probeMemory64);
-    expect(read("src/runtime/client.ts")).toMatch(/^import "\.\.\/\.\.\/public\/workers\/memory64-probe\.js";$/m);
+    expect(read("lib/client.ts")).toMatch(/^import "\.\.\/public\/workers\/memory64-probe\.js";$/m);
   });
 
   it("no other source file carries the probe bytes or validates a probe of its own", () => {
-    const files = ["src/runtime/client.ts", "public/workers/lean.worker.js", "public/workers/lsp-frames.js", "public/workers/lsp-front-door.js", "public/workers/snapshot-prefetch.worker.js",
+    const files = ["public/workers/lean.worker.js", "public/workers/lsp-frames.js", "public/workers/lsp-front-door.js", "public/workers/snapshot-prefetch.worker.js",
+      ...fs.readdirSync(path.join(root, "lib")).filter((f) => /\.ts$/.test(f)).map((f) => `lib/${f}`),
       ...fs.readdirSync(path.join(root, "frontend/src"), { recursive: true }).map(String).filter((f) => /\.ts$/.test(f)).map((f) => `frontend/src/${f}`)];
     for (const f of files) {
       expect(read(f), f).not.toMatch(/0x05,\s*0x03,\s*0x01,\s*0x04/);

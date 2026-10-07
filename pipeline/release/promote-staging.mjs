@@ -152,7 +152,7 @@ const publicRuntime = path.join(publicDir, "runtime");
 const publicSnapshots = path.join(publicDir, "snapshots");
 const publicProfiles = path.join(publicDir, "profiles");
 const PROFILE_INDEX_SCHEMA = "qed64.profile-index/v1";
-// What the browser would reject anyway (src/install/profiles.ts
+// What the browser would reject anyway (lib/profiles.ts
 // validateManifest): refuse it here, before it is served.
 const MAX_PART_BYTES = 64 * 1024 * 1024;
 const promotedRuntime = { buildId: manifest.buildId, leanVersion: manifest.leanVersion };

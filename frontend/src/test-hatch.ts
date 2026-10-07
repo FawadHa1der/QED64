@@ -3,9 +3,9 @@
 // own `revision`; an embedder's product code must not use it. It exists so the
 // harnesses (QED64's own and the widgets showcase's) stop wrapping relay
 // methods and reading private fields: what they read is named here once.
-import type { LspRelay } from "./lsp-relay";
+import type { LspRelay } from "../../lib/lsp-relay";
 import type { LspMessage, RelayTaps } from "./relay-taps";
-import type { ResidentSession } from "./resident-session";
+import type { ResidentSession } from "../../lib/resident-session";
 
 export const TEST_HATCH_REVISION = "0.1.1"; // 0.1.1: a timed-out lsp.request sends $/cancelRequest and keeps swallowing its reply
 

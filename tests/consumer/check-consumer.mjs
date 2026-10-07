@@ -157,7 +157,7 @@ console.log(JSON.stringify({ out, loaded: {
   redirect: [redirect.status, redirect.headers.get("location"), redirect.headers.get("cross-origin-embedder-policy")],
 } }));
 `);
-const outsideExports = ["qed64/src/runtime/client.ts", "qed64/infra/worker.js", "qed64/tests/adversarial/preflight.mjs"];
+const outsideExports = ["qed64/lib/client.ts", "qed64/src/runtime/client.ts", "qed64/infra/worker.js", "qed64/tests/adversarial/preflight.mjs"];
 // A stand-in lean.wasm for buildIdOfArtifact: its buildId is "wasm64-" + the first 16 hex of its sha256.
 const standIn = path.join(run, "stand-in-bin");
 fs.mkdirSync(standIn);

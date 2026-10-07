@@ -11,7 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { isInsidePublic, runtimeBuildId } from "../../pipeline/toolchain/artifact-paths.mjs";
 import { isImmutable } from "../../infra/worker.js";
-import { fetchSnapshotIndex } from "../../src/runtime/snapshots";
+import { fetchSnapshotIndex } from "../../lib/snapshots";
 
 const root = path.resolve(__dirname, "../..");
 const chunker = path.join(root, "pipeline/toolchain/chunk-runtime.mjs");

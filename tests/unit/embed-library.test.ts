@@ -5,13 +5,13 @@
 // prefetch as a function, and the offline URL list. Over a fake Worker, a
 // spied LeanSession and an OPFS stub — no wasm.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { deathCause, failureCauseOf, failureKindOf, stageOfWorkerPhase } from "../../frontend/src/embed/failure";
-import { runtimeUrls } from "../../frontend/src/embed/urls";
-import { PREFETCH_SILENCE_MS, prefetchRaw, type ProgressInfo, type Qed64Artifacts, type StatusSink } from "../../frontend/src/qed64-boot";
-import { LspRelay, type RestartOptions } from "../../frontend/src/lsp-relay";
-import { ResidentSession, type ResidentHost, type SessionFile } from "../../frontend/src/resident-session";
-import type { ReadyInfo, RuntimeManifest } from "../../src/runtime/client";
-import * as embed from "../../frontend/src/embed/index";
+import { deathCause, failureCauseOf, failureKindOf, stageOfWorkerPhase } from "../../lib/failure";
+import { runtimeUrls } from "../../lib/urls";
+import { PREFETCH_SILENCE_MS, prefetchRaw, type ProgressInfo, type Qed64Artifacts, type StatusSink } from "../../lib/qed64-boot";
+import { LspRelay, type RestartOptions } from "../../lib/lsp-relay";
+import { ResidentSession, type ResidentHost, type SessionFile } from "../../lib/resident-session";
+import type { ReadyInfo, RuntimeManifest } from "../../lib/client";
+import * as embed from "../../lib/index";
 
 describe("failureKindOf: the worker's real messages", () => {
   it.each([

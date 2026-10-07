@@ -5,10 +5,10 @@
 import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
-import * as embed from "../../frontend/src/embed/index";
+import * as embed from "../../lib/index";
 
 const root = path.resolve(__dirname, "../..");
-const barrelSource = fs.readFileSync(path.join(root, "frontend/src/embed/index.ts"), "utf8");
+const barrelSource = fs.readFileSync(path.join(root, "lib/index.ts"), "utf8");
 
 /** Runtime names lean4game imports through `qed64/embed` (its qed64-dep branch, app code and tests). */
 const LEAN4GAME = [
@@ -17,7 +17,7 @@ const LEAN4GAME = [
   "resolveRuntimeManifest", "BootParamError", "validateBootOverrides", "WORKER_SCRIPT_LOAD_FAILED",
   "LeanSession", "deathCause", "failureCauseOf", "loadSnapshotByName",
 ];
-/** Runtime names frontend/src/main.ts (the stock page) imports from "./embed". */
+/** Runtime names frontend/src/main.ts (the stock page) imports from the barrel ("../../lib"). */
 const STOCK_PAGE = ["LspRelay", "ResidentSession", "entryLabel", "failureCauseOf", "installArtifacts", "makeEditorPolicy"];
 const INTERNAL = [
   "installProfile", "ensureProfile", "fetchProfileIndex", "parseBootParams", "overridesOf", "NO_OVERRIDES",
@@ -56,8 +56,10 @@ describe("qed64/embed barrel", () => {
 
   it("main.ts imports the barrel's names from the barrel, not from their deep paths", () => {
     const main = fs.readFileSync(path.join(root, "frontend/src/main.ts"), "utf8");
-    expect(main).toMatch(/\} from "\.\/embed";/);
-    for (const deep of ["./qed64-boot", "./lsp-relay", "./resident-session", "../../src/runtime/snapshots", "./embed/failure"]) {
+    expect(main).toMatch(/\} from "\.\.\/\.\.\/lib";/);
+    // ...nor through the one-cycle shims at the old paths (plan A7).
+    for (const deep of ["../../lib/qed64-boot", "../../lib/lsp-relay", "../../lib/resident-session", "../../lib/snapshots", "../../lib/failure",
+      "./embed", "./qed64-boot", "./lsp-relay", "./resident-session", "../../src/runtime/snapshots", "./embed/failure"]) {
       expect(main, deep).not.toContain(`from "${deep}"`);
     }
   });

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Mutation test for the edit coalescer's back-pressure rules
-// (frontend/src/embed/edit-coalescer.ts; docs/EMBEDDING.md §7.8, HARDENING
+// (lib/edit-coalescer.ts; docs/EMBEDDING.md §7.8, HARDENING
 // #59). Each mutant below is one deliberate wrong rule — the comparison off by
 // one, a guard dropped, a release without a hold, a cap that restarts, a
 // timer left behind — applied to a COPY of the source under work/embed/mutants
@@ -19,7 +19,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const SRC = path.join(root, "frontend/src/embed/edit-coalescer.ts");
+const SRC = path.join(root, "lib/edit-coalescer.ts");
 const OUT = path.join(root, "work/embed/mutants");
 const TESTS = ["tests/unit/edit-coalescer.test.ts", "tests/unit/resident-session.test.ts"];
 const only = (() => { const i = process.argv.indexOf("--only"); return i >= 0 ? process.argv[i + 1] ?? "" : ""; })();
