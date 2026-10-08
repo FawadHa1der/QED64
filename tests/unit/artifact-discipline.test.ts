@@ -560,7 +560,7 @@ describe("promote-staging.mjs", () => {
 
   test("refuses any target a symlink sends outside --public (a directory or a file), before writing anything", () => {
     const stage = path.join(tmp, "stage-escape");
-    stageRuntime(stage, "esc");
+    const esc = stageRuntime(stage, "esc");
     // runtime/chunks as a DIRECTORY symlink into another tree: this worktree's public/ has exactly that shape
     const pub = path.join(tmp, "public-escape-dir");
     const elsewhere = path.join(tmp, "elsewhere-chunks");
@@ -585,6 +585,68 @@ describe("promote-staging.mjs", () => {
     expect(f.stderr).toMatch(/refusing .*runtime\/runtime-manifest\.json: it resolves to .*elsewhere-manifest\.json, outside --public/);
     expect(fs.readFileSync(outsideFile, "utf8")).toBe("the other checkout's manifest");
     expect(fs.readdirSync(path.join(pub2, "runtime"))).toEqual(["runtime-manifest.json"]);
+    // HARDENING #64: the per-build index copies are confined up front too, so a symlinked copy refuses
+    // before the chunks, the .snapz or a pack part is copied (switchFile's own confine comes too late)
+    const escapes = (pubDir: string, copy: string, outside: string) => {
+      const target = path.join(pubDir, "snapshots", copy);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(outside, `the other checkout's ${copy}`);
+      fs.symlinkSync(outside, target);
+      return target;
+    };
+    const copyRefusal = (copy: string, outside: string) =>
+      new RegExp(`^promote: refusing .*snapshots/${copy.replace(/\./g, "\\.")}: it resolves to .*${path.basename(outside).replace(/\./g, "\\.")}, outside --public .* — nothing was written\n$`);
+    // the one refusal line names the copy (and only it), whichever index it is
+    const COPY_REFUSAL = /^promote: refusing .*snapshots\/(profiles-)?index\.wasm64-[0-9a-f]{16}\.json: it resolves to .*, outside --public .* — nothing was written\n$/;
+    {
+      // the snapshot index's copy: nothing written (no runtime/, no .snapz)
+      const pub3 = path.join(tmp, "public-escape-snapshot-copy");
+      const copy = `index.${esc.manifest.buildId}.json`;
+      const outside = path.join(tmp, "elsewhere-snapshot-index.json");
+      escapes(pub3, copy, outside);
+      for (const extra of [["--dry-run"], []]) {
+        const r = run(promote, ["--staging", stage, "--public", pub3, ...extra]);
+        expect(r.status, r.stderr).toBe(2);
+        expect(r.stderr).toMatch(copyRefusal(copy, outside));
+        expect(r.stderr).toMatch(COPY_REFUSAL);
+        expect(fs.readFileSync(outside, "utf8")).toBe(`the other checkout's ${copy}`);
+        expect(fs.readdirSync(pub3)).toEqual(["snapshots"]);
+        expect(fs.readdirSync(path.join(pub3, "snapshots"))).toEqual([copy]);
+      }
+    }
+    {
+      // the profile index's copy on a staged-packs promote: no runtime/, no .snapz, no pack part
+      const packStage = path.join(tmp, "stage-escape-packs");
+      const pk = stagePairing(packStage, "esc-pk");
+      const pub4 = path.join(tmp, "public-escape-profile-copy");
+      const copy = `profiles-index.${pk.manifest.buildId}.json`;
+      const outside = path.join(tmp, "elsewhere-profile-index.json");
+      escapes(pub4, copy, outside);
+      const r = run(promote, ["--staging", packStage, "--public", pub4]);
+      expect(r.status, r.stderr).toBe(2);
+      expect(r.stderr).toMatch(copyRefusal(copy, outside));
+      expect(r.stderr).toMatch(COPY_REFUSAL);
+      expect(fs.readFileSync(outside, "utf8")).toBe(`the other checkout's ${copy}`);
+      expect(fs.readdirSync(pub4)).toEqual(["snapshots"]);
+      expect(fs.readdirSync(path.join(pub4, "snapshots"))).toEqual([copy]);
+    }
+    {
+      // ... and on a kernel-only re-point of a served profile index: the tree exactly as it was
+      const pub5 = path.join(tmp, "public-escape-repoint-copy");
+      expect(run(promote, ["--staging", path.join(tmp, "stage-escape-packs"), "--public", pub5]).status).toBe(0);
+      const bumpStage = path.join(tmp, "stage-escape-repoint");
+      const bump = stageRuntime(bumpStage, "esc-bump", { leanVersion: LEAN });
+      const copy = `profiles-index.${bump.manifest.buildId}.json`;
+      const outside = path.join(tmp, "elsewhere-repoint-index.json");
+      escapes(pub5, copy, outside);
+      const before = treeState(pub5);
+      const r = run(promote, ["--staging", bumpStage, "--public", pub5]);
+      expect(r.status, r.stderr).toBe(2);
+      expect(r.stderr).toMatch(copyRefusal(copy, outside));
+      expect(r.stderr).toMatch(COPY_REFUSAL);
+      expect(fs.readFileSync(outside, "utf8")).toBe(`the other checkout's ${copy}`);
+      expect(treeState(pub5)).toEqual(before);
+    }
     // a --public that is itself a symlink, and a symlink that stays inside the tree, are fine
     const realPub = path.join(tmp, "public-real-target");
     fs.mkdirSync(path.join(realPub, "snapshots-real"), { recursive: true });
