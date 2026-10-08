@@ -39,7 +39,7 @@ paired build outputs of "Environment" below.
 | Consumer (G2) | `npm run test:consumer -- --work <dir outside the repo>` | the packed tarball alone suffices: every `exports` key resolves from the extracted package (paths outside `exports` refused), `qed64/edge` and the olean reader load, and `tests/consumer/fixture/` (a `qed64/embed` page, docs/EMBEDDING.md §6.1's headless boot and worker staging, a `qed64/edge` Worker) type-checks and builds with the repo's tsc and Vite; the repo and its node_modules stay untouched | nothing (`--keep` keeps the run dir) | no | `CONSUMER CHECK PASS` |
 | Suite | `npm run test:adversarial [-- --skip-compiler]` (`tests/adversarial/run.mjs`) | pretest (`typecheck:site`), its own Vite on :5187, preflight, the compiler battery, a cool-down, then e2e; one report directory per run | fetched artifacts; the battery's pairing (or `--skip-compiler`) | lock | `report: …/report.md`, exit 0 (3 = a lane refused, 1 = product failures) |
 | Preflight | `node pipeline/release/preflight.mjs --url <page url> [--no-boot]` | the pairing the URL boots: manifest, every chunk (HEAD size, non-HTML type), the snapshot index and files, each entry's `runtime` against the manifest's `buildId`, the profile index, and one headless boot smoke | dev or served build | lock (no browser with `--no-boot`) | `PREFLIGHT OK buildId=… mode=… snapshots=…` (3 = `PREFLIGHT REFUSED: …`) |
-| Compiler battery | `node tests/adversarial/compiler-battery.mjs [--snap <file> --artifact <dir> --lib <tree>] [--jobs 3]` | the corpus's must-succeed, must-error and golden-message cases against the Mathlib snapshot under Node, on the runtime the browser ships (`snapshot-probe --via-mem`, a bounded pool), with no PANIC anywhere | `QED64_MATHLIB_SNAP`, `QED64_LEAN_ARTIFACT`, `QED64_LIB_TREE` (else exit 2, a `REFUSED` record) | no browser (heavy: `--jobs` wasm Nodes) | `compiler battery: N/N passed` (3 = infra only) |
+| Compiler battery | `node tests/adversarial/compiler-battery.mjs [--snap <file> --artifact <dir> --lib <tree>] [--jobs 3] [--probe <snapshot-probe.mjs>] [--messages-dir <dir>]` | the corpus's must-succeed, must-error and golden-message cases against the Mathlib snapshot under Node, on the runtime the browser ships (`snapshot-probe --via-mem`, a bounded pool), with no PANIC anywhere | `QED64_MATHLIB_SNAP`, `QED64_LEAN_ARTIFACT`, `QED64_LIB_TREE` (else exit 2, a `REFUSED` record) | no browser (heavy: `--jobs` wasm Nodes) | `compiler battery: N/N passed` (3 = infra only) |
 | e2e | `node tests/adversarial/e2e.mjs --url <dev url> [--only <name>]` | boot, golden message batteries, UI-glitch checks, editor action storms with recovery, the worker-kill drill, memory telemetry, speed budgets | dev | lock | `e2e: 23/23 passed` |
 | Editing latency | `node tests/adversarial/editing-latency.mjs --url <dev url> [--rounds 3]` | header-switch, admit, body-edit, completion and error-clear times, read from `qed64.status()` facts only | dev | lock | `SUMMARY {…}` (3 = no header fact) |
 | Crash gauntlet | `node tests/adversarial/crash-gauntlet.mjs <url> [minutes] [mixed\|imports]` | sustained example switches, garbage bursts and header flips: the page survives and the breaker does not halt | dev | lock | the step log, exit 0 (1 = page crash, 2 = halted) |
@@ -181,7 +181,12 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   and a fresh all-infra `compiler-report.json` (work/adversarial/ and the run
   dir) whose `refused` field and rows carry the `no-path` line; `run.mjs`
   counts that 2 as a refusal (exit 3) and its report.md shows the lane with a
-  `REFUSED` line. A lane that ran and wrote no report at all is a `REFUSED` /
+  `REFUSED` line. `--probe <file>` runs another snapshot-probe with the same
+  CLI in place of QED64's (the bake move's acceptance runs the corpus through
+  QED64's probe and the lean4-wasm64 package's), a missing one being the same
+  exit 2 with a fresh all-infra report; `--messages-dir <dir>` writes each
+  item's message JSON lines (`<name>.jsonl`, the `{"caption":…}` lines in
+  order), so two runs diff file by file. A lane that ran and wrote no report at all is a `REFUSED` /
   `NO REPORT` line, never silently left out (tests/unit/tool-paths.test.ts,
   tests/unit/adversarial-harness.test.ts).
   In e2e, `infra` means the page never became interactive within

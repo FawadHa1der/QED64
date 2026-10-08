@@ -34,7 +34,10 @@ import { fileURLToPath } from "node:url";
 import { resolveToolPath } from "../../pipeline/toolchain/artifact-paths.mjs";
 import { arg, root, teeLog } from "./harness.mjs";
 
-const USAGE = "compiler-battery.mjs [--corpus <file>] [--jobs 3] [--run-dir <dir>] [--snap <mathlib.snap>] [--artifact <stage1>] [--lib <tree>]";
+const USAGE = "compiler-battery.mjs [--corpus <file>] [--jobs 3] [--run-dir <dir>] [--snap <mathlib.snap>] [--artifact <stage1>] [--lib <tree>] [--probe <snapshot-probe.mjs>] [--messages-dir <dir>]";
+
+/** The message JSON lines a probe run printed (`--dump-messages`), in order. */
+export const messageLines = (out) => [...out.matchAll(/\{"caption":.*/g)].map((m) => m[0]);
 
 /** The battery's pairing (snapshot, runtime, olean tree) by the one path
  * rule; `io` and `base` are the tests' (a scratch checkout root). */
@@ -65,7 +68,7 @@ export function classify(item, { out, code, wallMs, budget, spawnError = null })
     name: item.name, category: item.category, wallMs, outcome, pass: outcome === "pass", failures,
     excerpt: outcome === "pass" ? undefined : out.slice(-600), ...extra,
   });
-  const msgs = [...out.matchAll(/\{"caption":.*/g)].map((m) => m[0]);
+  const msgs = messageLines(out);
   const msgText = msgs.join("\n");
   const panic = /PANIC at|assertion violation|Maximum call stack|INTERNAL PANIC/.test(out);
   if (spawnError) return row("infra", [`infra: spawn failed (${spawnError.code ?? spawnError.message})`]);
@@ -147,6 +150,17 @@ async function main() {
     process.exit(refusal ?? 2);
   }
   const { snap, artifact, lib } = inputs;
+  // --probe: another snapshot-probe with this CLI (the bake move's acceptance runs the corpus through QED64's probe and
+  // the lean4-wasm64 package's, docs/TESTING.md); --messages-dir: each item's message JSON lines, for diffing two runs.
+  const probe = path.resolve(arg("probe", path.join(root, "pipeline/snapshot/snapshot-probe.mjs")));
+  if (!fs.existsSync(probe)) {
+    const why = `compiler-battery: --probe ${probe} does not exist`;
+    writeReport(dir, infraRows(corpus, `infra: ${why}`), { refused: why });
+    console.error(`${why}\nusage: ${USAGE}\ncompiler battery: REFUSED — ${why}`);
+    process.exit(2);
+  }
+  const messagesDir = arg("messages-dir", "");
+  if (messagesDir) fs.mkdirSync(messagesDir, { recursive: true });
   fs.mkdirSync(path.join(root, "work"), { recursive: true });
   const scratch = fs.mkdtempSync(path.join(root, "work/adv-"));
 
@@ -157,7 +171,7 @@ async function main() {
       fs.writeFileSync(file, src.endsWith("\n") ? src : src + "\n");
       const budget = Math.min(item.expect.budgetMs ?? 20000, 120000);
       const t0 = Date.now();
-      const child = spawn("node", ["--stack-size=8192", path.join(root, "pipeline/snapshot/snapshot-probe.mjs"),
+      const child = spawn("node", ["--stack-size=8192", probe,
         "--snap", snap, "--probe-file", file, "--budget-ms", String(budget + 30000),
         "--via-mem", "--init-flags", "1", "--artifact", artifact,
         "--lib", lib, "--dump-messages"], { cwd: root });
@@ -169,6 +183,7 @@ async function main() {
       const killer = setTimeout(() => { child.kill("SIGKILL"); }, budget + 60000);
       child.on("close", (code) => {
         clearTimeout(killer);
+        if (messagesDir) fs.writeFileSync(path.join(messagesDir, `${item.name.replace(/[^\w.-]/g, "_")}.jsonl`), messageLines(out).map((l) => `${l}\n`).join(""));
         resolve(classify(item, { out, code, wallMs: Date.now() - t0, budget, spawnError }));
       });
     });

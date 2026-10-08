@@ -5,6 +5,8 @@ export type BatteryRow = {
   name: string; category: string; wallMs: number; outcome: "pass" | "fail" | "infra"; pass: boolean;
   failures: string[]; excerpt?: string; note?: string;
 };
+/** The message JSON lines a probe run printed (`--dump-messages`), in order. */
+export function messageLines(out: string): string[];
 export function missingInputs(inputs: { snap: string; artifact: string }): string[];
 export function classify(item: BatteryItem, run: { out: string; code: number | null; wallMs: number; budget: number; spawnError?: (Error & { code?: string }) | null }): BatteryRow;
 export function rewriteAliases(src: string): string;

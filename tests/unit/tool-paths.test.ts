@@ -272,7 +272,7 @@ describe("the tools in a scratch checkout: the variable is honoured", () => {
     expect(io.code).toBe(2);
     expect(io.err).toEqual([
       `compiler-battery: no --snap given and QED64_MATHLIB_SNAP is unset; the deprecated default ${path.join(s, "work/snapshot/mathlib.snap")} is absent — pass --snap <file> or set QED64_MATHLIB_SNAP`,
-      `usage: compiler-battery.mjs [--corpus <file>] [--jobs 3] [--run-dir <dir>] [--snap <mathlib.snap>] [--artifact <stage1>] [--lib <tree>]`,
+      `usage: compiler-battery.mjs [--corpus <file>] [--jobs 3] [--run-dir <dir>] [--snap <mathlib.snap>] [--artifact <stage1>] [--lib <tree>] [--probe <snapshot-probe.mjs>] [--messages-dir <dir>]`,
     ]);
     io.err.length = 0; io.code = null;
     const env = { QED64_MATHLIB_SNAP: "/e/m.snap", QED64_LEAN_ARTIFACT: "/e/stage1", QED64_LIB_TREE: "/e/slim" };
@@ -448,7 +448,7 @@ describe("compiler-battery's CLI refusal leaves a record (no stale or missing re
     const r = run(s, "tests/adversarial/compiler-battery.mjs", ["--corpus", corpus, "--run-dir", runDir]);
     expect(r.status, r.stderr).toBe(2);
     const why = `compiler-battery: no --snap given and QED64_MATHLIB_SNAP is unset; the deprecated default ${path.join(s, "work/snapshot/mathlib.snap")} is absent — pass --snap <file> or set QED64_MATHLIB_SNAP`;
-    const usage = "usage: compiler-battery.mjs [--corpus <file>] [--jobs 3] [--run-dir <dir>] [--snap <mathlib.snap>] [--artifact <stage1>] [--lib <tree>]";
+    const usage = "usage: compiler-battery.mjs [--corpus <file>] [--jobs 3] [--run-dir <dir>] [--snap <mathlib.snap>] [--artifact <stage1>] [--lib <tree>] [--probe <snapshot-probe.mjs>] [--messages-dir <dir>]";
     expect(r.lines).toEqual([why, usage, `compiler battery: REFUSED — ${why}`]);
     expect(r.lines[0]).toMatch(NO_PATH);
     expect(fs.readFileSync(path.join(runDir, "compiler.log"), "utf8").split("\n").filter(Boolean)).toEqual(r.lines);
@@ -457,6 +457,43 @@ describe("compiler-battery's CLI refusal leaves a record (no stale or missing re
     expect(report).toEqual({ lane: "compiler", total: 2, failed: 2, infra: 2, refused: why,
       results: ["one", "two"].map((name) => ({ name, category: "c", wallMs: 0, outcome: "infra", pass: false, failures: [`infra: ${why}`] })) });
     // no probe scratch dir (work/adv-*) was made
+    expect(fs.readdirSync(path.join(s, "work"))).toEqual(["adversarial"]);
+  });
+
+  test("--probe names the probe the battery runs, with the battery's argv; --messages-dir keeps each item's message JSON lines", () => {
+    const { s, corpus, runDir } = batteryCheckout();
+    const art = fakeStage1(path.join(s, "art"), { wasm: true });
+    fs.writeFileSync(path.join(s, "m.snap"), "a snapshot");
+    fs.mkdirSync(path.join(s, "tree"));
+    const probe = path.join(s, "other/snapshot-probe.mjs");
+    fs.mkdirSync(path.dirname(probe));
+    // Prints its argv, two message lines, then a verdict.
+    fs.writeFileSync(probe, `const a = process.argv.slice(2);
+console.log("argv " + JSON.stringify(a));
+console.log('[lean:stdout] {"caption":"one","severity":1,"data":"x"}');
+console.log('[lean:stdout] {"caption":"two","severity":1,"data":"y"}');
+console.log("SNAPSHOT PROBE PASS");
+`);
+    const msgs = path.join(s, "msgs");
+    const r = run(s, "tests/adversarial/compiler-battery.mjs", ["--corpus", corpus, "--run-dir", runDir, "--snap", path.join(s, "m.snap"), "--artifact", art, "--lib", path.join(s, "tree"), "--probe", probe, "--messages-dir", msgs, "--jobs", "1"]);
+    expect(r.stdout).toMatch(/compiler battery: \d+\/2 passed/);
+    expect(fs.readdirSync(msgs).sort()).toEqual(["one.jsonl", "two.jsonl"]);
+    expect(fs.readFileSync(path.join(msgs, "one.jsonl"), "utf8")).toBe('{"caption":"one","severity":1,"data":"x"}\n{"caption":"two","severity":1,"data":"y"}\n');
+    const log = fs.readFileSync(path.join(runDir, "compiler.log"), "utf8");
+    expect(log).not.toContain("argv"); // the probe's own stdout is the battery's input, not its log
+  });
+
+  test("--probe naming a missing file: exit 2 before anything is spawned, a fresh all-infra report naming it", () => {
+    const { s, corpus, runDir } = batteryCheckout();
+    const art = fakeStage1(path.join(s, "art"), { wasm: true });
+    fs.writeFileSync(path.join(s, "m.snap"), "a snapshot");
+    fs.mkdirSync(path.join(s, "tree"));
+    const missing = path.join(s, "nowhere/snapshot-probe.mjs");
+    const r = run(s, "tests/adversarial/compiler-battery.mjs", ["--corpus", corpus, "--run-dir", runDir, "--snap", path.join(s, "m.snap"), "--artifact", art, "--lib", path.join(s, "tree"), "--probe", missing]);
+    expect(r.status, r.stderr).toBe(2);
+    expect(r.lines.at(-1)).toBe(`compiler battery: REFUSED — compiler-battery: --probe ${missing} does not exist`);
+    const report = readJson(path.join(runDir, "compiler-report.json"));
+    expect([report.total, report.infra, report.refused]).toEqual([2, 2, `compiler-battery: --probe ${missing} does not exist`]);
     expect(fs.readdirSync(path.join(s, "work"))).toEqual(["adversarial"]);
   });
 
