@@ -6,7 +6,7 @@
 // prefetch + load) live here, and the boot itself in resident-session.ts.
 import { runtimeManifestIdFault, type LeanSession, type RuntimeManifest } from "./client";
 import { fetchProfileIndex, installProfile, type InstalledProfile, type ProfileIndex } from "./profiles";
-import { entryLabel, fetchSnapshotIndex, loadSnapshotIndex, snapshotCacheKey, type SnapshotEntry, type SnapshotIndex } from "./snapshots";
+import { entryLabel, fetchSnapshotIndex, loadSnapshotIndex, pairedCopyOr, pairedIndexCopyUrl, snapshotCacheKey, type SnapshotEntry, type SnapshotIndex } from "./snapshots";
 import { NO_OVERRIDES, parseBootParams, validateBootOverrides, type BootOverrides } from "./params";
 import { failureCauseOf, stepOfInstallPhase, type BootStage, type BootStep, type FailureCause } from "./failure";
 import { clearNetworkFailure, isRawCached, networkFailedRecently, noteNetworkFailure, PREFETCH_SILENCE_MS, prefetchRaw, type PrefetchRawResult } from "./raw-cache";
@@ -78,33 +78,20 @@ function shellBuildId(): string | null {
  * must-revalidate (infra/edge-worker.js isImmutable): a same-runtime rebake
  * rewrites them under the same name. */
 export function pinnedIndexUrls(buildId: string): { snapshots: string; profiles: string } {
-  return { snapshots: `/snapshots/index.${buildId}.json`, profiles: `/snapshots/profiles-index.${buildId}.json` };
+  return { snapshots: pairedIndexCopyUrl("/snapshots/index.json", buildId), profiles: `/snapshots/profiles-index.${buildId}.json` };
 }
 
-const PINNABLE_BUILD_ID = /^wasm64-[0-9a-f]{16}$/;
-
-/** HARDENING #64: the mutable index names whatever pairing was uploaded
- * LAST, which during an upload-then-deploy window is the next runtime's, not
- * this shell's. When `served` (the mutable index, already read) names a
- * runtime (`runtimesOf`) other than the one this shell pins, the per-build
- * copy of the pinned runtime's index is read with `load` (the mutable path's
- * own reader and checks) and returned. null means "keep `served`": the shell
- * pins no runtime (or a malformed id), `served` is missing or names only the
- * pinned runtime (or none: an index older than the pairing fields), or the
- * copy is absent or not an index (a 404, an HTML answer, a network error, a
- * malformed body: a deployment older than the copies). So a paired site
- * costs no request, and one that does not publish the copies (an embedder's
- * own origin) never sees one unless its mutable index is mispaired. */
-async function pinnedIndexFor<T>(which: "snapshots" | "profiles", served: T | null, runtimesOf: (index: T) => readonly unknown[], load: (url: string) => Promise<T>): Promise<T | null> {
-  const id = shellBuildId();
-  if (id === null || !PINNABLE_BUILD_ID.test(id) || served === null) return null;
-  if (!runtimesOf(served).some((r) => typeof r === "string" && r !== id)) return null;
-  try {
-    return await load(pinnedIndexUrls(id)[which]);
-  } catch {
-    return null;
-  }
-}
+/** HARDENING #64: a mutable index names whatever pairing was uploaded LAST,
+ * which during an upload-then-deploy window is the next runtime's, not this
+ * shell's. Both indexes go through the one rule, `pairedCopyOr`
+ * (lib/snapshots.ts): the snapshot index through loadSnapshotIndex's
+ * `pairedBuildId` (the option a direct caller such as lean4game's game boot
+ * passes too), the profile index here with its own copy path. The shell's
+ * buildId is passed as is: a missing or malformed one reads no copy. So a
+ * paired site costs no request, and one that does not publish the copies
+ * (an embedder's own origin) never sees one unless its mutable index is
+ * mispaired. */
+const pairedBuildId = (): string | undefined => shellBuildId() ?? undefined;
 
 /** Set once by installArtifacts from `?profiles=`; identity in production. */
 let profileReroot: (url: string) => string = (url) => url;
@@ -161,15 +148,15 @@ export async function resolveRuntimeManifest(overrides: BootOverrides, opts: { p
  * collide with served ones), else the served `/snapshots/index.json`, or,
  * when that names another runtime than the one this shell pins, the pinned
  * runtime's copy `/snapshots/index.<buildId>.json` (HARDENING #64) when it
- * is an index. An overlay that was asked
+ * is an index paired with that runtime (loadSnapshotIndex's `pairedBuildId`,
+ * the same rule a direct caller of fetchSnapshotIndex gets). An overlay that was asked
  * for and is missing, malformed or off this site is a named failure
  * (docs/EMBEDDING.md §4), never a silent "no snapshots" that surfaces later as
  * "snapshot 'init' failed to load". */
 export async function fetchSnapshotIndexFor(overrides: BootOverrides): Promise<SnapshotIndex | null> {
   const dir = overrides.snapshots;
   if (!dir) {
-    const served = await fetchSnapshotIndex();
-    return (await pinnedIndexFor("snapshots", served, (i) => i.snapshots.map((e) => e.runtime), (url) => loadSnapshotIndex(url))) ?? served;
+    return fetchSnapshotIndex("/snapshots/index.json", { pairedBuildId: pairedBuildId() });
   }
   return loadSnapshotIndex(`/${dir}/index.json`).then((idx) => ({
     ...idx,
@@ -201,7 +188,8 @@ export async function installArtifacts(ui: StatusSink, opts: InstallOptions = {}
   // The served index names the pairing uploaded last (HARDENING #64): when it
   // is another runtime's, the pinned runtime's copy; a `?profiles=` set keeps
   // its own index.
-  const index: ProfileIndex = (devProfiles ? null : await pinnedIndexFor("profiles", served, (i) => [i.runtime?.buildId], (url) => fetchProfileIndex(url))) ?? served;
+  const index: ProfileIndex = devProfiles || !served ? served
+    : await pairedCopyOr(served, pairedBuildId(), (i) => [i.runtime?.buildId], (id) => pinnedIndexUrls(id).profiles, (url) => fetchProfileIndex(url));
   if (!index) throw new Error(`profile index missing (${indexUrl})`);
   const runtime = opts.runtime ?? (await resolveRuntimeManifest(overrides));
 

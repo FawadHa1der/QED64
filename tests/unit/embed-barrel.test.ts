@@ -67,4 +67,10 @@ describe("qed64/embed barrel", () => {
   it("EMBED_API_REVISION is a semver", () => {
     expect(embed.EMBED_API_REVISION).toMatch(/^\d+\.\d+\.\d+(-[\w.]+)?$/);
   });
+
+  it("docs/EMBEDDING.md §12 records the bump to the current EMBED_API_REVISION (§7: an additive change bumps it, with a row)", () => {
+    const doc = fs.readFileSync(path.join(root, "docs/EMBEDDING.md"), "utf8");
+    const changes = doc.slice(doc.indexOf("\n## 12. "));
+    expect(changes).toContain(`\`EMBED_API_REVISION\` → \`${embed.EMBED_API_REVISION}\``);
+  });
 });

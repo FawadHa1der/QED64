@@ -56,12 +56,71 @@ export interface IndexOptions {
   allowCrossOrigin?: boolean;
   /** The page's origin (default `location.origin`; no check when neither is known). */
   origin?: string;
+  /** The runtime this page boots (a `wasm64-<16 hex>` buildId; any other
+   * value is ignored, as is its absence). When the index read from `url`
+   * has an entry whose `runtime` names ANOTHER runtime (an upload of the
+   * next pairing ran ahead of this page's deploy, HARDENING #64), the
+   * runtime's per-build copy `<dir of url>/index.<pairedBuildId>.json` is
+   * read with the same checks and returned when every one of its entries is
+   * paired with `pairedBuildId`; a copy that answers anything else (a 404,
+   * HTML, a network error, a malformed or mispaired body) keeps the index
+   * read from `url`, whose unpaired entries the boot then refuses as before
+   * (`SNAPSHOT_UNPAIRED`). A paired index, one without `runtime` fields and a
+   * missing one cost no extra request. Absent: no copy is ever read. */
+  pairedBuildId?: string;
 }
+
+/** @internal The shape of a buildId a pinned read accepts (runtime/v1). */
+export const PAIRABLE_BUILD_ID = /^wasm64-[0-9a-f]{16}$/;
+
+/** @internal The per-build copy of the index at `url`: `index.<buildId>.json`
+ * in the same directory (its query and fragment dropped). */
+export function pairedIndexCopyUrl(url: string, buildId: string): string {
+  const path = url.replace(/[?#][\s\S]*$/, "");
+  return `${path.slice(0, path.lastIndexOf("/") + 1)}index.${buildId}.json`;
+}
+
+/** @internal HARDENING #64's rule, the one implementation for both
+ * site-owned indexes (the snapshot index here through `pairedBuildId`, the
+ * profile index in qed64-boot.ts). A mutable index names whatever pairing
+ * was uploaded LAST: when `served` names (`runtimesOf`) a runtime other
+ * than `pairedBuildId`, the copy at `copyUrl(pairedBuildId)` is read with
+ * `load` (the mutable path's own reader and checks) and returned when it
+ * names `pairedBuildId` and nothing else; otherwise `served`. No request
+ * when `pairedBuildId` is not a buildId or `served` names no other runtime. */
+export async function pairedCopyOr<T>(
+  served: T,
+  pairedBuildId: unknown,
+  runtimesOf: (index: T) => readonly unknown[],
+  copyUrl: (buildId: string) => string,
+  load: (url: string) => Promise<T>,
+): Promise<T> {
+  if (typeof pairedBuildId !== "string" || !PAIRABLE_BUILD_ID.test(pairedBuildId)) return served;
+  if (!runtimesOf(served).some((r) => typeof r === "string" && r !== pairedBuildId)) return served;
+  let copy: T;
+  try {
+    copy = await load(copyUrl(pairedBuildId));
+  } catch {
+    return served; // a deployment older than the copies, or a copy that is not an index
+  }
+  const runtimes = runtimesOf(copy);
+  return runtimes.length > 0 && runtimes.every((r) => r === pairedBuildId) ? copy : served;
+}
+
+const snapshotRuntimes = (index: SnapshotIndex): readonly unknown[] => index.snapshots.map((e) => e.runtime);
 
 /** The index, or a thrown Error naming what is wrong with it (an HTTP status,
  * a body that is not JSON, a schema or entry that does not validate, an index
- * or entry URL on another origin). */
+ * or entry URL on another origin). With `opts.pairedBuildId`, a mispaired
+ * index is replaced by its runtime's per-build copy when that is a paired
+ * index (IndexOptions.pairedBuildId). */
 export async function loadSnapshotIndex(url = "/snapshots/index.json", opts: IndexOptions = {}): Promise<SnapshotIndex> {
+  const served = await readSnapshotIndex(url, opts);
+  return pairedCopyOr(served, opts.pairedBuildId, snapshotRuntimes, (id) => pairedIndexCopyUrl(url, id), (copy) => readSnapshotIndex(copy, opts));
+}
+
+/** One index file, checked (loadSnapshotIndex without the pairing rule). */
+async function readSnapshotIndex(url: string, opts: IndexOptions): Promise<SnapshotIndex> {
   const origin = opts.origin ?? (globalThis as { location?: { origin?: string } }).location?.origin;
   const indexUrl = origin ? new URL(url, origin) : null;
   const foreign = (u: URL | null) => !opts.allowCrossOrigin && !!origin && (!u || u.origin !== new URL(origin).origin);
@@ -103,7 +162,8 @@ export async function loadSnapshotIndex(url = "/snapshots/index.json", opts: Ind
   return index;
 }
 
-/** The index, or null when it is missing, malformed or off this site. */
+/** The index, or null when it is missing, malformed or off this site
+ * (`opts.pairedBuildId` as in loadSnapshotIndex). */
 export async function fetchSnapshotIndex(url = "/snapshots/index.json", opts: IndexOptions = {}): Promise<SnapshotIndex | null> {
   try {
     return await loadSnapshotIndex(url, opts);

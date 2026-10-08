@@ -338,10 +338,18 @@ Page-tier facts (stable, for preflights and deploy tools):
   built for that buildId reads the mutable `/snapshots/index.json` and
   `/profiles/index.json` first; only when one names another runtime (an
   upload of the next pairing ran ahead of its deploy) does it read its
-  runtime's copy, used when it is an index (a 404, HTML or a network error
+  runtime's copy, used when it is an index paired with that runtime (a 404,
+  HTML, a network error, a malformed body or a copy naming any other runtime
   keeps the mutable one). A paired site (the showcase's origin, lean4game's,
   a local tree) is never asked for a copy. `?snapshots=<dir>` and
-  `?profiles=<dir>` read only their own `index.json`.
+  `?profiles=<dir>` read only their own `index.json`. A page that reads the
+  snapshot index itself gets the same rule from `loadSnapshotIndex` /
+  `fetchSnapshotIndex` with `pairedBuildId` (§7.0): the copy is
+  `index.<buildId>.json` in the directory of the index it was given.
+  Writers: `bake-snapshot` writes `index.<buildId>.json` beside the
+  `index.json` it upserts (same bytes; docs/CLI-CONTRACT.md), so a site that
+  uploads a baked snapshots dir as it is publishes the copy with it; QED64's
+  promote and upload write `/snapshots/`'s copies themselves.
 - **`dist/` layout.**
   - `index.html`, `assets/*`, `workers/*`, `infoview/*`, and
     `qed64-build.json`;
@@ -703,6 +711,29 @@ library contract a dist was built from without opening the bundle.
 - **snapshots:**
   - the index: `loadSnapshotIndex` (throws, naming the fault),
     `fetchSnapshotIndex` (null on any fault) and `snapshotCacheKey`;
+    ```ts
+    loadSnapshotIndex(url = "/snapshots/index.json", opts?: IndexOptions): Promise<SnapshotIndex>;
+    fetchSnapshotIndex(url = "/snapshots/index.json", opts?: IndexOptions): Promise<SnapshotIndex | null>;
+    interface IndexOptions {
+      allowCrossOrigin?: boolean; // default false: the index and its entry URLs must be on `origin`
+      origin?: string;            // default location.origin
+      pairedBuildId?: string;     // the runtime the page boots ("wasm64-" + 16 hex; anything else is ignored)
+    }
+    ```
+    With `pairedBuildId` (HARDENING #64): the index at `url` is read as
+    without it; when an entry's `runtime` names another runtime,
+    `<directory of url>/index.<pairedBuildId>.json` is read with the same
+    checks and returned when every one of its entries is paired with
+    `pairedBuildId`. A 404, HTML, a network error, a malformed body or a
+    copy that is empty, mixed or of another runtime keeps the index at
+    `url`, and the boot then refuses its unpaired entries as it always did
+    (`SNAPSHOT_UNPAIRED`, §7.2). A paired index, an index without `runtime`
+    fields and a missing one (which still throws, or is null) cost no extra
+    request; without the option nothing changes. `installArtifacts` and
+    `fetchSnapshotIndexFor` pass the shell's own `__QED64_BUILD_ID__`; a
+    page that reads the index itself (lean4game's game boot) passes the
+    buildId of the runtime it boots (the one it pins, or its runtime
+    manifest's `buildId` once resolved);
   - the overlay helpers of §8.
 - **raw cache (§7.4):** `prefetchRaw`, `isRawCached`, `removeRawRegion`,
   `isCacheKeyOf`, `SNAPSHOT_CACHE_DIR` and `PREFETCH_SILENCE_MS`.
@@ -960,9 +991,13 @@ core pack (`profiles: "core"`), the snapshot index. With a pinned buildId
 (`__QED64_BUILD_ID__` defined by the bundler, §6.1), an index whose mutable
 path names another runtime is followed by its per-build copy
 (`/snapshots/profiles-index.<buildId>.json`, `/snapshots/index.<buildId>.json`,
-§4), used when it is an index; a paired index, and every index without a
-pinned buildId, is read from its mutable path only, as before. A `runtime`
-or `snapshots` passed in is not fetched.
+§4), used when it is an index paired with that buildId (the snapshot index
+through `loadSnapshotIndex`'s `pairedBuildId`, §7.0, the one rule both
+indexes share); a paired index, and every index without a pinned buildId,
+is read from its mutable path only, as before. A `runtime` or `snapshots`
+passed in is not fetched. A page that fetches the snapshot index itself
+(not through `fetchSnapshotIndexFor` or `installArtifacts`) passes
+`pairedBuildId` to get the same order.
 
 A game page wants `{overrides: "none", profiles: "none"}`, or its own
 overrides routed through `validateBootOverrides` (lean4game parses its URL
@@ -1686,6 +1721,23 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   `/\/index\.json$/` and serves both copies `immutable` for a year: that
   text is the fork owner's to update (relay in HARDENING #64); import
   `qed64/edge`'s `isImmutable` instead of copying it.
+- **The pinned snapshot index for direct callers (HARDENING #64
+  follow-up, 2026-10-08):** lean4game's game boot reads the snapshot index
+  with `fetchSnapshotIndex()` itself, so the shell-side rule above did not
+  protect its site. `loadSnapshotIndex` and `fetchSnapshotIndex` gain the
+  optional `IndexOptions.pairedBuildId` (§7.0): a mispaired index is
+  replaced by `index.<pairedBuildId>.json` from the same directory when that
+  copy is an index whose entries are all paired with `pairedBuildId`;
+  anything else keeps the index as read, and the `SNAPSHOT_UNPAIRED`
+  refusal applies as before. Without the option the requests and results
+  are exactly as before. `fetchSnapshotIndexFor` and `installArtifacts` now
+  go through it (one implementation, `pairedCopyOr` in `lib/snapshots.ts`,
+  internal, also used for the profile index's copy), which tightens the
+  shell's rule by one case: a copy that is itself mispaired, mixed or empty
+  is no longer used (it keeps the mutable index). `bake-snapshot` writes the
+  copy beside every index it upserts (docs/CLI-CONTRACT.md changelog), so
+  a consumer that uploads its baked snapshots dir as is publishes it.
+  Additive (a new optional field), so `EMBED_API_REVISION` → `1.0.0-pre.7`.
 - **`qed64/edge` routes a toolchain release (plan step B2b, 2026-10-06):**
   additive options, every default unchanged (`QED64_LEGACY` and the hardened
   defaults keep `release: null`). `release` takes a `lean4-wasm64.release/v1`

@@ -7,9 +7,14 @@
 // another runtime, X's per-build copy (`/snapshots/index.<X>.json`,
 // `/snapshots/profiles-index.<X>.json`), used when it is an index; a paired
 // mutable index costs no extra request, so a site without the copies (an
-// embedder's origin, a local tree) sees no 404.
+// embedder's origin, a local tree) sees no 404. The follow-up: the snapshot
+// index's rule lives in loadSnapshotIndex / fetchSnapshotIndex behind
+// `pairedBuildId`, for a page that reads the index itself (lean4game's game
+// boot), and the shell goes through it; a copy is used only when it is
+// paired with the pinned runtime.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchSnapshotIndexFor, installArtifacts, pinnedIndexUrls, type StatusSink } from "../../lib/qed64-boot";
+import { fetchSnapshotIndexFor, installArtifacts, pinnedIndexUrls, snapshotPairingFault, type StatusSink } from "../../lib/qed64-boot";
+import { fetchSnapshotIndex, loadSnapshotIndex, pairedIndexCopyUrl } from "../../lib/snapshots";
 import { NO_OVERRIDES } from "../../lib/params";
 import type { RuntimeManifest } from "../../lib/client";
 
@@ -96,6 +101,13 @@ describe("fetchSnapshotIndexFor", () => {
     expect(asked).toEqual(["/snapshots/index.json", SNAP_COPY]);
   });
 
+  it.each(NOT_A_PAIRED_COPY)("a copy that is %s: the mutable index (the shell uses the option's rule)", async (_label, answer) => {
+    vi.stubGlobal("__QED64_BUILD_ID__", OLD);
+    const asked = site({ ...WINDOW, [SNAP_COPY]: answer });
+    expect((await fetchSnapshotIndexFor(NO_OVERRIDES))?.snapshots[0]?.runtime).toBe(NEW);
+    expect(asked).toEqual(["/snapshots/index.json", SNAP_COPY]);
+  });
+
   it("a missing mutable index stays missing (no copy request); no pinned buildId, or a malformed one, never asks for a copy", async () => {
     vi.stubGlobal("__QED64_BUILD_ID__", OLD);
     let asked = site({ ...COPIES });
@@ -119,6 +131,81 @@ describe("fetchSnapshotIndexFor", () => {
   });
 });
 
+/** Copies that are not OLD's paired index: each keeps the mutable index. */
+const NOT_A_PAIRED_COPY: [string, () => Response][] = [
+  ["a 404 (a deployment older than the copies)", notFound],
+  ["an HTML answer (a dev server's SPA fallback)", html],
+  ["a malformed body", () => json({ schema: "something else" })],
+  ["a network error", () => { throw new TypeError("Failed to fetch"); }],
+  ["an index of another runtime (mispaired)", () => json(snapshotIndex(NEW))],
+  ["an index mixing OLD and NEW", () => json({ ...snapshotIndex(OLD), snapshots: [...snapshotIndex(OLD).snapshots, { ...snapshotIndex(NEW).snapshots[0], name: "mathlib" }] })],
+  ["an index without runtime fields", () => json(snapshotIndex(null))],
+  ["an empty index", () => json({ schema: "qed64.snapshot-index/v1", snapshots: [] })],
+  ["an index whose entry points off this site", () => json({ ...snapshotIndex(OLD), snapshots: [{ ...snapshotIndex(OLD).snapshots[0], url: "https://evil.example/init.snapz" }] })],
+];
+
+describe("loadSnapshotIndex / fetchSnapshotIndex: pairedBuildId (a direct caller, lean4game's game boot)", () => {
+  it("the copy's path: index.<buildId>.json beside the given index, its query and fragment dropped", () => {
+    expect(pairedIndexCopyUrl("/snapshots/index.json", OLD)).toBe(SNAP_COPY);
+    expect(pairedIndexCopyUrl("/games/robo/index.json?v=3#x", OLD)).toBe(`/games/robo/index.${OLD}.json`);
+    expect(pairedIndexCopyUrl(`${ORIGIN}/snapshots/index.json`, OLD)).toBe(`${ORIGIN}${SNAP_COPY}`);
+    expect(pairedIndexCopyUrl("index.json", OLD)).toBe(`index.${OLD}.json`);
+    expect(pinnedIndexUrls(OLD).snapshots).toBe(pairedIndexCopyUrl("/snapshots/index.json", OLD));
+  });
+
+  it("without the option: exactly today's requests, even in the window", async () => {
+    const asked = site({ ...WINDOW, ...COPIES });
+    expect((await loadSnapshotIndex()).snapshots[0]?.runtime).toBe(NEW);
+    expect((await fetchSnapshotIndex())?.snapshots[0]?.runtime).toBe(NEW);
+    expect((await fetchSnapshotIndex("/snapshots/index.json", {}))?.snapshots[0]?.runtime).toBe(NEW);
+    expect(asked).toEqual(["/snapshots/index.json", "/snapshots/index.json", "/snapshots/index.json"]);
+  });
+
+  it("paired, or an index without runtime fields: the index, and no request for the copy", async () => {
+    let asked = site({ ...PAIRED, ...COPIES });
+    expect((await loadSnapshotIndex(undefined, { pairedBuildId: OLD })).snapshots[0]?.runtime).toBe(OLD);
+    expect((await fetchSnapshotIndex(undefined, { pairedBuildId: OLD }))?.snapshots[0]?.runtime).toBe(OLD);
+    expect(asked).toEqual(["/snapshots/index.json", "/snapshots/index.json"]);
+    asked = site({ ...COPIES, "/snapshots/index.json": () => json(snapshotIndex(null)) });
+    expect((await fetchSnapshotIndex(undefined, { pairedBuildId: OLD }))?.snapshots[0]?.runtime).toBeUndefined();
+    expect(asked).toEqual(["/snapshots/index.json"]);
+  });
+
+  it("mispaired: the paired copy beside it is read with the same checks and used (both functions, any directory)", async () => {
+    let asked = site({ ...WINDOW, ...COPIES });
+    expect((await loadSnapshotIndex("/snapshots/index.json", { pairedBuildId: OLD })).snapshots[0]?.runtime).toBe(OLD);
+    expect((await fetchSnapshotIndex("/snapshots/index.json", { pairedBuildId: OLD }))?.snapshots[0]?.runtime).toBe(OLD);
+    expect(asked).toEqual(["/snapshots/index.json", SNAP_COPY, "/snapshots/index.json", SNAP_COPY]);
+    const game = "/games/robo/index.json", gameCopy = `/games/robo/index.${OLD}.json`;
+    asked = site({ [game]: () => json(snapshotIndex(NEW)), [gameCopy]: () => json(snapshotIndex(OLD)), ...COPIES });
+    expect((await fetchSnapshotIndex(game, { pairedBuildId: OLD }))?.snapshots[0]?.runtime).toBe(OLD);
+    expect(asked).toEqual([game, gameCopy]);
+  });
+
+  it.each(NOT_A_PAIRED_COPY)("mispaired, and the copy is %s: the mutable index, which the boot then refuses as before", async (_label, answer) => {
+    for (const read of [loadSnapshotIndex, fetchSnapshotIndex]) {
+      const asked = site({ ...WINDOW, [SNAP_COPY]: answer });
+      const idx = await read("/snapshots/index.json", { pairedBuildId: OLD });
+      expect(idx?.snapshots[0]?.runtime).toBe(NEW);
+      expect(asked).toEqual(["/snapshots/index.json", SNAP_COPY]);
+      // today's refusal (HARDENING #62): the entry is unpaired with the runtime this page boots
+      expect(snapshotPairingFault(idx!.snapshots[0]!, "init", { buildId: OLD })).toMatchObject({ kind: "unpaired", code: "SNAPSHOT_UNPAIRED" });
+    }
+  });
+
+  it("a missing mutable index stays missing (no copy request); a pairedBuildId that is not a buildId reads no copy", async () => {
+    let asked = site({ ...COPIES });
+    await expect(loadSnapshotIndex(undefined, { pairedBuildId: OLD })).rejects.toMatchObject({ indexFault: "missing" });
+    expect(await fetchSnapshotIndex(undefined, { pairedBuildId: OLD })).toBeNull();
+    expect(asked).toEqual(["/snapshots/index.json", "/snapshots/index.json"]);
+    for (const pin of ["", "wasm64-XYZ", "../../evil", OLD.toUpperCase(), `${OLD}0`, ` ${OLD}`]) {
+      asked = site({ ...WINDOW, ...COPIES, [`/snapshots/index.${pin}.json`]: () => json(snapshotIndex(OLD)) });
+      expect((await fetchSnapshotIndex(undefined, { pairedBuildId: pin }))?.snapshots[0]?.runtime, pin).toBe(NEW);
+      expect(asked, pin).toEqual(["/snapshots/index.json"]);
+    }
+  });
+});
+
 describe("installArtifacts: both indexes", () => {
   it("in the window, a shell pinned to OLD boots OLD's profile index and snapshot index", async () => {
     vi.stubGlobal("__QED64_BUILD_ID__", OLD);
@@ -137,12 +224,18 @@ describe("installArtifacts: both indexes", () => {
     expect(asked).toEqual(["/profiles/index.json", "/snapshots/index.json"]);
   });
 
-  it("a missing or HTML profile-index copy keeps the mutable index; profiles: \"none\" keeps its lenient empty index without asking for a copy", async () => {
+  it("a missing, HTML or mispaired profile-index copy keeps the mutable index; profiles: \"none\" keeps its lenient empty index without asking for a copy", async () => {
     vi.stubGlobal("__QED64_BUILD_ID__", OLD);
     for (const answer of [notFound, html]) {
       const asked = site({ ...WINDOW, [PROF_COPY]: answer });
       const a = await installArtifacts(sink(), { overrides: "none", profiles: [], runtime, snapshots: null });
       expect(a.index.runtime.buildId).toBe(NEW);
+      expect(asked).toEqual(["/profiles/index.json", PROF_COPY]);
+    }
+    for (const answer of [() => json(profileIndex(NEW)), () => json({ schema: "qed64.profile-index/v1", profiles: [] })]) {
+      const asked = site({ ...WINDOW, [PROF_COPY]: answer }); // a copy of another runtime's pairing, or of none
+      const a = await installArtifacts(sink(), { overrides: "none", profiles: [], runtime, snapshots: null });
+      expect(a.index.runtime?.buildId).toBe(NEW);
       expect(asked).toEqual(["/profiles/index.json", PROF_COPY]);
     }
     const asked = site({ ...COPIES });
