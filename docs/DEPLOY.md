@@ -238,7 +238,13 @@ Promote checklist, in order:
    `snapshots/index.json` or `profiles/index.json` names another runtime
    and that runtime has no copy in R2 yet, it copies the mutable file to
    that runtime's per-build name inside R2 (a server-side `rclone copyto`;
-   an existing copy is never overwritten); (b) uploads this runtime's two
+   an existing copy is never overwritten). (a) fails closed: only an index
+   `rclone lsf` does not list counts as absent; a listed index must be
+   read (`rclone cat` exit 0), and an `lsf` or `cat` that fails (an R2
+   5xx, throttling, a dropped connection) refuses with `cannot check R2
+   (…)`, exit 3, before any write, since an unreadable index taken for an
+   absent one would leave the deployed pairing unpinned; every read comes
+   before the first copy. (b) uploads this runtime's two
    copies from the mutable files; (c) uploads `public/snapshots/` (without
    any local per-build copy) and `profiles/index.json`. It uploads its own
    checkout's `public/`: after an adoption, the checkout whose `public/` is
@@ -258,7 +264,8 @@ deploy). Upload-then-deploy (not the reverse) remains the order: a shell
 deployed before its upload finds neither its snapshots nor its copies.
 From the first deploy of a shell that reads the copies on, step 2 (a)
 makes sure the copies of the pairing it pins exist before the mutable files
-change, whether or not anyone uploaded them earlier.
+change, whether or not anyone uploaded them earlier, or the upload refuses
+(exit 3) without writing anything when R2 cannot be read: rerun it.
 
 Optional, after step 1: `node pipeline/release/release-manifest.mjs --commit
 HEAD --out release.json` writes the `qed64.release/v1` manifest of the
@@ -311,6 +318,21 @@ Worker routes by the release record (`infra/worker.js`:
   keeps `errorCacheControl: null` on its own paths, so a missing snapshot
   still gets the path rule; adopting `errorCacheControl: "no-store"` is
   part of the hardened decision, A4, and recommended.)
+- **The fork's cache rule is stale (relay, HARDENING #64).** The fork's
+  `formats/HOSTING.md` rule 8 calls QED64's `isImmutable` the rule every
+  consumer shares and quotes it, but quotes the version before #64
+  (`/\/index\.json$/`); its Python reference server's `MUTABLE` regex has
+  the same gap. A site that copies either serves the per-build index copies
+  `immutable` for a year (their names carry 16 hex), so a shared cache can
+  keep a copy a same-runtime rebake rewrote (browsers revalidate anyway: the
+  shell fetches indexes with `cache: "no-cache"`). The fork is not QED64's
+  to edit: its owner, with the next release-format change, makes rule 8's
+  mutable test
+  `/\/runtime-manifest(\.[^/]*)?\.json$/.test(p) || /\/(?:profiles-)?index(\.[^/]*)?\.json$/.test(p)`
+  and the Python one
+  `r"/runtime-manifest(\.[^/]*)?\.json$|/(?:profiles-)?index(\.[^/]*)?\.json$"`.
+  Until then, consumers import `isImmutable` from `qed64/edge` (the
+  showcase does) rather than copy the snippet.
 - **Adoption order.** (1) The release's owner uploads
   `lean4-wasm64/<id>/` (HOSTING.md's three rclone passes) and confirms it
   complete. (2) QED64 runs `scripts/upload-artifacts.sh`: it refuses unless
@@ -319,8 +341,10 @@ Worker routes by the release record (`infra/worker.js`:
   fails for a local reason, such as no `qed64-r2` remote, expired
   credentials or no network, prints `cannot check R2 (rclone lsf exit N)`
   instead of the not-in-R2 refusal; both exit 3) and unless the profile
-  index is that runtime's too, pins R2's current pairing and this runtime's
-  per-build index copies ("Atomic promotes", step 2), then uploads
+  index is that runtime's too, pins R2's current pairing (a read of R2's
+  mutable indexes that fails is the same `cannot check R2`, exit 3, before
+  any write) and this runtime's per-build index copies ("Atomic promotes",
+  step 2), then uploads
   `public/snapshots/` and `public/profiles/index.json`. (3) One deploy of
   the shell and the Worker together: the user pushes `main` (CI runs
   `scripts/deploy-app.sh`). The shell and the Worker always ship in the same

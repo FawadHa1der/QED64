@@ -1680,7 +1680,12 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   `…/index.<x>.json` and `…/profiles-index.<x>.json` revalidating (they
   carry a 16-hex buildId, which the digest rule alone made immutable, also
   for a 404); every other path keeps its rule. No export or type changes:
-  `EMBED_API_REVISION` stays `1.0.0-pre.6`.
+  `EMBED_API_REVISION` stays `1.0.0-pre.6`. A site that takes its cache
+  rule from the fork's `formats/HOSTING.md` rule 8 (its `isImmutable`
+  snippet, or its Python reference server's `MUTABLE`) still has the old
+  `/\/index\.json$/` and serves both copies `immutable` for a year: that
+  text is the fork owner's to update (relay in HARDENING #64); import
+  `qed64/edge`'s `isImmutable` instead of copying it.
 - **`qed64/edge` routes a toolchain release (plan step B2b, 2026-10-06):**
   additive options, every default unchanged (`QED64_LEGACY` and the hardened
   defaults keep `release: null`). `release` takes a `lean4-wasm64.release/v1`
