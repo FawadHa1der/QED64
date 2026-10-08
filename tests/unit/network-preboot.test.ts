@@ -334,6 +334,33 @@ describe("a short transfer is a network failure, so the rule fires for it (the b
     relay.clientPort.close();
   });
 
+  it("through the relay, without a Content-Length: the index's transfer size reaches the checker's stream, so the cut is network too", async () => {
+    // A close-delimited body (no Content-Length) that ends short on every request. The prefetch worker has the
+    // index's transfer (raw-cache.ts posts it) and fails with the transfer wording; the boot's cause, though, is the
+    // checker's own stream of the same URL, which can say so only when loadSnapshot passes it the same expectation.
+    // This fake Lean worker does what lean.worker.js does with and without it (short-transfer.test.ts runs that).
+    const SHORT_NO_CL = `the transfer of init.x.snapz ended early: received 25 of ${INIT.transfer} bytes`;
+    vi.mocked(prefetchRaw).mockResolvedValue(prefetchFailed(SHORT_NO_CL));
+    const boots: Array<ReturnType<typeof vi.fn>> = [];
+    const transfers: unknown[] = [];
+    const relay = new LspRelay(() => {
+      const x = session();
+      x.loadSnapshot.mockImplementation(async (...args: unknown[]) => {
+        const transferBytes = args[5];
+        transfers.push(transferBytes);
+        throw workerFailed(typeof transferBytes === "number" && transferBytes > 0 ? SHORT_NO_CL : TRUNCATED);
+      });
+      boots.push(x.boot as never);
+      return x.s;
+    }, { status() {} }, () => Promise.resolve());
+    await vi.waitFor(() => expect(relay.state.kind).toBe("halted"));
+    expect(transfers).toEqual([INIT.transfer]); // only the first attempt reached the checker
+    expect(relay.lastDeath).toMatchObject({ reason: "bootFailed", seq: 3, cause: { kind: "network", subject: "init", message: SHORT_NO_CL } });
+    expect(boots.map((b) => b.mock.calls.length)).toEqual([1, 0, 0]); // without transferBytes: corrupt, [1, 1, 1]
+    expect(prefetchedNames()).toEqual(["init", "init", "init"]);
+    relay.clientPort.close();
+  });
+
   it("a body that arrived in full and fails the decoder stays corrupt: no pre-boot download, a runtime per attempt as before", async () => {
     vi.mocked(prefetchRaw).mockResolvedValue(prefetchFailed(TRUNCATED));
     const boots: Array<ReturnType<typeof vi.fn>> = [];
@@ -348,6 +375,22 @@ describe("a short transfer is a network failure, so the rule fires for it (the b
     expect(boots.map((b) => b.mock.calls.length)).toEqual([1, 1, 1]); // retrying a corrupt snapshot first would not help
     expect(networkFailedRecently(INIT)).toBe(false);
     relay.clientPort.close();
+  });
+});
+
+describe("LeanSession.loadSnapshot's message", () => {
+  it("carries transferBytes as an optional input field (additive, EMBEDDING §7.7), and omits it when the entry has none", async () => {
+    const posted = async (...args: unknown[]) => {
+      FakeLeanWorker.posted = [];
+      const { s, loadSnapshot } = session();
+      loadSnapshot.mockRestore(); // the real method, posting to the fake worker
+      void (s.lean as unknown as { loadSnapshot: (...a: unknown[]) => Promise<unknown> }).loadSnapshot(...args).catch(() => {});
+      await vi.waitFor(() => expect(FakeLeanWorker.posted.filter((m) => m.type === "loadSnapshot")).toHaveLength(1));
+      return (FakeLeanWorker.posted.find((m) => m.type === "loadSnapshot") as { input?: Record<string, unknown> }).input;
+    };
+    const base = { url: INIT.url, name: "init.snap", expectedBytes: 100, cacheKey: "k", runtime: BOOTED };
+    expect(await posted(INIT.url, "init.snap", 100, "k", BOOTED, 50)).toStrictEqual({ ...base, transferBytes: 50 });
+    expect(await posted(INIT.url, "init.snap", 100, "k", BOOTED)).toStrictEqual(base);
   });
 });
 

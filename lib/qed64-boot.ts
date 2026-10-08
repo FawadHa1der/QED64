@@ -347,7 +347,10 @@ export async function loadSnapshotForBoot(
     // The index entry's `runtime` (buildId that baked it) rides along so the worker
     // can refuse an unpaired snapshot with SNAPSHOT_UNPAIRED instead of trapping
     // (snapshots are binary-paired to the runtime; artifact discipline, review C6).
-    const r = await qs.session.loadSnapshot(entry.url, `${name}.snap`, entry.bytes, snapshotCacheKey(entry), entry.runtime);
+    // `transfer` (the compressed size) lets the worker's own stream call a body
+    // that ends short of it a network failure even without a Content-Length
+    // (HARDENING #63 follow-up 1): this stream's error is the boot's cause.
+    const r = await qs.session.loadSnapshot(entry.url, `${name}.snap`, entry.bytes, snapshotCacheKey(entry), entry.runtime, entry.transfer);
     if (r.success) { qs.loadedSnapshots.add(name); clearNetworkFailure(entry); } // the checker streamed it, or read the cache
     else qs.lastFailure = { kind: "corrupt", stage: "snapshot", subject: name, code: "SNAPSHOT_LOAD_RESULT", message: `the Lean loader refused the ${name} snapshot region` };
     return r.success;

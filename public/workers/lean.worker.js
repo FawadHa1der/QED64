@@ -1765,7 +1765,7 @@ async function loadSnapshot(msg) {
     fail(msg.requestId, new Error("Malformed loadSnapshot input."), "INVALID_MESSAGE", true);
     return;
   }
-  const { url, name, expectedBytes, cacheKey, runtime } = msg.input;
+  const { url, name, expectedBytes, cacheKey, runtime, transferBytes } = msg.input;
   const safeName = String(name || "boot.snap").replace(/[^A-Za-z0-9._-]/g, "_");
   // Same origin only (HARDENING #57): a region is committed to this site's
   // cache under the key the index names and loaded on every later visit.
@@ -1864,15 +1864,19 @@ async function loadSnapshot(msg) {
       // plain olean bytes ("incorrect header check", HARDENING #19). Sniff
       // the magic on the first chunk instead.
       //
-      // A body that ENDS short of its Content-Length (when it is not
-      // content-encoded: an encoded body's length counts other bytes than the
-      // stream yields) errors with the transfer failure instead of closing,
-      // so the decoder never flushes a short input into a "corrupt" verdict.
-      // Content-Length only: the index's transfer size would be a new
-      // loadSnapshot field (docs/EMBEDDING.md §7.7), and the prefetch worker,
-      // which has it, runs first.
+      // A body that ENDS short of the compressed bytes it should carry errors
+      // with the transfer failure instead of closing, so the decoder never
+      // flushes a short input into a "corrupt" verdict. The expectation is
+      // the response's Content-Length when the body is not content-encoded
+      // (an encoded body's length counts other bytes than the stream
+      // yields), else the index's transfer size (`transferBytes`, an
+      // optional input field: docs/EMBEDDING.md §7.7, messages change
+      // additively) once the first chunk shows gzip, exactly as
+      // snapshot-prefetch.worker.js does. The boot's cause comes from THIS
+      // stream when the prefetch failed first, so it must see a cut the
+      // same way (HARDENING #63 follow-up 1).
       const encoding = (response.headers.get("content-encoding") || "").trim().toLowerCase();
-      const expectedTransfer = !encoding || encoding === "identity" ? Number(response.headers.get("content-length")) || 0 : 0;
+      let expectedTransfer = !encoding || encoding === "identity" ? Number(response.headers.get("content-length")) || 0 : 0;
       const rawReader = response.body.getReader();
       const head = await rawReader.read();
       if (head.done || !head.value) {
@@ -1881,6 +1885,7 @@ async function loadSnapshot(msg) {
       }
       if (head.value[0] === 0x3c) throw new Error("snapshot fetch: the server answered HTML, not a snapshot");
       const isGzip = head.value.length >= 2 && head.value[0] === 0x1f && head.value[1] === 0x8b;
+      if (!expectedTransfer && isGzip && typeof transferBytes === "number" && transferBytes > 0) expectedTransfer = transferBytes;
       let arrived = head.value.length;
       const replay = new ReadableStream({
         start(controller) {

@@ -104,9 +104,10 @@ function sandboxBase(fetchImpl: () => unknown) {
 
 // ------------------------------------------------------------ snapshot-prefetch.worker.js
 
-/** A fake OPFS directory: what rawPrefetch touches (file handles, a sync access handle, move, removeEntry). */
-function fakeOpfs() {
-  const files = new Map<string, Uint8Array>();
+/** A fake OPFS directory: what rawPrefetch touches (file handles, a sync access handle, move, removeEntry).
+ * `seed`: files already there (an old compressed `<cacheKey>` entry, which rawPrefetch prefers to the network). */
+function fakeOpfs(seed: Record<string, Uint8Array> = {}) {
+  const files = new Map<string, Uint8Array>(Object.entries(seed));
   const notFound = () => Object.assign(new Error("not found"), { name: "NotFoundError" });
   const dir = {
     async getDirectoryHandle() { return dir; },
@@ -135,17 +136,19 @@ function fakeOpfs() {
 }
 
 type Report = { status: string; error?: string; bytes?: number };
-/** Run the real prefetch worker once: post one request, resolve with its final report. */
-async function prefetch(served: Served, extra: Record<string, unknown> = {}): Promise<{ last: Report; files: Map<string, Uint8Array> }> {
-  const opfs = fakeOpfs();
-  const sandbox = sandboxBase(() => respond(served));
+/** Run the real prefetch worker once: post one request, resolve with its final report. `served: null` = a fetch
+ * would fail the test (counted in `fetches`). */
+async function prefetch(served: Served | null, extra: Record<string, unknown> = {}, seed: Record<string, Uint8Array> = {}): Promise<{ last: Report; files: Map<string, Uint8Array>; fetches: number }> {
+  const opfs = fakeOpfs(seed);
+  let fetches = 0;
+  const sandbox = sandboxBase(() => { fetches++; if (!served) throw new Error("fetch must not be called"); return respond(served); });
   sandbox.navigator = opfs.navigator;
   const reports: Report[] = [];
   sandbox.postMessage = (m: Report) => reports.push(m);
   vm.createContext(sandbox);
   vm.runInContext(readFileSync(path.join(workers, "snapshot-prefetch.worker.js"), "utf8"), sandbox, { filename: "snapshot-prefetch.worker.js" });
   await (sandbox.onmessage as (e: { data: unknown }) => Promise<void>)({ data: { url: URL_, cacheKey: "init.k", rawBytes: RAW.length, ...extra } });
-  return { last: reports.at(-1)!, files: opfs.files };
+  return { last: reports.at(-1)!, files: opfs.files, fetches };
 }
 
 describe("snapshot-prefetch.worker.js: a short transfer is network, a full one that fails the decoder is corrupt", () => {
@@ -167,6 +170,15 @@ describe("snapshot-prefetch.worker.js: a short transfer is network, a full one t
     const { last } = await prefetch({ bytes: HALF, headers: { "content-type": "application/octet-stream" } }, { transferBytes: GZ.length });
     expect(last.error).toBe(`the transfer of ${FILE} ended early: received ${HALF.length} of ${GZ.length} bytes`);
     expect(failureKindOf(undefined, last.error!)).toBe("network");
+  });
+
+  it("a truncated compressed cache entry is local damage, not the transfer: transferBytes applies to the network only", async () => {
+    // An old `<cacheKey>` entry (compressed, half its bytes) is the source rawPrefetch prefers; raw-cache.ts always
+    // posts transferBytes, but a short LOCAL file must stay corrupt, or storage damage would arm #63's network memory.
+    const { last, fetches } = await prefetch(null, { transferBytes: GZ.length }, { "init.k": HALF });
+    expect(fetches).toBe(0);
+    expect(last.error).toBe("Compressed input was truncated.");
+    expect(failureKindOf(undefined, last.error!)).toBe("corrupt");
   });
 
   it("a body that ends before its first byte is the transfer too, not an empty source", async () => {
@@ -228,10 +240,10 @@ function leanWorker() {
     },
   });
   let seq = 0;
-  async function load(s: Served): Promise<{ error?: { code: string; message: string } }> {
+  async function load(s: Served, extra: Record<string, unknown> = {}): Promise<{ error?: { code: string; message: string } }> {
     served = s;
     const requestId = `snap-${++seq}`;
-    listeners.message!({ data: { protocol: 1, requestId, type: "loadSnapshot", input: { url: URL_, name: "init.snap", expectedBytes: RAW.length } } });
+    listeners.message!({ data: { protocol: 1, requestId, type: "loadSnapshot", input: { url: URL_, name: "init.snap", expectedBytes: RAW.length, ...extra } } });
     await expect.poll(() => posted.find((m) => m.requestId === requestId && (m.type === "error" || m.type === "result")), { timeout: 5000 }).toBeTruthy();
     hooks.frontDoor.host({ state: "ready" });
     return posted.find((m) => m.requestId === requestId && (m.type === "error" || m.type === "result"))!;
@@ -268,7 +280,23 @@ describe("lean.worker.js loadSnapshot: the checker's own stream classifies a sho
     expect(failureKindOf(bad.error!.code, bad.error!.message)).toBe("corrupt");
   });
 
-  it("Content-Length only (no new loadSnapshot field): without one, or for an encoded body, the decoder's words as before", async () => {
+  it("no Content-Length: the index's transfer size (the optional transferBytes input) is the expectation, as in the prefetch worker", async () => {
+    // The shape the checker's stream decides the boot's cause in (HARDENING #63 follow-up 1): the prefetch failed
+    // first, then this stream of the same URL ends short with no Content-Length (a close-delimited body).
+    const before = w.loaded.length;
+    const r = await w.load({ bytes: HALF, headers: { "content-type": "application/octet-stream" } }, { transferBytes: GZ.length });
+    expect(r.error).toMatchObject({ code: "SNAPSHOT_FAILED", message: `the transfer of ${FILE} ended early: received ${HALF.length} of ${GZ.length} bytes` });
+    expect(failureKindOf(r.error!.code, r.error!.message)).toBe("network");
+    expect(w.loaded.length).toBe(before);
+    // The whole body against the same expectation reaches the region loader.
+    const full = await w.load({ bytes: GZ, headers: { "content-type": "application/octet-stream" } }, { transferBytes: GZ.length });
+    expect(full.error!.message).toBe("stop: the region arrived");
+    // A Content-Length, when present, wins over transferBytes.
+    const cl = await w.load({ bytes: HALF, headers: announced(HALF.length) }, { transferBytes: GZ.length });
+    expect(cl.error!.message).toBe("Compressed input was truncated.");
+  });
+
+  it("without an expected size (no Content-Length, no transferBytes) or for an encoded body, the decoder's words as before", async () => {
     const none = await w.load({ bytes: HALF, headers: { "content-type": "application/octet-stream" } });
     expect(none.error!.message).toBe("Compressed input was truncated.");
     const encoded = await w.load({ bytes: HALF, headers: { ...announced(GZ.length), "content-encoding": "gzip" } });
