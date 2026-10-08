@@ -147,7 +147,7 @@ const NOT_A_PAIRED_COPY: [string, () => Response][] = [
 describe("loadSnapshotIndex / fetchSnapshotIndex: pairedBuildId (a direct caller, lean4game's game boot)", () => {
   it("the copy's path: index.<buildId>.json beside the given index, its query and fragment dropped", () => {
     expect(pairedIndexCopyUrl("/snapshots/index.json", OLD)).toBe(SNAP_COPY);
-    expect(pairedIndexCopyUrl("/games/robo/index.json?v=3#x", OLD)).toBe(`/games/robo/index.${OLD}.json`);
+    expect(pairedIndexCopyUrl("/games/robo/index.json?from=/a/b#/c", OLD)).toBe(`/games/robo/index.${OLD}.json`);
     expect(pairedIndexCopyUrl(`${ORIGIN}/snapshots/index.json`, OLD)).toBe(`${ORIGIN}${SNAP_COPY}`);
     expect(pairedIndexCopyUrl("index.json", OLD)).toBe(`index.${OLD}.json`);
     expect(pinnedIndexUrls(OLD).snapshots).toBe(pairedIndexCopyUrl("/snapshots/index.json", OLD));
