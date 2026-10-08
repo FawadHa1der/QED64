@@ -782,9 +782,9 @@ runtime, not three. A first attempt and a cached snapshot boot as before
 A body that ends early is `network`, whatever a decoder then says about
 the short input: both snapshot streams (the raw prefetch and the Lean
 worker's own) count the compressed bytes against the response's
-Content-Length (the prefetch also against the index entry's `transfer`
-when there is none) and fail a short one with "the transfer of <file>
-ended early: received <n> of <expected> bytes". `corrupt` means the bytes
+Content-Length (both also against the index entry's `transfer` when there
+is none and the body is gzip) and fail a short one with "the transfer of
+<file> ended early: received <n> of <expected> bytes". `corrupt` means the bytes
 arrived in full and failed a check (HARDENING #63, follow-up 1).
 
 Classification is per throw, from the error code **and** message:
@@ -1628,14 +1628,19 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   raw-cache and qed64-boot functions are not in the barrel):
   `EMBED_API_REVISION` stays `1.0.0-pre.6`.
   Follow-up (2026-10-08, the browser lane): a `.snapz` body that ends
-  cleanly short of its announced size (Content-Length; for the prefetch
-  also the index's `transfer`) is now `network` with the message "the
+  cleanly short of its announced size (Content-Length, or without one the
+  index's `transfer` for a gzip body, in both streams) is now `network`
+  with the message "the
   transfer of <file> ended early: received <n> of <expected> bytes", not
   `corrupt` from the decoder's "Compressed input was truncated."; so the
   rule above fires for that shape of a cut too. A body that arrived in full
   and fails the decoder stays `corrupt` (§7.2). The prefetch worker's
-  request gains an optional `transferBytes`; `loadSnapshot`'s message, the
-  worker revision and `PROTOCOL` are unchanged. A clean short end changes
+  request and `loadSnapshot`'s input each gain an optional `transferBytes`
+  (`LeanSession.loadSnapshot`'s optional 6th argument; `loadSnapshotByName`
+  passes the entry's `transfer`), additively as §7.7 allows: an older
+  worker ignores the field, and without it a worker checks the
+  Content-Length only. The worker revision, `PROTOCOL` and the closure's
+  `requests` are unchanged. A clean short end changes
   the prefetch warning's text after "raw prefetch error: " to that message
   (a transport error keeps "network error").
 - **`qed64/edge` routes a toolchain release (plan step B2b, 2026-10-06):**

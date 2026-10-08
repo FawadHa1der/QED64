@@ -378,8 +378,10 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   lines "Session disposed." and "Outdated RPC session" are known, and so
   is the EMPTY `console.error` of a boot that reaches elaborating, which
   is monaco-vscode-api's NotificationService printing Lean's own
-  empty-message -32800 reply, but only when the lane's LSP tap saw such a
-  reply in the 3 s before it or the 0.5 s after). Every console line (with
+  empty-message -32800 reply, but only when it comes from the page's main
+  bundle and takes its own unused -32800 reply, seen by the lane's LSP tap
+  in the 3 s before it or the 0.5 s after: one reply per line, in time
+  order, as the showcase pairs). Every console line (with
   its arguments and source location when its text is empty), the LSP error
   replies, the `.snapz` requests, the runtime starts and the relay's
   states are printed. Exit 0 when every scenario passes, 1 FAIL. Run it

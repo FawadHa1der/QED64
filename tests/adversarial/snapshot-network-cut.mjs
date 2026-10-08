@@ -63,13 +63,18 @@
 // that Lean itself sends with an EMPTY message (the boot-time codeAction the
 // header processing cancels) reaches it, so Chromium records
 // console.error(""). Third-party, Lean's own reply, not QED64 output; the
-// showcase allowlists the same line the same way (tests/ux/selectors.json
-// consoleAllowlist.consoleError[0]: text ^$, pairWith -32800 within -3 s /
-// +0.5 s, fail-closed without its LSP tap). The lane taps the relay's
-// toClient (an init script wrapping qed64.relay.toClient, reporting every LSP
-// error reply through an exposed binding that survives the reload) and
-// counts an empty console.error as known only when a -32800 reply arrived in
-// the 3 s before it or the 0.5 s after; an unpaired one FAILS.
+// showcase allowlists that line (tests/ux/selectors.json
+// consoleAllowlist.consoleError[0]: text ^$, the main page bundle at a pinned
+// line, pairWith -32800 within -3 s / +0.5 s, fail-closed without its LSP
+// tap; tests/ux/bringup/console.mjs pairs one-to-one). The lane taps the
+// relay's toClient (an init script wrapping qed64.relay.toClient, reporting
+// every LSP error reply through an exposed binding that survives the reload)
+// and pairs the same way: each empty console.error, in time order, from the
+// page's main bundle (the module script index.html loads; not a worker or
+// the InfoView), is known only when it can take its OWN unused -32800 reply
+// from the 3 s before it or the 0.5 s after. One reply excuses one line; an
+// unpaired one, or one from elsewhere, FAILS. The lane does not pin the
+// bundle's line (it changes per build; the showcase pins it per QED64 pin).
 // Usage: node tests/adversarial/snapshot-network-cut.mjs --url http://localhost:5185/ [--scenarios once,lasting] [--cut-bytes 1000000] [--cut-mode truncate|abort] [--buffer 'import Mathlib\n\n#check (1 : Nat)\n'] [--wait-ms 300000] [--headed]
 // Exit 0 = every scenario passed, 1 = one failed (2 = usage). Serve a build
 // (scripts/serve-dist.mjs) and run it through the host browser lock.
@@ -189,6 +194,13 @@ async function run(browser, sc) {
       bootcard: card ? card.className : null, bootlabel: document.getElementById("bootlabel")?.textContent ?? null,
     };
   }).catch(() => null);
+  /** The page's main bundle (the module script index.html loads), by path: where the empty NotificationService
+   * console.error comes from (header comment). Read after each load; a served build's name is content-hashed. */
+  const mainBundles = new Set();
+  const noteMainBundle = async () => {
+    const src = await page.evaluate(() => document.querySelector('script[type="module"][src]')?.getAttribute("src") ?? null).catch(() => null);
+    if (src) mainBundles.add(new URL(src, url).pathname);
+  };
   const timeline = [];
   /** Sample until `done(s)` or the wait runs out; `phase` labels the timeline rows. */
   async function watch(phase, done) {
@@ -209,6 +221,7 @@ async function run(browser, sc) {
   const row = { sc, cutMode: CUT_MODE, cutBytes: CUT_BYTES };
   try {
     await page.goto(url, { waitUntil: "domcontentloaded" });
+    await noteMainBundle();
     if (sc === "once") {
       const w = await watch("boot", (s) => s.phase === "ready" || s.relay === "halted");
       await sleep(2000); // stragglers
@@ -222,6 +235,7 @@ async function run(browser, sc) {
       const initBefore = runtimeInit.length;
       if (crashedAt === null) {
         await page.reload({ waitUntil: "domcontentloaded" });
+        await noteMainBundle();
         const r = await watch("reload", (s) => s.phase === "ready" || s.relay === "halted");
         Object.assign(row, { reload: { readyAfterMs: r.last?.phase === "ready" && r.at !== null ? r.at - tReload : null, last: r.last, runtimeStarts: runtimeInit.length - initBefore } });
       }
@@ -231,12 +245,20 @@ async function run(browser, sc) {
     await context.close().catch(() => {});
   }
   const judged = consoleLines.filter((l) => /^(?:error|warning|pageerror|worker:error|worker:warning)$/.test(l.type));
-  const cancelled = lspErrors.filter((e) => e.code === -32800);
-  /** The empty NotificationService console.error, explained by its own LSP RequestCancelled reply (header comment). */
-  const pairedEmpty = (l) => l.type === "error" && l.text === "" && cancelled.some((e) => e.t >= l.t - PAIR_BEFORE_MS && e.t <= l.t + PAIR_AFTER_MS);
+  /** The empty NotificationService console.error, explained by its OWN LSP RequestCancelled reply (header
+   * comment): one-to-one in time order, as the showcase's classifyConsole pairs, and only from the main bundle. */
+  const replies = lspErrors.filter((e) => e.code === -32800).map((e) => ({ t: e.t, used: false })).sort((a, b) => a.t - b.t);
+  const fromMainBundle = (l) => typeof l.where === "string" && mainBundles.has(l.where.replace(/:\d+:\d+$/, ""));
+  const paired = new Set();
+  for (const l of judged.filter((x) => x.type === "error" && x.text === "").sort((a, b) => a.t - b.t)) {
+    if (!fromMainBundle(l)) continue;
+    const k = replies.find((e) => !e.used && e.t >= l.t - PAIR_BEFORE_MS && e.t <= l.t + PAIR_AFTER_MS);
+    if (k) { k.used = true; paired.add(l); }
+  }
+  const pairedEmpty = (l) => paired.has(l);
   const known = (l) => KNOWN.test(l.text) || pairedEmpty(l);
   Object.assign(row, {
-    crashedAt, snapz, cutsAt: cuts, runtimeInit, wasmChunks: wasmChunks.length, timeline, consoleLines, lspErrors,
+    crashedAt, mainBundles: [...mainBundles], snapz, cutsAt: cuts, runtimeInit, wasmChunks: wasmChunks.length, timeline, consoleLines, lspErrors,
     prefetchWarning: judged.some((l) => PREFETCH_WARNING.test(l.text)),
     outside: judged.filter((l) => !ALLOWED.some((re) => re.test(l.text)) && !known(l)),
     known: judged.filter(known).length,
@@ -297,7 +319,7 @@ try {
       console.log(`  boot card: ${JSON.stringify(row.last?.bootcard ?? null)} / ${JSON.stringify(row.last?.bootlabel ?? null)}`);
       console.log(`  reload: ${JSON.stringify(row.reload ?? null)}`);
     } else console.log(`  ready at: ${row.readyAt === null ? "never" : `${(row.readyAt / 1000).toFixed(1)} s`}; deaths ${row.last?.deaths ?? "?"}`);
-    console.log(`  allowlisted shapes: ${row.shapes.map((x) => `${x.count}× /${x.shape}/`).join(", ")}${row.known ? `; known lines (not judged): ${row.known}, of which empty console.errors paired with a -32800 reply: ${row.pairedEmpty}` : ""}`);
+    console.log(`  allowlisted shapes: ${row.shapes.map((x) => `${x.count}× /${x.shape}/`).join(", ")}${row.known ? `; known lines (not judged): ${row.known}, of which empty console.errors from ${row.mainBundles.join(", ") || "(no main bundle seen)"} paired one-to-one with a -32800 reply: ${row.pairedEmpty} (replies: ${row.lspErrors.filter((e) => e.code === -32800).length})` : ""}`);
     for (const l of row.outside) console.log(`  OUTSIDE ALLOWLIST [${(l.t / 1000).toFixed(1)}s] ${l.type}: ${shown(l)}`);
     for (const [what, pass] of checks) console.log(`  ${pass ? "ok  " : "FAIL"} ${what}`);
     console.log(`  RESULT ${sc} :: ${JSON.stringify({ ...row, consoleLines: row.consoleLines.length })}`);
