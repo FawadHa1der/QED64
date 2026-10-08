@@ -332,6 +332,16 @@ Page-tier facts (stable, for preflights and deploy tools):
 - **The runtime manifest.** `/runtime/runtime-manifest.<buildId>.json`
   (immutable, fetched first by a shell built for that buildId) and
   `/runtime/runtime-manifest.json` (mutable).
+- **The per-build index copies** (HARDENING #64).
+  `/snapshots/index.<buildId>.json` and `/snapshots/profiles-index.<buildId>.json`
+  are the snapshot and profile indexes of that runtime's pairing. A shell
+  built for that buildId reads the mutable `/snapshots/index.json` and
+  `/profiles/index.json` first; only when one names another runtime (an
+  upload of the next pairing ran ahead of its deploy) does it read its
+  runtime's copy, used when it is an index (a 404, HTML or a network error
+  keeps the mutable one). A paired site (the showcase's origin, lean4game's,
+  a local tree) is never asked for a copy. `?snapshots=<dir>` and
+  `?profiles=<dir>` read only their own `index.json`.
 - **`dist/` layout.**
   - `index.html`, `assets/*`, `workers/*`, `infoview/*`, and
     `qed64-build.json`;
@@ -944,6 +954,15 @@ installArtifacts(ui, opts?: {
 resolveRuntimeManifest(overrides, { pinnedBuildId? }): Promise<RuntimeManifest>;
 fetchSnapshotIndexFor(overrides): Promise<SnapshotIndex | null>;   // a requested overlay that fails is a named error
 ```
+
+The boot's fetches, in order: the profile index, the runtime manifest, the
+core pack (`profiles: "core"`), the snapshot index. With a pinned buildId
+(`__QED64_BUILD_ID__` defined by the bundler, §6.1), an index whose mutable
+path names another runtime is followed by its per-build copy
+(`/snapshots/profiles-index.<buildId>.json`, `/snapshots/index.<buildId>.json`,
+§4), used when it is an index; a paired index, and every index without a
+pinned buildId, is read from its mutable path only, as before. A `runtime`
+or `snapshots` passed in is not fetched.
 
 A game page wants `{overrides: "none", profiles: "none"}`, or its own
 overrides routed through `validateBootOverrides` (lean4game parses its URL
@@ -1643,6 +1662,25 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   `requests` are unchanged. A clean short end changes
   the prefetch warning's text after "raw prefetch error: " to that message
   (a transport error keeps "network error").
+- **The indexes are pinned like the runtime manifest (HARDENING #64,
+  2026-10-08):** the upload of a new pairing replaced the mutable
+  `/snapshots/index.json` and `/profiles/index.json` while the deployed shell
+  still booted the previous runtime, so every new visit in that window read
+  snapshot entries baked for the next runtime and failed `SNAPSHOT_UNPAIRED`
+  until the deploy. A shell with a pinned buildId (`__QED64_BUILD_ID__`)
+  still reads the mutable paths first; when one names another runtime, it
+  reads that buildId's copy, `/snapshots/index.<buildId>.json`
+  (`fetchSnapshotIndexFor` without an overlay) or
+  `/snapshots/profiles-index.<buildId>.json` (`installArtifacts` without
+  `?profiles=`), and uses it unless it answers a 404, HTML, a network error
+  or a body that is not an index (§4, §7.6). A paired index costs no extra
+  request, so a site that does not publish the copies (the showcase's,
+  lean4game's) sees none and no 404; without a pinned buildId nothing
+  changes. `qed64/edge`'s `isImmutable` now calls
+  `…/index.<x>.json` and `…/profiles-index.<x>.json` revalidating (they
+  carry a 16-hex buildId, which the digest rule alone made immutable, also
+  for a 404); every other path keeps its rule. No export or type changes:
+  `EMBED_API_REVISION` stays `1.0.0-pre.6`.
 - **`qed64/edge` routes a toolchain release (plan step B2b, 2026-10-06):**
   additive options, every default unchanged (`QED64_LEGACY` and the hardened
   defaults keep `release: null`). `release` takes a `lean4-wasm64.release/v1`

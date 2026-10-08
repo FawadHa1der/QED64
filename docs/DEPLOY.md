@@ -173,8 +173,9 @@ its own checkout's `public/`, so make that tree another worktree's own real
 or promote the same staging into the uploading checkout's real `public/`
 first (`promote-staging.mjs --staging work/staging/<buildId> --public
 <checkout>/public`) and upload there. The digest-named chunk files make mixed CDN caches
-harmless; the mutable files (`runtime-manifest.json`, `snapshots/index.json`)
-are served `must-revalidate`.
+harmless; the mutable files (`runtime-manifest.json`, `snapshots/index.json`,
+`profiles/index.json`) and their per-build copies are served
+`must-revalidate`.
 
 ## Atomic promotes (shell ↔ runtime pairing)
 
@@ -191,6 +192,26 @@ broken window whichever went first. The pinning scheme closes it:
 - The shell build injects the `buildId` of the manifest committed in
   `public/runtime/runtime-manifest.json` and asks for the PINNED manifest
   first, falling back to the mutable path (dev, pre-scheme shells).
+- The two site-owned indexes are pinned the same way (HARDENING #64). They
+  are QED64's own, so `upload-artifacts.sh` writes their per-build copies:
+  `snapshots/index.<buildId>.json` and `snapshots/profiles-index.<buildId>.json`
+  (both under `/snapshots/`, which every Worker and record leaves to the
+  site; a `/profiles/index.<buildId>.json` would be routed to the toolchain
+  release, which does not carry it). The shell reads the mutable
+  `snapshots/index.json` and `profiles/index.json` as before; when one names
+  another runtime than the one it pins, it reads its own runtime's copy and
+  uses it when that is an index (a 404 or an HTML answer keeps the mutable
+  one). A paired index costs no extra request, so a site or a local tree
+  without copies never sees a 404 for one. Before this, the mutable
+  indexes were the hole in the scheme: the upload replaced them while the deployed shell still booted
+  the previous runtime, which then read snapshot entries baked for the next
+  one and failed `SNAPSHOT_UNPAIRED` on every new visit until the deploy
+  (2026-10-08, ~10 min). The copies are served `must-revalidate`, like the
+  per-build runtime manifest: a rebake for the same runtime rewrites them
+  under the same name. Locally they are gitignored files beside the tracked
+  indexes, written by `promote-staging.mjs` and `fetch-artifacts` from those
+  indexes' bytes, as `runtime-manifest.<buildId>.json` is; the upload sends
+  them to R2 straight from the mutable files and never sends a local copy.
 - `rclone copy` (never `sync`) keeps every older runtime's chunks in R2,
   so previously-deployed shells keep working during and after a promote.
   Garbage-collect superseded chunk sets deliberately, much later.
@@ -210,13 +231,34 @@ Promote checklist, in order:
    (`toolchain/lean4-wasm64-release.json`) — the shell build reads its
    `buildId`, the Worker its release id.
 2. The release's owner has uploaded `lean4-wasm64/<id>/`; then
-   `scripts/upload-artifacts.sh` — additive; invisible to deployed shells
-   until a shell that pins the new buildId ships. It uploads its own
+   `scripts/upload-artifacts.sh` — additive, and invisible to every deployed
+   shell that reads the per-build index copies (any shell built from
+   HARDENING #64 on) until a shell that pins the new buildId ships. In
+   order, it (a) pins what R2 serves now: when R2's mutable
+   `snapshots/index.json` or `profiles/index.json` names another runtime
+   and that runtime has no copy in R2 yet, it copies the mutable file to
+   that runtime's per-build name inside R2 (a server-side `rclone copyto`;
+   an existing copy is never overwritten); (b) uploads this runtime's two
+   copies from the mutable files; (c) uploads `public/snapshots/` (without
+   any local per-build copy) and `profiles/index.json`. It uploads its own
    checkout's `public/`: after an adoption, the checkout whose `public/` is
    the isolated tree, or one the staging was promoted into (above).
+   A rebake for the SAME runtime is visible at once, as before: its copies
+   are rewritten in (b), and the deployed shell, paired with that runtime,
+   boots the new entries.
 3. Push `main` — CI deploys the shell and the Worker together; the shell
-   asks for the runtime it was built against and finds it already in R2.
-   No window. (The full order: "The toolchain release prefix" below.)
+   asks for the runtime and the indexes it was built against and finds them
+   already in R2. No window. (The full order: "The toolchain release
+   prefix" below.)
+
+**Once, for the shell deployed before HARDENING #64.** A shell older than
+the change reads only the mutable indexes, so the first landing that
+uploads while such a shell is live still has the window above (until its
+deploy). Upload-then-deploy (not the reverse) remains the order: a shell
+deployed before its upload finds neither its snapshots nor its copies.
+From the first deploy of a shell that reads the copies on, step 2 (a)
+makes sure the copies of the pairing it pins exist before the mutable files
+change, whether or not anyone uploaded them earlier.
 
 Optional, after step 1: `node pipeline/release/release-manifest.mjs --commit
 HEAD --out release.json` writes the `qed64.release/v1` manifest of the
@@ -243,7 +285,7 @@ Worker routes by the release record (`infra/worker.js`:
 | `/runtime/*` (manifests, per-build manifests, chunks) | `lean4-wasm64/<id>/runtime/*` | the release's owner |
 | `/profiles/*` except `/profiles/index.json` (pack manifests, parts) | `lean4-wasm64/<id>/profiles/*` | the release's owner |
 | `/profiles/index.json` | `profiles/index.json` (bucket root) | QED64 (`upload-artifacts.sh`) |
-| `/snapshots/*` | `snapshots/*` (bucket root) | QED64 (`upload-artifacts.sh`) |
+| `/snapshots/*`, the per-build index copies `/snapshots/index.<buildId>.json` and `/snapshots/profiles-index.<buildId>.json` included | `snapshots/*` (bucket root) | QED64 (`upload-artifacts.sh`) |
 
 - **The record is the single source of the id.**
   `toolchain/lean4-wasm64-release.json` (a byte copy of the published
@@ -276,7 +318,9 @@ Worker routes by the release record (`infra/worker.js`:
   manifest and every snapshot are that release's runtime (an `lsf` that
   fails for a local reason, such as no `qed64-r2` remote, expired
   credentials or no network, prints `cannot check R2 (rclone lsf exit N)`
-  instead of the not-in-R2 refusal; both exit 3), then uploads
+  instead of the not-in-R2 refusal; both exit 3) and unless the profile
+  index is that runtime's too, pins R2's current pairing and this runtime's
+  per-build index copies ("Atomic promotes", step 2), then uploads
   `public/snapshots/` and `public/profiles/index.json`. (3) One deploy of
   the shell and the Worker together: the user pushes `main` (CI runs
   `scripts/deploy-app.sh`). The shell and the Worker always ship in the same
