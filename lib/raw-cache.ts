@@ -279,6 +279,9 @@ function runWorker(entry: SnapshotEntry, key: string, f: Flight, opts: PrefetchR
       finish({ status: "done", bytes: m.bytes ?? entry.bytes });
     };
     arm();
-    w.postMessage({ url: entry.url, cacheKey: key, rawBytes: entry.bytes });
+    // transferBytes: the compressed size the index declares, for a response
+    // without a usable Content-Length (the worker's short-transfer check,
+    // HARDENING #63); an older prefetch worker ignores it.
+    w.postMessage({ url: entry.url, cacheKey: key, rawBytes: entry.bytes, ...(entry.transfer ? { transferBytes: entry.transfer } : {}) });
   });
 }

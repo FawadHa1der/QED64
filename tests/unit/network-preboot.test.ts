@@ -23,7 +23,7 @@ import { downloadBeforeBoot, noteBootNetworkFailure, type ProgressInfo, type Qed
 import { ResidentSession } from "../../lib/resident-session";
 import { LspRelay, type RestartOptions } from "../../lib/lsp-relay";
 import { deathInfo } from "../../frontend/src/page-api";
-import type { FailureCause } from "../../lib/failure";
+import { failureCauseOf, type FailureCause } from "../../lib/failure";
 import type { RuntimeManifest } from "../../lib/client";
 
 const BOOTED = "wasm64-3ab1c6a9da03bc29";
@@ -42,6 +42,15 @@ const CUT: FailureCause = { kind: "network", stage: "snapshot", subject: "mathli
 const cutResult = (subject = "mathlib"): PrefetchRawResult => ({ status: "error", error: { ...CUT, subject } });
 /** The Lean worker's own stream, cut (what loadSnapshotByName classifies as the boot's cause today). */
 const workerCut = () => Object.assign(new Error("network error"), { code: "SNAPSHOT_FAILED" });
+
+/** A body that ended cleanly before its Content-Length (the lane's truncate cut): both snapshot workers' words
+ * (tests/unit/short-transfer.test.ts runs them). Before #63's follow-up the decoder's "Compressed input was
+ * truncated." reached the page instead, classified corrupt, and the network rule never fired. */
+const SHORT = "the transfer of init.x.snapz ended early: received 1000000 of 2000000 bytes";
+const TRUNCATED = "Compressed input was truncated.";
+/** The prefetch worker's report of it, classified as raw-cache.ts runWorker does. */
+const prefetchFailed = (message: string, subject = "init"): PrefetchRawResult => ({ status: "error", error: failureCauseOf(new Error(message), { stage: "snapshot", subject }) });
+const workerFailed = (message: string) => Object.assign(new Error(message), { code: "SNAPSHOT_FAILED" });
 
 /** The Lean worker: records what the session posts (a `boot` request would start the runtime). */
 class FakeLeanWorker {
@@ -296,6 +305,48 @@ describe("through the relay: a download that always fails", () => {
     await vi.waitFor(() => expect(relay.state.kind).toBe("serving"));
     expect(boots.map((b) => b.mock.calls.length)).toEqual([1, 0, 0, 1]);
     expect(networkFailedRecently(INIT) || networkFailedRecently(MATHLIB)).toBe(false);
+    relay.clientPort.close();
+  });
+});
+
+describe("a short transfer is a network failure, so the rule fires for it (the browser lane's truncate cut)", () => {
+  it("the checker's own short stream fails start() with a network cause and is remembered", async () => {
+    const a = session();
+    a.loadSnapshot.mockRejectedValueOnce(workerFailed(SHORT));
+    await expect(a.s.start()).rejects.toMatchObject({ message: "snapshot 'init' failed to load", cause: { kind: "network", code: "SNAPSHOT_FAILED", subject: "init", message: SHORT } });
+    expect(networkFailedRecently(INIT)).toBe(true);
+  });
+
+  it("through the relay: a body cut short on every request halts with the network cause, and only the first attempt boots", async () => {
+    vi.mocked(prefetchRaw).mockResolvedValue(prefetchFailed(SHORT));
+    const boots: Array<ReturnType<typeof vi.fn>> = [];
+    const relay = new LspRelay(() => {
+      const x = session();
+      x.loadSnapshot.mockRejectedValue(workerFailed(SHORT)); // the prefetch failed first; the checker streams it and is cut the same way
+      boots.push(x.boot as never);
+      return x.s;
+    }, { status() {} }, () => Promise.resolve());
+    await vi.waitFor(() => expect(relay.state.kind).toBe("halted"));
+    expect(relay.stats).toMatchObject({ workerDeaths: 3, breakerTrips: 1, reboots: 2 });
+    expect(relay.lastDeath).toMatchObject({ reason: "bootFailed", seq: 3, cause: { kind: "network", stage: "snapshot", subject: "init", message: SHORT } });
+    expect(boots.map((b) => b.mock.calls.length)).toEqual([1, 0, 0]); // the lane's truncate run: was [1, 1, 1]
+    expect(prefetchedNames()).toEqual(["init", "init", "init"]);
+    relay.clientPort.close();
+  });
+
+  it("a body that arrived in full and fails the decoder stays corrupt: no pre-boot download, a runtime per attempt as before", async () => {
+    vi.mocked(prefetchRaw).mockResolvedValue(prefetchFailed(TRUNCATED));
+    const boots: Array<ReturnType<typeof vi.fn>> = [];
+    const relay = new LspRelay(() => {
+      const x = session();
+      x.loadSnapshot.mockRejectedValue(workerFailed(TRUNCATED));
+      boots.push(x.boot as never);
+      return x.s;
+    }, { status() {} }, () => Promise.resolve());
+    await vi.waitFor(() => expect(relay.state.kind).toBe("halted"));
+    expect(relay.lastDeath).toMatchObject({ reason: "bootFailed", cause: { kind: "corrupt", message: TRUNCATED } });
+    expect(boots.map((b) => b.mock.calls.length)).toEqual([1, 1, 1]); // retrying a corrupt snapshot first would not help
+    expect(networkFailedRecently(INIT)).toBe(false);
     relay.clientPort.close();
   });
 });

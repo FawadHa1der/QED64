@@ -30,6 +30,12 @@ describe("failureKindOf: the worker's real messages", () => {
     ["RUNTIME_FETCH_FAILED", "lean.wasm chunk 3 failed SHA-256 verification.", "corrupt"],
     ["RUNTIME_FETCH_FAILED", "lean.wasm chunk 3: 1048576 bytes, expected 4194304.", "corrupt"],
     [undefined, "incorrect header check", "corrupt"],
+    // A body that arrived in full and fails the decoder (Chromium's DecompressionStream words) is corrupt; one that
+    // ENDED before the bytes it announced is the transfer, whatever the decoder said (HARDENING #63).
+    ["SNAPSHOT_FAILED", "Compressed input was truncated.", "corrupt"],
+    [undefined, "The compressed data was not valid.", "corrupt"],
+    ["SNAPSHOT_FAILED", "the transfer of init.b6d945e398b4d55e.snapz ended early: received 1000000 of 61234567 bytes", "network"],
+    [undefined, "the transfer of mathlib.265cd10cbadd1313.snapz ended early: received 0 of 512 bytes", "network"],
     [undefined, "QuotaExceededError: the quota has been exceeded", "storage"],
     ["COMPILE_CRASHED", "something else entirely", "other"],
     ["WORKER_DEP_MISMATCH", "lsp-front-door.js is revision \"2\", lean.worker.js needs 1 (a deploy mixed versions; reload)", "stale"],
@@ -144,7 +150,8 @@ describe("prefetchRaw", () => {
     const r = prefetchRaw(entry, { onProgress: (p) => seen.push(p), workerUrl: "/game/workers/snapshot-prefetch.worker.js" });
     const w = await spawned();
     expect(w.url).toBe("/game/workers/snapshot-prefetch.worker.js");
-    expect(w.posted[0]).toMatchObject({ url: entry.url, rawBytes: 1000 });
+    // transferBytes: the index's compressed size, the worker's short-transfer expectation without a Content-Length (HARDENING #63).
+    expect(w.posted[0]).toMatchObject({ url: entry.url, rawBytes: 1000, transferBytes: 400 });
     w.emit({ status: "progress", bytes: 300, total: 1000, phase: "download" });
     w.emit({ status: "progress", bytes: 900, total: 1000, phase: "inflate" });
     w.emit({ status: "done", bytes: 1000 });

@@ -11,12 +11,13 @@
 export type BootStage = "manifests" | "profile" | "runtime" | "memory" | "snapshot" | "modules" | "warm" | "files" | "done" | "failed";
 export type BootStep = "check" | "download" | "inflate" | "commit" | "verify" | "read" | "load" | "init" | "write";
 
-/** network: the fetch was rejected, the stream was cut, or the server
- * answered 5xx/429 (retrying can help); missing: the server says it does not
+/** network: the fetch was rejected, the stream was cut, the body ended
+ * before the bytes it announced arrived ("the transfer of … ended early"), or
+ * the server answered 5xx/429 (retrying can help); missing: the server says it does not
  * have it — 404/410, an HTML page where a binary or script belongs, a
  * snapshot the index does not list (a deploy problem: retrying cannot help);
- * corrupt: it arrived but is wrong (length, SHA-256, gzip, magic, a region the
- * loader refuses); unpaired: a snapshot of another runtime build; oom: an
+ * corrupt: it arrived IN FULL but is wrong (length, SHA-256, gzip, magic, a
+ * region the loader refuses); unpaired: a snapshot of another runtime build; oom: an
  * allocation or memory reservation failed; storage: OPFS/quota; stale: the
  * site was updated under this page (its worker scripts are of another
  * revision than each other: WORKER_DEP_MISMATCH) — reload the page; other: the
@@ -53,11 +54,22 @@ export function failureKindOf(code: string | undefined, message: string): Failur
   if (status !== undefined && status >= 400 && status < 500 && status !== 408 && status !== 425 && status !== 429) return "missing";
   if (/answered HTML|Unexpected token '?<|<!doctype|text\/html/i.test(message)) return "missing";
   if (code === "MEMORY_FAILED" || /could not allocate|out of memory|Cannot enlarge memory|Array buffer allocation failed|RangeError: .*memory/i.test(message)) return "oom";
+  // A body that ended before the bytes it announced (Content-Length, or the
+  // index's transfer size) is a transfer failure, whatever the decoder then
+  // said about the short input ("Compressed input was truncated."): the
+  // snapshot workers name it so (HARDENING #63). Before the corrupt rule, whose
+  // "truncated" and "expected N bytes" would otherwise claim it.
+  if (TRANSFER_ENDED_EARLY.test(message)) return "network";
   if (/SHA-256 verification|sha256|digest mismatch|checksum|integrity|bad magic|magic|not a compacted-region|index declares|raw size mismatch|compressed data was not valid|Junk found|truncated|short (?:read|region)|unexpected end|incorrect header check|invalid (?:block|stored|distance|code|literal)|gzip|inflate|corrupt|expected \d+ bytes|bytes, expected|empty (?:body|snapshot source)/i.test(message)) return "corrupt";
   if (code === "RUNTIME_FETCH_FAILED" || /\bHTTP \d{3}\b|Failed to fetch|NetworkError|network error|fetch failed|net::ERR_|ERR_NETWORK|ERR_CONNECTION|connection (?:reset|closed|refused)|socket hang up|terminated|The operation was aborted|body stream/i.test(message)) return "network";
   if (/QuotaExceeded|quota|NoModificationAllowed|NotReadableError|getDirectory|createWritable|createSyncAccessHandle|OPFS/i.test(message)) return "storage";
   return "other";
 }
+
+/** The snapshot workers' words for a body that ended short of the bytes it
+ * announced (snapshot-prefetch.worker.js and lean.worker.js loadSnapshot):
+ * "the transfer of <file> ended early: received <n> of <expected> bytes". */
+export const TRANSFER_ENDED_EARLY = /\bthe transfer of .+ ended early\b/;
 
 /** lean.worker.js refused a sibling script of another revision (docs/EMBEDDING.md
  * §7.7): the deployed worker scripts changed under this page. Its cause is

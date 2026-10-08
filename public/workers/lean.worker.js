@@ -1740,6 +1740,16 @@ async function openRawSnapshot(rawKey, expectedBytes) {
   return { handle, size };
 }
 
+/** A body that ends before the bytes it announced is a transfer failure, not
+ * a corrupt snapshot (HARDENING #63): the page classifies these words as
+ * `network` (lib/failure.ts TRANSFER_ENDED_EARLY), whatever the decoder then
+ * says about the short input ("Compressed input was truncated."). The same
+ * words as snapshot-prefetch.worker.js. */
+function transferEndedEarly(target, received, expected) {
+  const file = target.pathname.slice(target.pathname.lastIndexOf("/") + 1) || target.pathname;
+  return new Error(`the transfer of ${file} ended early: received ${received} of ${expected} bytes`);
+}
+
 async function loadSnapshot(msg) {
   if (residentMode) {
     // K-i (see compile): a snapshot published after open would change the
@@ -1807,6 +1817,7 @@ async function loadSnapshot(msg) {
   let reader = null;
   let rawSource = null;
   let prevSinkRef = null;
+  let endedEarly = null; // set when the network body ended short of its Content-Length
   try {
     const rawKey = cacheKey ? `${cacheKey}.raw` : null;
     rawSource = rawKey ? await openRawSnapshot(rawKey, total) : null;
@@ -1852,19 +1863,37 @@ async function loadSnapshot(msg) {
       // browser inflates transparently; trusting the URL would then gunzip
       // plain olean bytes ("incorrect header check", HARDENING #19). Sniff
       // the magic on the first chunk instead.
+      //
+      // A body that ENDS short of its Content-Length (when it is not
+      // content-encoded: an encoded body's length counts other bytes than the
+      // stream yields) errors with the transfer failure instead of closing,
+      // so the decoder never flushes a short input into a "corrupt" verdict.
+      // Content-Length only: the index's transfer size would be a new
+      // loadSnapshot field (docs/EMBEDDING.md §7.7), and the prefetch worker,
+      // which has it, runs first.
+      const encoding = (response.headers.get("content-encoding") || "").trim().toLowerCase();
+      const expectedTransfer = !encoding || encoding === "identity" ? Number(response.headers.get("content-length")) || 0 : 0;
       const rawReader = response.body.getReader();
       const head = await rawReader.read();
-      if (head.done || !head.value) throw new Error("snapshot fetch: empty body");
+      if (head.done || !head.value) {
+        if (expectedTransfer > 0) throw transferEndedEarly(target, 0, expectedTransfer);
+        throw new Error("snapshot fetch: empty body");
+      }
       if (head.value[0] === 0x3c) throw new Error("snapshot fetch: the server answered HTML, not a snapshot");
       const isGzip = head.value.length >= 2 && head.value[0] === 0x1f && head.value[1] === 0x8b;
+      let arrived = head.value.length;
       const replay = new ReadableStream({
         start(controller) {
           controller.enqueue(head.value);
         },
         async pull(controller) {
           const { done, value } = await rawReader.read();
-          if (done) controller.close();
-          else controller.enqueue(value);
+          if (!done) {
+            arrived += value.length;
+            controller.enqueue(value);
+          } else if (expectedTransfer > 0 && arrived < expectedTransfer) {
+            controller.error((endedEarly = transferEndedEarly(target, arrived, expectedTransfer)));
+          } else controller.close();
         },
         cancel(reason) {
           return rawReader.cancel(reason);
@@ -1924,10 +1953,12 @@ async function loadSnapshot(msg) {
     // A mid-stream failure (allocation, network, torn cache) must not strand
     // a partial multi-GB region in the wasm heap: the fallback import that
     // follows runs under whatever heap this leak would have consumed.
-    try { reader?.cancel(); } catch { /* stream already dead */ }
+    // An errored stream's cancel() rejects with its error: caught, not an unhandled rejection.
+    try { reader?.cancel().catch(() => {}); } catch { /* stream already dead */ }
     try { rawSource?.handle.close(); } catch { /* already closed */ }
     if (heapPtr !== null) { try { M._free(heapPtr); } catch { /* best effort */ } }
-    fail(msg.requestId, error, "SNAPSHOT_FAILED", true);
+    // Whatever the decoder or the size check made of a short body, it was the transfer.
+    fail(msg.requestId, endedEarly || error, "SNAPSHOT_FAILED", true);
   } finally {
     if (prevSinkRef) sink = prevSinkRef.sink;
     if (state === "compiling") state = "ready";
