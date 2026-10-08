@@ -38,7 +38,7 @@ import { buildIdOfArtifact, refuseInsidePublic, resolveToolPath, stagingDir, too
   const spec = {"tool":"bake-snapshot","usage":"bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--roots <A,B,…>] [--label <text>] [--initial-bytes <bytes>] [--allow-legacy-imports] [--runner <script>]","flags":{"name":1,"probe":1,"artifact":1,"lib":1,"reserve":1,"work":1,"out":1,"roots":1,"label":1,"initial-bytes":1,"allow-legacy-imports":0,"runner":1},"required":[],"passthrough":null,"passthroughRequired":false};
   spec.help = [
     "usage: bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--roots <A,B,…>] [--label <text>] [--initial-bytes <bytes>] [--allow-legacy-imports] [--runner <script>]",
-    "Bake an environment snapshot with the exact wasm64 runtime under Node (the runner is supervised and reaped), gzip it content-addressed into the staging dir and upsert its index entry.",
+    "Bake an environment snapshot with the exact wasm64 runtime under Node (the runner is supervised and reaped), gzip it content-addressed into the staging dir and upsert its index entry; the index's per-build copy index.<buildId>.json is written beside it with the same bytes.",
     "run as: node pipeline/snapshot/bake-snapshot.mjs (or npm run bake:snapshot -- …)",
     "",
     "flags:",
@@ -48,7 +48,7 @@ import { buildIdOfArtifact, refuseInsidePublic, resolveToolPath, stagingDir, too
     "  --lib <olean tree>       olean tree mounted at /lib/lean (default: the runner's <artifact>/lib/lean)",
     "  --reserve <bytes>        compactor buffer reserved up front (LEAN_COMPACTOR_RESERVE for the runner) (default: 3758096384 (3.5 GiB))",
     "  --work <dir>             raw .snap + probe.lean; <work>/<name>.snap is deleted when the bake starts; a relative --work resolves against the repo root (default: $QED64_WORK, else (deprecated, one WARNING) work/snapshot under the repo root: the PAIRED set the probes load)",
-    "  --out <dir>              staged .snapz + index.json; refused inside public/; a relative --out resolves against the repo root (default: $QED64_STAGING, else (deprecated, one WARNING) work/staging/<buildId>/snapshots under the repo root; with QED64_STAGING, <QED64_STAGING>/<buildId>/snapshots)",
+    "  --out <dir>              staged .snapz, index.json and its per-build copy index.<buildId>.json (same bytes, copy first; another runtime's copy is never touched); refused inside public/; a relative --out resolves against the repo root (default: $QED64_STAGING, else (deprecated, one WARNING) work/staging/<buildId>/snapshots under the repo root; with QED64_STAGING, <QED64_STAGING>/<buildId>/snapshots)",
     "  --roots <A,B,…>          module roots the entry serves (docs/EMBEDDING.md §8): the page boots and widens to it for a header naming one (default: none (the legacy rule: an entry named mathlib serves the umbrella roots))",
     "  --label <text>           the entry's human name for the page's pill and boot card (default: none)",
     "  --initial-bytes <bytes>  initial Memory64 commit when the entry is loaded (default: none (2 GiB with a non-base entry))",
@@ -327,11 +327,72 @@ const entry = {
   ...(label ? { label } : {}),
   ...(initialBytes ? { initialBytes } : {}),
 };
-// Re-read: a concurrent bake of a sibling name may have upserted meanwhile.
-try { index = JSON.parse(fs.readFileSync(indexPath, "utf8")); } catch {}
-index.snapshots = index.snapshots.filter((s) => s.name !== name).concat([entry]);
-fs.writeFileSync(indexPath, JSON.stringify(index, null, 2));
+// THE PER-BUILD COPY (HARDENING #64). Beside index.json the bake writes
+// index.<buildId>.json, the same bytes, named by the runtime this index is
+// paired with (the refusals above keep one --out to one pairing): the copy a
+// page pinned to that runtime reads when the mutable index.json beside it
+// names another runtime (loadSnapshotIndex's `pairedBuildId`,
+// lib/snapshots.ts). Another runtime's copy in --out is never touched.
+// QED64's own path does not need it: promote-staging derives public/'s copy
+// from the staged index.json and ignores this one, and upload-artifacts.sh
+// sends no local copy (it writes R2's from the mutable file). It is for a
+// consumer whose own upload copies the snapshots dir as baked: the copy
+// arrives with the index, so a page pinned to this runtime keeps reading
+// its pairing when that consumer's next pairing is uploaded ahead of its
+// deploy.
+//
+// The upsert runs under the index's lock (index.json.lock, created by
+// link(2) so it is never seen empty; held for milliseconds, so one older
+// than LOCK_STALE_MS is a crashed holder's and is taken over): a concurrent
+// bake of a sibling name re-reads, merges and writes after this one, never
+// interleaved with it, so its entry is not lost and the two files are never
+// written by different bakes. Both files go through temp file + rename
+// (both temps written first: a full disk fails before either switches),
+// the COPY FIRST and index.json LAST, as promote-staging switches public/:
+// index.json is the commit record. Every version of either file names this
+// runtime only, so no order can show a reader a mispaired index. Copy-first
+// means the copy is never OLDER than index.json: at every instant it holds
+// index.json's bytes or the next version's (whose .snapz is already in
+// place), so a reader that falls back to it never loses an entry the index
+// has committed; a crash between the renames leaves the copy one version
+// ahead, never behind, and the next bake of this --out rewrites both.
+const copyPath = path.join(out, `index.${buildId}.json`);
+const lockPath = `${indexPath}.lock`;
+const LOCK_STALE_MS = 30000;
+for (;;) {
+  const mine = `${lockPath}.${process.pid}`;
+  fs.writeFileSync(mine, `${process.pid}\n`);
+  try {
+    fs.linkSync(mine, lockPath);
+    break;
+  } catch (e) {
+    if (e.code !== "EEXIST") throw e;
+    let age = 0;
+    try { age = Date.now() - fs.statSync(lockPath).mtimeMs; } catch { continue; } // released meanwhile
+    if (age > LOCK_STALE_MS) { fs.rmSync(lockPath, { force: true }); continue; }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  } finally {
+    fs.rmSync(mine, { force: true });
+  }
+}
+try {
+  // Re-read: a concurrent bake of a sibling name may have upserted meanwhile.
+  try { index = JSON.parse(fs.readFileSync(indexPath, "utf8")); } catch {}
+  index.snapshots = index.snapshots.filter((s) => s.name !== name).concat([entry]);
+  const indexText = JSON.stringify(index, null, 2);
+  const writes = [copyPath, indexPath].map((to) => ({ to, tmp: `${to}.${process.pid}.tmp` }));
+  try {
+    for (const { tmp } of writes) fs.writeFileSync(tmp, indexText);
+    for (const { to, tmp } of writes) fs.renameSync(tmp, to);
+  } finally {
+    for (const { tmp } of writes) fs.rmSync(tmp, { force: true });
+  }
+} finally {
+  // Released only while it is still this bake's (a holder past LOCK_STALE_MS has lost it).
+  try { if (fs.readFileSync(lockPath, "utf8") === `${process.pid}\n`) fs.rmSync(lockPath, { force: true }); } catch { /* gone */ }
+}
 console.log(
   `baked ${gzPath} (${transferBytes} bytes transfer, ${snapBytes} raw); ` +
     `index updated (imports: [${entry.imports.join(", ")}], runtime ${buildId})`,
 );
+console.log(`index copy ${copyPath} written (runtime ${buildId})`);

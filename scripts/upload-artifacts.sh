@@ -193,7 +193,12 @@ run rclone copyto public/snapshots/index.json "qed64-r2:$BUCKET/snapshots/index.
 run rclone copyto public/profiles/index.json "qed64-r2:$BUCKET/snapshots/profiles-index.$BUILD_ID.json" --checksum --s3-no-check-bucket
 
 # 3. The snapshots and the mutable files. No local per-build copy is sent: R2's
-# are written by step 2 (this runtime) and step 1 (absent ones) only.
+# are written by step 2 (this runtime) and step 1 (absent ones) only. (A local
+# copy would add nothing here: step 2 already sends this runtime's bytes, and
+# an older runtime's local copy must never overwrite R2's. bake-snapshot still
+# writes index.<buildId>.json into its --out for a consumer whose own upload
+# copies a baked snapshots dir as it is: there the copy is what pins its
+# deployed page, HARDENING #64.)
 run rclone copy public/snapshots "qed64-r2:$BUCKET/snapshots" --exclude 'index.*.json' --exclude 'profiles-index.*.json' --checksum --transfers 4 --s3-chunk-size 64M --progress
 run rclone copyto public/profiles/index.json "qed64-r2:$BUCKET/profiles/index.json" --checksum --s3-no-check-bucket
 

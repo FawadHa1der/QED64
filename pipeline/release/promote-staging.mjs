@@ -67,7 +67,13 @@
 // runtime/runtime-manifest.<buildId>.json, and re-derivable from the tracked
 // indexes (fetch-artifacts and upload-artifacts.sh write them from those).
 // A rebake for the same runtime rewrites them; another runtime's copies are
-// never touched, so a shell pinned to it keeps its pairing.
+// never touched, so a shell pinned to it keeps its pairing. bake-snapshot
+// also writes <staging>/snapshots/index.<buildId>.json (the staged index's
+// bytes, for consumers that upload a baked dir as is): the promote neither
+// copies nor checks it. Its public copy is switched once, from the staged
+// index.json it promotes, which for a bake's index is the same bytes
+// (JSON.stringify(index, null, 2) both ways); a stale staged copy is
+// therefore harmless here.
 //
 // CONFINED. Every target — each copied file and each switched one — must lie
 // inside realpath(--public) once symlinks are resolved, or the promote exits 2

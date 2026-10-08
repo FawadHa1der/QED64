@@ -553,6 +553,107 @@ fs.writeFileSync(path.join(work, "runner.json"), JSON.stringify({ argv: a, execA
   });
 });
 
+describe("bake-snapshot writes the index's per-build copy (HARDENING #64) with a FAKE runner", () => {
+  const FAKE_RUNNER = `import fs from "node:fs";
+import path from "node:path";
+const a = process.argv.slice(2);
+const work = a[a.indexOf("--work") + 1];
+const save = a.find((x) => x.startsWith("--incr-header-save=")).split("=")[1].replace(/^\\/work\\//, "");
+if (!process.env.FAKE_NO_SNAP) fs.writeFileSync(path.join(work, save), "a raw region " + save);
+`;
+  const OTHER = "wasm64-0000000000000000";
+  function bakeCheckout() {
+    const s = toolCheckout("bake-snapshot");
+    fs.writeFileSync(path.join(s, "pipeline/snapshot/node-runner.mjs"), FAKE_RUNNER);
+    const art = fakeStage1(path.join(s, "art/stage1"), { wasm: true });
+    const id = runtimeBuildId(fs.readFileSync(path.join(art, "bin/lean.wasm")));
+    return { s, art, id, out: path.join(s, "out") };
+  }
+  const bake = (s: string, art: string, out: string, name: string, env: Record<string, string> = {}) =>
+    run(s, "pipeline/snapshot/bake-snapshot.mjs", ["--artifact", art, "--out", out, "--work", path.join(s, "w"), "--name", name], env);
+  /** --out's files other than the .snapz: no lock, temp or stray file is left. */
+  const indexFiles = (out: string) => fs.readdirSync(out).filter((f) => !f.endsWith(".snapz")).sort();
+
+  test("copy bytes == index bytes, after a first bake and after a sibling's; one index-copy line each; another runtime's copy untouched", () => {
+    const { s, art, id, out } = bakeCheckout();
+    fs.mkdirSync(out);
+    const otherCopy = path.join(out, `index.${OTHER}.json`);
+    fs.writeFileSync(otherCopy, "another runtime's copy: never touched");
+    const a = bake(s, art, out, "init");
+    expect([a.status, a.stderr]).toEqual([0, ""]);
+    const copy = path.join(out, `index.${id}.json`);
+    const copyLines = a.stdout.split("\n").filter((l) => marker("bake-snapshot", "index-copy").test(l));
+    expect(copyLines).toEqual([`index copy ${copy} written (runtime ${id})`]);
+    expect(marker("bake-snapshot", "index-copy").exec(copyLines[0]!)?.slice(2)).toEqual([id, id]);
+    expect(fs.readFileSync(copy)).toEqual(fs.readFileSync(path.join(out, "index.json")));
+    const b = bake(s, art, out, "mathlib");
+    expect([b.status, b.stderr]).toEqual([0, ""]);
+    const index = fs.readFileSync(path.join(out, "index.json"));
+    expect(fs.readFileSync(copy)).toEqual(index);
+    expect(JSON.parse(index.toString()).snapshots.map((e: { name: string; runtime: string }) => [e.name, e.runtime])).toEqual([["init", id], ["mathlib", id]]);
+    expect(fs.readFileSync(otherCopy, "utf8")).toBe("another runtime's copy: never touched");
+    expect(indexFiles(out)).toEqual([`index.${OTHER}.json`, `index.${id}.json`, "index.json"].sort());
+  });
+
+  test("a refused bake (a foreign index) and a failed one (no .snap, exit 1) write neither file", () => {
+    const { s, art, id, out } = bakeCheckout();
+    fs.mkdirSync(out);
+    fs.writeFileSync(path.join(out, "index.json"), JSON.stringify({ schema: "qed64.snapshot-index/v1", snapshots: [{ name: "mathlib", url: "/snapshots/m.snapz", runtime: OTHER }] }));
+    let before = tree(s);
+    const refused = bake(s, art, out, "init");
+    expect(refused.status).toBe(2);
+    expect(refused.lines[0]).toMatch(marker("bake-snapshot", "refuse-foreign"));
+    expect(tree(s)).toEqual(before);
+    const out2 = path.join(s, "out2");
+    fs.mkdirSync(out2);
+    fs.mkdirSync(path.join(s, "w"), { recursive: true });
+    fs.writeFileSync(path.join(s, "w/probe.lean"), "#check (2 + 2 : Nat)\n"); // what the bake writes, so the tree compares
+    before = tree(s);
+    const failed = bake(s, art, out2, "init", { FAKE_NO_SNAP: "1" });
+    expect(failed.status).toBe(1);
+    expect(failed.lines).toContain("FAIL: snapshot file was not produced");
+    expect(tree(s)).toEqual(before);
+    expect(fs.existsSync(path.join(out2, `index.${id}.json`))).toBe(false);
+  });
+
+  test("the upsert waits for the index's lock (another bake's) and takes over a stale one", async () => {
+    const { s, art, id, out } = bakeCheckout();
+    fs.mkdirSync(out);
+    const lock = path.join(out, "index.json.lock");
+    fs.writeFileSync(lock, "99999999\n"); // fresh: a sibling bake mid-upsert
+    const child = spawn(process.execPath, [path.join(s, "pipeline/snapshot/bake-snapshot.mjs"), "--artifact", art, "--out", out, "--work", path.join(s, "w"), "--name", "init"], {
+      cwd: s, stdio: ["ignore", "pipe", "pipe"], env: { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !RULE_ENV.includes(k))), TMPDIR: path.join(s, "tmp") },
+    });
+    let stdout = "";
+    child.stdout.on("data", (d) => { stdout += d; });
+    const exited = new Promise<number | null>((resolve) => child.on("exit", (code) => resolve(code)));
+    const killer = setTimeout(() => child.kill("SIGKILL"), 20_000);
+    try {
+      // the .snapz is renamed into place just before the upsert: from then on the bake is at the lock
+      for (let t = 0; t < 200 && !fs.readdirSync(out).some((f) => f.endsWith(".snapz")); t += 1) await new Promise((r) => setTimeout(r, 50));
+      await new Promise((r) => setTimeout(r, 400));
+      expect(fs.existsSync(path.join(out, "index.json"))).toBe(false);
+      expect(fs.existsSync(path.join(out, `index.${id}.json`))).toBe(false);
+      fs.rmSync(lock); // the sibling releases it
+      expect(await exited).toBe(0);
+    } finally {
+      clearTimeout(killer);
+      child.kill("SIGKILL");
+    }
+    expect(stdout).toContain(`index copy ${path.join(out, `index.${id}.json`)} written`);
+    expect(fs.readFileSync(path.join(out, `index.${id}.json`))).toEqual(fs.readFileSync(path.join(out, "index.json")));
+    // a lock older than LOCK_STALE_MS (30 s) is a crashed holder's: taken over, then released
+    fs.writeFileSync(lock, "99999999\n");
+    const old = (Date.now() - 60_000) / 1000;
+    fs.utimesSync(lock, old, old);
+    const r = bake(s, art, out, "mathlib");
+    expect([r.status, r.stderr]).toEqual([0, ""]);
+    expect(fs.readFileSync(path.join(out, `index.${id}.json`))).toEqual(fs.readFileSync(path.join(out, "index.json")));
+    expect(JSON.parse(fs.readFileSync(path.join(out, "index.json"), "utf8")).snapshots.map((e: { name: string }) => e.name)).toEqual(["init", "mathlib"]);
+    expect(indexFiles(out)).toEqual([`index.${id}.json`, "index.json"].sort());
+  });
+});
+
 describe("ensureStackSize: the re-exec keeps the PID, the stdio and the exit code", () => {
   /** A scratch tool that calls ensureStackSize first, reports itself, then exits 7 or (--hang) stays alive. */
   function scratchTool(): string {

@@ -260,6 +260,40 @@ describe("promote-staging.mjs", () => {
     expect(fs.readdirSync(path.join(pub, "snapshots")).filter((f) => f.startsWith("profiles-index."))).toEqual([]);
   });
 
+  test("a staged per-build copy written by the bake: the promote's copy has its bytes; the promote neither copies, refuses nor double-writes it", () => {
+    // A real bake (FAKE runner, no wasm) into the staged snapshots dir of a staged runtime of the same lean.wasm.
+    const stage = path.join(tmp, "stage-baked-copy");
+    const bin = fakeBin("p-baked");
+    const manifest = stageChunks(bin, path.join(stage, "runtime"));
+    const art = path.join(tmp, "stage1-baked");
+    fs.mkdirSync(path.join(art, "bin"), { recursive: true });
+    fs.copyFileSync(path.join(bin, "lean.wasm"), path.join(art, "bin/lean.wasm"));
+    const runner = path.join(tmp, "fake-runner-baked.mjs");
+    fs.writeFileSync(runner, `import fs from "node:fs"; import path from "node:path";
+const a = process.argv.slice(2); const work = a[a.indexOf("--work") + 1];
+fs.writeFileSync(path.join(work, a.find((x) => x.startsWith("--incr-header-save=")).split("=")[1].replace(/^\\/work\\//, "")), "a raw region");
+`);
+    const snapshots = path.join(stage, "snapshots");
+    const baked = run(baker, ["--artifact", art, "--out", snapshots, "--work", path.join(tmp, "work-baked"), "--runner", runner]);
+    expect(baked.status, baked.stderr).toBe(0);
+    const id = manifest.buildId;
+    const stagedCopy = fs.readFileSync(path.join(snapshots, `index.${id}.json`));
+    expect(stagedCopy).toEqual(fs.readFileSync(path.join(snapshots, "index.json")));
+    const pub = path.join(tmp, "public-baked-copy");
+    const r = run(promote, ["--staging", stage, "--public", pub]);
+    expect(r.status, r.stderr).toBe(0);
+    expect(fs.readFileSync(path.join(pub, `snapshots/index.${id}.json`))).toEqual(stagedCopy);
+    expect(fs.readFileSync(path.join(pub, "snapshots/index.json"))).toEqual(stagedCopy);
+    // written once, as a switch from the index's bytes; the staged copy itself is not copied in
+    expect(planLines(r.stdout).filter((l) => l.includes(`index.${id}.json`))).toEqual([`swap  ${path.relative(root, path.join(pub, `snapshots/index.${id}.json`))}`]);
+    // a stale staged copy (hand-edited, or a crash between the bake's renames) is neither used nor refused
+    fs.writeFileSync(path.join(snapshots, `index.${id}.json`), "{\"stale\": true}");
+    const pub2 = path.join(tmp, "public-baked-stale");
+    const r2 = run(promote, ["--staging", stage, "--public", pub2]);
+    expect(r2.status, r2.stderr).toBe(0);
+    expect(fs.readFileSync(path.join(pub2, `snapshots/index.${id}.json`))).toEqual(stagedCopy);
+  });
+
   test("refuses a staged chunk or snapshot whose bytes do not match its recorded digest", () => {
     const pub = path.join(tmp, "public-3");
     const stage = path.join(tmp, "stage-truncated");

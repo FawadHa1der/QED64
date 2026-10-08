@@ -329,7 +329,7 @@ usage: bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <di
 | `--lib <olean tree>` | the runner's `<artifact>/lib/lean` | The tree mounted at `/lib/lean`. Passed to the runner as given, so it resolves against the cwd. |
 | `--reserve <bytes>` | `3758096384` (3.5 GiB) | `LEAN_COMPACTOR_RESERVE` for the runner. |
 | `--work <dir>` | `$QED64_WORK`, else (deprecated) `work/snapshot` under the repo root | Holds the raw `.snap` and `probe.lean`. **The deprecated default is the PAIRED set** the probes and the compiler battery load: a bake for any other runtime must pass `--work`. Resolves against the repo root. |
-| `--out <dir>` | `<$QED64_STAGING>/<buildId>/snapshots`, else (deprecated) `work/staging/<buildId>/snapshots` under the repo root | Holds the staged `.snapz` and `index.json`. Refused inside `public/`. Resolves against the repo root. |
+| `--out <dir>` | `<$QED64_STAGING>/<buildId>/snapshots`, else (deprecated) `work/staging/<buildId>/snapshots` under the repo root | Holds the staged `.snapz`, `index.json` and its per-build copy `index.<buildId>.json`. Refused inside `public/`. Resolves against the repo root. |
 | `--roots <A,B,…>` | none | Module roots the entry serves (docs/EMBEDDING.md §8): the page boots and widens to it for a header naming one. Absent: the legacy rule (an entry named `mathlib` serves the umbrella roots). |
 | `--label <text>` | none | The entry's human name for the page's pill and boot card. |
 | `--initial-bytes <bytes>` | none | The initial Memory64 commit when the entry is loaded (else 2 GiB with any non-base entry). |
@@ -350,6 +350,15 @@ usage: bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <di
   - `<out>/index.json` with the entry `{name, url, digest, bytes, transfer,
     imports, runtime}` upserted, plus `roots`, `label` and `initialBytes`
     when given.
+  - `<out>/index.<buildId>.json`, the per-build copy (HARDENING #64):
+    exactly the bytes of the new `index.json`, named by the runtime the
+    index is paired with (this bake's). It is what a page pinned to that
+    runtime reads when the mutable `index.json` beside it names another
+    runtime (`loadSnapshotIndex`'s `pairedBuildId`, docs/EMBEDDING.md §7.0).
+    Another runtime's copy in `<out>` is never touched. QED64's promote
+    derives `public/`'s copy from the staged `index.json` and its upload
+    sends no local copy; the bake's copy is for a consumer whose own upload
+    copies a baked snapshots dir as it is.
 
 | Marker | Stream | Regex |
 |---|---|---|
@@ -357,6 +366,7 @@ usage: bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <di
 | reaped | stdout | `^bake output stable \((\d+) bytes\) with runner quiet — reaping the wedged exit$` |
 | compressing | stdout | `^compressing (\S+)\.snapz …$` |
 | baked | stdout | `^baked (\S+\/([^/\s]+)\.([0-9a-f]{16})\.snapz) \((\d+) bytes transfer, (\d+) raw\); index updated \(imports: \[([^\]]*)\], runtime (\S+)\)$` |
+| index-copy | stdout | `^index copy (.+[\/\\]index\.(wasm64-[0-9a-f]{16})\.json) written \(runtime (wasm64-[0-9a-f]{16})\)$` (after `baked`, since 2026-10-08) |
 | no-snap | stderr | `^FAIL: snapshot file was not produced$` |
 | no-artifact | stderr | `^bake-snapshot: no lean\.wasm under (.+) — pass --artifact <stage1 dir>$` |
 | no-runner | stderr | `^bake-snapshot: no runner script (.+) — pass --runner <script> or set QED64_RUNNER$` |
@@ -388,7 +398,19 @@ The runner's output (node-runner and Lean) is interleaved on both streams.
    300 s and the `.snap` stable for more than 120 s, SIGKILLs the runner.
 7. Creates `<out>` (`mkdir -p`), unlinks `<work>/<name>.snap.deps`, writes
    `<name>.snapz.tmp` and renames it to the final name.
-8. Re-reads and rewrites `index.json`.
+8. Takes the index's lock `<out>/index.json.lock` (created with link(2)
+   from `<out>/index.json.lock.<pid>`; it waits while another bake holds
+   it, and takes over a lock older than 30 s, a crashed holder's), re-reads
+   `index.json`, writes `index.<buildId>.json.<pid>.tmp` and
+   `index.json.<pid>.tmp` with the same bytes, renames the COPY first and
+   `index.json` last, and releases the lock. Every version of either file is
+   paired with this runtime only, so the order cannot show a mispaired
+   index; copy-first keeps the copy never older than `index.json` (a crash
+   between the renames leaves it one version ahead, and the next bake
+   rewrites both), and `index.json` stays the commit record, as in
+   `promote-staging`. A sibling bake into the same `<out>` no longer loses
+   an entry to an interleaved write. A refusal (exit 2) and a failed run
+   (exit 1) write neither file.
 
 Older `.snapz` files are never deleted.
 
@@ -1259,6 +1281,7 @@ as QED64's own gate did.
 | 3 | 2026-10-06 | Plan step A5, **docs/config only: no tool changed**. A consistency pass over this document: chunk-runtime's tier row and the tier-3 list mark every forward (`chunk-runtime`, `unpack`, `inspect`, `gate.mjs`) and the `gen-exports.py` stub; no Consumers list names a deleted script or the old README any more (node-runner's no longer lists QED64's `gate.mjs`, which forwards to the package's gate; unpack's no longer lists the README); the Runtime notes say which gates spawn node-runner. The repository's `.claude/launch.json` dev entry matches Vite's port 5184 (`strictPort`). | docs/config only |
 | 3 | 2026-10-06 | **snapshot-probe's watchdog** (the QED64 side of the kernel's patch 0037, HARDENING #61): from 0037 on a task that never finishes hangs `lean_wasm_compile`, which blocks the probe's main thread. A worker thread in the probe process now keeps a wall-clock deadline, new flag `--watchdog-ms <ms>` (default `--budget-ms` + 120000; `0` = no watchdog, as before): past it, one new `watchdog` line (also a `fail` line), then the process SIGKILLs itself (the status is killed by SIGKILL, not an exit code). A malformed `--watchdog-ms` is exit 2. No child process: the PID, the stdio, every line of a run that reaches a verdict, its exit code and per-PID measures (`/usr/bin/time -l`) are unchanged, and a verdict reached before the deadline is never followed by the `watchdog` line. | additive (a flag, a marker, a kill status) |
 | 3 | 2026-10-08 | HARDENING #64, **fetch-artifacts** also writes the per-build copies of the two site-owned indexes a pinned shell reads when the mutable one names another runtime: `snapshots/index.<buildId>.json` (group `snapshots`, named by the one runtime the index's entries name) and `snapshots/profiles-index.<buildId>.json` (group `profiles`, named by the index's `runtime.buildId`), from the tracked indexes' own bytes like `runtime/runtime-manifest.<buildId>.json`; each is one more `wrote` (or `present`) line and counts in `FETCH OK`'s totals. An index whose entries name no runtime, or several, gets no copy. Flags, markers and exits are unchanged. Also: release-manifest (tier 3) refuses a present copy that is not byte-identical to its index (no new field: the manifest's format and `artifactSetId` are unchanged); `promote-staging.mjs`, not a contract tool, writes the same two copies. | additive (two written files); a refusal |
+| 3 | 2026-10-08 | HARDENING #64 follow-up, **bake-snapshot** writes the per-build copy `<out>/index.<buildId>.json` (exactly the new `index.json`'s bytes, buildId = this bake's runtime; another runtime's copy untouched) and prints one new line after `baked`, marker `index-copy`. The upsert runs under `<out>/index.json.lock` and switches both files by temp file + rename, the copy first and `index.json` last (side effect 8); before, `index.json` was rewritten in place with no lock. Flags, the other markers and the exits are unchanged; `promote-staging.mjs` (not a contract tool) ignores the staged copy and switches `public/`'s from the staged index, which for a bake's index is the same bytes. | additive (a written file, a marker) |
 
 ## Open decisions
 
