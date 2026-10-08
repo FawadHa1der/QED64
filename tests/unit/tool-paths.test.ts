@@ -616,6 +616,18 @@ if (!process.env.FAKE_NO_SNAP) fs.writeFileSync(path.join(work, save), "a raw re
     expect(fs.existsSync(path.join(out2, `index.${id}.json`))).toBe(false);
   });
 
+  test("the copy is switched FIRST: when index.json's rename fails, the copy already holds the new index (never behind it); no temp file or lock is left", () => {
+    const { s, art, id, out } = bakeCheckout();
+    fs.mkdirSync(path.join(out, "index.json", "blocker"), { recursive: true }); // a directory: rename(2) over it fails
+    const r = bake(s, art, out, "init");
+    expect(r.status).toBe(1);
+    expect(r.stdout).not.toMatch(/^baked /m);
+    const copy = JSON.parse(fs.readFileSync(path.join(out, `index.${id}.json`), "utf8"));
+    expect(copy.snapshots.map((e: { name: string; runtime: string }) => [e.name, e.runtime])).toEqual([["init", id]]);
+    expect(fs.statSync(path.join(out, "index.json")).isDirectory()).toBe(true);
+    expect(indexFiles(out)).toEqual([`index.${id}.json`, "index.json"].sort());
+  });
+
   test("the upsert waits for the index's lock (another bake's) and takes over a stale one", async () => {
     const { s, art, id, out } = bakeCheckout();
     fs.mkdirSync(out);
