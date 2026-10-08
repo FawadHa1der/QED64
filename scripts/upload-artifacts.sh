@@ -29,7 +29,9 @@
 # else it pins what R2 serves NOW: when R2's mutable index names another
 # runtime and that runtime has no copy in R2 yet (the first upload after this
 # change, or a copy lost), it is copied there inside R2 first, so the shell
-# deployed with it keeps its pairing through this upload. Upload-then-deploy
+# deployed with it keeps its pairing through this upload. That pin fails
+# closed: an R2 read that fails (not an absent index: an error) refuses, exit
+# 3, before any write, rather than replace an unpinned pairing. Upload-then-deploy
 # is therefore invisible to every deployed shell that reads the copies: one
 # built from this change on. A shell deployed BEFORE this change reads only
 # the mutable files and still sees the new pairing until the deploy (once).
@@ -103,17 +105,26 @@ RELEASE_ID=$(LEGACY_ROOT=$LEGACY_ROOT node -e '
 # The release must already be in R2: its owner uploads it (a read; DRY_RUN too).
 # "Not in R2" is said only when rclone could look: lsf listed nothing, or
 # exited 3/4 (rclone's directory/file not found). Any other failure (no
-# qed64-r2 remote, expired credentials, no network) is a local problem, not
-# the release owner's, and is reported as such.
-lsf_err=$(mktemp "${TMPDIR:-/tmp}/upload-artifacts-lsf.XXXXXX")
-trap 'rm -f "$lsf_err"' EXIT
-lsf_rc=0
-listed=$(rclone lsf "qed64-r2:$BUCKET/lean4-wasm64/$RELEASE_ID/release.json" 2>"$lsf_err") || lsf_rc=$?
-if [ "$lsf_rc" -ne 0 ] && [ "$lsf_rc" -ne 3 ] && [ "$lsf_rc" -ne 4 ]; then
-  first=$(grep -m1 . "$lsf_err" | tr -d '\r' || true)
-  echo "upload-artifacts: cannot check R2 (rclone lsf exit $lsf_rc): ${first:-no error output}" >&2
-  exit 3
-fi
+# qed64-r2 remote, expired credentials, no network, an R2 5xx) is not an
+# answer, and is reported as such, before any write; step (1) below reads R2
+# the same way, so it never mistakes "unreadable" for "absent".
+r2_err=$(mktemp "${TMPDIR:-/tmp}/upload-artifacts-lsf.XXXXXX")
+trap 'rm -f "$r2_err"' EXIT
+# Sets LISTED to what `rclone lsf` lists for the R2 key $1 (empty: absent), or
+# refuses, exit 3, when rclone could not look.
+r2_lsf() {
+  local rc=0
+  LISTED=$(rclone lsf "qed64-r2:$BUCKET/$1" 2>"$r2_err") || rc=$?
+  if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ] && [ "$rc" -ne 4 ]; then
+    local first
+    first=$(grep -m1 . "$r2_err" | tr -d '\r' || true)
+    echo "upload-artifacts: cannot check R2 (rclone lsf exit $rc): ${first:-no error output}" >&2
+    exit 3
+  fi
+  [ "$rc" -eq 0 ] || LISTED=""
+}
+r2_lsf "lean4-wasm64/$RELEASE_ID/release.json"
+listed=$LISTED
 if [ "$listed" != "release.json" ]; then
   echo "upload-artifacts: REFUSED: the toolchain release $RELEASE_ID is not in R2 (its owner uploads it: lean4-wasm64 formats/HOSTING.md)" >&2
   exit 3
@@ -126,10 +137,10 @@ run() {
 # The preflight checked it is the release's runtime.
 BUILD_ID=$(node -p 'JSON.parse(require("fs").readFileSync("public/runtime/runtime-manifest.json","utf8")).buildId')
 
-# The one runtime the index object $1 in R2 names (a snapshot index's entries,
-# or a profile index's runtime.buildId), or nothing (absent, unreadable, mixed).
-r2_index_runtime() {
-  { rclone cat "qed64-r2:$BUCKET/$1" 2>/dev/null || true; } | node -e '
+# The one runtime the index JSON on stdin names (a snapshot index's entries,
+# or a profile index's runtime.buildId), or nothing (unparseable, mixed, none).
+index_runtime() {
+  node -e '
     let s = "";
     process.stdin.on("data", (d) => (s += d)).on("end", () => {
       try {
@@ -141,17 +152,37 @@ r2_index_runtime() {
     });'
 }
 
-# 1. Pin what R2 serves now (a read, then a copy inside R2 only when needed;
+# 1. Pin what R2 serves now (reads, then a copy inside R2 only when needed;
 # DRY_RUN reads and prints the copy). Never overwrites an existing copy.
+# Fails CLOSED: this is the only step that makes the deployed pairing's copies
+# when they are absent (the first upload after HARDENING #64), so a read that
+# fails (lsf or cat: a 5xx, throttling, a dropped connection) refuses, exit 3,
+# and every read comes before the first write, so a refusal writes nothing.
+# Only an index R2 does not list is "absent"; one it lists must be read. A
+# body read in full that names no single runtime (unparseable, mixed, none)
+# pins nothing, as there is nothing to pin.
+pins=()
 for pair in snapshots/index.json:snapshots/index profiles/index.json:snapshots/profiles-index; do
   src=${pair%%:*}
-  live=$(r2_index_runtime "$src")
+  r2_lsf "$src"
+  [ "$LISTED" = "$(basename "$src")" ] || continue
+  cat_rc=0
+  body=$(rclone cat "qed64-r2:$BUCKET/$src" 2>"$r2_err") || cat_rc=$?
+  if [ "$cat_rc" -ne 0 ]; then
+    first=$(grep -m1 . "$r2_err" | tr -d '\r' || true)
+    echo "upload-artifacts: cannot check R2 (rclone cat $src exit $cat_rc): ${first:-no error output}" >&2
+    exit 3
+  fi
+  live=$(printf '%s' "$body" | index_runtime)
   [ -n "$live" ] && [ "$live" != "$BUILD_ID" ] || continue
   dst="${pair#*:}.$live.json"
-  have=$(rclone lsf "qed64-r2:$BUCKET/$dst" 2>/dev/null || true)
-  [ "$have" = "$(basename "$dst")" ] && continue
+  r2_lsf "$dst"
+  [ "$LISTED" = "$(basename "$dst")" ] && continue
   echo "upload-artifacts: R2's $src is runtime $live, which has no $dst yet: copying it there first (HARDENING #64)" >&2
-  run rclone copyto "qed64-r2:$BUCKET/$src" "qed64-r2:$BUCKET/$dst" --s3-no-check-bucket
+  pins+=("$src:$dst")
+done
+for pin in ${pins[@]+"${pins[@]}"}; do
+  run rclone copyto "qed64-r2:$BUCKET/${pin%%:*}" "qed64-r2:$BUCKET/${pin#*:}" --s3-no-check-bucket
 done
 
 # 2. This runtime's per-build copies, from the mutable files' own bytes, before
