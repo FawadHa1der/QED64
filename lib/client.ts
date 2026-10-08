@@ -412,9 +412,14 @@ export class LeanSession {
     name?: string,
     expectedBytes?: number,
     cacheKey?: string,
-    runtime?: string
+    runtime?: string,
+    /** The compressed size the index declares (`transfer`): the worker's
+     * expectation for a gzip body without a usable Content-Length, so a body
+     * that ends short of it is a network failure, not corrupt (HARDENING #63).
+     * Optional and additive (docs/EMBEDDING.md §7.7): an older worker ignores it. */
+    transferBytes?: number
   ): Promise<{ success: boolean; elapsedMs: number }> {
-    return this.exclusive(() => this.request("loadSnapshot", { input: { url, name, expectedBytes, cacheKey, runtime} }));
+    return this.exclusive(() => this.request("loadSnapshot", { input: { url, name, expectedBytes, cacheKey, runtime, ...(transferBytes ? { transferBytes } : {}) } }));
   }
 
   /** Write files into the worker's filesystem (absolute paths; parent

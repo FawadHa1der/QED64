@@ -91,7 +91,7 @@ describe("loadSnapshotByName: an unpaired entry is refused before the fetch/cach
     const { qs, loadSnapshot } = qsOf();
     await expect(loadSnapshotByName(artifacts(BOOTED, BOOTED), qs, "mathlib", ui)).resolves.toBe(true);
     expect(prefetchRaw).toHaveBeenCalledTimes(1);
-    expect(loadSnapshot).toHaveBeenCalledWith("/snapshots/mathlib.x.snapz", "mathlib.snap", 100, expect.any(String), BOOTED);
+    expect(loadSnapshot).toHaveBeenCalledWith("/snapshots/mathlib.x.snapz", "mathlib.snap", 100, expect.any(String), BOOTED, 50); // and the index transfer size (HARDENING #63)
     expect(qs.lastFailure).toBeUndefined();
   });
 
@@ -99,7 +99,7 @@ describe("loadSnapshotByName: an unpaired entry is refused before the fetch/cach
     const { qs, loadSnapshot } = qsOf();
     await expect(loadSnapshotByName(artifacts(undefined, undefined), qs, "mathlib", ui)).resolves.toBe(true);
     expect(prefetchRaw).toHaveBeenCalledTimes(1);
-    expect(loadSnapshot).toHaveBeenCalledWith("/snapshots/mathlib.x.snapz", "mathlib.snap", 100, expect.any(String), undefined);
+    expect(loadSnapshot).toHaveBeenCalledWith("/snapshots/mathlib.x.snapz", "mathlib.snap", 100, expect.any(String), undefined, 50);
   });
 });
 

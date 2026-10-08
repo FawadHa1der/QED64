@@ -50,6 +50,7 @@ paired build outputs of "Environment" below.
 | Edit storm | `node tests/adversarial/edit-storm.mjs --url <served url> [--reps 2] [--scenarios …]` | an edit per keystroke over work that ignores cancellation: no crash, death or reboot, ready at the last version, the pool within tolerance (HARDENING #59; `?edithold=0` is the control arm) | served build | lock | `edit-storm: N/N pass` |
 | Boot card | `node tests/adversarial/boot-card.mjs --url <served url> [--scenario slow-link\|check-fallback\|all]` | a cold first visit over a shaped link: the boot card shows progress the whole way, and the check fallback appears while an Init-only buffer elaborates (HARDENING #54) | served build | lock | `boot-card: N/N passed` |
 | Unpaired snapshot | `node tests/adversarial/unpaired-snapshot.mjs --url <served url>` | a snapshot of another runtime is refused before the runtime starts and before a byte of it downloads (HARDENING #62) | served build | lock | `unpaired-snapshot: PASS (n/n checks)` |
+| Snapshot network cut | `node tests/adversarial/snapshot-network-cut.mjs --url <served url> [--scenarios once,lasting] [--cut-mode truncate\|abort]` | a single cut `.snapz` response is absorbed (ready, 0 deaths); a lasting cut halts the relay with a `network` death after one runtime start, not three, and a reload after the network returns is ready, in both cut modes (truncate: a body that ends early is `network`; abort: "Failed to fetch") (HARDENING #63) | served build | lock | `snapshot-network-cut: 2/2 pass` |
 | Deep recursion | `node tests/adversarial/deep-recursion.mjs --url <served url> [--scenarios seeded,typing]` | deep `decide` recursion ends in Lean's own error with the checker alive, not a pthread JS-stack overflow (HARDENING #60) | served build | lock | `deep-recursion: 2/2 pass`. It passed both scenarios on wasm64-57ae00dc5f6ce958 (kernel patch 0036, adopted with lean-v4.34.0-41ec565) and fails on 0035b and earlier: it is #60's regression check |
 | Resident gate | `tests/adversarial/resident-gate.sh` | the post-rebuild gate: typecheck, a restarted dev server on :5184, preflight, e2e, latency, battery, with cool-downs | the staged pairing (`resident-url.sh`) | not on a shared host (it kills the :5184 listener) | each lane's line; `GATE-REFUSED: …` exit 3 |
 
@@ -353,6 +354,38 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   three times or not at all. Every console line is printed, with the time
   to halt, the relay's states, when `initialize` reached the relay and each
   shape's count. Exit 0 PASS, 1 FAIL. Run it through the host browser lock.
+- **Snapshot network cut** (`snapshot-network-cut.mjs --url <served build>
+  [--scenarios once,lasting] [--cut-bytes 1000000] [--cut-mode
+  truncate|abort] [--buffer <text>] [--wait-ms 300000] [--headed]`,
+  HARDENING #63; docs/EMBEDDING.md §7.2): a lasting network failure in a
+  `.snapz` response costs the relay's retries no runtime. It serves nothing
+  and writes nothing under `public/`: Playwright's context route answers a
+  cut `.snapz` request with the first `--cut-bytes` of the real response
+  under its full content-length (the body ends mid-stream: in Chromium a
+  clean short end, which both snapshot streams name "the transfer of …
+  ended early", a `network` cause), or aborts it with `connectionreset`
+  (`--cut-mode abort`); the requests it does not cut continue. Run both
+  modes: they expect the same verdicts. `once` cuts the first response: PASS is ready, 0 deaths,
+  exactly one cut, the "raw prefetch error" warning (the checker streamed
+  the snapshot itself) and one runtime start. `lasting` cuts every
+  response until the relay halts: PASS is halted, `lastDeath` `bootFailed`
+  with cause kind `network`, more than one cut, exactly one runtime start
+  (the `[mem] runtime-initialized` lines; three before the fix) and the boot
+  card failed; then it stops cutting and reloads the page: ready, 0 deaths.
+  Both: no renderer crash, and no console error or warning outside the
+  shapes the showcase's C11 allowlists (the relay's died and halted lines,
+  `Failed to load resource: net::ERR_…`, the prefetch warning; the reload
+  lines "Session disposed." and "Outdated RPC session" are known, and so
+  is the EMPTY `console.error` of a boot that reaches elaborating, which
+  is monaco-vscode-api's NotificationService printing Lean's own
+  empty-message -32800 reply, but only when it comes from the page's main
+  bundle and takes its own unused -32800 reply, seen by the lane's LSP tap
+  in the 3 s before it or the 0.5 s after: one reply per line, in time
+  order, as the showcase pairs). Every console line (with
+  its arguments and source location when its text is empty), the LSP error
+  replies, the `.snapz` requests, the runtime starts and the relay's
+  states are printed. Exit 0 when every scenario passes, 1 FAIL. Run it
+  through the host browser lock.
 
 ## Pipeline CLI contract (docs/CLI-CONTRACT.md, tests/unit/cli-contract.test.ts)
 

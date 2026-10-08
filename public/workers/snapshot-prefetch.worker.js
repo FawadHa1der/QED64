@@ -11,7 +11,7 @@
 "use strict";
 
 self.onmessage = async (e) => {
-  const { url, cacheKey, rawBytes } = e.data || {};
+  const { url, cacheKey, rawBytes, transferBytes } = e.data || {};
   const report = (msg) => self.postMessage(msg);
   if (!url || !cacheKey) {
     report({ status: "error", error: "missing url/cacheKey" });
@@ -43,10 +43,19 @@ self.onmessage = async (e) => {
     report({ status: "error", error: `the snapshot index declares no raw size (bytes) for ${cacheKey}; nothing fetched` });
     return;
   }
-  return rawPrefetch(url, cacheKey, rawBytes, report);
+  return rawPrefetch(url, cacheKey, rawBytes, report, target, transferBytes);
 };
 
-async function rawPrefetch(url, cacheKey, rawBytes, report) {
+/** A body that ends before the bytes it announced is a transfer failure, not
+ * a corrupt snapshot (HARDENING #63): the page classifies these words as
+ * `network` (lib/failure.ts TRANSFER_ENDED_EARLY), whatever the decoder then
+ * says about the short input ("Compressed input was truncated."). */
+function transferEndedEarly(target, received, expected) {
+  const file = target.pathname.slice(target.pathname.lastIndexOf("/") + 1) || target.pathname;
+  return new Error(`the transfer of ${file} ended early: received ${received} of ${expected} bytes`);
+}
+
+async function rawPrefetch(url, cacheKey, rawBytes, report, target, transferBytes) {
   let dir;
   try {
     const root = await navigator.storage.getDirectory();
@@ -72,6 +81,7 @@ async function rawPrefetch(url, cacheKey, rawBytes, report) {
     report({ status: "busy", error: String(error && error.message) });
     return;
   }
+  let endedEarly = null; // set when the network body ended short of its announced size
   try {
     // Source: the cached compressed entry when present (a warm-compressed
     // browser converting to raw), else the network.
@@ -82,25 +92,44 @@ async function rawPrefetch(url, cacheKey, rawBytes, report) {
       if (cf.size > 0) { source = cf.stream(); sourceTotal = cf.size; }
     } catch { /* no compressed cache */ }
     let downloadedTotal = 0;
+    // The compressed bytes the network response should carry: its
+    // Content-Length when the body is not content-encoded (an encoded body's
+    // length counts other bytes than the stream yields), else the index's
+    // transfer size once the first chunk shows gzip. 0 = unknown: no check.
+    let expectedTransfer = 0;
+    let fromNetwork = false;
     if (!source) {
       const response = await fetch(url);
       if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
       if (response.redirected && new URL(response.url).origin !== self.location.origin) throw new Error(`SNAPSHOT_URL_REFUSED: redirected to ${new URL(response.url).origin}, not this site`);
       if (/text\/html/i.test(response.headers.get("content-type") || "")) throw new Error("the server answered HTML, not a snapshot");
       downloadedTotal = Number(response.headers.get("content-length")) || 0;
+      const encoding = (response.headers.get("content-encoding") || "").trim().toLowerCase();
+      if (!encoding || encoding === "identity") expectedTransfer = downloadedTotal;
+      fromNetwork = true;
       source = response.body;
     }
     // Sniff gzip on the first chunk (dev servers sometimes pre-inflate).
     const reader = source.getReader();
     const head = await reader.read();
-    if (head.done || !head.value) throw new Error("empty snapshot source");
+    if (head.done || !head.value) {
+      if (expectedTransfer > 0) throw transferEndedEarly(target, 0, expectedTransfer);
+      throw new Error("empty snapshot source");
+    }
     if (head.value[0] === 0x3c) throw new Error("the server answered HTML, not a snapshot");
     const isGzip = head.value.length >= 2 && head.value[0] === 0x1f && head.value[1] === 0x8b;
+    if (fromNetwork && !expectedTransfer && isGzip && typeof transferBytes === "number" && transferBytes > 0) expectedTransfer = transferBytes;
+    // Count the compressed bytes as they arrive: a stream that ENDS short of
+    // the expected size errors with the transfer failure instead of closing,
+    // so the decoder never flushes a short input into a "corrupt" verdict.
+    let arrived = head.value.length;
     const replay = new ReadableStream({
       start(c) { c.enqueue(head.value); },
       async pull(c) {
         const { done, value } = await reader.read();
-        if (done) c.close(); else c.enqueue(value);
+        if (!done) { arrived += value.length; c.enqueue(value); return; }
+        if (expectedTransfer > 0 && arrived < expectedTransfer) c.error((endedEarly = transferEndedEarly(target, arrived, expectedTransfer)));
+        else c.close();
       },
       cancel(reason) { return reader.cancel(reason); },
     });
@@ -140,6 +169,8 @@ async function rawPrefetch(url, cacheKey, rawBytes, report) {
   } catch (error) {
     try { if (handle) handle.close(); } catch { /* closed */ }
     dir.removeEntry(partial).catch(() => {});
-    report({ status: "error", error: String(error && error.message) });
+    // Whatever the decoder or the size check made of a short body, it was the transfer.
+    const failure = endedEarly || error;
+    report({ status: "error", error: String(failure && failure.message) });
   }
 }

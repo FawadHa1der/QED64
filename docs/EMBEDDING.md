@@ -753,9 +753,9 @@ interface FailureCause { kind: FailureKind; httpStatus?: number; stage?: BootSta
 
 | kind | meaning | e.g. |
 |------|---------|------|
-| `network` | the fetch was rejected, the stream was cut, or 5xx/429 (retrying can help) | `Failed to fetch`, `HTTP 503` |
+| `network` | the fetch was rejected, the stream was cut, the body ended before the bytes it announced, or 5xx/429 (retrying can help) | `Failed to fetch`, `HTTP 503`, `the transfer of <file> ended early: received <n> of <expected> bytes` |
 | `missing` | the server does not have it: a deploy problem, so retrying cannot help | every 4xx except 408/425/429; an HTML answer where JSON or binary belongs (the workers and the index loader sniff it); `SNAPSHOT_NOT_IN_INDEX` |
-| `corrupt` | it arrived but is wrong | chunk length or SHA-256 mismatch; a gzip/DecompressionStream error; "not a compacted-region file"; a size the index does not declare; "raw size mismatch"; `SNAPSHOT_LOAD_RESULT` (the Lean loader refused the region); `RUNTIME_MANIFEST_MISMATCH` (a runtime manifest whose `buildId` is not `wasm64-` + the first 16 hex digits of its own `files["lean.wasm"].sha256`: the runtime/v1 invariant every reader may check; the page refuses it before fetching, the worker before booting) |
+| `corrupt` | it arrived in full but is wrong | chunk length or SHA-256 mismatch; a gzip/DecompressionStream error of a body that arrived in full; "not a compacted-region file"; a size the index does not declare; "raw size mismatch"; `SNAPSHOT_LOAD_RESULT` (the Lean loader refused the region); `RUNTIME_MANIFEST_MISMATCH` (a runtime manifest whose `buildId` is not `wasm64-` + the first 16 hex digits of its own `files["lean.wasm"].sha256`: the runtime/v1 invariant every reader may check; the page refuses it before fetching, the worker before booting) |
 | `unpaired` | a snapshot baked by another runtime build | `SNAPSHOT_UNPAIRED` |
 | `oom` | an allocation or reservation failed | `MEMORY_FAILED`, `could not allocate`, `Cannot enlarge memory` |
 | `storage` | OPFS or quota | `QuotaExceededError` |
@@ -770,6 +770,22 @@ is created and disposed, but no `boot` request, `lean.wasm` fetch or
 Memory64 reservation happens; `ResidentSession.start()` rejects first;
 `loadSnapshotByName` returns false before fetching; an entry without
 `runtime` is still the worker's to decide; HARDENING #62).
+
+A boot that fails with a `network` cause is remembered by the page for 60 s
+(per snapshot, in module state every session shares): the next session, the
+relay's reboot, downloads each pre-open snapshot the cache lacks before it
+boots its runtime, and rejects with the download's `network` cause before
+any runtime exists, so a lasting cut costs the relay's three retries one
+runtime, not three. A first attempt and a cached snapshot boot as before
+(HARDENING #63).
+
+A body that ends early is `network`, whatever a decoder then says about
+the short input: both snapshot streams (the raw prefetch and the Lean
+worker's own) count the compressed bytes against the response's
+Content-Length (both also against the index entry's `transfer` when there
+is none and the body is gzip) and fail a short one with "the transfer of
+<file> ended early: received <n> of <expected> bytes". `corrupt` means the bytes
+arrived in full and failed a check (HARDENING #63, follow-up 1).
 
 Classification is per throw, from the error code **and** message:
 `RUNTIME_FETCH_FAILED` covers a 404, a cut and a SHA mismatch alike. The page
@@ -1584,6 +1600,49 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   runs runtime <id>" where the worker's says "this worker booted <id>"
   (classify by `kind`/`code`, never by the words). No export changes:
   `EMBED_API_REVISION` stays `1.0.0-pre.6`.
+- **A network failure costs no runtime per retry (HARDENING #63,
+  2026-10-07):** the pre-open snapshot download came strictly after the
+  runtime boot (`LeanSession.boot`, then per snapshot the raw prefetch and,
+  when it failed, the checker's own stream), so each relay retry of a
+  lasting cut booted a runtime that died at its first snapshot. Now
+  `ResidentSession.start()` remembers a `network`-kind boot failure for
+  every snapshot it loads before opening (raw-cache.ts module state, per
+  cache key, 60 s), and a later session of the page downloads each
+  remembered snapshot with the raw prefetch before a pack install and the
+  runtime boot (`downloadBeforeBoot`, lib/qed64-boot.ts): a download that
+  fails with a `network` cause rejects `start()` with `snapshot '<name>'
+  failed to load` and that cause before any runtime exists; a completed
+  download or load clears the memory; a cached region is probed first and
+  shows no label, and a pre-boot prefetch that cannot decide (silence,
+  another tab, a non-network error) is not run again by the boot's load
+  (the checker streams it at once). The step's progress label carries
+  `loaded: 0`, `total` and `unit: "bytes"`, so it never has the shape of the
+  "waiting for another tab" call (`step: "download"` without `loaded`). A
+  first attempt, a cached snapshot
+  and a memory older than 60 s boot as before, and a single cut is still
+  absorbed with 0 deaths. The relay, its breaker, the `Death` projection
+  and the console lines are unchanged; a lasting cut now shows the same
+  three `bootFailed` deaths and the halt after one runtime start. The
+  pre-boot download makes one request per session (no retry layer of its
+  own: the relay's reboots are the retries). No export changes (the new
+  raw-cache and qed64-boot functions are not in the barrel):
+  `EMBED_API_REVISION` stays `1.0.0-pre.6`.
+  Follow-up (2026-10-08, the browser lane): a `.snapz` body that ends
+  cleanly short of its announced size (Content-Length, or without one the
+  index's `transfer` for a gzip body, in both streams) is now `network`
+  with the message "the
+  transfer of <file> ended early: received <n> of <expected> bytes", not
+  `corrupt` from the decoder's "Compressed input was truncated."; so the
+  rule above fires for that shape of a cut too. A body that arrived in full
+  and fails the decoder stays `corrupt` (§7.2). The prefetch worker's
+  request and `loadSnapshot`'s input each gain an optional `transferBytes`
+  (`LeanSession.loadSnapshot`'s optional 6th argument; `loadSnapshotByName`
+  passes the entry's `transfer`), additively as §7.7 allows: an older
+  worker ignores the field, and without it a worker checks the
+  Content-Length only. The worker revision, `PROTOCOL` and the closure's
+  `requests` are unchanged. A clean short end changes
+  the prefetch warning's text after "raw prefetch error: " to that message
+  (a transport error keeps "network error").
 - **`qed64/edge` routes a toolchain release (plan step B2b, 2026-10-06):**
   additive options, every default unchanged (`QED64_LEGACY` and the hardened
   defaults keep `release: null`). `release` takes a `lean4-wasm64.release/v1`
