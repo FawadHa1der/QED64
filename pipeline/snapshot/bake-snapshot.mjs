@@ -335,11 +335,15 @@ const entry = {
 // lib/snapshots.ts). Another runtime's copy in --out is never touched.
 // QED64's own path does not need it: promote-staging derives public/'s copy
 // from the staged index.json and ignores this one, and upload-artifacts.sh
-// sends no local copy (it writes R2's from the mutable file). It is for a
-// consumer whose own upload copies the snapshots dir as baked: the copy
-// arrives with the index, so a page pinned to this runtime keeps reading
-// its pairing when that consumer's next pairing is uploaded ahead of its
-// deploy.
+// sends no local copy (it writes R2's from the mutable file). It suits only
+// a consumer that serves its staging dir UNMERGED (uploads --out as baked):
+// the copy arrives with the index, so a page pinned to this runtime keeps
+// reading its pairing when that consumer's next pairing is uploaded ahead of
+// its deploy. This file is the STAGING index (only this --out's bakes); a
+// consumer that merges staged entries into its served index (lean4game's
+// scripts/stage-snapshots.py keeps other names) must derive its copy from
+// that merged index instead, or a pinned page would miss every entry not
+// rebaked here (HARDENING #64, the relay to lean4game).
 //
 // The upsert runs under the index's lock (index.json.lock, created by an
 // exclusive open, O_CREAT|O_EXCL, which every local filesystem the staging

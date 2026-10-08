@@ -357,8 +357,11 @@ usage: bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <di
     runtime (`loadSnapshotIndex`'s `pairedBuildId`, docs/EMBEDDING.md §7.0).
     Another runtime's copy in `<out>` is never touched. QED64's promote
     derives `public/`'s copy from the staged `index.json` and its upload
-    sends no local copy; the bake's copy is for a consumer whose own upload
-    copies a baked snapshots dir as it is.
+    sends no local copy. The bake's copy is the STAGING index's (only the
+    entries baked into this `<out>`), so it suits only a consumer that serves
+    its staging dir unmerged; one that merges staged entries into a served
+    index (lean4game's `scripts/stage-snapshots.py` keeps other names) must
+    derive its copy from that merged index (docs/EMBEDDING.md §4).
 
 | Marker | Stream | Regex |
 |---|---|---|

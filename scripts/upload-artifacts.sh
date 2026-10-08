@@ -196,9 +196,11 @@ run rclone copyto public/profiles/index.json "qed64-r2:$BUCKET/snapshots/profile
 # are written by step 2 (this runtime) and step 1 (absent ones) only. (A local
 # copy would add nothing here: step 2 already sends this runtime's bytes, and
 # an older runtime's local copy must never overwrite R2's. bake-snapshot still
-# writes index.<buildId>.json into its --out for a consumer whose own upload
-# copies a baked snapshots dir as it is: there the copy is what pins its
-# deployed page, HARDENING #64.)
+# writes index.<buildId>.json into its --out, which suits only a consumer
+# that serves its staging dir unmerged (uploads the baked dir as it is); a
+# consumer that merges staged entries into its served index, like lean4game's
+# stage-snapshots.py, must derive its copy from the merged index the way this
+# script does, HARDENING #64.)
 run rclone copy public/snapshots "qed64-r2:$BUCKET/snapshots" --exclude 'index.*.json' --exclude 'profiles-index.*.json' --checksum --transfers 4 --s3-chunk-size 64M --progress
 run rclone copyto public/profiles/index.json "qed64-r2:$BUCKET/profiles/index.json" --checksum --s3-no-check-bucket
 

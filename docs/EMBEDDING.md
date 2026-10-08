@@ -346,10 +346,24 @@ Page-tier facts (stable, for preflights and deploy tools):
   snapshot index itself gets the same rule from `loadSnapshotIndex` /
   `fetchSnapshotIndex` with `pairedBuildId` (§7.0): the copy is
   `index.<buildId>.json` in the directory of the index it was given.
-  Writers: `bake-snapshot` writes `index.<buildId>.json` beside the
-  `index.json` it upserts (same bytes; docs/CLI-CONTRACT.md), so a site that
-  uploads a baked snapshots dir as it is publishes the copy with it; QED64's
-  promote and upload write `/snapshots/`'s copies themselves.
+  The option is only half of the protection: it reads a copy, and the site
+  must publish one. Without it the copy request answers 404, the mutable
+  index is kept and the page refuses its entries `SNAPSHOT_UNPAIRED`, as
+  before. Writers: QED64's promote and upload derive `/snapshots/`'s copies
+  from the index the site serves. `bake-snapshot` writes
+  `index.<buildId>.json` beside the `index.json` it upserts (same bytes;
+  docs/CLI-CONTRACT.md), but that is the STAGING index, holding only the
+  entries baked into that `<out>`: it suits only a site that serves its
+  staging dir unmerged (uploads the baked dir as it is). A site that merges
+  staged entries into its served index, keeping other names (lean4game's
+  `scripts/stage-snapshots.py`), publishes a copy derived from its MERGED
+  index instead, as QED64's promote and upload do: written with the merged
+  index's bytes when every entry names one runtime (a mixed merge has no
+  pairing to pin, so it gets none), uploaded before the mutable
+  `index.json`, never overwriting another runtime's copy already
+  published (stale local copies of other runtimes removed before the
+  upload), and gitignored locally. A pinned page reading the bake's
+  staging copy there would miss every entry not rebaked in that run.
 - **`dist/` layout.**
   - `index.html`, `assets/*`, `workers/*`, `infoview/*`, and
     `qed64-build.json`;
@@ -733,7 +747,12 @@ library contract a dist was built from without opening the bundle.
     `fetchSnapshotIndexFor` pass the shell's own `__QED64_BUILD_ID__`; a
     page that reads the index itself (lean4game's game boot) passes the
     buildId of the runtime it boots (the one it pins, or its runtime
-    manifest's `buildId` once resolved);
+    manifest's `buildId` once resolved). A caller that relies on the throw
+    keeps `loadSnapshotIndex(url, { pairedBuildId })`: lean4game's boot
+    catches its off-site refusal (`SNAPSHOT_URL_REFUSED`) to raise its own
+    coded SEC1 refusal, and `fetchSnapshotIndex` would turn that refusal
+    into the "unreadable" null. The option reads a copy only where the site
+    publishes one (§4);
   - the overlay helpers of §8.
 - **raw cache (§7.4):** `prefetchRaw`, `isRawCached`, `removeRawRegion`,
   `isCacheKeyOf`, `SNAPSHOT_CACHE_DIR` and `PREFETCH_SILENCE_MS`.
@@ -997,7 +1016,8 @@ indexes share); a paired index, and every index without a pinned buildId,
 is read from its mutable path only, as before. A `runtime` or `snapshots`
 passed in is not fetched. A page that fetches the snapshot index itself
 (not through `fetchSnapshotIndexFor` or `installArtifacts`) passes
-`pairedBuildId` to get the same order.
+`pairedBuildId` to get the same order, and its site publishes the copy
+derived from the index it serves (§4).
 
 A game page wants `{overrides: "none", profiles: "none"}`, or its own
 overrides routed through `validateBootOverrides` (lean4game parses its URL
@@ -1723,8 +1743,12 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   `qed64/edge`'s `isImmutable` instead of copying it.
 - **The pinned snapshot index for direct callers (HARDENING #64
   follow-up, 2026-10-08):** lean4game's game boot reads the snapshot index
-  with `fetchSnapshotIndex()` itself, so the shell-side rule above did not
-  protect its site. `loadSnapshotIndex` and `fetchSnapshotIndex` gain the
+  with `loadSnapshotIndex()` itself (its `?snapshots=` overlay goes through
+  `fetchSnapshotIndexFor`, which needs nothing), so the shell-side rule
+  above did not protect its site; it adopts the option as
+  `loadSnapshotIndex(undefined, { pairedBuildId })`, which keeps the throw
+  its SEC1 off-site refusal catches (`fetchSnapshotIndex` would turn that
+  into null). `loadSnapshotIndex` and `fetchSnapshotIndex` gain the
   optional `IndexOptions.pairedBuildId` (§7.0): a mispaired index is
   replaced by `index.<pairedBuildId>.json` from the same directory when that
   copy is an index whose entries are all paired with `pairedBuildId`;
@@ -1734,9 +1758,15 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   go through it (one implementation, `pairedCopyOr` in `lib/snapshots.ts`,
   internal, also used for the profile index's copy), which tightens the
   shell's rule by one case: a copy that is itself mispaired, mixed or empty
-  is no longer used (it keeps the mutable index). `bake-snapshot` writes the
-  copy beside every index it upserts (docs/CLI-CONTRACT.md changelog), so
-  a consumer that uploads its baked snapshots dir as is publishes it.
+  is no longer used (it keeps the mutable index). The option is half of
+  the adoption: a site must also publish `snapshots/index.<buildId>.json`
+  derived from the index it SERVES (§4), or the copy request is a 404 and
+  the mutable index is kept. `bake-snapshot` writes the copy beside every
+  index it upserts (docs/CLI-CONTRACT.md changelog), but that is the
+  staging index: it suits only a consumer that serves its staging dir
+  unmerged, not one that merges staged entries into its served index
+  (lean4game's `stage-snapshots.py`), which derives its copy from the
+  merged index.
   Additive (a new optional field), so `EMBED_API_REVISION` → `1.0.0-pre.7`.
 - **`qed64/edge` routes a toolchain release (plan step B2b, 2026-10-06):**
   additive options, every default unchanged (`QED64_LEGACY` and the hardened
