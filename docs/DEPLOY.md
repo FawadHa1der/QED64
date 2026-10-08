@@ -262,6 +262,12 @@ the change reads only the mutable indexes, so the first landing that
 uploads while such a shell is live still has the window above (until its
 deploy). Upload-then-deploy (not the reverse) remains the order: a shell
 deployed before its upload finds neither its snapshots nor its copies.
+The way out of that window, and QED64's own order: first deploy a shell built
+from #64 on the pairing that is already served (same runtime, nothing new to
+upload, so no window), and land the next runtime only after that shell is live.
+A site that must change runtime while an older shell is live uploads in two
+parts instead: the `.snapz` files and the per-build copies before the deploy,
+the mutable `index.json` files right after it.
 From the first deploy of a shell that reads the copies on, step 2 (a)
 makes sure the copies of the pairing it pins exist before the mutable files
 change, whether or not anyone uploaded them earlier, or the upload refuses
