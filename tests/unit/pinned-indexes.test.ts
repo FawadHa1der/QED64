@@ -182,6 +182,40 @@ describe("loadSnapshotIndex / fetchSnapshotIndex: pairedBuildId (a direct caller
     expect(asked).toEqual([game, gameCopy]);
   });
 
+  it("a mutable index that MIXES runtimes (lean4game's merge after a partial rebake) is mispaired: the paired copy is used", async () => {
+    // stage-snapshots.py replaces each rebaked game's entry by name and keeps
+    // the others, so one entry naming another runtime is enough to read the copy.
+    const entry = (name: string, runtime: string) => ({ ...snapshotIndex(runtime).snapshots[0]!, name, url: `/snapshots/${name}.${"0".repeat(16)}.snapz` });
+    const mixed = { schema: "qed64.snapshot-index/v1", snapshots: [entry("init", OLD), entry("mathlib", NEW)] };
+    const pairedCopy = { schema: "qed64.snapshot-index/v1", snapshots: [entry("init", OLD), entry("mathlib", OLD)] };
+    const answers = { ...COPIES, "/snapshots/index.json": () => json(mixed), [SNAP_COPY]: () => json(pairedCopy) };
+    const reads: Array<[string, () => Promise<{ snapshots: Array<{ runtime?: string }> } | null>]> = [
+      ["loadSnapshotIndex", () => loadSnapshotIndex(undefined, { pairedBuildId: OLD })],
+      ["fetchSnapshotIndex", () => fetchSnapshotIndex(undefined, { pairedBuildId: OLD })],
+      ["fetchSnapshotIndexFor", () => { vi.stubGlobal("__QED64_BUILD_ID__", OLD); return fetchSnapshotIndexFor(NO_OVERRIDES); }],
+    ];
+    for (const [label, read] of reads) {
+      const asked = site(answers);
+      const idx = await read();
+      expect(asked, label).toEqual(["/snapshots/index.json", SNAP_COPY]);
+      expect(idx?.snapshots.map((e) => e.runtime), label).toEqual([OLD, OLD]);
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("an empty mutable index names no other runtime: one request, no copy", async () => {
+    const empty = { schema: "qed64.snapshot-index/v1", snapshots: [] };
+    for (const read of [loadSnapshotIndex, fetchSnapshotIndex]) {
+      const asked = site({ ...COPIES, "/snapshots/index.json": () => json(empty) });
+      expect((await read(undefined, { pairedBuildId: OLD }))?.snapshots).toEqual([]);
+      expect(asked).toEqual(["/snapshots/index.json"]);
+    }
+    vi.stubGlobal("__QED64_BUILD_ID__", OLD);
+    const asked = site({ ...COPIES, "/snapshots/index.json": () => json(empty) });
+    expect((await fetchSnapshotIndexFor(NO_OVERRIDES))?.snapshots).toEqual([]);
+    expect(asked).toEqual(["/snapshots/index.json"]);
+  });
+
   it.each(NOT_A_PAIRED_COPY)("mispaired, and the copy is %s: the mutable index, which the boot then refuses as before", async (_label, answer) => {
     for (const read of [loadSnapshotIndex, fetchSnapshotIndex]) {
       const asked = site({ ...WINDOW, [SNAP_COPY]: answer });
