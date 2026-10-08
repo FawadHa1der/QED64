@@ -50,7 +50,7 @@ paired build outputs of "Environment" below.
 | Edit storm | `node tests/adversarial/edit-storm.mjs --url <served url> [--reps 2] [--scenarios …]` | an edit per keystroke over work that ignores cancellation: no crash, death or reboot, ready at the last version, the pool within tolerance (HARDENING #59; `?edithold=0` is the control arm) | served build | lock | `edit-storm: N/N pass` |
 | Boot card | `node tests/adversarial/boot-card.mjs --url <served url> [--scenario slow-link\|check-fallback\|all]` | a cold first visit over a shaped link: the boot card shows progress the whole way, and the check fallback appears while an Init-only buffer elaborates (HARDENING #54) | served build | lock | `boot-card: N/N passed` |
 | Unpaired snapshot | `node tests/adversarial/unpaired-snapshot.mjs --url <served url> [--scenario unpaired\|rescued]` | a snapshot of another runtime is refused before the runtime starts and before a byte of it downloads (HARDENING #62); `rescued`: a mispaired served index is replaced by the pinned runtime's per-build copy (HARDENING #64) | served build (with its per-build copies) | lock | `unpaired-snapshot: PASS (n/n checks, <scenario>)` |
-| Snapshot network cut | `node tests/adversarial/snapshot-network-cut.mjs --url <served url> [--scenarios once,lasting] [--cut-mode truncate\|abort]` | a single cut `.snapz` response is absorbed (ready, 0 deaths); a lasting cut halts the relay with a `network` death after one runtime start, not three, and a reload after the network returns is ready, in both cut modes (truncate: a body that ends early is `network`; abort: "Failed to fetch") (HARDENING #63) | served build | lock | `snapshot-network-cut: 2/2 pass` |
+| Snapshot network cut | `node tests/adversarial/snapshot-network-cut.mjs --url <served url> [--scenarios once,lasting,manifest] [--cut-mode truncate\|abort]` | a single cut `.snapz` response is absorbed (ready, 0 deaths); a lasting cut halts the relay with a `network` death after one runtime start, not three, and a reload after the network returns is ready, in both cut modes (truncate: a body that ends early is `network`; abort: "Failed to fetch") (HARDENING #63) | served build | lock | `snapshot-network-cut: 2/2 pass` |
 | Deep recursion | `node tests/adversarial/deep-recursion.mjs --url <served url> [--scenarios seeded,typing]` | deep `decide` recursion ends in Lean's own error with the checker alive, not a pthread JS-stack overflow (HARDENING #60) | served build | lock | `deep-recursion: 2/2 pass`. It passed both scenarios on wasm64-57ae00dc5f6ce958 (kernel patch 0036, adopted with lean-v4.34.0-41ec565) and fails on 0035b and earlier: it is #60's regression check |
 | Resident gate | `tests/adversarial/resident-gate.sh` | the post-rebuild gate: typecheck, a restarted dev server on :5184, preflight, e2e, latency, battery, with cool-downs | the staged pairing (`resident-url.sh`) | not on a shared host (it kills the :5184 listener) | each lane's line; `GATE-REFUSED: …` exit 3 |
 
@@ -371,7 +371,7 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   or the upload write it). Exit 0 PASS, 1 FAIL. Run it through the host
   browser lock.
 - **Snapshot network cut** (`snapshot-network-cut.mjs --url <served build>
-  [--scenarios once,lasting] [--cut-bytes 1000000] [--cut-mode
+  [--scenarios once,lasting,manifest] [--cut-bytes 1000000] [--cut-mode
   truncate|abort] [--buffer <text>] [--wait-ms 300000] [--headed]`,
   HARDENING #63; docs/EMBEDDING.md §7.2): a lasting network failure in a
   `.snapz` response costs the relay's retries no runtime. It serves nothing
@@ -388,7 +388,11 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   with cause kind `network`, more than one cut, exactly one runtime start
   (the `[mem] runtime-initialized` lines; three before the fix) and the boot
   card failed; then it stops cutting and reloads the page: ready, 0 deaths.
-  Both: no renderer crash, and no console error or warning outside the
+  `manifest` (HARDENING #65; not in the default list) refuses the pinned
+  `/runtime/runtime-manifest.<buildId>.json` with `connectionreset` and cuts
+  no `.snapz`: PASS is the pinned request refused, the mutable
+  `runtime-manifest.json` read, ready, 0 deaths and one runtime start (before
+  #65 the refused fetch failed the boot). All: no renderer crash, and no console error or warning outside the
   shapes the showcase's C11 allowlists (the relay's died and halted lines,
   `Failed to load resource: net::ERR_…`, the prefetch warning; the reload
   lines "Session disposed." and "Outdated RPC session" are known, and so

@@ -49,6 +49,72 @@ describe("resolveRuntimeManifest (page side)", () => {
   });
 });
 
+describe("resolveRuntimeManifest: the pinned copy first; any miss of it leaves the choice to the mutable path (HARDENING #65)", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const PINNED = "/runtime/runtime-manifest.wasm64-3ab1c6a9da03bc29.json";
+  const MUTABLE = "/runtime/runtime-manifest.json";
+  const json = (m: unknown) => ({ ok: true, status: 200, headers: new Headers({ "content-type": "application/json" }), json: async () => m });
+  const failedToFetch = () => Promise.reject(new TypeError("Failed to fetch"));
+  /** fetch answered per URL; returns the URLs asked, in order. */
+  const serve = (answers: Record<string, () => unknown>) => {
+    const asked: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      asked.push(url);
+      const a = answers[url];
+      if (!a) throw new Error(`unexpected fetch ${url}`);
+      return a();
+    });
+    return asked;
+  };
+  const resolve = (overrides = NO_OVERRIDES) => resolveRuntimeManifest(overrides, { pinnedBuildId: "wasm64-3ab1c6a9da03bc29" });
+
+  it("a pinned copy that answers JSON is used; the mutable path is never asked", async () => {
+    const asked = serve({ [PINNED]: () => json(good()) });
+    await expect(resolve()).resolves.toMatchObject({ buildId: "wasm64-3ab1c6a9da03bc29" });
+    expect(asked).toEqual([PINNED]);
+  });
+
+  it("a REJECTED pinned fetch (a dead link while online, a refusing proxy) is a miss: the mutable manifest is used", async () => {
+    const asked = serve({ [PINNED]: failedToFetch, [MUTABLE]: () => json(good()) });
+    await expect(resolve()).resolves.toMatchObject({ buildId: "wasm64-3ab1c6a9da03bc29" });
+    expect(asked).toEqual([PINNED, MUTABLE]);
+  });
+
+  it("so is a pinned body read that rejects, a 404 and a non-JSON answer", async () => {
+    for (const pinned of [
+      () => ({ ok: true, status: 200, headers: new Headers({ "content-type": "application/json" }), json: failedToFetch }),
+      () => ({ ok: false, status: 404, headers: new Headers({ "content-type": "application/json" }), json: async () => ({}) }),
+      () => ({ ok: true, status: 200, headers: new Headers({ "content-type": "text/html" }), json: async () => good() }),
+    ]) {
+      const asked = serve({ [PINNED]: pinned, [MUTABLE]: () => json(good()) });
+      await expect(resolve()).resolves.toMatchObject({ buildId: "wasm64-3ab1c6a9da03bc29" });
+      expect(asked).toEqual([PINNED, MUTABLE]);
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("when the mutable fetch rejects too, the boot fails with the mutable fetch's error: a network cause", async () => {
+    serve({ [PINNED]: failedToFetch, [MUTABLE]: failedToFetch });
+    const err = await resolve().catch((e: unknown) => e) as Error;
+    expect(err).toBeInstanceOf(TypeError);
+    expect(err.message).toBe("Failed to fetch");
+    expect(failureCauseOf(err, { stage: "manifests" })).toMatchObject({ kind: "network", stage: "manifests" });
+  });
+
+  it("a pinned copy that breaks the invariant is still refused (corrupt), not replaced", async () => {
+    serve({ [PINNED]: () => json({ ...good(), buildId: "wasm64-deadbeefdeadbeef" }) });
+    const err = await resolve().catch((e: unknown) => e) as Error & { code?: string };
+    expect(err.code).toBe("RUNTIME_MANIFEST_MISMATCH");
+  });
+
+  it("?runtime= still wins over the pinned copy", async () => {
+    const other = { ...good(), buildId: "wasm64-3ab1c6a9da03bc29" };
+    const asked = serve({ [PINNED]: () => json(good()), "/runtime/runtime-manifest.wasm64-1111111111111111.json": () => json(other) });
+    await expect(resolve({ ...NO_OVERRIDES, runtime: "wasm64-1111111111111111" })).resolves.toBe(other);
+    expect(asked).toEqual([PINNED, "/runtime/runtime-manifest.wasm64-1111111111111111.json"]);
+  });
+});
+
 describe("lean.worker.js boot (the real worker source in a VM)", () => {
   type Posted = { type: string; requestId?: string; error?: { code: string; message: string; recoverable: boolean } };
   function worker() {

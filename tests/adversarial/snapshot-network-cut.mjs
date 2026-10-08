@@ -39,6 +39,13 @@
 //            lastDeath bootFailed with cause kind network, more than 1 cut,
 //            exactly 1 runtime start (was 3), the boot card failed; after
 //            the reload: ready, 0 deaths, no renderer crash.
+//   manifest (HARDENING #65, not in the default list) refuse the pinned
+//            runtime manifest /runtime/runtime-manifest.<buildId>.json with
+//            connectionreset ("Failed to fetch", as behind a refusing proxy
+//            while navigator.onLine is true); no .snapz is cut. PASS: the
+//            pinned request was refused, the mutable runtime-manifest.json
+//            was read, ready, 0 deaths, 1 runtime start. Before #65 the boot
+//            failed on the refused fetch.
 // Runtime starts are the `[mem] runtime-initialized` log lines (page and
 // worker consoles); the lean.wasm chunk requests are printed beside them
 // (a second runtime's chunks may come from the HTTP cache and not show).
@@ -70,7 +77,7 @@ import { shownLine, shownLspErrors, trackEmptyConsole } from "./empty-console.mj
 
 const argv = process.argv.slice(2);
 const arg = (k, d) => { const i = argv.indexOf(`--${k}`); return i >= 0 ? argv[i + 1] : d; };
-const USAGE = "Usage: node tests/adversarial/snapshot-network-cut.mjs --url <served build> [--scenarios once,lasting] [--cut-bytes 1000000] [--cut-mode truncate|abort] [--buffer <text>] [--wait-ms 300000] [--headed]";
+const USAGE = "Usage: node tests/adversarial/snapshot-network-cut.mjs --url <served build> [--scenarios once,lasting,manifest] [--cut-bytes 1000000] [--cut-mode truncate|abort] [--buffer <text>] [--wait-ms 300000] [--headed]";
 if (argv.includes("--help") || argv.includes("-h")) { console.log(USAGE); process.exit(2); }
 const url = arg("url", "http://localhost:5185/");
 const SCENARIOS = arg("scenarios", "once,lasting").split(",").filter(Boolean);
@@ -79,7 +86,7 @@ const CUT_MODE = arg("cut-mode", "truncate");
 const BUFFER = arg("buffer", "import Mathlib\n\n#check (1 : Nat)\n").replace(/\\n/g, "\n");
 const WAIT = Number(arg("wait-ms", "300000"));
 const HEADED = argv.includes("--headed");
-if (!/^https?:\/\//.test(url) || !Number.isFinite(WAIT) || !(CUT_BYTES > 0) || !["truncate", "abort"].includes(CUT_MODE) || SCENARIOS.some((s) => !["once", "lasting"].includes(s))) {
+if (!/^https?:\/\//.test(url) || !Number.isFinite(WAIT) || !(CUT_BYTES > 0) || !["truncate", "abort"].includes(CUT_MODE) || SCENARIOS.some((s) => !["once", "lasting", "manifest"].includes(s))) {
   console.log(`snapshot-network-cut: usage: ${USAGE}`);
   process.exit(2);
 }
@@ -117,7 +124,7 @@ async function run(browser, sc) {
   await context.addInitScript((t) => { try { localStorage.setItem("qed64.buffer", t); } catch {} }, BUFFER);
   const t0 = Date.now();
   const at = () => Math.round(Date.now() - t0);
-  let cutting = true;
+  let cutting = sc !== "manifest";
   const cuts = [], snapz = [], wasmChunks = [];
   const empty = await trackEmptyConsole(context, at);
   await context.route((u) => SNAPZ.test(u.pathname), async (route) => {
@@ -127,7 +134,14 @@ async function run(browser, sc) {
     cuts.push({ t: at(), url: route.request().url() });
     try { await cutResponse(route); } catch (e) { console.log(`  route error (${String(e?.message ?? e).slice(0, 160)}): aborting instead`); await route.abort("connectionreset").catch(() => {}); }
   });
-  context.on("request", (r) => { if (/lean\.wasm/.test(r.url())) wasmChunks.push({ t: at(), url: r.url() }); });
+  // manifest: the pinned runtime manifest's fetch is refused (HARDENING #65); every other request continues.
+  const PINNED_MANIFEST = /^\/runtime\/runtime-manifest\.wasm64-[0-9a-f]{16}\.json$/;
+  const manifests = [];
+  if (sc === "manifest") await context.route((u) => PINNED_MANIFEST.test(u.pathname), (route) => route.abort("connectionreset"));
+  context.on("request", (r) => {
+    if (/lean\.wasm/.test(r.url())) wasmChunks.push({ t: at(), url: r.url() });
+    else if (/\/runtime\/runtime-manifest[^/]*\.json/.test(r.url())) manifests.push({ t: at(), path: new URL(r.url()).pathname, refused: sc === "manifest" && PINNED_MANIFEST.test(new URL(r.url()).pathname) });
+  });
   const page = await context.newPage();
   const consoleLines = [], runtimeInit = [];
   let crashedAt = null;
@@ -175,7 +189,7 @@ async function run(browser, sc) {
   try {
     await page.goto(url, { waitUntil: "domcontentloaded" });
     await empty.noteMainBundle(page, url);
-    if (sc === "once") {
+    if (sc === "once" || sc === "manifest") {
       const w = await watch("boot", (s) => s.phase === "ready" || s.relay === "halted");
       await sleep(2000); // stragglers
       Object.assign(row, { readyAt: w.last?.phase === "ready" ? w.at : null, last: w.last, cuts: cuts.length, runtimeStarts: runtimeInit.length });
@@ -203,7 +217,7 @@ async function run(browser, sc) {
   const pairedEmpty = (l) => paired.has(l);
   const known = (l) => KNOWN.test(l.text) || pairedEmpty(l);
   Object.assign(row, {
-    crashedAt, mainBundles: [...empty.mainBundles], snapz, cutsAt: cuts, runtimeInit, wasmChunks: wasmChunks.length, timeline, consoleLines, lspErrors: empty.lspErrors,
+    crashedAt, mainBundles: [...empty.mainBundles], snapz, manifests, cutsAt: cuts, runtimeInit, wasmChunks: wasmChunks.length, timeline, consoleLines, lspErrors: empty.lspErrors,
     prefetchWarning: judged.some((l) => PREFETCH_WARNING.test(l.text)),
     outside: judged.filter((l) => !ALLOWED.some((re) => re.test(l.text)) && !known(l)),
     known: judged.filter(known).length,
@@ -219,6 +233,17 @@ function checksOf(row) {
     ["no renderer crash", row.crashedAt === null],
     ["no console error/warning outside the allowlisted shapes", row.outside.length === 0],
   ];
+  if (row.sc === "manifest") {
+    return [
+      ["the pinned runtime manifest's fetch was refused", row.manifests.some((m) => m.refused)],
+      ["the mutable runtime-manifest.json was read", row.manifests.some((m) => m.path === "/runtime/runtime-manifest.json")],
+      ["no .snapz response was cut", row.cuts === 0],
+      ["the page reached ready", row.readyAt !== null],
+      ["0 deaths", L.deaths === 0],
+      ["exactly 1 runtime start", row.runtimeStarts === 1],
+      ...common,
+    ];
+  }
   if (row.sc === "once") {
     return [
       ["exactly one .snapz response was cut", row.cuts === 1],
@@ -252,11 +277,12 @@ try {
     const checks = checksOf(row);
     const ok = checks.every(([, pass]) => pass);
     results.push(ok);
-    console.log(`== ${sc} (cut ${row.cutMode}, ${row.cutBytes} bytes)`);
+    console.log(`== ${sc} (${sc === "manifest" ? "the pinned runtime manifest refused, no .snapz cut" : `cut ${row.cutMode}, ${row.cutBytes} bytes`})`);
     const shown = shownLine;
     for (const l of row.consoleLines) console.log(`  console [${(l.t / 1000).toFixed(1)}s] ${l.type}: ${shown(l)}`);
     console.log(`  LSP error replies (tap): ${shownLspErrors(row.lspErrors)}`);
     console.log(`  .snapz requests: ${row.snapz.map((x) => `${(x.t / 1000).toFixed(1)}s ${x.url.replace(/^.*\//, "")}${x.cut ? " CUT" : ""}`).join(", ") || "none"}`);
+    console.log(`  runtime manifest requests: ${row.manifests.map((m) => `${(m.t / 1000).toFixed(1)}s ${m.path}${m.refused ? " REFUSED" : ""}`).join(", ") || "none"}`);
     console.log(`  runtime starts: ${row.runtimeInit.map((x) => `${(x.t / 1000).toFixed(1)}s`).join(", ") || "none"}; lean.wasm requests: ${row.wasmChunks}`);
     console.log(`  relay over time: ${row.timeline.map((x) => `${(x.t / 1000).toFixed(1)}s [${x.phase}] ${x.relay}/${x.ph} ${x.session} deaths=${x.deaths}`).join(" → ")}`);
     if (sc === "lasting") {

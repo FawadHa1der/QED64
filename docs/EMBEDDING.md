@@ -1006,7 +1006,12 @@ fetchSnapshotIndexFor(overrides): Promise<SnapshotIndex | null>;   // a requeste
 ```
 
 The boot's fetches, in order: the profile index, the runtime manifest, the
-core pack (`profiles: "core"`), the snapshot index. With a pinned buildId
+core pack (`profiles: "core"`), the snapshot index. The runtime manifest is
+the pinned buildId's `/runtime/runtime-manifest.<buildId>.json` first; a
+404, a non-JSON answer or a fetch that rejects (a dead link while
+`navigator.onLine` is still true, a refusing proxy) is a miss, and the
+mutable `/runtime/runtime-manifest.json` decides, its own failure being the
+boot's (HARDENING #65). `?runtime=` overrides both. With a pinned buildId
 (`__QED64_BUILD_ID__` defined by the bundler, §6.1), an index whose mutable
 path names another runtime is followed by its per-build copy
 (`/snapshots/profiles-index.<buildId>.json`, `/snapshots/index.<buildId>.json`,
@@ -1768,6 +1773,18 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   (lean4game's `stage-snapshots.py`), which derives its copy from the
   merged index.
   Additive (a new optional field), so `EMBED_API_REVISION` → `1.0.0-pre.7`.
+- **A rejected pinned runtime-manifest fetch is a miss (HARDENING #65,
+  2026-10-08, reported by lean4game):** `resolveRuntimeManifest` fell back
+  to the mutable `/runtime/runtime-manifest.json` when the pinned copy
+  answered a 404 or HTML, but a pinned fetch that REJECTED (a site without
+  the copy behind a refusing proxy, a dead link while `navigator.onLine` is
+  still true) failed the boot, though the mutable manifest (or a service
+  worker's cached one) would have served. A rejected fetch or body read of
+  the pinned copy is now a miss like a 404; when the mutable fetch fails
+  too, the boot fails with its error, a `network` cause, as before. A
+  pinned copy that answers a manifest breaking the runtime/v1 invariant is
+  still refused, not replaced. No export or type changes:
+  `EMBED_API_REVISION` stays `1.0.0-pre.7`.
 - **`qed64/edge` routes a toolchain release (plan step B2b, 2026-10-06):**
   additive options, every default unchanged (`QED64_LEGACY` and the hardened
   defaults keep `release: null`). `release` takes a `lean4-wasm64.release/v1`

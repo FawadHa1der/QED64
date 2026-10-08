@@ -119,6 +119,21 @@ export function overridesOf(opts: Pick<InstallOptions, "overrides"> = {}): BootO
   return validateBootOverrides(o, location.origin);
 }
 
+/** The pinned runtime's immutable manifest, or null for a miss: an HTTP
+ * error, a non-JSON answer (a host that rewrites misses to a page), or a fetch
+ * or body read that rejects (a dead link while navigator.onLine is still true,
+ * a refusing proxy; HARDENING #65). A miss leaves the choice to the mutable
+ * path, whose own failure, if any, is the boot's. */
+async function pinnedRuntimeManifest(id: string): Promise<RuntimeManifest | null> {
+  try {
+    const r = await fetch(`/runtime/runtime-manifest.${id}.json`);
+    if (!r.ok || !(r.headers.get("content-type") ?? "").includes("json")) return null;
+    return (await r.json()) as RuntimeManifest;
+  } catch {
+    return null;
+  }
+}
+
 /** The runtime manifest a boot uses (docs/EMBEDDING.md §7.6): the immutable
  * manifest of the runtime this shell was built against first (uploaded by
  * scripts/upload-artifacts.sh, so a shell deploy never races the mutable
@@ -126,15 +141,12 @@ export function overridesOf(opts: Pick<InstallOptions, "overrides"> = {}): BootO
  * public/runtime), else the mutable path. */
 export async function resolveRuntimeManifest(overrides: BootOverrides, opts: { pinnedBuildId?: string | null } = {}): Promise<RuntimeManifest> {
   const pinnedId = opts.pinnedBuildId !== undefined ? opts.pinnedBuildId : shellBuildId();
-  let manifestResponse: Response | null = null;
-  if (pinnedId) {
-    const pinned = await fetch(`/runtime/runtime-manifest.${pinnedId}.json`);
-    if (pinned.ok && (pinned.headers.get("content-type") ?? "").includes("json")) manifestResponse = pinned;
+  let manifest = pinnedId ? await pinnedRuntimeManifest(pinnedId) : null;
+  if (overrides.runtime || !manifest) {
+    const r = await fetch(overrides.runtime ? `/runtime/runtime-manifest.${overrides.runtime}.json` : "/runtime/runtime-manifest.json", { cache: "no-cache" });
+    if (!r.ok) throw new Error(`runtime manifest: HTTP ${r.status}`);
+    manifest = (await r.json()) as RuntimeManifest;
   }
-  if (overrides.runtime) manifestResponse = await fetch(`/runtime/runtime-manifest.${overrides.runtime}.json`, { cache: "no-cache" });
-  if (!manifestResponse) manifestResponse = await fetch("/runtime/runtime-manifest.json", { cache: "no-cache" });
-  if (!manifestResponse.ok) throw new Error(`runtime manifest: HTTP ${manifestResponse.status}`);
-  const manifest = (await manifestResponse.json()) as RuntimeManifest;
   // runtime/v1 invariant (§7.2): buildId is "wasm64-" + sha256(lean.wasm)[:16]. The worker refuses it too
   // (RUNTIME_MANIFEST_MISMATCH); checking here fails the boot before any chunk is fetched, with a cause.
   const fault = runtimeManifestIdFault(manifest);
