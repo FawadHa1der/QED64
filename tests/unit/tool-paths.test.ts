@@ -642,7 +642,7 @@ fs.promises.link = async () => { const e = new Error("EPERM: operation not permi
     expect(indexFiles(out)).toEqual([`index.${id}.json`, "index.json"].sort());
   });
 
-  test("the upsert waits for the index's lock (a live holder's) and takes over a dead holder's", async () => {
+  test("the upsert waits for the index's lock while it is held, and goes on once it is released", async () => {
     const { s, art, id, out } = bakeCheckout();
     fs.mkdirSync(out);
     const lock = path.join(out, "index.json.lock");
@@ -668,29 +668,40 @@ fs.promises.link = async () => { const e = new Error("EPERM: operation not permi
     }
     expect(stdout).toContain(`index copy ${path.join(out, `index.${id}.json`)} written`);
     expect(fs.readFileSync(path.join(out, `index.${id}.json`))).toEqual(fs.readFileSync(path.join(out, "index.json")));
-    // a lock whose pid is dead on this host is a crashed holder's: taken over at once, then released
-    const dead = spawnSync(process.execPath, ["-e", "console.log(process.pid)"], { encoding: "utf8" });
-    fs.writeFileSync(lock, `${Number(dead.stdout.trim())}\n`);
-    const r = bake(s, art, out, "mathlib");
-    expect([r.status, r.stderr]).toEqual([0, ""]);
-    expect(fs.readFileSync(path.join(out, `index.${id}.json`))).toEqual(fs.readFileSync(path.join(out, "index.json")));
-    expect(JSON.parse(fs.readFileSync(path.join(out, "index.json"), "utf8")).snapshots.map((e: { name: string }) => e.name)).toEqual(["init", "mathlib"]);
     expect(indexFiles(out)).toEqual([`index.${id}.json`, "index.json"].sort());
   });
 
-  test("a live holder is never broken: past the wait bound the bake exits 1 naming it, the lock kept, no index written", () => {
+  test("a lock is never taken over (a live, a dead or an unreadable holder, however old): past the wait bound exit 1 naming it and printing the entry; the lock and both indexes untouched", () => {
     const { s, art, id, out } = bakeCheckout();
     fs.mkdirSync(out);
+    const first = bake(s, art, out, "init");
+    expect([first.status, first.stderr]).toEqual([0, ""]);
     const lock = path.join(out, "index.json.lock");
-    fs.writeFileSync(lock, `${process.pid}\n`); // live for the whole bake
+    const index = fs.readFileSync(path.join(out, "index.json"));
+    const dead = Number(spawnSync(process.execPath, ["-e", "console.log(process.pid)"], { encoding: "utf8" }).stdout.trim());
     const old = (Date.now() - 600_000) / 1000;
-    fs.utimesSync(lock, old, old); // an old mtime no longer makes a live holder's lock stale
-    const r = bake(s, art, out, "init", { QED64_BAKE_LOCK_WAIT_MS: "300" });
-    expect(r.status).toBe(1);
-    expect(r.stderr).toContain(`index lock ${lock} is held by live pid ${process.pid}`);
-    expect(fs.readFileSync(lock, "utf8")).toBe(`${process.pid}\n`);
-    expect(fs.existsSync(path.join(out, "index.json"))).toBe(false);
-    expect(fs.existsSync(path.join(out, `index.${id}.json`))).toBe(false);
+    for (const [text, who] of [
+      [`${process.pid}\n`, `pid ${process.pid} (running on this host)`],
+      [`${dead}\n`, `pid ${dead} (not running on this host)`],
+      ['{"pid":1,"host":"elsewhere"}\n', 'a holder it cannot read ("{\\"pid\\":1,\\"host\\":\\"elsewhere\\"}\\n")'],
+      ["", 'a holder it cannot read ("")'],
+    ] as [string, string][]) {
+      fs.writeFileSync(lock, text);
+      fs.utimesSync(lock, old, old); // a 10-minute-old mtime makes no lock stale
+      const r = bake(s, art, out, "mathlib", { QED64_BAKE_LOCK_WAIT_MS: "300" });
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain(`index lock ${lock} is held by ${who} for over 300 ms; a lock is never taken over`);
+      const printed = r.stderr.split("\n").find((l) => l.startsWith("bake-snapshot: unindexed entry "));
+      expect(JSON.parse(printed!.slice("bake-snapshot: unindexed entry ".length))).toMatchObject({ name: "mathlib", runtime: id });
+      expect(fs.readFileSync(lock, "utf8")).toBe(text);
+      expect(fs.readFileSync(path.join(out, "index.json"))).toEqual(index);
+      expect(fs.readFileSync(path.join(out, `index.${id}.json`))).toEqual(index);
+    }
+    fs.rmSync(lock); // the documented way out: remove the lock once no bake writes --out, rerun
+    const r = bake(s, art, out, "mathlib");
+    expect([r.status, r.stderr]).toEqual([0, ""]);
+    expect(JSON.parse(fs.readFileSync(path.join(out, "index.json"), "utf8")).snapshots.map((e: { name: string }) => e.name)).toEqual(["init", "mathlib"]);
+    expect(indexFiles(out)).toEqual([`index.${id}.json`, "index.json"].sort());
   });
 });
 

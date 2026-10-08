@@ -349,12 +349,15 @@ const entry = {
 // exclusive open, O_CREAT|O_EXCL, which every local filesystem the staging
 // dir may sit on supports: link(2) is refused by exFAT/FAT and some FUSE or
 // SMB mounts, and its failure came AFTER the runner. The lock holds its
-// holder's pid. A lock whose pid is dead on this host is a crashed holder's
-// and is taken over; a live holder is waited for, at most LOCK_WAIT_MS, and
-// then the bake fails (exit 1) naming it, rather than breaking a lock that a
-// slow disk or a stopped process still owns; an empty lock older than
-// LOCK_EMPTY_STALE_MS is a holder that died between the create and the pid
-// write; the lean4-wasm64 package's port of this bake uses the same rule): a concurrent
+// holder's pid. A lock is never taken over: without link(2) no takeover is
+// race-free (two waiters that judge one dead lock can both remove it, the
+// second removing the lock the first has just created), a pid means
+// nothing on an --out shared between hosts, and another tool's lock may
+// not be in this format. A bake waits for the lock at most LOCK_WAIT_MS,
+// then fails (exit 1): one line names the lock, its holder and whether
+// that pid runs on this host, one prints the entry it could not index; its
+// .snapz is in place and neither index is touched, so once no bake writes
+// this --out, removing the lock and rerunning finishes the upsert): a concurrent
 // bake of a sibling name re-reads, merges and writes after this one, never
 // interleaved with it, so its entry is not lost and the two files are never
 // written by different bakes. Both files go through temp file + rename
@@ -371,8 +374,7 @@ const copyPath = path.join(out, `index.${buildId}.json`);
 const lockPath = `${indexPath}.lock`;
 // The wait bound; QED64_BAKE_LOCK_WAIT_MS overrides it for tests only (not a contract variable).
 const LOCK_WAIT_MS = Number(process.env.QED64_BAKE_LOCK_WAIT_MS) > 0 ? Number(process.env.QED64_BAKE_LOCK_WAIT_MS) : 120000;
-const LOCK_EMPTY_STALE_MS = 5000;
-/** true when `pid` is a process on this host (EPERM: alive, another user's). */
+/** true when `pid` is a process on this host (EPERM: alive, another user's); only reported, never acted on. */
 const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; } };
 const lockWaitStart = Date.now();
 for (;;) {
@@ -381,13 +383,15 @@ for (;;) {
     fd = fs.openSync(lockPath, "wx");
   } catch (e) {
     if (e.code !== "EEXIST") throw e;
-    let text = "";
-    let age = 0;
-    try { text = fs.readFileSync(lockPath, "utf8"); age = Date.now() - fs.statSync(lockPath).mtimeMs; } catch { continue; } // released meanwhile
-    const holder = /^(\d+)\n$/.exec(text);
-    if (holder ? !pidAlive(Number(holder[1])) : age > LOCK_EMPTY_STALE_MS) { fs.rmSync(lockPath, { force: true }); continue; }
     if (Date.now() - lockWaitStart > LOCK_WAIT_MS) {
-      console.error(`bake-snapshot: index lock ${lockPath} is held by live pid ${holder ? holder[1] : "(unwritten)"} for over ${LOCK_WAIT_MS} ms; not taking it over (the .snapz is in place, the index is not updated)`);
+      let text;
+      try { text = fs.readFileSync(lockPath, "utf8"); } catch { continue; } // released meanwhile
+      const holder = /^(\d+)\n$/.exec(text);
+      const who = holder
+        ? `pid ${holder[1]} (${pidAlive(Number(holder[1])) ? "running" : "not running"} on this host)`
+        : `a holder it cannot read (${JSON.stringify(text.slice(0, 200))})`;
+      console.error(`bake-snapshot: index lock ${lockPath} is held by ${who} for over ${LOCK_WAIT_MS} ms; a lock is never taken over: once no bake writes ${out}, remove it and rerun (the .snapz is in place, the index is not updated)`);
+      console.error(`bake-snapshot: unindexed entry ${JSON.stringify(entry)}`);
       process.exit(1);
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
