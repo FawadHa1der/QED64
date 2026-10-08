@@ -377,6 +377,7 @@ const LOCK_WAIT_MS = Number(process.env.QED64_BAKE_LOCK_WAIT_MS) > 0 ? Number(pr
 /** true when `pid` is a process on this host (EPERM: alive, another user's); only reported, never acted on. */
 const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; } };
 const lockWaitStart = Date.now();
+let lockVanished = 0;
 for (;;) {
   let fd;
   try {
@@ -384,12 +385,26 @@ for (;;) {
   } catch (e) {
     if (e.code !== "EEXIST") throw e;
     if (Date.now() - lockWaitStart > LOCK_WAIT_MS) {
-      let text;
-      try { text = fs.readFileSync(lockPath, "utf8"); } catch { continue; } // released meanwhile
-      const holder = /^(\d+)\n$/.exec(text);
+      // Read without following a link. An exclusive create never makes a symlink, so one at the lock path (dangling or
+      // not) is no bake's lock, and neither is a directory: each is named at once, never retried, since open() keeps
+      // answering EEXIST for them while no read succeeds (a retry there spun at 100% CPU). A lock released between the
+      // open and the read (ENOENT) sends the bake back to open(), at most 100 times.
+      let text = null;
+      let unreadable = null;
+      try {
+        const st = fs.lstatSync(lockPath);
+        if (st.isSymbolicLink()) unreadable = "a symlink";
+        else if (st.isDirectory()) unreadable = "a directory";
+        else if (!st.isFile()) unreadable = "not a regular file";
+        else text = fs.readFileSync(lockPath, "utf8");
+      } catch (e) {
+        if (e.code === "ENOENT" && ++lockVanished <= 100) continue; // released meanwhile
+        unreadable = `unreadable: ${e.code ?? e.message}`;
+      }
+      const holder = text === null ? null : /^(\d+)\n$/.exec(text);
       const who = holder
         ? `pid ${holder[1]} (${pidAlive(Number(holder[1])) ? "running" : "not running"} on this host)`
-        : `a holder it cannot read (${JSON.stringify(text.slice(0, 200))})`;
+        : `a holder it cannot read (${unreadable ?? JSON.stringify(text.slice(0, 200))})`;
       console.error(`bake-snapshot: index lock ${lockPath} is held by ${who} for over ${LOCK_WAIT_MS} ms; a lock is never taken over: once no bake writes ${out}, remove it and rerun (the .snapz is in place, the index is not updated)`);
       console.error(`bake-snapshot: unindexed entry ${JSON.stringify(entry)}`);
       process.exit(1);

@@ -697,7 +697,23 @@ fs.promises.link = async () => { const e = new Error("EPERM: operation not permi
       expect(fs.readFileSync(path.join(out, "index.json"))).toEqual(index);
       expect(fs.readFileSync(path.join(out, `index.${id}.json`))).toEqual(index);
     }
-    fs.rmSync(lock); // the documented way out: remove the lock once no bake writes --out, rerun
+    // A dangling symlink or a directory at the lock path: open() answers EEXIST and no read succeeds. Named at once
+    // past the bound, never retried (the retry spun at 100% CPU); the path is left as it was.
+    fs.rmSync(lock);
+    for (const [make, who] of [
+      [() => fs.symlinkSync(path.join(out, "nowhere"), lock), "a holder it cannot read (a symlink)"],
+      [() => fs.mkdirSync(lock), "a holder it cannot read (a directory)"],
+    ] as [() => void, string][]) {
+      make();
+      const started = Date.now();
+      const r = bake(s, art, out, "mathlib", { QED64_BAKE_LOCK_WAIT_MS: "300" });
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain(`index lock ${lock} is held by ${who} for over 300 ms; a lock is never taken over`);
+      expect(Date.now() - started).toBeLessThan(15_000);
+      expect(fs.readFileSync(path.join(out, "index.json"))).toEqual(index);
+      fs.rmSync(lock, { recursive: true });
+    }
+    // the documented way out: remove the lock once no bake writes --out, rerun
     const r = bake(s, art, out, "mathlib");
     expect([r.status, r.stderr]).toEqual([0, ""]);
     expect(JSON.parse(fs.readFileSync(path.join(out, "index.json"), "utf8")).snapshots.map((e: { name: string }) => e.name)).toEqual(["init", "mathlib"]);

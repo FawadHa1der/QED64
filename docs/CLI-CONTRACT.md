@@ -406,7 +406,8 @@ The runner's output (node-runner and Lean) is interleaved on both streams.
    exFAT/FAT, FUSE or SMB `<out>` works). A lock is never taken over, whatever
    its holder (live, dead or unreadable) or its age: the bake waits for it at
    most 120 s, then exits 1 with one stderr line naming the lock, its holder
-   and whether that pid runs on this host, and one `unindexed entry <json>`
+   and whether that pid runs on this host (a symlink or a directory at the
+   lock path is named as such, never followed), and one `unindexed entry <json>`
    line, without touching either index (its `.snapz` is already in place;
    once no bake writes `<out>`, removing the lock and rerunning redoes the
    upsert). With the lock it re-reads
