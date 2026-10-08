@@ -398,8 +398,9 @@ The runner's output (node-runner and Lean) is interleaved on both streams.
    300 s and the `.snap` stable for more than 120 s, SIGKILLs the runner.
 7. Creates `<out>` (`mkdir -p`), unlinks `<work>/<name>.snap.deps`, writes
    `<name>.snapz.tmp` and renames it to the final name.
-8. Takes the index's lock `<out>/index.json.lock` (created with link(2)
-   from `<out>/index.json.lock.<pid>`; it waits while another bake holds
+8. Takes the index's lock `<out>/index.json.lock` (created by an exclusive
+   open, `O_CREAT|O_EXCL`, holding the bake's pid; no hard link, so an
+   exFAT/FAT, FUSE or SMB `<out>` works; it waits while another bake holds
    it, and takes over a lock older than 30 s, a crashed holder's), re-reads
    `index.json`, writes `index.<buildId>.json.<pid>.tmp` and
    `index.json.<pid>.tmp` with the same bytes, renames the COPY first and

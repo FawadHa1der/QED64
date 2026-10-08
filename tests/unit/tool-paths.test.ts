@@ -628,6 +628,20 @@ if (!process.env.FAKE_NO_SNAP) fs.writeFileSync(path.join(work, save), "a raw re
     expect(indexFiles(out)).toEqual([`index.${id}.json`, "index.json"].sort());
   });
 
+  test("the lock needs no hard link: an --out whose filesystem refuses link(2) (exFAT/FAT, some FUSE/SMB) still gets both files", () => {
+    const { s, art, id, out } = bakeCheckout();
+    fs.mkdirSync(out);
+    const noLink = path.join(s, "no-link.mjs");
+    fs.writeFileSync(noLink, `import fs from "node:fs";
+fs.linkSync = () => { const e = new Error("EPERM: operation not permitted, link"); e.code = "EPERM"; throw e; };
+fs.promises.link = async () => { const e = new Error("EPERM: operation not permitted, link"); e.code = "EPERM"; throw e; };
+`);
+    const r = bake(s, art, out, "init", { NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import ${pathToFileURL(noLink).href}`.trim() });
+    expect([r.status, r.stderr]).toEqual([0, ""]);
+    expect(fs.readFileSync(path.join(out, `index.${id}.json`))).toEqual(fs.readFileSync(path.join(out, "index.json")));
+    expect(indexFiles(out)).toEqual([`index.${id}.json`, "index.json"].sort());
+  });
+
   test("the upsert waits for the index's lock (another bake's) and takes over a stale one", async () => {
     const { s, art, id, out } = bakeCheckout();
     fs.mkdirSync(out);

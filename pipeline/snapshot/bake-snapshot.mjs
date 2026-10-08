@@ -341,9 +341,13 @@ const entry = {
 // its pairing when that consumer's next pairing is uploaded ahead of its
 // deploy.
 //
-// The upsert runs under the index's lock (index.json.lock, created by
-// link(2) so it is never seen empty; held for milliseconds, so one older
-// than LOCK_STALE_MS is a crashed holder's and is taken over): a concurrent
+// The upsert runs under the index's lock (index.json.lock, created by an
+// exclusive open, O_CREAT|O_EXCL, which every local filesystem the staging
+// dir may sit on supports: link(2) is refused by exFAT/FAT and some FUSE or
+// SMB mounts, and its failure came AFTER the runner. Waiters read only the
+// lock's mtime, and the holder reads its pid back only after writing it, so
+// an empty lock is never misread. Held for milliseconds, so one older than
+// LOCK_STALE_MS is a crashed holder's and is taken over): a concurrent
 // bake of a sibling name re-reads, merges and writes after this one, never
 // interleaved with it, so its entry is not lost and the two files are never
 // written by different bakes. Both files go through temp file + rename
@@ -360,20 +364,26 @@ const copyPath = path.join(out, `index.${buildId}.json`);
 const lockPath = `${indexPath}.lock`;
 const LOCK_STALE_MS = 30000;
 for (;;) {
-  const mine = `${lockPath}.${process.pid}`;
-  fs.writeFileSync(mine, `${process.pid}\n`);
+  let fd;
   try {
-    fs.linkSync(mine, lockPath);
-    break;
+    fd = fs.openSync(lockPath, "wx");
   } catch (e) {
     if (e.code !== "EEXIST") throw e;
     let age = 0;
     try { age = Date.now() - fs.statSync(lockPath).mtimeMs; } catch { continue; } // released meanwhile
     if (age > LOCK_STALE_MS) { fs.rmSync(lockPath, { force: true }); continue; }
     await new Promise((resolve) => setTimeout(resolve, 50));
-  } finally {
-    fs.rmSync(mine, { force: true });
+    continue;
   }
+  try {
+    fs.writeSync(fd, `${process.pid}\n`);
+  } catch (e) {
+    fs.rmSync(lockPath, { force: true }); // ours, just created: never left behind for the next bake to wait out
+    throw e;
+  } finally {
+    fs.closeSync(fd);
+  }
+  break;
 }
 try {
   // Re-read: a concurrent bake of a sibling name may have upserted meanwhile.
