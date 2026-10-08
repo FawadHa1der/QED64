@@ -8,6 +8,21 @@
 // 2026-10-06). The page now refuses the pairing before the worker boots and
 // before a byte of the snapshot is fetched.
 //
+// HARDENING #64: a shell whose served /snapshots/index.json names another
+// runtime reads its pinned runtime's copy /snapshots/index.<buildId>.json and
+// boots from it when that copy is paired. So the default scenario
+// (`--scenario unpaired`) rewrites the copy too: the whole served pairing is
+// another runtime's, the refusal is the one above. A server without the copy
+// gets the rewritten index.json's bytes for it (no 404 line in the console),
+// as a site whose copy names the other runtime too. `--scenario rescued`
+// replays the #64 incident instead (an old shell meeting a new mutable index):
+// only index.json is rewritten, the copy is served as it is, and the page must
+// boot from the copy: ready, 0 deaths, one runtime start, the .snapz fetched.
+// A boot that reaches elaborating logs one EMPTY console.error (Lean's own
+// empty RequestCancelled reply through monaco-vscode-api's notification
+// service): known only when paired one-to-one with its own -32800 reply, from
+// the page's main bundle (empty-console.mjs, as snapshot-network-cut.mjs).
+//
 // The lane serves nothing and writes nothing under public/: it intercepts the
 // snapshot index request (served or `?snapshots=<dir>` overlay, any
 // `…/index.json` outside /profiles/) with Playwright's route, fetches the real
@@ -39,23 +54,26 @@
 // (bootFailed) line appears fewer than three times or not at all, and
 // `initialize` is answered with the halted line instead. Both are correct;
 // the lane prints when `initialize` reached the relay and each shape's count.
-// Usage: node tests/adversarial/unpaired-snapshot.mjs --url http://localhost:5185/ [--runtime wasm64-0000000000000000] [--buffer 'import Mathlib\n\n#check (1 : Nat)\n'] [--wait-ms 90000] [--headed]
+// Usage: node tests/adversarial/unpaired-snapshot.mjs --url http://localhost:5185/ [--scenario unpaired|rescued] [--runtime wasm64-0000000000000000] [--buffer 'import Mathlib\n\n#check (1 : Nat)\n'] [--wait-ms 90000 (rescued: 180000)] [--headed]
 // Exit 0 = PASS, 1 = FAIL (2 = usage). Run it through the host browser lock.
 import { chromium } from "playwright";
+import { shownLine, shownLspErrors, trackEmptyConsole } from "./empty-console.mjs";
 
 const argv = process.argv.slice(2);
 const arg = (k, d) => { const i = argv.indexOf(`--${k}`); return i >= 0 ? argv[i + 1] : d; };
 if (argv.includes("--help") || argv.includes("-h")) {
-  console.log("Usage: node tests/adversarial/unpaired-snapshot.mjs --url <served build> [--runtime <buildId>] [--buffer <text>] [--wait-ms 90000] [--headed]");
+  console.log("Usage: node tests/adversarial/unpaired-snapshot.mjs --url <served build> [--scenario unpaired|rescued] [--runtime <buildId>] [--buffer <text>] [--wait-ms 90000 (rescued: 180000)] [--headed]");
   process.exit(2);
 }
 const url = arg("url", "http://localhost:5185/");
 const FAKE = arg("runtime", "wasm64-0000000000000000");
 const BUFFER = arg("buffer", "import Mathlib\n\n#check (1 : Nat)\n").replace(/\\n/g, "\n");
-const WAIT = Number(arg("wait-ms", "90000"));
+const SCENARIO = arg("scenario", "unpaired");
+const RESCUED = SCENARIO === "rescued";
+const WAIT = Number(arg("wait-ms", RESCUED ? "180000" : "90000"));
 const HEADED = argv.includes("--headed");
-if (!/^https?:\/\//.test(url) || !Number.isFinite(WAIT) || !/^wasm64-[0-9a-f]{16}$/.test(FAKE)) {
-  console.log("unpaired-snapshot: usage: --url must be http(s), --wait-ms a number, --runtime wasm64-<16 hex>");
+if (!/^https?:\/\//.test(url) || !Number.isFinite(WAIT) || !/^wasm64-[0-9a-f]{16}$/.test(FAKE) || !/^(?:unpaired|rescued)$/.test(SCENARIO)) {
+  console.log("unpaired-snapshot: usage: --url must be http(s), --scenario unpaired|rescued, --wait-ms a number, --runtime wasm64-<16 hex>");
   process.exit(2);
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -73,9 +91,10 @@ try {
   const t0 = Date.now();
   const at = () => Math.round(Date.now() - t0);
   const intercepted = [];
-  await context.route((u) => /\/index\.json$/.test(u.pathname) && !u.pathname.startsWith("/profiles/"), async (route) => {
-    const res = await route.fetch();
-    let body = await res.text();
+  const empty = await trackEmptyConsole(context, at);
+  // The snapshot index (served or overlay) and the served index's per-build copy (HARDENING #64).
+  const COPY = /\/index\.wasm64-[0-9a-f]{16}\.json$/;
+  const rewrite = (body) => {
     let rewritten = 0;
     try {
       const idx = JSON.parse(body);
@@ -84,7 +103,24 @@ try {
         body = JSON.stringify(idx);
       }
     } catch { /* not JSON: passed through unchanged */ }
-    intercepted.push({ t: at(), url: route.request().url(), status: res.status(), rewritten });
+    return { body, rewritten };
+  };
+  await context.route((u) => (/\/index\.json$/.test(u.pathname) || COPY.test(u.pathname)) && !u.pathname.startsWith("/profiles/"), async (route) => {
+    const copy = COPY.test(new URL(route.request().url()).pathname);
+    if (copy && RESCUED) { // the copy as the server has it
+      const res = await route.fetch();
+      intercepted.push({ t: at(), url: route.request().url(), copy, status: res.status(), rewritten: 0 });
+      await route.fulfill({ response: res });
+      return;
+    }
+    let res = await route.fetch();
+    let synthesized = false;
+    if (copy && res.status() !== 200) { // no copy on this server: the rewritten index.json's bytes stand in for it
+      res = await route.fetch({ url: route.request().url().replace(COPY, "/index.json") });
+      synthesized = true;
+    }
+    const { body, rewritten } = rewrite(await res.text());
+    intercepted.push({ t: at(), url: route.request().url(), copy, status: res.status(), rewritten, ...(synthesized ? { synthesized } : {}) });
     // The body is the decoded text: drop the transfer framing the server sent for its own bytes.
     const headers = Object.fromEntries(Object.entries(res.headers()).filter(([k]) => !/^(?:content-encoding|content-length|transfer-encoding)$/i.test(k)));
     await route.fulfill({ status: res.status(), headers: { ...headers, "content-type": "application/json" }, body });
@@ -103,7 +139,9 @@ try {
   page.on("crash", () => { crashedAt = at(); });
   page.on("console", (m) => {
     const text = m.text();
-    consoleLines.push({ t: at(), type: m.type(), text });
+    const line = { t: at(), type: m.type(), text };
+    consoleLines.push(line);
+    empty.describe(m, line);
     if (/runtime-initialized/.test(text)) runtimeInit.push({ t: at(), text: text.slice(0, 200) });
   });
   page.on("pageerror", (e) => consoleLines.push({ t: at(), type: "pageerror", text: String(e?.message ?? e) }));
@@ -113,6 +151,7 @@ try {
     if (/runtime-initialized/.test(text)) runtimeInit.push({ t: at(), text: text.slice(0, 200) });
   }));
   await page.goto(url, { waitUntil: "domcontentloaded" });
+  await empty.noteMainBundle(page, url);
   const sample = () => page.evaluate(() => {
     const q = globalThis.qed64;
     const r = q?.test?.rawStatus?.() ?? q?.status?.();
@@ -128,7 +167,7 @@ try {
     };
   }).catch(() => null);
   const timeline = [];
-  let last = null, haltedAt = null, initializeAt = null, initializeAfterHalt = null;
+  let last = null, haltedAt = null, initializeAt = null, initializeAfterHalt = null, readyAt = null;
   while (at() < WAIT && crashedAt === null) {
     const s = await sample();
     if (s) {
@@ -138,21 +177,37 @@ try {
       // Sampled: when both first show in one sample, which came first is unknown (null).
       if (s.initialize && initializeAt === null) { initializeAt = at(); initializeAfterHalt = haltedAt !== null ? true : s.relay === "halted" ? null : false; }
       if (s.relay === "halted" && haltedAt === null) haltedAt = at();
+      if (s.phase === "ready" && readyAt === null) readyAt = at();
     }
     if (haltedAt !== null && at() - haltedAt > 3000) break; // stragglers: a request or a log after the halt
+    if (readyAt !== null && at() - readyAt > 3000) break;
     await sleep(250);
   }
+  await empty.settle(); // the argument handles die with the context
   await context.close().catch(() => {});
   const judged = consoleLines.filter((l) => /^(?:error|warning|pageerror|worker:error|worker:warning)$/.test(l.type));
-  const outside = judged.filter((l) => !ALLOWED.some((re) => re.test(l.text)) && !KNOWN_N2.test(l.text));
+  const paired = empty.paired(judged);
+  const outside = judged.filter((l) => !ALLOWED.some((re) => re.test(l.text)) && !KNOWN_N2.test(l.text) && !paired.has(l));
   const knownN2 = judged.filter((l) => KNOWN_N2.test(l.text));
   const shapes = ALLOWED.map((re) => ({ shape: re.source, count: judged.filter((l) => re.test(l.text)).length }));
-  row = { url, fakeRuntime: FAKE, intercepted, requests, runtimeInit, crashedAt, haltedAt, initializeAt, initializeAfterHalt, timeline, last, consoleLines, outside, knownN2, shapes };
+  row = { url, scenario: SCENARIO, fakeRuntime: FAKE, intercepted, requests, runtimeInit, crashedAt, haltedAt, readyAt, initializeAt, initializeAfterHalt, timeline, last, consoleLines, outside, knownN2, shapes, pairedEmpty: paired.size, mainBundles: [...empty.mainBundles], lspErrors: empty.lspErrors };
 } finally { await browser.close().catch(() => {}); }
 
 const L = row.last ?? {};
-const checks = [
-  ["the snapshot index was intercepted and rewritten", row.intercepted.some((i) => i.rewritten > 0)],
+const mutable = row.intercepted.filter((i) => !i.copy);
+const copies = row.intercepted.filter((i) => i.copy);
+const checks = RESCUED ? [
+  ["the served index.json was intercepted and rewritten", mutable.some((i) => i.rewritten > 0)],
+  ["the per-build copy was read, as the server has it (200)", copies.length > 0 && copies.every((i) => i.status === 200)],
+  ["no renderer crash", row.crashedAt === null],
+  ["the page reached ready", row.readyAt !== null],
+  ["0 deaths", (L.deaths ?? 0) === 0 && L.lastDeath == null],
+  ["a .snapz request (the copy's entries were used)", row.requests.snapz.length > 0],
+  ["exactly 1 runtime start", row.runtimeInit.length === 1],
+  ["no console error/warning outside the allowlisted shapes", row.outside.length === 0],
+] : [
+  ["the snapshot index was intercepted and rewritten", mutable.some((i) => i.rewritten > 0)],
+  ["the per-build copy was read and named the other runtime too", copies.length > 0 && copies.every((i) => i.rewritten > 0)],
   ["no renderer crash", row.crashedAt === null],
   ["no .snapz request", row.requests.snapz.length === 0],
   ["no lean.wasm chunk request", row.requests.wasmChunks.length === 0],
@@ -164,10 +219,12 @@ const checks = [
   ["the page's boot card shows failed", /\bfailed\b/.test(L.bootcard ?? "")],
   ["no console error/warning outside the allowlisted shapes", row.outside.length === 0],
 ];
-for (const l of row.consoleLines) console.log(`  console [${(l.t / 1000).toFixed(1)}s] ${l.type}: ${l.text.split("\n")[0].slice(0, 300)}`);
+for (const l of row.consoleLines) console.log(`  console [${(l.t / 1000).toFixed(1)}s] ${l.type}: ${shownLine(l)}`);
+console.log(`  LSP error replies (tap): ${shownLspErrors(row.lspErrors)}`);
 console.log(`  index intercepted: ${JSON.stringify(row.intercepted)}`);
 console.log(`  requests: ${row.requests.snapz.length} .snapz, ${row.requests.wasmChunks.length} lean.wasm, ${row.requests.runtimeManifests.length} runtime manifest(s)`);
 console.log(`  relay over time: ${row.timeline.map((x) => `${(x.t / 1000).toFixed(1)}s ${x.relay}/${x.phase} ${x.session} deaths=${x.deaths}`).join(" → ")}`);
+console.log(`  scenario: ${SCENARIO}; ready at: ${row.readyAt === null ? "never" : `${(row.readyAt / 1000).toFixed(1)} s`}; runtime starts: ${row.runtimeInit.length}`);
 console.log(`  halted at: ${row.haltedAt === null ? "never" : `${(row.haltedAt / 1000).toFixed(1)} s`}; deaths ${L.deaths ?? "?"}, reboots ${L.reboots ?? "?"}, breaker trips ${L.breakerTrips ?? "?"}`);
 console.log(`  boot: ${JSON.stringify(L.boot ?? null)}`);
 console.log(`  lastDeath: ${JSON.stringify(L.lastDeath ?? null)}`);
@@ -175,9 +232,10 @@ console.log(`  boot card: ${JSON.stringify(L.bootcard ?? null)} / ${JSON.stringi
 console.log(`  initialize reached the relay: ${row.initializeAt === null ? "never (sampled every 250 ms)" : `${(row.initializeAt / 1000).toFixed(1)} s, ${row.initializeAfterHalt === null ? "in the same 250 ms sample as the halt (order unknown)" : row.initializeAfterHalt ? "after the halt (answered with the halted line)" : "before the halt (answered at a later death: the died (bootFailed) line)"}`}`);
 console.log(`  allowlisted shapes: ${row.shapes.map((x) => `${x.count}× /${x.shape}/`).join(", ")}`);
 if (row.knownN2.length) console.log(`  known N2 lines (not judged): ${row.knownN2.length}`);
-for (const l of row.outside) console.log(`  OUTSIDE ALLOWLIST [${(l.t / 1000).toFixed(1)}s] ${l.type}: ${l.text.split("\n")[0].slice(0, 300)}`);
+if (row.pairedEmpty) console.log(`  empty console.errors from ${row.mainBundles.join(", ")} paired one-to-one with a -32800 reply (not judged): ${row.pairedEmpty} (replies: ${row.lspErrors.filter((e) => e.code === -32800).length})`);
+for (const l of row.outside) console.log(`  OUTSIDE ALLOWLIST [${(l.t / 1000).toFixed(1)}s] ${l.type}: ${shownLine(l)}`);
 for (const [what, ok] of checks) console.log(`  ${ok ? "ok  " : "FAIL"} ${what}`);
 console.log(`  RESULT :: ${JSON.stringify({ ...row, consoleLines: row.consoleLines.length })}`);
 const pass = checks.every(([, ok]) => ok);
-console.log(`unpaired-snapshot: ${pass ? "PASS" : "FAIL"} (${checks.filter(([, ok]) => ok).length}/${checks.length} checks)`);
+console.log(`unpaired-snapshot: ${pass ? "PASS" : "FAIL"} (${checks.filter(([, ok]) => ok).length}/${checks.length} checks, ${SCENARIO})`);
 process.exit(pass ? 0 : 1);

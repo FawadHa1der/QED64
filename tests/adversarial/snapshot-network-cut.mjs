@@ -57,28 +57,16 @@
 // source location, since msg.text() alone says nothing.
 //
 // The empty console.error (seen once per healthy boot in the first lane run,
-// as the first "elaborating" lines arrive): monaco-vscode-api's
-// StandaloneNotificationService.notify console.errors the message of every
-// Error-severity notification, and an LSP RequestCancelled (-32800) reply
-// that Lean itself sends with an EMPTY message (the boot-time codeAction the
-// header processing cancels) reaches it, so Chromium records
-// console.error(""). Third-party, Lean's own reply, not QED64 output; the
-// showcase allowlists that line (tests/ux/selectors.json
-// consoleAllowlist.consoleError[0]: text ^$, the main page bundle at a pinned
-// line, pairWith -32800 within -3 s / +0.5 s, fail-closed without its LSP
-// tap; tests/ux/bringup/console.mjs pairs one-to-one). The lane taps the
-// relay's toClient (an init script wrapping qed64.relay.toClient, reporting
-// every LSP error reply through an exposed binding that survives the reload)
-// and pairs the same way: each empty console.error, in time order, from the
-// page's main bundle (the module script index.html loads; not a worker or
-// the InfoView), is known only when it can take its OWN unused -32800 reply
-// from the 3 s before it or the 0.5 s after. One reply excuses one line; an
-// unpaired one, or one from elsewhere, FAILS. The lane does not pin the
-// bundle's line (it changes per build; the showcase pins it per QED64 pin).
+// as the first "elaborating" lines arrive) is Lean's own empty RequestCancelled
+// reply surfacing through monaco-vscode-api's notification service; it is
+// known only when paired one-to-one with its own -32800 reply, from the
+// page's main bundle (empty-console.mjs, shared with unpaired-snapshot.mjs);
+// an unpaired one, or one from elsewhere, FAILS.
 // Usage: node tests/adversarial/snapshot-network-cut.mjs --url http://localhost:5185/ [--scenarios once,lasting] [--cut-bytes 1000000] [--cut-mode truncate|abort] [--buffer 'import Mathlib\n\n#check (1 : Nat)\n'] [--wait-ms 300000] [--headed]
 // Exit 0 = every scenario passed, 1 = one failed (2 = usage). Serve a build
 // (scripts/serve-dist.mjs) and run it through the host browser lock.
 import { chromium } from "playwright";
+import { shownLine, shownLspErrors, trackEmptyConsole } from "./empty-console.mjs";
 
 const argv = process.argv.slice(2);
 const arg = (k, d) => { const i = argv.indexOf(`--${k}`); return i >= 0 ? argv[i + 1] : d; };
@@ -107,25 +95,6 @@ const ALLOWED = [
 // pageerror and the InfoView webview's es-module-shims JSON.parse warning).
 const KNOWN = /^Session disposed\.$|^Outdated RPC session$|^unsupported(?:\s|$)|^TODO: catch JSON\.parse failure: +SyntaxError: Unexpected token 'e', "esms,true,/;
 const PREFETCH_WARNING = /^\[qed64\] raw prefetch error: /;
-/** The empty NotificationService line pairs with an LSP RequestCancelled reply this close (ms, before / after). */
-const PAIR_BEFORE_MS = 3000, PAIR_AFTER_MS = 500;
-// Wraps the page's relay.toClient (frontend/src/relay-taps.ts already shadows it; the relay calls this.toClient
-// dynamically) and reports every LSP error reply to Node. Top frame only (the InfoView iframe has no relay).
-const LSP_TAP = `(() => {
-  try { if (window.top !== window || window.__netcutTap) return; } catch (e) { return; }
-  window.__netcutTap = true;
-  let wrapped = null;
-  setInterval(() => {
-    let r = null; try { r = window.qed64 && window.qed64.relay; } catch (e) { r = null; }
-    if (!r || r === wrapped || typeof r.toClient !== 'function') return;
-    const tc = r.toClient;
-    r.toClient = function (m) {
-      try { if (m && m.id !== undefined && m.error && typeof window.__netcutLspError === 'function') window.__netcutLspError({ id: m.id, code: m.error.code, message: String(m.error.message || '').slice(0, 200) }); } catch (e) {}
-      return tc.apply(this, arguments);
-    };
-    wrapped = r;
-  }, 5);
-})();`;
 const SNAPZ = /\.snapz(?:$|\?)/;
 
 /** The first CUT_BYTES of the real response, answered with its full content-length: the body ends early. */
@@ -149,9 +118,8 @@ async function run(browser, sc) {
   const t0 = Date.now();
   const at = () => Math.round(Date.now() - t0);
   let cutting = true;
-  const cuts = [], snapz = [], wasmChunks = [], lspErrors = [];
-  await context.exposeBinding("__netcutLspError", (_source, e) => { lspErrors.push({ t: at(), ...e }); });
-  await context.addInitScript(LSP_TAP);
+  const cuts = [], snapz = [], wasmChunks = [];
+  const empty = await trackEmptyConsole(context, at);
   await context.route((u) => SNAPZ.test(u.pathname), async (route) => {
     const cutThis = cutting && (sc === "lasting" || cuts.length === 0);
     snapz.push({ t: at(), url: route.request().url(), cut: cutThis });
@@ -161,7 +129,7 @@ async function run(browser, sc) {
   });
   context.on("request", (r) => { if (/lean\.wasm/.test(r.url())) wasmChunks.push({ t: at(), url: r.url() }); });
   const page = await context.newPage();
-  const consoleLines = [], runtimeInit = [], pending = [];
+  const consoleLines = [], runtimeInit = [];
   let crashedAt = null;
   const onLine = (type, text) => {
     const line = { t: at(), type, text };
@@ -169,18 +137,10 @@ async function run(browser, sc) {
     if (/runtime-initialized/.test(text)) runtimeInit.push({ t: at(), text: text.slice(0, 200) });
     return line;
   };
-  /** msg.text() of a console call whose arguments render empty says nothing: record what was passed, and where. */
-  const describeEmpty = (m, line) => {
-    if (line.text !== "") return;
-    const loc = m.location?.() ?? {};
-    line.where = loc.url ? `${loc.url.replace(/^https?:\/\/[^/]+/, "")}:${loc.lineNumber}:${loc.columnNumber}` : "?";
-    pending.push(Promise.all(m.args().map((a) => a.jsonValue().then((v) => JSON.stringify(v) ?? String(v), () => a.toString())))
-      .then((args) => { line.args = args; }, (e) => { line.args = [`<unreadable: ${String(e?.message ?? e).slice(0, 80)}>`]; }));
-  };
   page.on("crash", () => { crashedAt = at(); });
-  page.on("console", (m) => describeEmpty(m, onLine(m.type(), m.text())));
+  page.on("console", (m) => empty.describe(m, onLine(m.type(), m.text())));
   page.on("pageerror", (e) => onLine("pageerror", String(e?.message ?? e)));
-  page.on("worker", (w) => w.on("console", (m) => describeEmpty(m, onLine(`worker:${m.type()}`, m.text()))));
+  page.on("worker", (w) => w.on("console", (m) => empty.describe(m, onLine(`worker:${m.type()}`, m.text()))));
   const sample = () => page.evaluate(() => {
     const q = globalThis.qed64;
     const r = q?.test?.rawStatus?.() ?? q?.status?.();
@@ -194,13 +154,6 @@ async function run(browser, sc) {
       bootcard: card ? card.className : null, bootlabel: document.getElementById("bootlabel")?.textContent ?? null,
     };
   }).catch(() => null);
-  /** The page's main bundle (the module script index.html loads), by path: where the empty NotificationService
-   * console.error comes from (header comment). Read after each load; a served build's name is content-hashed. */
-  const mainBundles = new Set();
-  const noteMainBundle = async () => {
-    const src = await page.evaluate(() => document.querySelector('script[type="module"][src]')?.getAttribute("src") ?? null).catch(() => null);
-    if (src) mainBundles.add(new URL(src, url).pathname);
-  };
   const timeline = [];
   /** Sample until `done(s)` or the wait runs out; `phase` labels the timeline rows. */
   async function watch(phase, done) {
@@ -221,7 +174,7 @@ async function run(browser, sc) {
   const row = { sc, cutMode: CUT_MODE, cutBytes: CUT_BYTES };
   try {
     await page.goto(url, { waitUntil: "domcontentloaded" });
-    await noteMainBundle();
+    await empty.noteMainBundle(page, url);
     if (sc === "once") {
       const w = await watch("boot", (s) => s.phase === "ready" || s.relay === "halted");
       await sleep(2000); // stragglers
@@ -235,30 +188,22 @@ async function run(browser, sc) {
       const initBefore = runtimeInit.length;
       if (crashedAt === null) {
         await page.reload({ waitUntil: "domcontentloaded" });
-        await noteMainBundle();
+        await empty.noteMainBundle(page, url);
         const r = await watch("reload", (s) => s.phase === "ready" || s.relay === "halted");
         Object.assign(row, { reload: { readyAfterMs: r.last?.phase === "ready" && r.at !== null ? r.at - tReload : null, last: r.last, runtimeStarts: runtimeInit.length - initBefore } });
       }
     }
   } finally {
-    await Promise.allSettled(pending); // the argument handles die with the context
+    await empty.settle(); // the argument handles die with the context
     await context.close().catch(() => {});
   }
   const judged = consoleLines.filter((l) => /^(?:error|warning|pageerror|worker:error|worker:warning)$/.test(l.type));
-  /** The empty NotificationService console.error, explained by its OWN LSP RequestCancelled reply (header
-   * comment): one-to-one in time order, as the showcase's classifyConsole pairs, and only from the main bundle. */
-  const replies = lspErrors.filter((e) => e.code === -32800).map((e) => ({ t: e.t, used: false })).sort((a, b) => a.t - b.t);
-  const fromMainBundle = (l) => typeof l.where === "string" && mainBundles.has(l.where.replace(/:\d+:\d+$/, ""));
-  const paired = new Set();
-  for (const l of judged.filter((x) => x.type === "error" && x.text === "").sort((a, b) => a.t - b.t)) {
-    if (!fromMainBundle(l)) continue;
-    const k = replies.find((e) => !e.used && e.t >= l.t - PAIR_BEFORE_MS && e.t <= l.t + PAIR_AFTER_MS);
-    if (k) { k.used = true; paired.add(l); }
-  }
+  // The empty NotificationService console.error, explained by its OWN LSP RequestCancelled reply (empty-console.mjs).
+  const paired = empty.paired(judged);
   const pairedEmpty = (l) => paired.has(l);
   const known = (l) => KNOWN.test(l.text) || pairedEmpty(l);
   Object.assign(row, {
-    crashedAt, mainBundles: [...mainBundles], snapz, cutsAt: cuts, runtimeInit, wasmChunks: wasmChunks.length, timeline, consoleLines, lspErrors,
+    crashedAt, mainBundles: [...empty.mainBundles], snapz, cutsAt: cuts, runtimeInit, wasmChunks: wasmChunks.length, timeline, consoleLines, lspErrors: empty.lspErrors,
     prefetchWarning: judged.some((l) => PREFETCH_WARNING.test(l.text)),
     outside: judged.filter((l) => !ALLOWED.some((re) => re.test(l.text)) && !known(l)),
     known: judged.filter(known).length,
@@ -308,9 +253,9 @@ try {
     const ok = checks.every(([, pass]) => pass);
     results.push(ok);
     console.log(`== ${sc} (cut ${row.cutMode}, ${row.cutBytes} bytes)`);
-    const shown = (l) => `${l.text.split("\n")[0].slice(0, 300)}${l.text === "" ? `(empty text; args ${JSON.stringify(l.args ?? null)} at ${l.where ?? "?"})` : ""}`;
+    const shown = shownLine;
     for (const l of row.consoleLines) console.log(`  console [${(l.t / 1000).toFixed(1)}s] ${l.type}: ${shown(l)}`);
-    console.log(`  LSP error replies (tap): ${row.lspErrors.map((e) => `${(e.t / 1000).toFixed(1)}s ${e.code}${e.message ? ` ${JSON.stringify(e.message.slice(0, 60))}` : " (empty message)"}`).join(", ") || "none"}`);
+    console.log(`  LSP error replies (tap): ${shownLspErrors(row.lspErrors)}`);
     console.log(`  .snapz requests: ${row.snapz.map((x) => `${(x.t / 1000).toFixed(1)}s ${x.url.replace(/^.*\//, "")}${x.cut ? " CUT" : ""}`).join(", ") || "none"}`);
     console.log(`  runtime starts: ${row.runtimeInit.map((x) => `${(x.t / 1000).toFixed(1)}s`).join(", ") || "none"}; lean.wasm requests: ${row.wasmChunks}`);
     console.log(`  relay over time: ${row.timeline.map((x) => `${(x.t / 1000).toFixed(1)}s [${x.phase}] ${x.relay}/${x.ph} ${x.session} deaths=${x.deaths}`).join(" → ")}`);

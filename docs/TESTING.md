@@ -49,7 +49,7 @@ paired build outputs of "Environment" below.
 | Reload storm | `node tests/adversarial/reload-storm.mjs --url <url> [--runs 5] [--embed] [--ballast-mb N] [--headed]` | five reloads 3 s apart per run, a fresh browser per run, `ready` again after them; a crash is classified by the V8 OOM line (HARDENING #53, #55); `--embed` reloads a same-origin host page around the frame; `--ballast-mb N` (with `--embed`) makes that host hold N MiB of live JS objects in the renderer's shared pointer cage, a heavy embedding page (#55 residual: 800 MiB crashes 8/8, 0 MiB 0/8) | dev or served build (stock and `--embed`) | lock | `RELOAD-STORM <tag>: 0/N crashed …` (1 = a crash, 3 = nothing booted) |
 | Edit storm | `node tests/adversarial/edit-storm.mjs --url <served url> [--reps 2] [--scenarios …]` | an edit per keystroke over work that ignores cancellation: no crash, death or reboot, ready at the last version, the pool within tolerance (HARDENING #59; `?edithold=0` is the control arm) | served build | lock | `edit-storm: N/N pass` |
 | Boot card | `node tests/adversarial/boot-card.mjs --url <served url> [--scenario slow-link\|check-fallback\|all]` | a cold first visit over a shaped link: the boot card shows progress the whole way, and the check fallback appears while an Init-only buffer elaborates (HARDENING #54) | served build | lock | `boot-card: N/N passed` |
-| Unpaired snapshot | `node tests/adversarial/unpaired-snapshot.mjs --url <served url>` | a snapshot of another runtime is refused before the runtime starts and before a byte of it downloads (HARDENING #62) | served build | lock | `unpaired-snapshot: PASS (n/n checks)` |
+| Unpaired snapshot | `node tests/adversarial/unpaired-snapshot.mjs --url <served url> [--scenario unpaired\|rescued]` | a snapshot of another runtime is refused before the runtime starts and before a byte of it downloads (HARDENING #62); `rescued`: a mispaired served index is replaced by the pinned runtime's per-build copy (HARDENING #64) | served build (with its per-build copies) | lock | `unpaired-snapshot: PASS (n/n checks, <scenario>)` |
 | Snapshot network cut | `node tests/adversarial/snapshot-network-cut.mjs --url <served url> [--scenarios once,lasting] [--cut-mode truncate\|abort]` | a single cut `.snapz` response is absorbed (ready, 0 deaths); a lasting cut halts the relay with a `network` death after one runtime start, not three, and a reload after the network returns is ready, in both cut modes (truncate: a body that ends early is `network`; abort: "Failed to fetch") (HARDENING #63) | served build | lock | `snapshot-network-cut: 2/2 pass` |
 | Deep recursion | `node tests/adversarial/deep-recursion.mjs --url <served url> [--scenarios seeded,typing]` | deep `decide` recursion ends in Lean's own error with the checker alive, not a pthread JS-stack overflow (HARDENING #60) | served build | lock | `deep-recursion: 2/2 pass`. It passed both scenarios on wasm64-57ae00dc5f6ce958 (kernel patch 0036, adopted with lean-v4.34.0-41ec565) and fails on 0035b and earlier: it is #60's regression check |
 | Resident gate | `tests/adversarial/resident-gate.sh` | the post-rebuild gate: typecheck, a restarted dev server on :5184, preflight, e2e, latency, battery, with cool-downs | the staged pairing (`resident-url.sh`) | not on a shared host (it kills the :5184 listener) | each lane's line; `GATE-REFUSED: …` exit 3 |
@@ -335,13 +335,19 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   build (`scripts/serve-dist.mjs`), not the dev server, and run it through
   the host browser lock.
 - **Unpaired snapshot** (`unpaired-snapshot.mjs --url <served build>
-  [--runtime wasm64-0000000000000000] [--buffer <text>] [--wait-ms 90000]
-  [--headed]`, HARDENING #62; docs/EMBEDDING.md §7.2): the page refuses a
+  [--scenario unpaired|rescued] [--runtime wasm64-0000000000000000]
+  [--buffer <text>] [--wait-ms 90000 (rescued: 180000)] [--headed]`,
+  HARDENING #62 and #64; docs/EMBEDDING.md §7.2): the page refuses a
   snapshot of another runtime before the runtime starts and before a byte of
   the snapshot downloads. It serves nothing and writes nothing under
   `public/`: Playwright's route answers the snapshot index request (served
   or `?snapshots=` overlay) with a copy whose every entry's `runtime` is
-  `--runtime`. PASS: no `.snapz` request, no `lean.wasm` chunk request and
+  `--runtime`, and, since HARDENING #64, does the same to the served
+  index's per-build copy `/snapshots/index.<buildId>.json` that a shell reads
+  when `index.json` names another runtime (a server without the copy gets
+  the rewritten `index.json`'s bytes for it, so no 404 line). PASS: the copy
+  was read and named the other runtime too, no `.snapz` request, no
+  `lean.wasm` chunk request and
   no `runtime-initialized` log, the relay halted (three `bootFailed`
   deaths), `api.status().boot` `{failed: true}` with a message,
   `lastDeath.reason` `bootFailed` and `cause.kind` `unpaired`, the boot
@@ -353,7 +359,17 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   answered with the halted line, so the died line may appear fewer than
   three times or not at all. Every console line is printed, with the time
   to halt, the relay's states, when `initialize` reached the relay and each
-  shape's count. Exit 0 PASS, 1 FAIL. Run it through the host browser lock.
+  shape's count. `--scenario rescued` replays the #64 incident (an old shell
+  meeting a new mutable index): only `index.json` is rewritten, the copy is
+  served as the server has it, and the page boots from the copy. PASS: the
+  copy was read (200), ready, 0 deaths and no `lastDeath`, a `.snapz`
+  request, exactly 1 runtime start, no renderer crash and the same console
+  rule, plus the empty `console.error` of a boot that reaches elaborating,
+  known only when paired one-to-one with its own -32800 reply
+  (`tests/adversarial/empty-console.mjs`, shared with the network-cut lane);
+  the served build must carry the copy (`fetch-artifacts`, `promote`
+  or the upload write it). Exit 0 PASS, 1 FAIL. Run it through the host
+  browser lock.
 - **Snapshot network cut** (`snapshot-network-cut.mjs --url <served build>
   [--scenarios once,lasting] [--cut-bytes 1000000] [--cut-mode
   truncate|abort] [--buffer <text>] [--wait-ms 300000] [--headed]`,
