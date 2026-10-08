@@ -152,6 +152,9 @@ describe("infra/worker.js cache rule", () => {
     expect(isImmutable("/runtime/runtime-manifest.json")).toBe(false);
     expect(isImmutable("/snapshots/index.json")).toBe(false);
     expect(isImmutable("/profiles/index.json")).toBe(false);
+    // the per-build index copies (HARDENING #64): a rebake for the same runtime rewrites them
+    expect(isImmutable("/snapshots/index.wasm64-dca2763359db27e7.json")).toBe(false);
+    expect(isImmutable("/snapshots/profiles-index.wasm64-dca2763359db27e7.json")).toBe(false);
     expect(isImmutable(`/runtime/chunks/lean.js.${"a1b2c3d4e5f6a7b8c9d0"}.part-000`)).toBe(true);
     expect(isImmutable(`/runtime/chunks/${"0".repeat(64)}.bin`)).toBe(true);
     expect(isImmutable("/snapshots/init.dca2763359db27e7.snapz")).toBe(true);
@@ -247,6 +250,14 @@ describe("promote-staging.mjs", () => {
     const idx = JSON.parse(fs.readFileSync(path.join(pub, "snapshots/index.json"), "utf8"));
     expect(idx.snapshots[0].runtime).toBe(neu.manifest.buildId);
     expect(fs.readdirSync(path.join(pub, "runtime")).filter((f) => f.endsWith(".tmp"))).toEqual([]);
+    // HARDENING #64: each promote writes its snapshot index's per-build copy (the same bytes), and
+    // never touches another runtime's: a shell pinned to the old runtime keeps reading its pairing.
+    const copy = (id: string) => path.join(pub, `snapshots/index.${id}.json`);
+    expect(fs.readFileSync(copy(neu.manifest.buildId), "utf8")).toBe(fs.readFileSync(path.join(pub, "snapshots/index.json"), "utf8"));
+    expect(JSON.parse(fs.readFileSync(copy(old.manifest.buildId), "utf8")).snapshots[0].runtime).toBe(old.manifest.buildId);
+    expect(JSON.parse(fs.readFileSync(copy(old.manifest.buildId), "utf8")).snapshots[0].url).toBe(`/snapshots/${old.snapshotFile}`);
+    // no profile index published here: no profile-index copy invented
+    expect(fs.readdirSync(path.join(pub, "snapshots")).filter((f) => f.startsWith("profiles-index."))).toEqual([]);
   });
 
   test("refuses a staged chunk or snapshot whose bytes do not match its recorded digest", () => {
@@ -372,6 +383,9 @@ describe("promote-staging.mjs", () => {
     const swapOf = (suffix: string) => plan.findIndex((l) => l.startsWith("swap ") && l.endsWith(suffix));
     expect(swapOf("profiles/lean-core.manifest.json")).toBeLessThan(swapOf("runtime/runtime-manifest.json"));
     expect(swapOf("snapshots/index.json")).toBeLessThan(swapOf("runtime/runtime-manifest.json"));
+    // HARDENING #64: each per-build index copy switches just before its mutable index
+    expect(swapOf(`snapshots/index.${neu.manifest.buildId}.json`)).toBe(swapOf("snapshots/index.json") - 1);
+    expect(plan.at(-2)).toMatch(new RegExp(`^swap .*snapshots/profiles-index\\.${neu.manifest.buildId}\\.json$`));
 
     const after = treeState(pub);
     for (const [file, digest] of Object.entries(before)) {
@@ -385,6 +399,9 @@ describe("promote-staging.mjs", () => {
     expect(after["profiles/mathlib-essential.manifest.json"]).toBe(sha(fs.readFileSync(neu.essentialManifest)));
     const idx = JSON.parse(fs.readFileSync(path.join(pub, "profiles/index.json"), "utf8"));
     expect(idx.runtime).toEqual({ buildId: neu.manifest.buildId, leanVersion: LEAN });
+    // the profile index's per-build copy: the staged index's bytes, under snapshots/ (site-owned); the old one stays
+    expect(after[`snapshots/profiles-index.${neu.manifest.buildId}.json`]).toBe(after["profiles/index.json"]);
+    expect(after[`snapshots/profiles-index.${old.manifest.buildId}.json`]).toBe(before["profiles/index.json"]);
     expect(JSON.parse(fs.readFileSync(path.join(pub, "runtime/runtime-manifest.json"), "utf8")).buildId).toBe(neu.manifest.buildId);
     expect(Object.keys(after).filter((f) => f.endsWith(".tmp"))).toEqual([]);
     // the raw .pack that pack.mjs leaves beside the parts is staging-only
@@ -503,6 +520,10 @@ describe("promote-staging.mjs", () => {
     for (const f of Object.keys(before)) if (f.startsWith("profiles/") && f !== "profiles/index.json") expect(after[f]).toBe(before[f]);
     const idx = JSON.parse(fs.readFileSync(path.join(pub, "profiles/index.json"), "utf8"));
     expect(idx).toEqual({ ...servedIndex, runtime: { buildId: bump.manifest.buildId, leanVersion: LEAN } });
+    // the re-pointed index gets its per-build copy too; the base runtime's copy keeps the base pairing
+    expect(after[`snapshots/profiles-index.${bump.manifest.buildId}.json`]).toBe(after["profiles/index.json"]);
+    expect(JSON.parse(fs.readFileSync(path.join(pub, `snapshots/profiles-index.${base.manifest.buildId}.json`), "utf8"))).toEqual(servedIndex);
+    expect(planLines(real.stdout).at(-2)).toMatch(new RegExp(`^swap .*snapshots/profiles-index\\.${bump.manifest.buildId}\\.json$`));
     expect(servedIndex.runtime.buildId).toBe(base.manifest.buildId);
     expect(run(verifyRelease, ["--public", pub]).status).toBe(0);
 
@@ -572,7 +593,7 @@ describe("promote-staging.mjs", () => {
     fs.symlinkSync(realPub, linkPub);
     const ok = run(promote, ["--staging", stage, "--public", linkPub]);
     expect(ok.status, ok.stderr).toBe(0);
-    expect(fs.readdirSync(path.join(realPub, "snapshots-real")).sort()).toEqual(["index.json", expect.stringMatching(/^init\.[0-9a-f]{16}\.snapz$/)]);
+    expect(fs.readdirSync(path.join(realPub, "snapshots-real")).sort()).toEqual(["index.json", expect.stringMatching(/^index\.wasm64-[0-9a-f]{16}\.json$/), expect.stringMatching(/^init\.[0-9a-f]{16}\.snapz$/)]);
   });
 
   test("a kernel-only re-point keeps the served profile index's trailing newline (and adds none it lacked)", () => {

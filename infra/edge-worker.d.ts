@@ -198,7 +198,8 @@ export const RELEASE_R2_ROOT: string;
  * TypeError ("edge-worker: release: …") naming the first rule it breaks. */
 export function releaseRoutes(record: ReleaseRecord, artifactPrefixes?: readonly string[]): ReleaseRoutes;
 
-/** QED64's cache rule: digest/size-named files are immutable; every manifest and index revalidates. */
+/** QED64's cache rule: digest/size-named files are immutable; every manifest and index revalidates, the per-build
+ * copies included (`runtime-manifest.<buildId>.json`, `index.<buildId>.json`, `profiles-index.<buildId>.json`). */
 export function isImmutable(pathname: string): boolean;
 
 /** `prefix` + pathname without its leading slash, or null for an unsafe path. */

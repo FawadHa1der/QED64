@@ -11,8 +11,28 @@
 #   public/snapshots/        → snapshots/            (the snapshots + their index)
 #   public/profiles/index.json → profiles/index.json (which packs the page offers)
 # The release id is toolchain/lean4-wasm64-release.json's; the upload is
-# refused unless the shell's runtime manifest and every snapshot are that
-# release's runtime (buildId) and the release is already in R2.
+# refused unless the shell's runtime manifest, every snapshot and the profile
+# index are that release's runtime (buildId) and the release is already in R2.
+#
+# PINNED INDEXES (HARDENING #64). snapshots/index.json and profiles/index.json
+# are MUTABLE: this upload replaces them while the deployed shell is still
+# paired with the previous runtime, until the push deploys the new one. So it
+# also uploads, FIRST, the per-build copies a shell reads instead of them
+# when they name another runtime (lib/qed64-boot.ts), straight from the two
+# mutable files:
+#   public/snapshots/index.json  → snapshots/index.<buildId>.json
+#   public/profiles/index.json   → snapshots/profiles-index.<buildId>.json
+# (both under snapshots/, which every Worker leaves to the site). A shell
+# pinned to another runtime reads that runtime's copies, which this upload
+# never writes: local copies in public/snapshots/ (the promote's,
+# fetch-artifacts') are excluded from the directory copy. And before anything
+# else it pins what R2 serves NOW: when R2's mutable index names another
+# runtime and that runtime has no copy in R2 yet (the first upload after this
+# change, or a copy lost), it is copied there inside R2 first, so the shell
+# deployed with it keeps its pairing through this upload. Upload-then-deploy
+# is therefore invisible to every deployed shell that reads the copies: one
+# built from this change on. A shell deployed BEFORE this change reads only
+# the mutable files and still sees the new pairing until the deploy (once).
 #
 #   --legacy-root  ALSO upload public/runtime/ and public/profiles/ to the
 #                  bucket root, as before decision 3 (with the per-build
@@ -65,6 +85,10 @@ RELEASE_ID=$(LEGACY_ROOT=$LEGACY_ROOT node -e '
     if (s.runtime !== buildId) fail("snapshot " + s.name + " is for runtime " + s.runtime + ", the toolchain release " + rec.id + " is " + buildId);
   }
   need("public/profiles/index.json");
+  // The per-build copy of the profile index is named by this runtime, so it must pair with it.
+  const pi = JSON.parse(fs.readFileSync("public/profiles/index.json", "utf8"));
+  const piRuntime = pi.runtime && pi.runtime.buildId;
+  if (piRuntime !== buildId) fail("public/profiles/index.json is for runtime " + (piRuntime || "(none recorded)") + ", the toolchain release " + rec.id + " is " + buildId);
   let chunkCount = 0;
   if (process.env.LEGACY_ROOT === "1") {
     for (const f of Object.values(rt.files ?? {}))
@@ -99,16 +123,53 @@ run() {
   if [ "${DRY_RUN:-}" = 1 ]; then echo "would run: $*"; else "$@"; fi
 }
 
-run rclone copy public/snapshots "qed64-r2:$BUCKET/snapshots" --checksum --transfers 4 --s3-chunk-size 64M --progress
-# --s3-no-check-bucket: an object-scoped R2 token may not create buckets, and a
-# single-file copyto otherwise tries to (403 AccessDenied on CreateBucket).
+# The preflight checked it is the release's runtime.
+BUILD_ID=$(node -p 'JSON.parse(require("fs").readFileSync("public/runtime/runtime-manifest.json","utf8")).buildId')
+
+# The one runtime the index object $1 in R2 names (a snapshot index's entries,
+# or a profile index's runtime.buildId), or nothing (absent, unreadable, mixed).
+r2_index_runtime() {
+  { rclone cat "qed64-r2:$BUCKET/$1" 2>/dev/null || true; } | node -e '
+    let s = "";
+    process.stdin.on("data", (d) => (s += d)).on("end", () => {
+      try {
+        const j = JSON.parse(s);
+        const ids = new Set(Array.isArray(j.snapshots) ? j.snapshots.map((e) => e && e.runtime) : [j.runtime && j.runtime.buildId]);
+        const [id] = ids;
+        if (ids.size === 1 && /^wasm64-[0-9a-f]{16}$/.test(String(id))) console.log(id);
+      } catch {}
+    });'
+}
+
+# 1. Pin what R2 serves now (a read, then a copy inside R2 only when needed;
+# DRY_RUN reads and prints the copy). Never overwrites an existing copy.
+for pair in snapshots/index.json:snapshots/index profiles/index.json:snapshots/profiles-index; do
+  src=${pair%%:*}
+  live=$(r2_index_runtime "$src")
+  [ -n "$live" ] && [ "$live" != "$BUILD_ID" ] || continue
+  dst="${pair#*:}.$live.json"
+  have=$(rclone lsf "qed64-r2:$BUCKET/$dst" 2>/dev/null || true)
+  [ "$have" = "$(basename "$dst")" ] && continue
+  echo "upload-artifacts: R2's $src is runtime $live, which has no $dst yet: copying it there first (HARDENING #64)" >&2
+  run rclone copyto "qed64-r2:$BUCKET/$src" "qed64-r2:$BUCKET/$dst" --s3-no-check-bucket
+done
+
+# 2. This runtime's per-build copies, from the mutable files' own bytes, before
+# the mutable files change. --s3-no-check-bucket: an object-scoped R2 token may
+# not create buckets, and a single-file copyto otherwise tries to (403
+# AccessDenied on CreateBucket).
+run rclone copyto public/snapshots/index.json "qed64-r2:$BUCKET/snapshots/index.$BUILD_ID.json" --checksum --s3-no-check-bucket
+run rclone copyto public/profiles/index.json "qed64-r2:$BUCKET/snapshots/profiles-index.$BUILD_ID.json" --checksum --s3-no-check-bucket
+
+# 3. The snapshots and the mutable files. No local per-build copy is sent: R2's
+# are written by step 2 (this runtime) and step 1 (absent ones) only.
+run rclone copy public/snapshots "qed64-r2:$BUCKET/snapshots" --exclude 'index.*.json' --exclude 'profiles-index.*.json' --checksum --transfers 4 --s3-chunk-size 64M --progress
 run rclone copyto public/profiles/index.json "qed64-r2:$BUCKET/profiles/index.json" --checksum --s3-no-check-bucket
 
 if [ "$LEGACY_ROOT" = 1 ]; then
   # Immutable, digest-named copy of the manifest at the root ("atomic
   # promotes" in docs/DEPLOY.md), as before decision 3; the release carries
   # its own runtime/runtime-manifest.<buildId>.json. Gitignored.
-  BUILD_ID=$(node -p 'JSON.parse(require("fs").readFileSync("public/runtime/runtime-manifest.json","utf8")).buildId')
   run cp public/runtime/runtime-manifest.json "public/runtime/runtime-manifest.$BUILD_ID.json"
   for dir in runtime profiles; do
     run rclone copy "public/$dir" "qed64-r2:$BUCKET/$dir" --checksum --transfers 4 --s3-chunk-size 64M --progress

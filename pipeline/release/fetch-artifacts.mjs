@@ -12,8 +12,15 @@
 //              copy the page reads first: written from the tracked manifest's
 //              own bytes, never fetched;
 //   profiles   the transport parts of every profile manifest profiles/index.json
-//              lists (each part's digest and byteLength, then the transport's);
-//   snapshots  every .snapz of snapshots/index.json (digest and transfer size).
+//              lists (each part's digest and byteLength, then the transport's),
+//              plus snapshots/profiles-index.<buildId>.json, the per-build copy
+//              of the index a pinned shell reads when the mutable one names
+//              another runtime (HARDENING #64; buildId
+//              = the index's runtime.buildId): written from the tracked
+//              index's own bytes, never fetched;
+//   snapshots  every .snapz of snapshots/index.json (digest and transfer size),
+//              plus snapshots/index.<buildId>.json, its per-build copy (buildId
+//              = the one runtime its entries name), written the same way.
 // Sources:
 //   --release <dir|url>  a fork release in the served layout (release.json,
 //                        schema lean4-wasm64.release/v1): /runtime/* and
@@ -100,6 +107,16 @@ export function sitePath(group, url, where) {
   return s.slice(1);
 }
 
+/** The runtime an index's per-build copy is named by: the one buildId all of
+ * `ids` agree on, or null (none recorded, several, or not wasm64-<16 hex>: an
+ * index that predates the pairing fields gets no copy, and the shell reads
+ * the mutable path). */
+function pinnedIndexId(ids) {
+  const set = new Set(ids);
+  const [id] = set;
+  return set.size === 1 && /^wasm64-[0-9a-f]{16}$/.test(String(id)) ? id : null;
+}
+
 async function readTrackedJson(manifests, rel) {
   const file = path.join(manifests, rel);
   let text;
@@ -115,7 +132,8 @@ async function readTrackedJson(manifests, rel) {
  * What the tracked manifests name for the chosen groups:
  *   items  [{ group, rel, bytes, sha256 }]  content-addressed files to fetch;
  *   wholes [{ label, rels, bytes, sha256 }] files whose concatenated parts are pinned too;
- *   copies [{ group, rel, data }]           files written from tracked bytes (never fetched);
+ *   copies [{ group, rel, data }]           files written from tracked bytes (never fetched): the
+ *                                           per-build runtime manifest and index copies;
  *   manifests [{ group, rel, data }]        the tracked manifests themselves (--with-manifests);
  *   buildId                                 the runtime's, when runtime is chosen.
  * Throws FetchFailure(2) on a missing or malformed manifest, a URL outside its
@@ -160,6 +178,8 @@ export async function planFromManifests(manifests, groups) {
     const profiles = index.json?.profiles;
     if (!Array.isArray(profiles)) throw refuse(`${index.file}: no profiles list`);
     plan.manifests.push({ group: "profiles", rel, data: index.bytes });
+    const pinned = pinnedIndexId([index.json?.runtime?.buildId]);
+    if (pinned) plan.copies.push({ group: "profiles", rel: `snapshots/profiles-index.${pinned}.json`, data: index.bytes, from: rel });
     for (const p of profiles) {
       const mrel = sitePath("profiles", p?.manifest, `${index.file} profile ${JSON.stringify(p?.id)}`);
       const m = await readTrackedJson(manifests, mrel);
@@ -184,6 +204,8 @@ export async function planFromManifests(manifests, groups) {
       const r = sitePath("snapshots", e?.url, `${index.file} snapshot ${JSON.stringify(e?.name)}`);
       add("snapshots", r, e.transfer ?? e.bytes, hex(e.digest), index.file);
     }
+    const pinned = pinnedIndexId(entries.map((e) => e?.runtime));
+    if (pinned) plan.copies.push({ group: "snapshots", rel: `snapshots/index.${pinned}.json`, data: index.bytes, from: rel });
     plan.manifests.push({ group: "snapshots", rel, data: index.bytes });
   }
   return plan;

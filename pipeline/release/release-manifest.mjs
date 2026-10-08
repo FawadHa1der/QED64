@@ -50,7 +50,10 @@
 // record cannot vouch for them); a snapshot entry or the profile index is paired with
 // another runtime; a pack was built for another Lean version; the per-build
 // manifest public/runtime/runtime-manifest.<buildId>.json (when tracked, or
-// present with --worktree) is not byte-identical to the default one; with
+// present with --worktree) is not byte-identical to the default one, or a
+// per-build index copy (public/snapshots/index.<buildId>.json,
+// public/snapshots/profiles-index.<buildId>.json; HARDENING #64) is not
+// byte-identical to the index it copies; with
 // --dist: dist/workers/* is not exactly the source's public/workers/*, the
 // main bundle does not pin exactly {buildId}, or an artifact directory was
 // bundled. Plus the structural checks a manifest must pass to be described
@@ -540,6 +543,18 @@ export function buildReleaseManifest(source, { dist = null } = {}) {
     return { name: e.name, path: p, sha256: sha, transferBytes: e.transfer, rawBytes: e.bytes, imports: [...e.imports], runtime: e.runtime };
   });
   const snapshots = { index: tracked(INPUTS.snapshotIndex, siBytes), entries };
+  // The pinned shell reads each site-owned index's per-build copy when the
+  // mutable index names another runtime (HARDENING #64, lib/qed64-boot.ts):
+  // present, it must be the same bytes as the index it copies. Not an input and not listed (gitignored, re-derived
+  // from the tracked index by promote, fetch-artifacts and the upload; the
+  // manifest's format and artifactSetId stay what they were), only a check.
+  const sameCopy = (copyRepoPath, bytes, of) => {
+    const copy = source.read(copyRepoPath);
+    if (copy !== null && !copy.equals(bytes)) {
+      refuse(`${copyRepoPath} is not byte-identical to ${of} — the pinned shell would read another pairing's index; rerun the promote (or delete the copy: the upload sends ${of}'s bytes under that name)`);
+    }
+  };
+  sameCopy(`public/snapshots/index.${buildId}.json`, siBytes, INPUTS.snapshotIndex);
 
   // -- profiles
   const piBytes = need(INPUTS.profileIndex, "profile index");
@@ -596,6 +611,7 @@ export function buildReleaseManifest(source, { dist = null } = {}) {
     };
   });
   const profiles = { index: tracked(INPUTS.profileIndex, piBytes), packs };
+  sameCopy(`public/snapshots/profiles-index.${buildId}.json`, piBytes, INPUTS.profileIndex);
 
   // -- the hosting rule: every runtime/ and profiles/ file that is not
   // site-owned is served from the toolchain release's prefix, so the record

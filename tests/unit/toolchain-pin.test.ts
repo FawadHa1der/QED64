@@ -101,4 +101,15 @@ describe("toolchain/lean4-wasm64-release.json pins the release the Worker serves
     await shipped.fetch(new Request("https://qed64.example/profiles/index.json"), env);
     expect(asked).toEqual(["get profiles/index.json"]);
   });
+
+  test("the per-build index copies of this record's runtime (HARDENING #64) are the site's: bucket root, never the release prefix", async () => {
+    const id = record.runtime.buildId;
+    for (const p of [`/snapshots/index.${id}.json`, `/snapshots/profiles-index.${id}.json`]) {
+      expect(releasePath(p), p).toBeNull(); // the record leaves them to the site
+      const asked: string[] = [];
+      const bucket = { async get(key: string) { asked.push(`get ${key}`); return null; }, async head(key: string) { asked.push(`head ${key}`); return null; } };
+      const r = await shipped.fetch(new Request(`https://qed64.example${p}`), { ASSETS: { fetch: async () => new Response(null, { status: 404 }) }, ARTIFACTS: bucket });
+      expect([r.status, r.headers.get("cache-control"), asked], p).toEqual([404, "public, max-age=0, must-revalidate", [`get ${p.slice(1)}`]]);
+    }
+  });
 });

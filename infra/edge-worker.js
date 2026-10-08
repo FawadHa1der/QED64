@@ -59,8 +59,12 @@ export function isImmutable(pathname) {
   // alone (artifact-paths.mjs), so a relink that changes only lean.js keeps
   // the name and rewrites the chunk digests inside — a year-long immutable
   // cache would hand the pinned shell stale digests and fail boot
-  // verification (migration phase 1).
-  if (/\/runtime-manifest(\.[^/]*)?\.json$/.test(pathname) || /\/index\.json$/.test(pathname)) return false;
+  // verification (migration phase 1). The same holds for the per-build index
+  // copies, /snapshots/index.<buildId>.json and
+  // /snapshots/profiles-index.<buildId>.json (HARDENING #64): a rebake for the
+  // same runtime rewrites them under the same name, and a 404 before their
+  // upload must not be cached for a year either.
+  if (/\/runtime-manifest(\.[^/]*)?\.json$/.test(pathname) || /\/(?:profiles-)?index(\.[^/]*)?\.json$/.test(pathname)) return false;
   // Digest- or size-named files never change under the same name.
   return /(\.part-\d+|\.snapz|\.chunk\.|[0-9a-f]{16,})/.test(pathname);
 }

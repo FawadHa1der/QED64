@@ -1076,6 +1076,42 @@ describe("release: the record is checked when the worker is created", () => {
   });
 });
 
+// HARDENING #64: the per-build copies of the site-owned indexes. The shipped worker must read them
+// from the site (the bucket root), never from the release prefix, and serve them must-revalidate:
+// their NAME carries a 16-hex buildId, which the digest rule alone would call immutable, and a
+// rebake for the same runtime rewrites them; a 404 before their upload must not be cached a year.
+describe("the per-build index copies (/snapshots/index.<buildId>.json, /snapshots/profiles-index.<buildId>.json)", () => {
+  const ID = `wasm64-${HEX16}`;
+  const COPIES = [`/snapshots/index.${ID}.json`, `/snapshots/profiles-index.${ID}.json`];
+  const REVALIDATE = "public, max-age=0, must-revalidate";
+
+  test("isImmutable: they revalidate (the digest-named .snapz beside them stays immutable)", () => {
+    for (const p of COPIES) expect(isImmutable(p), p).toBe(false);
+    expect(isImmutable(SNAPZ)).toBe(true);
+    expect(isImmutable(`/snapshots/widgets8/index.${ID}.json`)).toBe(false);
+    expect(isImmutable(`/snapshots/x-index.${ID}.json`)).toBe(true); // only the two names, not any *-index
+  });
+
+  test("the shipped worker: site-owned (bucket root, one lookup, no release prefix), 200 and 404 both must-revalidate", async () => {
+    for (const p of COPIES) {
+      const key = p.slice(1);
+      const hit = { ASSETS: fakeAssets(FILES), ARTIFACTS: fakeBucket({ [key]: { bytes: json({ schema: "x" }), contentType: "application/json" } }) };
+      const r = await (shipped as EdgeWorker).fetch(req(p), hit);
+      expect([r.status, r.headers.get("cache-control"), hit.ARTIFACTS.calls.map((c) => `${c.op} ${c.key}`)], p).toEqual([200, REVALIDATE, [`get ${key}`]]);
+      isolated(r);
+      // a deployment older than the copies: a miss the browser re-asks for, not a year-long cached 404
+      const miss = makeEnv();
+      const m = await (shipped as EdgeWorker).fetch(req(p), miss);
+      expect([m.status, m.headers.get("cache-control"), miss.ARTIFACTS.calls.map((c) => `${c.op} ${c.key}`)], p).toEqual([404, REVALIDATE, [`get ${key}`]]);
+    }
+    // why not /profiles/index.<buildId>.json: the record's siteOwned names /profiles/index.json exactly,
+    // so that path is the release's (and the release does not carry it)
+    const env = makeEnv();
+    await (shipped as EdgeWorker).fetch(req(`/profiles/index.${ID}.json`), env);
+    expect(env.ARTIFACTS.calls[0]!.key.startsWith(RELEASE_R2_ROOT)).toBe(true);
+  });
+});
+
 describe("release: routing", () => {
   const bucketWith = (keys: string[]) => fakeBucket(Object.fromEntries(keys.map((k) => [k, { bytes: BYTES, contentType: "application/octet-stream" }])));
   const keysAsked = async (w: EdgeWorker, p: string, init?: RequestInit, keys: string[] = []) => {

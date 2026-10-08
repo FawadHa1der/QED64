@@ -61,6 +61,51 @@ export interface StatusSink {
 
 declare const __QED64_BUILD_ID__: string;
 
+/** The runtime buildId this shell was built against (`__QED64_BUILD_ID__`, a
+ * bundler define: frontend/vite.config.ts sets it from the committed runtime
+ * manifest), or null when the bundler defines none (an embedder without it,
+ * the unit tests). Read at call time. */
+function shellBuildId(): string | null {
+  return typeof __QED64_BUILD_ID__ === "string" ? __QED64_BUILD_ID__ : null;
+}
+
+/** @internal The per-build copies of the two site-owned indexes (HARDENING
+ * #64), written beside the mutable ones by every promote and upload and named
+ * by the runtime they are paired with, as `/runtime/runtime-manifest.<buildId>.json`
+ * is. Both live under `/snapshots/`, the prefix every QED64 Worker and record
+ * leaves to the site (hosting.siteOwned): `/profiles/index.<buildId>.json`
+ * would be routed to the toolchain release, which does not carry it. Served
+ * must-revalidate (infra/edge-worker.js isImmutable): a same-runtime rebake
+ * rewrites them under the same name. */
+export function pinnedIndexUrls(buildId: string): { snapshots: string; profiles: string } {
+  return { snapshots: `/snapshots/index.${buildId}.json`, profiles: `/snapshots/profiles-index.${buildId}.json` };
+}
+
+const PINNABLE_BUILD_ID = /^wasm64-[0-9a-f]{16}$/;
+
+/** HARDENING #64: the mutable index names whatever pairing was uploaded
+ * LAST, which during an upload-then-deploy window is the next runtime's, not
+ * this shell's. When `served` (the mutable index, already read) names a
+ * runtime (`runtimesOf`) other than the one this shell pins, the per-build
+ * copy of the pinned runtime's index is read with `load` (the mutable path's
+ * own reader and checks) and returned. null means "keep `served`": the shell
+ * pins no runtime (or a malformed id), `served` is missing or names only the
+ * pinned runtime (or none: an index older than the pairing fields), or the
+ * copy is absent or not an index (a 404, an HTML answer, a network error, a
+ * malformed body: a deployment older than the copies). So a paired site
+ * costs no request, and one that does not publish the copies (an embedder's
+ * own origin) never sees one unless its mutable index is mispaired. */
+async function pinnedIndexFor<T>(which: "snapshots" | "profiles", served: T | null, runtimesOf: (index: T) => readonly unknown[], load: (url: string) => Promise<T>): Promise<T | null> {
+  const id = shellBuildId();
+  if (id === null || !PINNABLE_BUILD_ID.test(id) || served === null) return null;
+  if (!runtimesOf(served).some((r) => typeof r === "string" && r !== id)) return null;
+  try {
+    return await load(pinnedIndexUrls(id)[which]);
+  } catch {
+    return null;
+  }
+}
+
 /** Set once by installArtifacts from `?profiles=`; identity in production. */
 let profileReroot: (url: string) => string = (url) => url;
 
@@ -93,7 +138,7 @@ export function overridesOf(opts: Pick<InstallOptions, "overrides"> = {}): BootO
  * manifest switch), `?runtime=` (an unpromoted runtime chunked into
  * public/runtime), else the mutable path. */
 export async function resolveRuntimeManifest(overrides: BootOverrides, opts: { pinnedBuildId?: string | null } = {}): Promise<RuntimeManifest> {
-  const pinnedId = opts.pinnedBuildId !== undefined ? opts.pinnedBuildId : typeof __QED64_BUILD_ID__ === "string" ? __QED64_BUILD_ID__ : null;
+  const pinnedId = opts.pinnedBuildId !== undefined ? opts.pinnedBuildId : shellBuildId();
   let manifestResponse: Response | null = null;
   if (pinnedId) {
     const pinned = await fetch(`/runtime/runtime-manifest.${pinnedId}.json`);
@@ -113,13 +158,19 @@ export async function resolveRuntimeManifest(overrides: BootOverrides, opts: { p
 /** The snapshot index a boot uses: `?snapshots=<dir>` (an unpromoted set
  * served from public/<dir>; its urls name the promoted dir, so they are
  * re-rooted — cache keys are content-addressed, so unpromoted bakes never
- * collide with served ones), else the served index. An overlay that was asked
+ * collide with served ones), else the served `/snapshots/index.json`, or,
+ * when that names another runtime than the one this shell pins, the pinned
+ * runtime's copy `/snapshots/index.<buildId>.json` (HARDENING #64) when it
+ * is an index. An overlay that was asked
  * for and is missing, malformed or off this site is a named failure
  * (docs/EMBEDDING.md §4), never a silent "no snapshots" that surfaces later as
  * "snapshot 'init' failed to load". */
 export async function fetchSnapshotIndexFor(overrides: BootOverrides): Promise<SnapshotIndex | null> {
   const dir = overrides.snapshots;
-  if (!dir) return fetchSnapshotIndex();
+  if (!dir) {
+    const served = await fetchSnapshotIndex();
+    return (await pinnedIndexFor("snapshots", served, (i) => i.snapshots.map((e) => e.runtime), (url) => loadSnapshotIndex(url))) ?? served;
+  }
   return loadSnapshotIndex(`/${dir}/index.json`).then((idx) => ({
     ...idx,
     snapshots: idx.snapshots.map((e) => ({ ...e, url: e.url.replace(/^\/snapshots\//, `/${dir}/`) })),
@@ -144,9 +195,13 @@ export async function installArtifacts(ui: StatusSink, opts: InstallOptions = {}
   profileReroot = devProfiles ? (url: string) => url.replace(/^\/profiles\//, `/${devProfiles}/`) : (url: string) => url;
   const wanted = opts.profiles ?? "core";
   const indexUrl = profileReroot("/profiles/index.json");
-  const index: ProfileIndex = wanted === "none"
+  const served: ProfileIndex = wanted === "none"
     ? await fetchProfileIndex(indexUrl).catch(() => ({ schema: "qed64.profile-index/v1", profiles: [] }) as unknown as ProfileIndex)
     : await fetchProfileIndex(indexUrl);
+  // The served index names the pairing uploaded last (HARDENING #64): when it
+  // is another runtime's, the pinned runtime's copy; a `?profiles=` set keeps
+  // its own index.
+  const index: ProfileIndex = (devProfiles ? null : await pinnedIndexFor("profiles", served, (i) => [i.runtime?.buildId], (url) => fetchProfileIndex(url))) ?? served;
   if (!index) throw new Error(`profile index missing (${indexUrl})`);
   const runtime = opts.runtime ?? (await resolveRuntimeManifest(overrides));
 

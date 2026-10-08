@@ -41,8 +41,9 @@
 //     here, before anything switched), then rename them back to back —
 //     the mixed window is a handful of rename(2) calls, not a 7 MB write.
 //     Leaves before roots, last-read first: per-build runtime manifest (a new
-//     name, nothing points at it yet), profile manifests, snapshot index,
-//     default runtime manifest, and profiles/index.json LAST. Every file a
+//     name, nothing points at it yet), profile manifests, the snapshot
+//     index's per-build copy, snapshot index, default runtime manifest, the
+//     profile index's per-build copy, and profiles/index.json LAST. Every file a
 //     mutable file references exists before it is switched in (no reader can
 //     see a manifest naming a missing part/chunk/snapshot), and the profile
 //     index is the commit record: its runtime.buildId names the new runtime
@@ -55,6 +56,18 @@
 //     NEW runtime manifest sees new packs and snapshots too. The straddling
 //     reader is what the pairing fields are for (snapshot entry.runtime is
 //     enforced by the worker; index.runtime is the same handle for packs).
+//
+// PER-BUILD INDEX COPIES (HARDENING #64). Beside the mutable indexes, every
+// promote writes the copies a shell pinned to this runtime reads when a
+// mutable index names another runtime (lib/qed64-boot.ts):
+// snapshots/index.<buildId>.json (the snapshot index's bytes) and
+// snapshots/profiles-index.<buildId>.json (the profile index's, when this
+// tree publishes one). Both under snapshots/, which every Worker
+// leaves to the site; untracked (gitignored), like
+// runtime/runtime-manifest.<buildId>.json, and re-derivable from the tracked
+// indexes (fetch-artifacts and upload-artifacts.sh write them from those).
+// A rebake for the same runtime rewrites them; another runtime's copies are
+// never touched, so a shell pinned to it keeps its pairing.
 //
 // CONFINED. Every target — each copied file and each switched one — must lie
 // inside realpath(--public) once symlinks are resolved, or the promote exits 2
@@ -350,11 +363,15 @@ const switchFile = (to, data) => {
 // 2. content-addressed files — every target (these and the switches below)
 // confined first, so a refusal leaves the tree exactly as it was
 const perBuildManifest = path.join(publicRuntime, `runtime-manifest.${manifest.buildId}.json`);
+const perBuildSnapshotIndex = path.join(publicSnapshots, `index.${manifest.buildId}.json`);
+const perBuildProfileIndex = path.join(publicSnapshots, `profiles-index.${manifest.buildId}.json`);
+const profileIndexBytes = stagedPacks ? stagedPacks.indexBytes : repointedIndex;
 for (const to of [
   ...chunkFiles.map((c) => path.join(publicRuntime, "chunks", c.base)),
   ...snapshotFiles.map((s) => path.join(publicSnapshots, s.base)),
   ...(stagedPacks ? [...stagedPacks.parts.keys(), ...stagedPacks.manifests.map((m) => m.base)].map((b) => path.join(publicProfiles, b)) : []),
-  perBuildManifest, path.join(publicSnapshots, "index.json"), path.join(publicRuntime, "runtime-manifest.json"), path.join(publicProfiles, "index.json"),
+  perBuildManifest, perBuildSnapshotIndex, path.join(publicSnapshots, "index.json"), path.join(publicRuntime, "runtime-manifest.json"),
+  ...(profileIndexBytes !== null ? [perBuildProfileIndex] : []), path.join(publicProfiles, "index.json"),
 ]) confine(to);
 for (const { base, from, sha } of chunkFiles) copyAdditive(from, path.join(publicRuntime, "chunks"), base, sha);
 for (const { base, from, sha } of snapshotFiles) copyAdditive(from, publicSnapshots, base, sha);
@@ -366,10 +383,15 @@ const manifestText = JSON.stringify(manifest, null, 2);
 // pinned shell can find it before the default flips.
 switchFile(perBuildManifest, manifestText);
 if (stagedPacks) for (const { base, bytes } of stagedPacks.manifests) switchFile(path.join(publicProfiles, base), bytes);
-switchFile(path.join(publicSnapshots, "index.json"), JSON.stringify(index, null, 2));
+// Each per-build index copy just before its mutable index, with the same bytes.
+const indexText = JSON.stringify(index, null, 2);
+switchFile(perBuildSnapshotIndex, indexText);
+switchFile(path.join(publicSnapshots, "index.json"), indexText);
 switchFile(path.join(publicRuntime, "runtime-manifest.json"), manifestText);
-if (stagedPacks) switchFile(path.join(publicProfiles, "index.json"), stagedPacks.indexBytes);
-else if (repointedIndex !== null) switchFile(path.join(publicProfiles, "index.json"), repointedIndex);
+if (profileIndexBytes !== null) {
+  switchFile(perBuildProfileIndex, profileIndexBytes);
+  switchFile(path.join(publicProfiles, "index.json"), profileIndexBytes);
+}
 
 if (!dryRun) {
   const written = [];
