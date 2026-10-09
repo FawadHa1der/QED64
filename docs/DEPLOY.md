@@ -37,8 +37,8 @@ at the origin root.
    (runtime chunks, library packs) must be in the bucket under
    `lean4-wasm64/<release id>/`, uploaded by its owner (see "The toolchain
    release prefix" below); then run `scripts/upload-artifacts.sh`, which
-   uploads QED64's own snapshots (multipart) and `profiles/index.json`;
-   re-run only when they change.
+   uploads QED64's own snapshots (multipart), then `snapshots/index.json`
+   and `profiles/index.json`; re-run only when they change.
 4. `scripts/deploy-app.sh` — builds the shell and `wrangler deploy`s it
    (see "The deploy script" below; `--dry-run` first if you want to see the
    build pass without deploying). The app is live at
@@ -244,14 +244,23 @@ Promote checklist, in order:
    5xx, throttling, a dropped connection) refuses with `cannot check R2
    (…)`, exit 3, before any write, since an unreadable index taken for an
    absent one would leave the deployed pairing unpinned; every read comes
-   before the first copy. (b) uploads this runtime's two
-   copies from the mutable files; (c) uploads `public/snapshots/` (without
-   any local per-build copy) and `profiles/index.json`. It uploads its own
-   checkout's `public/`: after an adoption, the checkout whose `public/` is
-   the isolated tree, or one the staging was promoted into (above).
-   A rebake for the SAME runtime is visible at once, as before: its copies
-   are rewritten in (b), and the deployed shell, paired with that runtime,
-   boots the new entries.
+   before the first copy. (b) uploads the `.snapz` files of
+   `public/snapshots/` (one parallel `rclone copy` without the top-level
+   `index.json` or any local per-build copy; an overlay directory travels
+   whole); (c) then, each a single `copyto` once the transfer before it has
+   exited 0, this runtime's two per-build copies from the mutable files,
+   `snapshots/index.json`, and `profiles/index.json` last. A failed
+   transfer stops the upload there: no index, copy or mutable, is written
+   before the snapshots it names, and the indexes after the failed one stay
+   as they were. An index is never in the same transfer as the snapshots it
+   names: a ~300 MB `.snapz` takes far longer than the small index, so R2
+   would serve an index naming a snapshot still uploading until it landed.
+   It uploads its own checkout's `public/`: after an adoption, the checkout
+   whose `public/` is the isolated tree, or one the staging was promoted
+   into (above). A rebake for the SAME runtime is visible at once, as
+   before, from the moment its mutable index lands (after its snapshots):
+   its copies are rewritten in (c), and the deployed shell, paired with
+   that runtime, boots the new entries.
 3. Push `main` — CI deploys the shell and the Worker together; the shell
    asks for the runtime and the indexes it was built against and finds them
    already in R2. No window. (The full order: "The toolchain release
@@ -349,9 +358,11 @@ Worker routes by the release record (`infra/worker.js`:
   instead of the not-in-R2 refusal; both exit 3) and unless the profile
   index is that runtime's too, pins R2's current pairing (a read of R2's
   mutable indexes that fails is the same `cannot check R2`, exit 3, before
-  any write) and this runtime's per-build index copies ("Atomic promotes",
-  step 2), then uploads
-  `public/snapshots/` and `public/profiles/index.json`. (3) One deploy of
+  any write), then uploads the `.snapz` files of `public/snapshots/`, then
+  this runtime's per-build index copies ("Atomic promotes"), then
+  `snapshots/index.json`, then `public/profiles/index.json` (each after the
+  one before it has landed).
+  (3) One deploy of
   the shell and the Worker together: the user pushes `main` (CI runs
   `scripts/deploy-app.sh`). The shell and the Worker always ship in the same
   deploy, so the Worker never routes to a release the shell does not pin.

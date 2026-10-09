@@ -8,7 +8,9 @@
 // and STUB_LSF_STDERR; any other lsf from STUB_R2_HAS, or fails it with
 // STUB_KEY_LSF_EXIT when it is STUB_KEY_LSF_FAIL; `cat` of R2's mutable
 // indexes from STUB_R2_SNAPSHOT_INDEX / STUB_R2_PROFILE_INDEX, or fails it
-// with STUB_CAT_EXIT when it is STUB_CAT_FAIL): no network, no credentials.
+// with STUB_CAT_EXIT when it is STUB_CAT_FAIL; with STUB_PUTS, each `copy` or
+// `copyto` appends the R2 keys it lands as one line, one parallel transfer, and
+// a `copy` then fails with STUB_COPY_EXIT): no network, no credentials.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -71,6 +73,20 @@ describe("scripts/upload-artifacts.sh against a stubbed rclone", () => {
       '  esac',
       '  echo "ERROR : $2: object not found" >&2; exit 3',
       'fi',
+      'if [ -n "$STUB_PUTS" ] && { [ "$1" = copy ] || [ "$1" = copyto ]; }; then',
+      '  verb=$1 src=$2 dst=${3#qed64-r2:qed64-artifacts/}; shift 3; ex=',
+      '  while [ $# -gt 0 ]; do [ "$1" = --exclude ] && { ex="$ex $2"; shift; }; shift; done',
+      '  set -f',
+      '  if [ "$verb" = copyto ]; then keys=$dst; else',
+      // the files rclone would send: every file under the source, less those an --exclude names (a pattern that starts
+  // with / is anchored to the source root, as rclone's are; any other matches the file name at any depth)
+      '    keys=$(cd "$src" && find . -type f | sed "s|^\\./||" | sort | while read -r f; do',
+      '      skip=; for p in $ex; do case "$p" in (/*) case "/$f" in ($p) skip=1 ;; esac ;; (*) case "${f##*/}" in ($p) skip=1 ;; esac ;; esac; done',
+      '      [ -n "$skip" ] || printf "%s " "$dst/$f"; done)',
+      '  fi',
+      '  echo $keys >> "$STUB_PUTS"',
+      '  if [ "$verb" = copy ] && [ -n "$STUB_COPY_EXIT" ]; then exit "$STUB_COPY_EXIT"; fi',
+      'fi',
       "",
     ].join("\n"), { mode: 0o755 });
     fs.symlinkSync(process.execPath, path.join(bin, "node"));
@@ -91,13 +107,18 @@ describe("scripts/upload-artifacts.sh against a stubbed rclone", () => {
   /** Step 1's reads when R2 lists both: each is read, to learn the runtime it names now. */
   const INDEXES = "snapshots/index.json profiles/index.json";
   const READ_BOTH = [`rclone lsf ${R2}/snapshots/index.json`, `rclone cat ${R2}/snapshots/index.json`, `rclone lsf ${R2}/profiles/index.json`, `rclone cat ${R2}/profiles/index.json`];
-  /** Step 2: this runtime's per-build copies, from the mutable files, before them (HARDENING #64). */
+  /** Step 2: the snapshots, without the top-level index or any local per-build copy, before any index names them. */
+  const SNAPSHOTS = `rclone copy public/snapshots ${R2}/snapshots --exclude /index.json --exclude index.*.json --exclude profiles-index.*.json --checksum --transfers 4 --s3-chunk-size 64M --progress`;
+  /** Step 3, first: this runtime's per-build copies, from the mutable files, before them (HARDENING #64). */
   const PINS = [
     `rclone copyto public/snapshots/index.json ${R2}/snapshots/index.${BUILD}.json --checksum --s3-no-check-bucket`,
     `rclone copyto public/profiles/index.json ${R2}/snapshots/profiles-index.${BUILD}.json --checksum --s3-no-check-bucket`,
   ];
+  /** Steps 2 and 3: the snapshots, the per-build copies, then snapshots/index.json, then profiles/index.json. */
   const SITE = [
-    `rclone copy public/snapshots ${R2}/snapshots --exclude index.*.json --exclude profiles-index.*.json --checksum --transfers 4 --s3-chunk-size 64M --progress`,
+    SNAPSHOTS,
+    ...PINS,
+    `rclone copyto public/snapshots/index.json ${R2}/snapshots/index.json --checksum --s3-no-check-bucket`,
     `rclone copyto public/profiles/index.json ${R2}/profiles/index.json --checksum --s3-no-check-bucket`,
   ];
   const ROOT = ["runtime", "profiles"].map((d) => `rclone copy public/${d} ${R2}/${d} --checksum --transfers 4 --s3-chunk-size 64M --progress`);
@@ -106,11 +127,69 @@ describe("scripts/upload-artifacts.sh against a stubbed rclone", () => {
     layout();
     const r = run([]);
     expect(r.status, r.stderr).toBe(0);
-    expect(r.argv).toEqual([LSF, ...READS, ...PINS, ...SITE, `rclone ls ${R2}/snapshots`]);
+    expect(r.argv).toEqual([LSF, ...READS, ...SITE, `rclone ls ${R2}/snapshots`]);
     expect(r.stderr).toContain(`preflight ok: release ${ID}, runtime ${BUILD}, 1 snapshots`);
     expect(fs.readdirSync(path.join(repo, "public/runtime"))).toEqual(["chunks", "runtime-manifest.json"]);
     // the per-build index copies go to R2 straight from the mutable files: nothing is written locally
     expect(fs.readdirSync(path.join(repo, "public/snapshots")).sort()).toEqual(["index.json", "init.0123456789abcdef.snapz"]);
+  });
+
+  // A same-runtime rebake is served at once (no deploy), so the order in which its objects land in R2 is
+  // what visitors see: one `rclone copy` holding the index too finished the small index.json long before a
+  // ~300 MB mathlib .snapz, and new visits fetched a snapshot the index named but R2 did not have yet.
+  it("lands every .snapz before any index (the per-build copies too), snapshots/index.json alone, profiles/index.json last; a failed snapshot copy writes no index", () => {
+    layout();
+    const MATHLIB = "mathlib.fedcba9876543210.snapz";
+    write("public/snapshots/index.json", JSON.stringify({ snapshots: [
+      { name: "init", url: "/snapshots/init.0123456789abcdef.snapz", runtime: BUILD },
+      { name: "mathlib", url: `/snapshots/${MATHLIB}`, runtime: BUILD },
+    ] }));
+    write(`public/snapshots/${MATHLIB}`, "mathlib snap");
+    // an overlay set (README: public/snapshots/<overlay>/, opened with ?snapshots=snapshots/<overlay>): its own
+    // index.json is not the mutable one and travels with its snapshots, as before
+    write("public/snapshots/widgets8/index.json", "overlay index");
+    write("public/snapshots/widgets8/hasse.aaaaaaaaaaaaaaaa.snapz", "overlay snap");
+    // the local per-build copies a promote writes beside the indexes: R2's come from step 2 only
+    write(`public/snapshots/index.${BUILD}.json`, "local copy");
+    write(`public/snapshots/profiles-index.${BUILD}.json`, "local copy");
+    const puts = path.join(tmp, "puts.log");
+    // each line: the keys one rclone write lands, in no order among themselves (one parallel transfer)
+    const landed = (extra: Record<string, string> = {}) => {
+      fs.rmSync(puts, { force: true });
+      const r = run([], { STUB_PUTS: puts, STUB_R2_HAS: INDEXES, STUB_R2_SNAPSHOT_INDEX: r2Snapshots(BUILD), STUB_R2_PROFILE_INDEX: r2Profiles(BUILD), ...extra });
+      const batches = fs.existsSync(puts) ? fs.readFileSync(puts, "utf8").trim().split("\n").map((l) => l.split(" ").sort()) : [];
+      return { ...r, batches };
+    };
+    const SNAPZ = ["snapshots/init.0123456789abcdef.snapz", `snapshots/${MATHLIB}`];
+    const OBJECTS = [...SNAPZ, "snapshots/widgets8/hasse.aaaaaaaaaaaaaaaa.snapz", "snapshots/widgets8/index.json"].sort();
+
+    const r = landed();
+    expect(r.status, r.stderr).toBe(0);
+    const at = (key: string) => r.batches.findIndex((b) => b.includes(key));
+    const index = at("snapshots/index.json");
+    expect(r.batches[index]).toEqual(["snapshots/index.json"]); // alone, not in the snapshots' transfer
+    for (const key of SNAPZ) expect(at(key), key).toBeGreaterThanOrEqual(0);
+    for (const key of SNAPZ) expect(at(key), key).toBeLessThan(index);
+    expect(r.batches[r.batches.length - 1]).toEqual(["profiles/index.json"]);
+    expect(r.batches).toEqual([
+      OBJECTS, // step 2: no top-level index and no local per-build copy in the parallel transfer; the overlay whole
+      [`snapshots/index.${BUILD}.json`], // step 3, from the mutable files' bytes, after the snapshots they name
+      [`snapshots/profiles-index.${BUILD}.json`],
+      ["snapshots/index.json"],
+      ["profiles/index.json"],
+    ]);
+
+    // a snapshot transfer that fails stops the upload: no index, copy or mutable, names what it did not finish
+    const failed = landed({ STUB_COPY_EXIT: "1" });
+    expect(failed.status).toBe(1);
+    expect(failed.batches).toEqual(r.batches.slice(0, 1));
+    expect(failed.argv.at(-1)).toBe(SITE[0]);
+
+    // DRY_RUN prints the same order and lands nothing
+    const dry = landed({ DRY_RUN: "1" });
+    expect(dry.status, dry.stderr).toBe(0);
+    expect(dry.batches).toEqual([]);
+    expect(dry.stdout.trim().split("\n")).toEqual([...SITE].map((c) => `would run: ${c}`).concat("dry run: nothing uploaded"));
   });
 
   it("refuses in one line, exit 3, when the release is not in R2, before any write", () => {
@@ -172,7 +251,7 @@ describe("scripts/upload-artifacts.sh against a stubbed rclone", () => {
     layout();
     const r = run(["--legacy-root"]);
     expect(r.status, r.stderr).toBe(0);
-    expect(r.argv).toEqual([LSF, ...READS, ...PINS, ...SITE, ...ROOT, `rclone ls ${R2}/snapshots`]);
+    expect(r.argv).toEqual([LSF, ...READS, ...SITE, ...ROOT, `rclone ls ${R2}/snapshots`]);
     expect(fs.existsSync(path.join(repo, `public/runtime/runtime-manifest.${BUILD}.json`))).toBe(true);
     expect(r.stderr).toContain("1 chunks (--legacy-root)");
     // its preflight also needs the chunks
@@ -191,7 +270,7 @@ describe("scripts/upload-artifacts.sh against a stubbed rclone", () => {
       expect(r.argv).toEqual([LSF, ...READS]);
       const plan = r.stdout.trim().split("\n");
       expect(plan).toEqual([
-        ...[...PINS, ...SITE].map((c) => `would run: ${c}`),
+        ...[...SITE].map((c) => `would run: ${c}`),
         ...(args.length ? [`would run: cp public/runtime/runtime-manifest.json public/runtime/runtime-manifest.${BUILD}.json`, ...ROOT.map((c) => `would run: ${c}`)] : []),
         "dry run: nothing uploaded",
       ]);
@@ -221,7 +300,7 @@ describe("scripts/upload-artifacts.sh against a stubbed rclone", () => {
     const live = { STUB_R2_HAS: INDEXES, STUB_R2_SNAPSHOT_INDEX: r2Snapshots([LIVE, LIVE]), STUB_R2_PROFILE_INDEX: r2Profiles(LIVE) };
     const r = run([], live);
     expect(r.status, r.stderr).toBe(0);
-    expect(r.argv).toEqual([LSF, ...PRESERVE, ...PINS, ...SITE, `rclone ls ${R2}/snapshots`]);
+    expect(r.argv).toEqual([LSF, ...PRESERVE, ...SITE, `rclone ls ${R2}/snapshots`]);
     expect(r.stderr).toContain(`upload-artifacts: R2's snapshots/index.json is runtime ${LIVE}, which has no ${LIVE_S} yet: copying it there first (HARDENING #64)`);
     expect(r.stderr).toContain(`upload-artifacts: R2's profiles/index.json is runtime ${LIVE}, which has no ${LIVE_P} yet: copying it there first (HARDENING #64)`);
     // DRY_RUN reads and prints the copies, writes nothing
@@ -231,9 +310,9 @@ describe("scripts/upload-artifacts.sh against a stubbed rclone", () => {
     expect(dry.stdout.trim().split("\n").slice(0, 2)).toEqual(PRESERVE.filter((c) => c.includes("copyto")).map((c) => `would run: ${c}`));
     // a copy already there is never overwritten (only the missing one is made)
     const one = run([], { ...live, STUB_R2_HAS: `${INDEXES} ${LIVE_S}` });
-    expect(one.argv).toEqual([LSF, ...PRESERVE.filter((c) => !c.includes(`${R2}/${LIVE_S} --s3`)), ...PINS, ...SITE, `rclone ls ${R2}/snapshots`]);
+    expect(one.argv).toEqual([LSF, ...PRESERVE.filter((c) => !c.includes(`${R2}/${LIVE_S} --s3`)), ...SITE, `rclone ls ${R2}/snapshots`]);
     const both = run([], { ...live, STUB_R2_HAS: `${INDEXES} ${LIVE_S} ${LIVE_P}` });
-    expect(both.argv).toEqual([LSF, ...PRESERVE.filter((c) => !c.includes("copyto")), ...PINS, ...SITE, `rclone ls ${R2}/snapshots`]);
+    expect(both.argv).toEqual([LSF, ...PRESERVE.filter((c) => !c.includes("copyto")), ...SITE, `rclone ls ${R2}/snapshots`]);
   });
 
   it("pins nothing from R2 when its indexes are this upload's runtime, mixed, name no runtime, or are absent", () => {
@@ -249,7 +328,7 @@ describe("scripts/upload-artifacts.sh against a stubbed rclone", () => {
     ] as [Record<string, string>, string[]][]) {
       const r = run([], extra);
       expect(r.status, r.stderr).toBe(0);
-      expect(r.argv, JSON.stringify(extra)).toEqual([LSF, ...reads, ...PINS, ...SITE, `rclone ls ${R2}/snapshots`]);
+      expect(r.argv, JSON.stringify(extra)).toEqual([LSF, ...reads, ...SITE, `rclone ls ${R2}/snapshots`]);
     }
   });
 

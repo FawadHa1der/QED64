@@ -36,6 +36,13 @@
 # built from this change on. A shell deployed BEFORE this change reads only
 # the mutable files and still sees the new pairing until the deploy (once).
 #
+# ORDER. (1) the pin of R2's current pairing, (2) every .snapz, (3) this
+# runtime's per-build copies, then snapshots/index.json, then
+# profiles/index.json: no index, copy or mutable, is written before the
+# snapshots it names are in R2, so not even a same-runtime rebake (served at
+# once, no deploy) can name a .snapz that is still uploading. With
+# --legacy-root, the root runtime/ and profiles/ copies follow.
+#
 #   --legacy-root  ALSO upload public/runtime/ and public/profiles/ to the
 #                  bucket root, as before decision 3 (with the per-build
 #                  manifest copy): for one cycle, the rollback path if the
@@ -185,23 +192,38 @@ for pin in ${pins[@]+"${pins[@]}"}; do
   run rclone copyto "qed64-r2:$BUCKET/${pin%%:*}" "qed64-r2:$BUCKET/${pin#*:}" --s3-no-check-bucket
 done
 
-# 2. This runtime's per-build copies, from the mutable files' own bytes, before
-# the mutable files change. --s3-no-check-bucket: an object-scoped R2 token may
-# not create buckets, and a single-file copyto otherwise tries to (403
-# AccessDenied on CreateBucket).
-run rclone copyto public/snapshots/index.json "qed64-r2:$BUCKET/snapshots/index.$BUILD_ID.json" --checksum --s3-no-check-bucket
-run rclone copyto public/profiles/index.json "qed64-r2:$BUCKET/snapshots/profiles-index.$BUILD_ID.json" --checksum --s3-no-check-bucket
-
-# 3. The snapshots and the mutable files. No local per-build copy is sent: R2's
-# are written by step 2 (this runtime) and step 1 (absent ones) only. (A local
-# copy would add nothing here: step 2 already sends this runtime's bytes, and
-# an older runtime's local copy must never overwrite R2's. bake-snapshot still
+# 2. The snapshots: every .snapz (and anything else in public/snapshots/ but
+# the top-level index.json and the local per-build copies) in one parallel
+# copy, BEFORE any index that names them is written, the per-build copies of
+# step 3 included. Not one copy with the index in it: a ~300 MB mathlib .snapz
+# takes far longer than the small index, so a same-runtime rebake would serve
+# an index naming a snapshot still uploading (new visitors' snapshot fetch
+# fails, a 404, until it lands). `/index.json` is anchored to public/snapshots/:
+# an overlay's own <overlay>/index.json travels with its snapshots, as before.
+# No local per-build copy is sent: R2's are written by step 3 (this runtime)
+# and step 1 (absent ones) only. (A local copy would add nothing here: step 3
+# already sends this runtime's bytes, and an older runtime's local copy must
+# never overwrite R2's. bake-snapshot still
 # writes index.<buildId>.json into its --out, which suits only a consumer
 # that serves its staging dir unmerged (uploads the baked dir as it is); a
 # consumer that merges staged entries into its served index, like lean4game's
 # stage-snapshots.py, must derive its copy from the merged index the way this
 # script does, HARDENING #64.)
-run rclone copy public/snapshots "qed64-r2:$BUCKET/snapshots" --exclude 'index.*.json' --exclude 'profiles-index.*.json' --checksum --transfers 4 --s3-chunk-size 64M --progress
+run rclone copy public/snapshots "qed64-r2:$BUCKET/snapshots" --exclude /index.json --exclude 'index.*.json' --exclude 'profiles-index.*.json' --checksum --transfers 4 --s3-chunk-size 64M --progress
+
+# 3. The indexes, each a single copyto once the transfer before it has exited
+# 0 (set -e: a failed transfer stops the upload there, so no index is written
+# before the snapshots it names, and the indexes after a failed one stay as
+# they were): this runtime's per-build copies, from the mutable files' own
+# bytes, before the mutable files change (HARDENING #64), then
+# snapshots/index.json, then profiles/index.json, the commit record, as
+# promote-staging writes it (with --legacy-root the root runtime/ and
+# profiles/ copies below still follow it). --s3-no-check-bucket: an
+# object-scoped R2 token may not create buckets, and a single-file copyto
+# otherwise tries to (403 AccessDenied on CreateBucket).
+run rclone copyto public/snapshots/index.json "qed64-r2:$BUCKET/snapshots/index.$BUILD_ID.json" --checksum --s3-no-check-bucket
+run rclone copyto public/profiles/index.json "qed64-r2:$BUCKET/snapshots/profiles-index.$BUILD_ID.json" --checksum --s3-no-check-bucket
+run rclone copyto public/snapshots/index.json "qed64-r2:$BUCKET/snapshots/index.json" --checksum --s3-no-check-bucket
 run rclone copyto public/profiles/index.json "qed64-r2:$BUCKET/profiles/index.json" --checksum --s3-no-check-bucket
 
 if [ "$LEGACY_ROOT" = 1 ]; then
