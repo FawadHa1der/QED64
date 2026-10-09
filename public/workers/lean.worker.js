@@ -67,6 +67,8 @@ let sink = null;
 // deploy between this script's load and a sibling's can pair two versions; a
 // sibling of another revision is refused (WORKER_DEP_MISMATCH), never run.
 const WORKER_REVISION = "1";
+/** HARDENING #67's interim engine-stack probe size (see mountEverything); digits only, never computed. */
+const STACK_PROBE_SLOTS = "8192";
 function checkSibling(name, mod) {
   if (mod && mod.REVISION === WORKER_REVISION) return;
   const error = new Error(`${name} is revision ${mod ? JSON.stringify(mod.REVISION) : "missing"}, lean.worker.js needs ${WORKER_REVISION} (a deploy mixed versions; reload)`);
@@ -1521,6 +1523,13 @@ async function boot(msg) {
           for (const dir of String(bootConfig.leanPath).split(":")) mkdirp(FS, dir);
           mountPacks(FS, bootConfig.packs || [], String(bootConfig.leanPath).split(":")[0]);
           self.Module.ENV.LEAN_PATH = bootConfig.leanPath;
+          // Interim, until the kernel's patch 0038 (HARDENING #67): the runtime's engine-stack probe reserves
+          // LEAN_WASM_STACK_PROBE_SLOTS 8-byte slots (16384 = 128 KiB by default) of a Chrome Worker's ~500 KiB stack,
+          // so proofs needing ~370-500 KiB that checked before patch 0036 now fail "stack is exhausted". 8192 is the
+          // smallest value the kernel's two deep-recursion probes survive (4096 overflows). Read once per process,
+          // with atoi: it must stay a literal of digits (a non-numeric value is 0 and turns the guard OFF). The 0038
+          // adoption must delete this line: 0038 still reads the variable as an override of its tuned 4096.
+          self.Module.ENV.LEAN_WASM_STACK_PROBE_SLOTS = STACK_PROBE_SLOTS;
           try {
             FS.chdir("/workspace");
           } catch {

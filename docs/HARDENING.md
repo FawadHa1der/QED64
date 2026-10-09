@@ -644,3 +644,24 @@ Found 2026-10-09 by the kernel while porting snapshot-probe to the lean4-wasm64 
 - `public/workers/lean.worker.js` also had `ENV: { LEAN_PATH }` in its literal, inert the same way, but its `mountEverything` preRun already sets `Module.ENV.LEAN_PATH`, so the worker's behaviour is unchanged; the dead key is replaced by a note. Any future runtime knob (e.g. a stack-probe setting) must be set in a preRun function.
 - `node-runner.mjs` was right all along (its preRun sets `LEAN_PATH`, `QED64_ALLOW_LEGACY_IMPORTS`, `LEAN_COMPACTOR_RESERVE` and `QED64_PROFILE_INIT`).
 - Tests: `tests/unit/probe-env.test.ts` runs the probe over a fake glue that replaces `Module.ENV` and runs preRun as the real glue does, and checks the environment getenv would read (`{LEAN_PATH}`; with `QED64_PROFILE_INIT=1`, both). The watchdog test's fake glue keeps the literal's `ENV` and runs no preRun, which is why no test saw this. Mutation: the old literal back fails 1.
+
+### 67. Kernel patch 0036's engine-stack probe rejects deep but legal proofs in Chrome (interim: probe size 8192; fix: kernel patch 0038)
+
+Reported 2026-10-09 by the widgets showcase (pin I = QED64 385a1ac, runtime wasm64-f69cca24d0878a58): its DistLens click-all went from 21/21 on runtime 3ab1c6a9 (no 0036) to 12/21, every failure "maximum recursion depth has been reached: the WebAssembly runtime's stack is exhausted". #60's fix (patch 0036) probes the engine stack (`engine_stack_has_headroom`, at the kernel guard's outermost level then every 16 levels, and every 16th `Core.checkSystem`) and raises Lean's error when fewer than `LEAN_WASM_STACK_PROBE_SLOTS` 8-byte slots are free: 16384 = 128 KiB of a Chrome Worker's ~500 KiB stack. Proofs that need ~370-500 KiB, which checked before 0036, are now rejected. Node runs (the battery, snapshot-probe) have larger stacks and never see it; the browser's FileWorker path also starts deeper than the one-shot compile, so headless repros undercount (the kernel could not reproduce DistLens headlessly).
+
+Chrome measurements (QED64's page, Init only, `theorem deepLegal : ∀ n : Fin K, ∀ m : Fin K, n * m = m * n := by decide`, `tests/adversarial/deep-recursion.mjs --scenarios legal`; the kernel's repro):
+
+| K | 3ab1c6a9 (no probe) | f69cca24, 16384 (live) | f69cca24, 8192 (interim) |
+|---|---|---|---|
+| 16 | pass | pass | |
+| 20 | pass | rejected | pass |
+| 22 | | | pass |
+| 24 | pass | rejected | rejected |
+| 28 | | Lean's error, 0 deaths | Lean's error, 0 deaths |
+
+With 8192 the over-deep side stays safe: K=28 and the lane's Fin 40 cases (seeded and typed, with Mathlib) end in Lean's error, the checker alive, no RangeError; e2e 23/23, page-api 6/6.
+
+- Interim (this change): `public/workers/lean.worker.js` sets `Module.ENV.LEAN_WASM_STACK_PROBE_SLOTS = "8192"` in its `mountEverything` preRun (the only place getenv sees, #66). The kernel measured 8192 as the smallest value its two deep-recursion probes survive at Chrome's stack budget (4096 overflows), with an unknown margin between them: a thinner margin than 0036's default, not a guarantee. It recovers about half of the wrongly rejected band (K ≤ 22 here), not all of it (K = 24 still fails). The runtime reads the variable once per process with atoi: the value must stay a literal of digits (a typo is 0 and turns the guard OFF); `tests/unit/stack-probe-slots.test.ts` pins that and the preRun placement (mutation: a non-numeric value, 4096, and a missing assignment each fail 1).
+- Fix (the kernel's): patch 0038, a new runtime that probes 4× as often with a quarter of the headroom (every 4 levels / 4th `checkSystem`, 4096 slots = 32 KiB). 0038 still reads `LEAN_WASM_STACK_PROBE_SLOTS` as an override, so **adopting 0038 must delete this worker setting** (8192 would override its tuned 4096). Its acceptance: the `legal` scenario at K = 24 passes, K = 28 and Fin 40 stay Lean's error.
+- lean4game's `bound` report is a different case: it needs more than 500 KiB and fails without 0036 too; 0036 only made its error clean.
+

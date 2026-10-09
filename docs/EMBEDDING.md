@@ -1785,6 +1785,17 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   pinned copy that answers a manifest breaking the runtime/v1 invariant is
   still refused, not replaced. No export or type changes:
   `EMBED_API_REVISION` stays `1.0.0-pre.7`.
+- **The engine-stack probe size, interim (HARDENING #67, 2026-10-09,
+  reported by the widgets showcase):** kernel patch 0036's stack guard
+  reserved 128 KiB of a Chrome Worker's stack, so proofs needing about
+  370-500 KiB that checked on earlier runtimes got "stack is exhausted".
+  `lean.worker.js` now sets the runtime's `LEAN_WASM_STACK_PROBE_SLOTS` to
+  8192 (64 KiB) at preRun: in Chrome, `decide` over `Fin 20` and `Fin 22`
+  check again, `Fin 24` still does not (the kernel's patch 0038 fixes it),
+  and over-deep proofs still end in Lean's error with the checker alive.
+  No export, type or worker-revision change: `EMBED_API_REVISION` stays
+  `1.0.0-pre.7`, the four worker scripts keep `REVISION` "1". A page that
+  stages QED64's workers gets it with the pin.
 - **`qed64/edge` routes a toolchain release (plan step B2b, 2026-10-06):**
   additive options, every default unchanged (`QED64_LEGACY` and the hardened
   defaults keep `release: null`). `release` takes a `lean4-wasm64.release/v1`
