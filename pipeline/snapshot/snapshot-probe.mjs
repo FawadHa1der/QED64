@@ -254,12 +254,15 @@ globalThis.Module = {
   mainScriptUrlOrBlob: leanJs,
   print: capture("stdout"),
   printErr: capture("stderr"),
-  ENV: {
-    LEAN_PATH: "/lib/lean",
-    ...(process.env.QED64_PROFILE_INIT ? { QED64_PROFILE_INIT: process.env.QED64_PROFILE_INIT } : {}),
-  },
   preRun: [
     function mount() {
+      // The environment the runtime's getenv reads. Not an `ENV` key of this literal: the glue does `var ENV={}` and
+      // then `Module["ENV"]=ENV`, replacing it, so that key never reached the runtime (QED64_PROFILE_INIT was never
+      // forwarded; LEAN_PATH only seemed set because the sysroot, /bin/lean → /lib/lean, gives the same root). Only an
+      // assignment at preRun reaches getenv, as in node-runner.mjs and the browser worker (HARDENING #66).
+      const ENV = globalThis.Module.ENV;
+      ENV.LEAN_PATH = "/lib/lean";
+      if (process.env.QED64_PROFILE_INIT) ENV.QED64_PROFILE_INIT = process.env.QED64_PROFILE_INIT;
       const FS = globalThis.Module.FS;
       const NODEFS = FS.filesystems.NODEFS;
       for (const d of ["/lib/lean", "/workspace", "/bin", "/snapshots"]) {

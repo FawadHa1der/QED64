@@ -1496,7 +1496,8 @@ async function boot(msg) {
         // surface it as log events instead of dropping it.
         else event(null, "log", { stream: "stderr", text: String(v) });
       },
-      ENV: { LEAN_PATH: bootConfig.leanPath },
+      // No `ENV` key here: the glue does `var ENV={}` then `Module["ENV"]=ENV`, replacing it, so only an assignment
+      // at preRun (mountEverything below) reaches getenv (HARDENING #66).
       preRun: [
         function runtimeMailboxMode() {
           // HARDENING #52: before initRuntime arms this thread's first
