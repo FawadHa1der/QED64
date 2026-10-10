@@ -494,7 +494,7 @@ describe("front door: worker host wiring (lean.worker.js)", () => {
     posted.length = 0;
     deliver({ protocol: 1, requestId: "a2", type: "lsp-arm" });
     expect(posted.find((m) => m.requestId === "a2")).toMatchObject({ type: "result", result: { operation: "lsp-arm", open: true } });
-    expect(calls).toEqual(["preinit", "ring", "main --worker -Dserver.reportDelayMs=0"]);
+    expect(calls).toEqual(["preinit", "ring", "main --worker -Dserver.reportDelayMs=0 -DElab.async=false"]);
     expect(hooks.frontDoor.armed()).toBe(true);
     expect(hooks.frontDoor.open()).toBe(true);
     expect(hooks.frontDoor.state()!.phase).toBe("open");

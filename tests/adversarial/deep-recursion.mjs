@@ -20,12 +20,18 @@
 //           engine-stack probe reserved 128 KiB of a Chrome Worker's
 //           ~500 KiB stack, so proofs needing ~370-500 KiB that checked
 //           before it failed after it (widgets showcase, 2026-10-09).
+//   theorems (not in the default list; HARDENING #70) many theorems in one
+//           Mathlib file, seeded at boot: 10 nlinarith + 10 ring, then one
+//           wrong `decide`. Under Lean's default Elab.async every blocked
+//           theorem task started a standard worker that never exits: this
+//           file held ~46 pthreads and crashed the renderer at ~16 s. PASS =
+//           the legal checks, except exactly one error, on the last line.
 // Records: final phase/relay, deaths, reboots, halts, lastDeath, every console
 // line mentioning "Maximum call stack" or "RangeError", page crash, pool peak.
 // Verdict per scenario: PASS when no renderer crash, no "Maximum call stack"
 // line, no worker death and no halt (the checker answered the line with a
 // diagnostic instead); FAIL otherwise. Run it through the host browser lock.
-// Usage: node tests/adversarial/deep-recursion.mjs --url http://localhost:5185/ [--scenarios seeded,typing,legal] [--legal <lean source>] [--wait-ms 120000]
+// Usage: node tests/adversarial/deep-recursion.mjs --url http://localhost:5185/ [--scenarios seeded,typing,legal,theorems] [--legal <lean source>] [--wait-ms 120000]
 // Exit 0 = every scenario passed, 1 = one failed.
 import { chromium } from "playwright";
 
@@ -36,13 +42,19 @@ const WAIT = Number(arg("wait-ms", "120000"));
 const LINE = "example : ∀ n : Fin 40, ∀ m : Fin 40, n * m = m * n := by decide";
 const HEADER = "import Mathlib\n\n";
 const LEGAL = arg("legal", null)?.replace(/\\n/g, "\n") ?? null;
+const THEOREMS = HEADER + [
+  ...Array.from({ length: 10 }, (_, i) => `theorem amgm${i + 1} (x y : ℝ) : 2 * (${i + 1} * x) * y ≤ (${i + 1} * x) ^ 2 + y ^ 2 := by nlinarith [sq_nonneg (${i + 1} * x - y)]`),
+  ...Array.from({ length: 10 }, (_, i) => `theorem cube${i + 1} (x : ℝ) : (x + ${i + 1}) ^ 3 = x ^ 3 + 3 * ${i + 1} * x ^ 2 + 3 * ${i + 1} ^ 2 * x + ${i + 1} ^ 3 := by ring`),
+  "theorem wrong : (2 : ℕ) + 2 = 5 := by decide",
+].join("\n");
+const THEOREMS_LAST = THEOREMS.split("\n").length - 1; // 0-based line of the wrong theorem
 if (SCENARIOS.includes("legal") && !LEGAL) { console.log("deep-recursion: usage: --scenarios legal needs --legal <lean source>"); process.exit(2); }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const results = [];
 
 async function run(browser, sc) {
   const context = await browser.newContext();
-  const seed = sc === "seeded" ? HEADER + LINE + "\n" : sc === "legal" ? `${LEGAL}\n` : HEADER + "theorem warm : 1 + 1 = 2 := rfl\n";
+  const seed = sc === "seeded" ? HEADER + LINE + "\n" : sc === "legal" ? `${LEGAL}\n` : sc === "theorems" ? `${THEOREMS}\n` : HEADER + "theorem warm : 1 + 1 = 2 := rfl\n";
   await context.addInitScript((t) => { try { localStorage.setItem("qed64.buffer", t); } catch {} }, seed);
   // The checker's own diagnostics for the document (origin "lean"), newest last.
   await context.addInitScript(() => {
@@ -61,7 +73,7 @@ async function run(browser, sc) {
   const sample = () => page.evaluate(() => { const r = globalThis.qed64?.test?.rawStatus?.(); const st = globalThis.qed64?.test?.stats?.(); return r ? { phase: r.phase, relay: r.relay, pool: r.pool, session: r.session, lastDeath: r.lastDeath ? { reason: r.lastDeath.reason, message: String(r.lastDeath.message).slice(0, 160), code: r.lastDeath.cause?.code ?? null } : null, deaths: st?.workerDeaths ?? null, reboots: st?.reboots ?? null, breakerTrips: st?.breakerTrips ?? st?.halts ?? null } : null; }).catch(() => null);
   const samples = [];
   let legal = null;
-  if (sc === "legal") {
+  if (sc === "legal" || sc === "theorems") {
     // Wait for the checker to settle on the seeded document, then read its last diagnostics.
     const settled = page.evaluate((ms) => globalThis.qed64.api.settled({ timeoutMs: ms }).then(() => true, (e) => String(e?.message ?? e)), WAIT).catch((e) => String(e));
     let result = null;
@@ -71,8 +83,9 @@ async function run(browser, sc) {
     }
     await sleep(2000); // stragglers: a late diagnostics frame
     const d = await page.evaluate(() => globalThis.__deepDiags ?? null).catch(() => null);
-    const errors = (d?.diagnostics ?? []).filter((x) => x.severity === 1).map((x) => String(x.message).slice(0, 240));
-    legal = { settled: result, settledAt: samples.at(-1)?.t ?? null, version: d?.version ?? null, diagnostics: d?.diagnostics?.length ?? null, errors };
+    const errs = (d?.diagnostics ?? []).filter((x) => x.severity === 1);
+    const errors = errs.map((x) => String(x.message).slice(0, 240));
+    legal = { settled: result, settledAt: samples.at(-1)?.t ?? null, version: d?.version ?? null, diagnostics: d?.diagnostics?.length ?? null, errors, errorLines: errs.map((x) => x.range?.start?.line ?? null) };
   } else if (sc === "typing") {
     for (;;) { const s = await sample(); if (s?.phase === "ready" || crashedAt !== null || Date.now() - t0 > 300000) break; await sleep(500); }
     await page.click(".monaco-editor .view-lines").catch(() => {});
@@ -96,10 +109,11 @@ try {
   for (const sc of SCENARIOS) {
     const row = await run(browser, sc);
     const ok = row.crashedAt === null && row.stackLineCount === 0 && !row.halted && (row.last?.deaths ?? 1) === 0
-      && (sc !== "legal" || (row.legal?.settled === true && row.legal.diagnostics !== null && row.legal.errors.length === 0));
+      && (sc !== "legal" || (row.legal?.settled === true && row.legal.diagnostics !== null && row.legal.errors.length === 0))
+      && (sc !== "theorems" || (row.legal?.settled === true && row.legal.errorLines.length === 1 && row.legal.errorLines[0] === THEOREMS_LAST));
     results.push(ok);
     console.log(`${ok ? "PASS" : "FAIL"} ${sc}: ${row.crashedAt !== null ? `renderer crashed at ${(row.crashedAt / 1000).toFixed(1)} s` : `${row.last?.deaths ?? "?"} death(s), ${row.halted ? "halted" : "not halted"}, ${row.stackLineCount} stack-overflow line(s)`}; pool peak ${row.peakPool}`);
-    if (row.legal) console.log(`  legal: settled ${JSON.stringify(row.legal.settled)}, ${row.legal.diagnostics ?? "no"} diagnostic(s) at version ${row.legal.version}, errors: ${row.legal.errors.length ? row.legal.errors.map((e) => JSON.stringify(e)).join("; ") : "none"}`);
+    if (row.legal) console.log(`  ${sc}: settled ${JSON.stringify(row.legal.settled)}, ${row.legal.diagnostics ?? "no"} diagnostic(s) at version ${row.legal.version}, errors: ${row.legal.errors.length ? row.legal.errors.map((e) => JSON.stringify(e)).join("; ") : "none"}`);
     console.log(`  RESULT ${sc} :: ${JSON.stringify(row)}`);
     await sleep(5000);
   }

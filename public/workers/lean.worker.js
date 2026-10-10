@@ -84,6 +84,12 @@ function leanWorkers(hc = typeof navigator !== "undefined" ? navigator.hardwareC
   const n = Number.isInteger(hc) && hc > 0 ? hc : 4;
   return Math.max(1, Math.min(n, LEAN_WORKERS_MAX));
 }
+// The resident FileWorker's command line. reportDelayMs=0: the reporter's first act is IO.sleep(reportDelayMs) on a
+// task pthread. Elab.async=false (HARDENING #70): the FileWorker turns asynchronous elaboration on only when the
+// command line leaves it unset, and under it a task that blocks in Task.get/IO.wait makes the task manager start
+// another standard worker, which never exits; a file of 20 Mathlib theorems then held ~46 pthreads at once, grew
+// the pool into the renderer's cage (#55) and crashed the tab. A file can still opt back in with set_option.
+const RESIDENT_ARGV = Object.freeze(["--worker", "-Dserver.reportDelayMs=0", "-DElab.async=false"]);
 function checkSibling(name, mod) {
   if (mod && mod.REVISION === WORKER_REVISION) return;
   const error = new Error(`${name} is revision ${mod ? JSON.stringify(mod.REVISION) : "missing"}, lean.worker.js needs ${WORKER_REVISION} (a deploy mixed versions; reload)`);
@@ -294,9 +300,7 @@ function residentOpenLoop() {
   const status = M._lean_browser64_configure_input_ring(asPtr(raw), RESIDENT_RING_CAP);
   if (Number(status) !== 0) throw new Error(`resident stdin ring rejected (${status})`);
   residentMode = true;
-  // reportDelayMs=0: the reporter's first act is IO.sleep(reportDelayMs) on
-  // a task pthread.
-  M.callMain(["--worker", "-Dserver.reportDelayMs=0"]);
+  M.callMain([...RESIDENT_ARGV]);
 }
 
 // ---------------------------------------------------------------------------
@@ -2205,7 +2209,7 @@ self.__qed64TestExports = {
   // validation (HARDENING #68), and the pthread prelude.
   lifetime: { ALIVE_LOCK, WANTED_LOCK, STOPPING_WORKERS_TOLERATED, MAX_NAMED_PREDECESSORS, namedPredecessors, waitForUnwantedRuntimes, waitedLine, pthreadPrelude },
   // Pool-growth diagnostic under test (tests/unit/pool-growth.test.ts, HARDENING #55 addendum).
-  pool: { instrumentPoolGrowth, poolSample, growths: () => poolGrowths, starts: () => poolStarts, lifetimes: () => poolLifetimes, leanWorkers, LEAN_WORKERS_MAX, PARKED_DEDICATED },
+  pool: { instrumentPoolGrowth, poolSample, growths: () => poolGrowths, starts: () => poolStarts, lifetimes: () => poolLifetimes, leanWorkers, LEAN_WORKERS_MAX, PARKED_DEDICATED, RESIDENT_ARGV },
   // Front-door host wiring under test (tests/unit/front-door.test.ts): the
   // machine's state and the merged status, read-only.
   frontDoor: {

@@ -288,8 +288,8 @@ success, a queued `didOpen` opened the loop under a snapshot load (refused
 `BAD_STATE` → boot failed → reboot → the same race → breaker). Opening the
 loop is `_lean_wasm_shell_mark_preinitialized()` (boot already ran the full
 init sequence; `main` must not run it again), `_lean_browser64_configure_input_ring(ptr, cap)`,
-then `callMain(["--worker", "-Dserver.reportDelayMs=0"])` on the application
-pthread (`PROXY_TO_PTHREAD`, patch 0031). Once open the worker beats every
+then `callMain(["--worker", "-Dserver.reportDelayMs=0", "-DElab.async=false"])` on the application
+pthread (`PROXY_TO_PTHREAD`, patch 0031; `Elab.async=false` is HARDENING #70). Once open the worker beats every
 2 s (`heartbeat` events; the only lifecycle-by-time signal in the system).
 After the loop opens, `loadSnapshot` and `compile` are refused `BAD_STATE`
 (invariant K-i: no environment is published after open, so Lean's

@@ -205,7 +205,7 @@ describe("resident ring writer through the front door (the page's path)", () => 
     expect(Atomics.load(ctrl, IDX.WRITE)).toBe(0);
     deliver({ protocol: 1, requestId: "arm", type: "lsp-arm" });
     expect(posted.find((m) => m.requestId === "arm")).toMatchObject({ type: "result", result: { operation: "lsp-arm", open: true } });
-    expect(calls).toEqual(["preinit", "malloc", "ring", "main --worker -Dserver.reportDelayMs=0"]);
+    expect(calls).toEqual(["preinit", "malloc", "ring", "main --worker -Dserver.reportDelayMs=0 -DElab.async=false"]);
     expect(FDH.open()).toBe(true);
     expect(FDH.state()!.phase).toBe("open");
     expect(R.snapshot()).toMatchObject({ residentMode: true, lspMode: true, died: false, queued: 0 });

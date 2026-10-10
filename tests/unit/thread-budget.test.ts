@@ -25,7 +25,7 @@ function pool() {
   sandbox.importScripts = (name: string) => vm.runInContext(readFileSync(path.join(workers, name), "utf8"), sandbox, { filename: name });
   vm.createContext(sandbox);
   vm.runInContext(src, sandbox, { filename: "lean.worker.js" });
-  return (sandbox as { __qed64TestExports?: { pool: { leanWorkers(hc?: unknown): number; LEAN_WORKERS_MAX: number; PARKED_DEDICATED: string } } }).__qed64TestExports!.pool;
+  return (sandbox as { __qed64TestExports?: { pool: { leanWorkers(hc?: unknown): number; LEAN_WORKERS_MAX: number; PARKED_DEDICATED: string; RESIDENT_ARGV: readonly string[] } } }).__qed64TestExports!.pool;
 }
 
 describe("the worker's thread budget (HARDENING #69)", () => {
@@ -51,5 +51,15 @@ describe("the worker's thread budget (HARDENING #69)", () => {
     expect(using).toBeGreaterThan(0);
     expect(fallback).toBeGreaterThan(using);
     expect(src).not.toMatch(/callMain\([^)]*"-j/); // inert under mark_preinitialized: never rely on it
+  });
+});
+
+describe("the resident FileWorker's command line (HARDENING #70)", () => {
+  it("turns asynchronous elaboration off: a blocked task would start a standard worker that never exits", () => {
+    expect([...pool().RESIDENT_ARGV]).toEqual(["--worker", "-Dserver.reportDelayMs=0", "-DElab.async=false"]);
+    expect(Object.isFrozen(pool().RESIDENT_ARGV)).toBe(true);
+    const open = src.slice(src.indexOf("function residentOpenLoop()"));
+    expect(open.slice(0, open.indexOf("\n}\n"))).toContain("M.callMain([...RESIDENT_ARGV]);");
+    expect([...src.matchAll(/M\.callMain\(/g)]).toHaveLength(1); // the only entry into Lean's main
   });
 });

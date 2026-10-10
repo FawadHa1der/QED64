@@ -703,5 +703,43 @@ Fix (`public/workers/lean.worker.js`):
 - Up to 4 finished dedicated threads stay parked for reuse (`LEAN_WASM_PARKED_DEDICATED` = "4" at preRun, a digits-only literal; read once at the task manager's construction). The widgets showcase measured parking (8 interleaved rounds, C3 + a reload storm, tracing off): pthread starts per heavy session ~1,220 → ~90 (4) or ~45 (8), a reload storm's renderer peak ~1.2 GB lower, storm-to-ready no slower. The kernel's review: no new state hazard (std workers already reuse threads across tasks), no deadlock (a dedicated task gets a parked or a fresh thread, never a queue), K × 8 MB of shadow stacks. 4 rather than 8: the same saving, half the reserved Workers.
 - The budget per runtime: 1 (the main pthread) + n (+1 per worker blocked in Task.get/IO.wait) + the live dedicated threads (≤ 4 parked + running) + bursts (~10, #55 addendum) ≤ 24. Parked threads count toward 0038's ceiling and never exit, so 0038 adds a parked idle timeout and a pressure check.
 
-Cost: n = 8 halves standard-thread parallelism on hosts with more cores; the gate measures heavy elaboration at n = 8 against the previous hardware default (10 or 12 still fit the budget if the loss is real).
+Cost: n = 8 halves standard-thread parallelism on hosts with more cores (10 or 12 still fit the budget if the loss is real). The gate's heavy-elaboration bench (40 Mathlib theorems) crashed the renderer on both arms, n = 14 and n = 8, which is #70, not this change; the n = 8 timing comes from the widgets showcase's per-panel runs.
 Tests: `tests/unit/thread-budget.test.ts` (leanWorkers' clamp, the parking literal and its preRun placement, the explicit init before the fallback, no inert -j).
+
+### 70. A file of ~20 Mathlib theorems crashed the tab (fixed: synchronous elaboration)
+
+Found 2026-10-10 by #69's gate. The bench was `import Mathlib` plus 40 one-line theorems: 20 `nlinarith`, 20 `ring`. It crashed the renderer on 6 of 6 runs, at 16-20 s, on the live build 5e63edd (n = 14) and on #69 (n = 8) alike. All six crash reports are V8 OOM in a Scavenge (the #55 cage), with 32-54 DedicatedWorker threads, against a pool of 24.
+
+What the pool showed at the crash (#69's diagnostic): 46 threads running, 3 parked, 22 growths, 50 thread starts, and only 4 threads ever returned. These are not the short bursts of #55's addendum (~0.5 s); they are long-lived threads.
+
+Thresholds measured on n = 8:
+- 4 theorems: peak 19 running, no growth.
+- 10 theorems: 20-23 running, no growth.
+- 20 theorems (10 + 10): crash at 16.2 s with the same 46/22/50.
+
+Cause: Lean's task manager (`src/runtime/object.cpp`).
+- When a pool task blocks in `Task.get`/`IO.wait`, `task_manager::wait_for` raises `m_max_std_workers` and starts a new standard worker if none is idle. This prevents deadlock.
+- A standard worker's loop ends only at shutdown, so every such thread lives for the rest of the session.
+- The FileWorker turns `Elab.async` on (`setIfNotSet` in `setupImports`) unless its command line sets it. Each theorem's body, kernel check and linters then run as tasks that wait on each other.
+- The thread high-water mark therefore grows with the number of theorems in flight, whatever the task manager's n is (#69). 0038's soft pool ceiling would not bound it either: after its deferral the creation overflows anyway.
+
+Fix (`public/workers/lean.worker.js`):
+- The resident loop's command line is `RESIDENT_ARGV = ["--worker", "-Dserver.reportDelayMs=0", "-DElab.async=false"]`. Command-line options win over `setIfNotSet`.
+- Theorems then elaborate and check in order on the command's own task.
+- A file can still opt in with `set_option Elab.async true`, at its own risk.
+
+Measured, page :5301 (n = 8; `deep-recursion.mjs --scenarios legal`, seeded, settle time from page load):
+
+| file | Elab.async (default) | Elab.async false |
+|---|---|---|
+| 10 theorems | 14.2 / 15.2 / 15.3 s, peak 20-23 running | 13.7 / 13.7 s, peak 15 running |
+| 20 theorems | renderer crash at 16.2 s | (not run) |
+| 40 theorems | renderer crash, 6/6 (n = 8 and n = 14) | 16.6 s (n = 8), 16.9 s (n = 14); peak 15 / 12 running, no growth |
+| 40 theorems, the last one wrong | | 17.3 s, exactly one error, on that theorem |
+
+No speed is lost: at this pool size the parallel tactic blocks did not finish sooner than the sequential ones.
+
+The one-shot `compile` path (`lean_wasm_compile`, kernel 0037) is untouched. It checks one header before the loop opens.
+
+Lane: `tests/adversarial/deep-recursion.mjs --scenarios theorems`, 20 theorems plus one wrong `decide`. PASS = no crash, death or halt, the document settles, and there is exactly one error, on the last line. It fails (crashes) on 5e63edd.
+Tests: `tests/unit/thread-budget.test.ts` (the frozen argv; the loop's only `callMain` passes it).
