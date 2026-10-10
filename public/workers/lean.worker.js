@@ -636,12 +636,41 @@ function livenessStep() {
   publishLiveness();
 }
 
+/** The glue's pthread pool object. In a MODULARIZE glue `PThread` is factory-local; only an EXPORTED_RUNTIME_METHODS
+ * build publishes it as `Module.PThread`. Prefer that, fall back to a global, null otherwise. */
+function poolThreads() {
+  return M && M.PThread ? M.PThread : typeof PThread !== "undefined" ? PThread : null;
+}
+
+// HARDENING #55 addendum (2026-10-10): the renderer's cage fills when the pool grows past its preallocated size
+// (Emscripten allocates a Worker whenever none is unused at a pthread_create, and never terminates it: every crash
+// on record had 31-43 DedicatedWorkers against a session's 26). Each growth is logged with what was live at that
+// moment, so the two kinds can be told apart: finished threads not yet returned (a cleanup that lost the race to a
+// create, which a few ms of deferral absorbs) or live threads at the pool size (a real burst: #59's cap, parking).
+// Diagnostic only: the allocation itself is unchanged.
+let poolGrowths = 0;
+function instrumentPoolGrowth(PT, log) {
+  if (!PT || typeof PT.allocateUnusedWorker !== "function" || PT.__qed64PoolGrowth) return false;
+  const allocate = PT.allocateUnusedWorker;
+  PT.allocateUnusedWorker = function () {
+    const result = allocate.apply(this, arguments);
+    poolGrowths += 1;
+    const unused = PT.unusedWorkers ? PT.unusedWorkers.length : -1;
+    const busy = PT.runningWorkers ? PT.runningWorkers.length : -1;
+    const live = PT.pthreads ? Object.keys(PT.pthreads).length : -1;
+    const finished = PT.finishedThreads && typeof PT.finishedThreads.size === "number" ? PT.finishedThreads.size : -1;
+    const parkedFn = M && typeof M._lean_wasm_task_manager_parked_threads === "function" ? M._lean_wasm_task_manager_parked_threads : null;
+    log(`[pool] grew to ${unused >= 0 && busy >= 0 ? unused + busy : -1} Workers (live ${live}, finished-unreturned ${finished}, unused ${unused}, parked ${parkedFn ? Number(parkedFn()) : -1}; growth ${poolGrowths})`);
+    return result;
+  };
+  PT.__qed64PoolGrowth = true;
+  return true;
+}
+
 function poolSample() {
-  // In a MODULARIZE glue `PThread` is factory-local; only an
-  // EXPORTED_RUNTIME_METHODS build publishes it as `Module.PThread`. Prefer
-  // that, fall back to a global, and report -1 (not measured) otherwise so
-  // the §6 attack-3 gauntlet can tell "≤ 20 running" from "never sampled".
-  const PT = M && M.PThread ? M.PThread : typeof PThread !== "undefined" ? PThread : null;
+  // Report -1 (not measured) when the pool is not reachable, so the §6 attack-3 gauntlet can tell "≤ 20 running"
+  // from "never sampled".
+  const PT = poolThreads();
   // `parked`: dedicated threads the task manager keeps parked for reuse
   // (kernel 0035) — live pthreads in `running` that carry no work; -1 on a
   // runtime without the export (a lock-free atomic read, safe from here).
@@ -650,6 +679,7 @@ function poolSample() {
     unused: PT && PT.unusedWorkers ? PT.unusedWorkers.length : -1,
     running: PT ? Object.keys(PT.pthreads || {}).length : -1,
     parked: parkedFn ? Number(parkedFn()) : -1,
+    grown: poolGrowths,
   };
 }
 
@@ -1575,6 +1605,8 @@ async function boot(msg) {
           // After initRuntime's FS.init (the standard streams exist) and
           // before any Lean output: the per-byte stdout sink (W1).
           installStdoutTap();
+          // From here on every growth of the pthread pool past its preallocated Workers is logged (#55 addendum).
+          instrumentPoolGrowth(poolThreads(), (text) => event(null, "log", { stream: "stderr", text }));
           // Persistent embedding: no main() ever runs, so the runtime
           // keepalive counter is 0 and the FIRST event-loop-serviced proxied
           // call from a pthread would end in maybeExit() → _exit(): the glue's
@@ -2106,6 +2138,8 @@ self.__qed64TestExports = {
   // predecessor wait against a fake navigator.locks, the named-predecessor
   // validation (HARDENING #68), and the pthread prelude.
   lifetime: { ALIVE_LOCK, WANTED_LOCK, STOPPING_WORKERS_TOLERATED, MAX_NAMED_PREDECESSORS, namedPredecessors, waitForUnwantedRuntimes, waitedLine, pthreadPrelude },
+  // Pool-growth diagnostic under test (tests/unit/pool-growth.test.ts, HARDENING #55 addendum).
+  pool: { instrumentPoolGrowth, poolSample, growths: () => poolGrowths },
   // Front-door host wiring under test (tests/unit/front-door.test.ts): the
   // machine's state and the merged status, read-only.
   frontDoor: {

@@ -162,7 +162,8 @@ export interface WorkerStatus {
   version: number | null;
   header: HeaderStatus | null;
   ring: { bytesQueued: number; refused: number };
-  pool: { unused: number; running: number; parked?: number };
+  /** `grown`: how often the pool grew past its preallocated Workers since the runtime initialised (HARDENING #55 addendum). */
+  pool: { unused: number; running: number; parked?: number; grown?: number };
   dropped: number;
   /** The front door's collision fact (`statusOf().collision`; §3 row 8,
    * HARDENING #43): names the worker's last publish reported "already
