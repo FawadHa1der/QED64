@@ -69,6 +69,21 @@ let sink = null;
 const WORKER_REVISION = "1";
 /** HARDENING #67's interim engine-stack probe size (see mountEverything); digits only, never computed. */
 const STACK_PROBE_SLOTS = "8192";
+// The thread budget (HARDENING #69): the pool preallocates 24 Workers, and every live pthread holds one; 1 main +
+// LEAN_WORKERS task-manager threads + PARKED_DEDICATED parked dedicated threads + a burst (~10) must stay within it.
+// Lean's task manager would otherwise take navigator.hardwareConcurrency workers: on a 24-32-thread desktop the
+// main and the workers alone outgrow the pool, which grows it into the renderer's cage (#55).
+const LEAN_WORKERS_MAX = 8;
+/** Parked dedicated threads (kernel 0035, LEAN_WASM_PARKED_DEDICATED; read once at the task manager's construction):
+ * a finished dedicated task's thread waits for the next instead of exiting, cutting thread churn ~13x and a reload
+ * storm's renderer peak by ~1.2 GB (the widgets showcase's measurement). Digits only, never computed. */
+const PARKED_DEDICATED = "4";
+/** The task manager's worker count: the host's hardware concurrency, at most LEAN_WORKERS_MAX, never 0 (0 means no
+ * task manager at all). */
+function leanWorkers(hc = typeof navigator !== "undefined" ? navigator.hardwareConcurrency : undefined) {
+  const n = Number.isInteger(hc) && hc > 0 ? hc : 4;
+  return Math.max(1, Math.min(n, LEAN_WORKERS_MAX));
+}
 function checkSibling(name, mod) {
   if (mod && mod.REVISION === WORKER_REVISION) return;
   const error = new Error(`${name} is revision ${mod ? JSON.stringify(mod.REVISION) : "missing"}, lean.worker.js needs ${WORKER_REVISION} (a deploy mixed versions; reload)`);
@@ -1635,6 +1650,7 @@ async function boot(msg) {
           // with atoi: it must stay a literal of digits (a non-numeric value is 0 and turns the guard OFF). The 0038
           // adoption must delete this line: 0038 still reads the variable as an override of its tuned 4096.
           self.Module.ENV.LEAN_WASM_STACK_PROBE_SLOTS = STACK_PROBE_SLOTS;
+          self.Module.ENV.LEAN_WASM_PARKED_DEDICATED = PARKED_DEDICATED;
           try {
             FS.chdir("/workspace");
           } catch {
@@ -1668,7 +1684,12 @@ async function boot(msg) {
           M._lean_initialize_runtime_module();
           M._lean_initialize();
           M._lean_io_mark_end_initialization();
-          if (M._lean_init_task_manager) M._lean_init_task_manager();
+          // The task manager's size is fixed here (main never initializes again: _lean_wasm_shell_mark_preinitialized).
+          if (M._lean_init_task_manager_using) {
+            const n = leanWorkers();
+            M._lean_init_task_manager_using(n);
+            event(null, "log", { stream: "stderr", text: `[boot] task manager: ${n} worker(s) (hardware concurrency ${typeof navigator !== "undefined" ? navigator.hardwareConcurrency : "?"}, at most ${LEAN_WORKERS_MAX}); parked dedicated threads: ${PARKED_DEDICATED}` });
+          } else if (M._lean_init_task_manager) M._lean_init_task_manager();
           if (M._lean_enable_initializer_execution) M._lean_enable_initializer_execution();
           const sp = M._lean_init_search_path();
           if (ioResultTag(sp) !== 0) {
@@ -2184,7 +2205,7 @@ self.__qed64TestExports = {
   // validation (HARDENING #68), and the pthread prelude.
   lifetime: { ALIVE_LOCK, WANTED_LOCK, STOPPING_WORKERS_TOLERATED, MAX_NAMED_PREDECESSORS, namedPredecessors, waitForUnwantedRuntimes, waitedLine, pthreadPrelude },
   // Pool-growth diagnostic under test (tests/unit/pool-growth.test.ts, HARDENING #55 addendum).
-  pool: { instrumentPoolGrowth, poolSample, growths: () => poolGrowths, starts: () => poolStarts, lifetimes: () => poolLifetimes },
+  pool: { instrumentPoolGrowth, poolSample, growths: () => poolGrowths, starts: () => poolStarts, lifetimes: () => poolLifetimes, leanWorkers, LEAN_WORKERS_MAX, PARKED_DEDICATED },
   // Front-door host wiring under test (tests/unit/front-door.test.ts): the
   // machine's state and the merged status, read-only.
   frontDoor: {
