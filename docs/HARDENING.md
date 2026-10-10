@@ -739,6 +739,29 @@ Measured, page :5301 (n = 8; `deep-recursion.mjs --scenarios legal`, seeded, set
 
 No speed is lost: at this pool size the parallel tactic blocks did not finish sooner than the sequential ones.
 
+Cost: about one step of #67's deep-proof band. Under `Elab.async=false` a theorem's tactics and its kernel check run inside the command task's own stack, below the command pipeline's frames (`elabCommandTopLevel` → … → `elabMutualDef`), instead of at the bottom of a fresh task.
+
+Measured with `theorem deepLegal : ∀ n : Fin K, ∀ m : Fin K, n * m = m * n`, Init only, probe 8192 on both builds:
+
+| tactic | async (5e63edd) | sync (this change) |
+|---|---|---|
+| `decide` | K ≤ 22 checks; K 23 and 24 give "stack is exhausted" | K ≤ 21 checks; K 22 and 24 give "stack is exhausted" |
+| `decide +kernel` | K 20, 24, 28, 32 all check | K 20, 24, 28, 32 all check |
+
+The over-deep side stays safe: K 28 is Lean's error, 0 deaths, and no RangeError.
+
+The shift is elaborator-side and below one K step. The kernel estimates it at low tens of KiB, against the 64 KiB reserve. Kernel patch 0038 (32 KiB reserve, a probe every 4 levels) wins back more than that; it is to be calibrated with `Elab.async=false` as the configuration.
+
+The kernel's verdict on the alternatives: capping `wait_for`'s growth would remove Lean's deadlock avoidance, and running sync elaboration on a fresh stack per command is async again. So the trade is a tab crash on ordinary long files against Lean's error one band earlier on deep, mostly contrived recursion.
+
+Checked against the course text: the proof-sheets site's 28 sheets, under the browser FileWorker in Node, with the flag on, give the same messages as native Lean 4.34, no stack message, and unchanged check times.
+
+Gate (8f29630, :5301; 2026-10-10):
+- `theorems` 3/3 PASS; the 40-theorem bench PASS. The same `theorems` scenario on 5e63edd crashed the renderer at 17.2 s.
+- deep-recursion seeded and typing PASS; e2e 23/23; page-api 6/6; InfoView 4/4; liveness 6/6.
+- edit-storm pageslow ×2 PASS (the pool grew by 1); reload-storm 0/3 crashed; restart-overlap idle: own predecessor waited, T0 → ready ~7.8 s.
+- Editing latency against 5e63edd, 2 runs × 3 rounds each: header switch 331/332 vs 318/326 ms, completion 333/345 vs 340/344 ms. No measurable change.
+
 The one-shot `compile` path (`lean_wasm_compile`, kernel 0037) is untouched. It checks one header before the loop opens.
 
 Lane: `tests/adversarial/deep-recursion.mjs --scenarios theorems`, 20 theorems plus one wrong `decide`. PASS = no crash, death or halt, the document settles, and there is exactly one error, on the last line. It fails (crashes) on 5e63edd.
