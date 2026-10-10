@@ -703,7 +703,13 @@ Fix (`public/workers/lean.worker.js`):
 - Up to 4 finished dedicated threads stay parked for reuse (`LEAN_WASM_PARKED_DEDICATED` = "4" at preRun, a digits-only literal; read once at the task manager's construction). The widgets showcase measured parking (8 interleaved rounds, C3 + a reload storm, tracing off): pthread starts per heavy session ~1,220 → ~90 (4) or ~45 (8), a reload storm's renderer peak ~1.2 GB lower, storm-to-ready no slower. The kernel's review: no new state hazard (std workers already reuse threads across tasks), no deadlock (a dedicated task gets a parked or a fresh thread, never a queue), K × 8 MB of shadow stacks. 4 rather than 8: the same saving, half the reserved Workers.
 - The budget per runtime: 1 (the main pthread) + n (+1 per worker blocked in Task.get/IO.wait) + the live dedicated threads (≤ 4 parked + running) + bursts (~10, #55 addendum) ≤ 24. Parked threads count toward 0038's ceiling and never exit, so 0038 adds a parked idle timeout and a pressure check.
 
-Cost: n = 8 halves standard-thread parallelism on hosts with more cores (10 or 12 still fit the budget if the loss is real). The gate's heavy-elaboration bench (40 Mathlib theorems) crashed the renderer on both arms, n = 14 and n = 8, which is #70, not this change; the n = 8 timing comes from the widgets showcase's per-panel runs.
+Cost: n = 8 halves standard-thread parallelism on hosts with more cores (10 or 12 still fit the budget if the loss is real). The gate's heavy-elaboration bench (40 Mathlib theorems) crashed the renderer on both arms, n = 14 and n = 8, which is #70, not this change; the n = 8 timing comes from the widgets showcase's per-panel runs. Widgets measured 5 interleaved rounds of C3 + C20 (tracing off), live 5e63edd (n = hardware, async) against 8f29630 (n = 8, parking 4, #70):
+- C20 DistLens 21/21 on both arms in every run;
+- the heavy panels' C20 wall time 5-8 % lower (DistLens 63.3 → 59.5 s, hasse-view 117.6 → 107.7 s, graph-scope 102.8 → 97.7 s);
+- the C3 renderer peak ~0.6 GB lower (10.04-10.37 → 9.46-9.70 GB);
+- the pool max 26 → 24, so it never grew.
+
+n = 8 stays; nothing calls for 10 or 12.
 Tests: `tests/unit/thread-budget.test.ts` (leanWorkers' clamp, the parking literal and its preRun placement, the explicit init before the fallback, no inert -j).
 
 ### 70. A file of ~20 Mathlib theorems crashed the tab (fixed: synchronous elaboration)
