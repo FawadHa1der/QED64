@@ -162,7 +162,7 @@ async function visit({ name, pageUrl, init, link, untilMs, stopWhen, act }) {
     const page = await context.newPage();
     page.on("crash", () => { crashed = Date.now() - t0; });
     const log = [];
-    page.on("console", (m) => { if (/^\[qed64\]|raw prefetch/.test(m.text())) log.push(`[${((Date.now() - t0) / 1000).toFixed(1)}] ${m.text().slice(0, 200)}`); });
+    page.on("console", (m) => { if (/^\[qed64\]|raw prefetch|\[boot\] waited/.test(m.text())) log.push(`[${((Date.now() - t0) / 1000).toFixed(1)}] ${m.text().slice(0, 200)}`); });
     await page.goto(pageUrl, { waitUntil: "domcontentloaded", timeout: 120000 });
     let last = "";
     let lastLine = 0;

@@ -47,6 +47,7 @@ paired build outputs of "Environment" below.
 | Page API | `node tests/adversarial/page-api.mjs --url <dev url> [--only <scenario>]` | `qed64.api` as an embedder uses it (docs/EMBEDDING.md §2–§4): code-top-level, embed-code, embed-setdoc, events, restart, bad-param | dev or served build (both answer `/embed-host.html`) | lock | `page-api: 6/6 pass` |
 | InfoView actions | `node tests/adversarial/infoview-actions.mjs --url <dev url> [--only <scenario>]` | the InfoView's editor RPC on the real page (HARDENING #56): capability-flag, try-this-apply, conv-generate, foreign-show | dev | lock | `infoview-actions: 4/4 pass` |
 | Reload storm | `node tests/adversarial/reload-storm.mjs --url <url> [--runs 5] [--embed] [--ballast-mb N] [--headed]` | five reloads 3 s apart per run, a fresh browser per run, `ready` again after them; a crash is classified by the V8 OOM line (HARDENING #53, #55); `--embed` reloads a same-origin host page around the frame; `--ballast-mb N` (with `--embed`) makes that host hold N MiB of live JS objects in the renderer's shared pointer cage, a heavy embedding page (#55 residual: 800 MiB crashes 8/8, 0 MiB 0/8) | dev or served build (stock and `--embed`) | lock | `RELOAD-STORM <tag>: 0/N crashed …` (1 = a crash, 3 = nothing booted) |
+| Restart overlap | `node tests/adversarial/restart-overlap.mjs --url <url> [--mode idle\|busy\|wedged\|frozen\|frozen-card] [--rule own\|tolerance] [--runs 1 --tag <arm>-r<n>] [--embed] [--ballast-mb N] [--headed]` | a document replacing its own runtime (`api.restart()`, a wedged or heartbeat-loss reboot, a restart of a frozen checker), a fresh browser per run: a 25 ms Web Locks trace counts the Workers of the runtimes the new boot named alive at the replacement's allocation, at its pool spawn and up to `runtime-initialized` (each with its sample bracket), beside the per-Worker records, the worker's `[boot] waited` line, T0 → `ready` and any renderer crash (classified as the reload storm does); `--rule tolerance` deletes the boot's `instance.predecessors`, an old page and the A/B control, and each run checks its arm held (HARDENING #68) | dev or served build (stock and `--embed`) | lock | `RESTART-OVERLAP <tag>: N/N completed … — PASS` (a crash is data; 1 = a run did not complete, an `arm-invalid` run, or under `--rule own` a named predecessor's Worker alive at the allocation or before `runtime-initialized`; 2 = usage; 3 = refused, or no run got as far as the action) |
 | Edit storm | `node tests/adversarial/edit-storm.mjs --url <served url> [--reps 2] [--scenarios …]` | an edit per keystroke over work that ignores cancellation: no crash, death or reboot, ready at the last version, the pool within tolerance (HARDENING #59; `?edithold=0` is the control arm) | served build | lock | `edit-storm: N/N pass` |
 | Boot card | `node tests/adversarial/boot-card.mjs --url <served url> [--scenario slow-link\|check-fallback\|all]` | a cold first visit over a shaped link: the boot card shows progress the whole way, and the check fallback appears while an Init-only buffer elaborates (HARDENING #54) | served build | lock | `boot-card: N/N passed` |
 | Unpaired snapshot | `node tests/adversarial/unpaired-snapshot.mjs --url <served url> [--scenario unpaired\|rescued]` | a snapshot of another runtime is refused before the runtime starts and before a byte of it downloads (HARDENING #62); `rescued`: a mispaired served index is replaced by the pinned runtime's per-build copy (HARDENING #64) | served build (with its per-build copies) | lock | `unpaired-snapshot: PASS (n/n checks, <scenario>)` |
@@ -269,9 +270,11 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   any change on the card, the bytes carried, and RSS per process type at
   ready. `check-fallback` restores an Init-only buffer that elaborates for
   60 s and requires the card to go ~30 s after the relay serves, while the
-  phase is still `elaborating`. Serve `dist/` (`npm run build:site`, then
-  `PORT=… node scripts/serve-dist.mjs`), not the dev server: unbundled
-  modules over a shaped link measure Vite, not the product.
+  phase is still `elaborating`. Each scenario's `<name>-console.log` keeps
+  the page's `[qed64]`, raw-prefetch and `[boot] waited` lines. Serve
+  `dist/` (`npm run build:site`, then `PORT=… node scripts/serve-dist.mjs`),
+  not the dev server: unbundled modules over a shaped link measure Vite,
+  not the product.
 - **Reload storm** (`reload-storm.mjs --url <dev url> [--runs 5] [--headed]
   [--embed] [--sample-ms 100] [--ready-each] [--console-log]`, HARDENING #53,
   #55; a release gate, the first lane of the pyramid): a fresh browser per
@@ -292,6 +295,44 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   run up against its samples. V2 is rare on the stock page: gate embedded
   AND stock, headed AND headless, with a release control arm in the same
   window.
+- **Restart overlap** (`restart-overlap.mjs --url <dev url> [--mode
+  idle|busy|wedged|frozen|frozen-card] [--rule own|tolerance] [--embed]
+  [--ballast-mb N] [--sample-ms N] [--runs 1 --tag <arm>-r<n>]`, HARDENING
+  #68): a fresh browser per run boots a Mathlib document, then the document
+  replaces its own runtime in `--mode`'s way. T0 is the `api.restart()` call
+  or, for the wedged and frozen deaths, the earliest of the trace losing the
+  old wanted lock, the new `lean.worker.js` request and the new lean.worker's
+  creation (`t0By` says which). A 25 ms `navigator.locks` trace (pushed as it
+  changes, so a crash keeps it) counts, over the runtimes the new boot named
+  that the trace saw (other replaced runtimes apart), their Workers at the
+  replacement's allocation (the first fresh blob import after the new
+  `lean.worker.js` request), at its pool spawn and up to
+  `runtime-initialized`; each moment records its sample bracket and is listed
+  as `imprecise` when a side exceeds 100 ms, and the per-Worker records
+  (`page.on("worker")` / close) give the old runtime's open Workers at the
+  same moments. `--rule tolerance` deletes the boot's `instance.predecessors`
+  (an old page: the control arm). Each run checks its arm: `tolerance` needs
+  the predecessors stripped and no "replaced by this page" count from the
+  worker, `own` needs the boot to name the old runtime; a run that fails it is
+  `arm-invalid` and left out of the crash counts. A crash between T0 and
+  `ready` is data, the A/B's count; `crashed-after-ready` is reported apart,
+  and a crash that kept the action from happening is `crashed-during-action`.
+  Every page call that polls or acts races a 15 s timeout, and four in a row
+  unanswered end the run `renderer-unresponsive`. Under `--rule own` the gate
+  is 0 named-predecessor Workers at the allocation and from the pool spawn to
+  `runtime-initialized`; a miss with the worker's wait budget spent is
+  `budget-spent-overlap`, reported, not a FAIL. Exit 1 is a run that did not
+  complete (`mode-missed`, `not-ready-after`, `renderer-unresponsive`, …), an
+  `arm-invalid` run or an own-gate failure; 2 is usage (including a `--tag`
+  outside `[A-Za-z0-9._-]{1,80}` or a `--sample-ms` that is not a
+  non-negative integer); 3 is a refusal (the manifest, `--embed`'s host page
+  without COEP, a tag whose `restart-overlap-<tag>.json` is already in the run
+  dir) or an invocation whose every run ended `never-ready` or
+  `harness-error`. The default tag carries the start time and pid, so
+  invocations never share a report. Interleave arms into one `--run-dir`, one
+  invocation per run, as for the reload storm; aggregation across runs is
+  manual for now (there is no summary tool for this lane yet:
+  `reload-storm-summary.py` reads only `reload-storm-*.json`).
 - **InfoView actions** (`infoview-actions.mjs --url <dev url> [--only <scenario>]`,
   HARDENING #56): the InfoView's editor RPC on the real page, each scenario on
   its own page (an `--only` that selects no scenario exits 3). `capability-flag`
