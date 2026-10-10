@@ -74,6 +74,16 @@ describe("the pool-growth diagnostic (HARDENING #55 addendum)", () => {
     expect(pool.poolSample()).toMatchObject({ grown: 2, starts: 3 });
   });
 
+  it("a glue without runningWorkers (e1a79c1's) counts the total as unused plus live", () => {
+    const pool = load();
+    const PT = fakePool() as Partial<FakePT> & FakePT;
+    delete (PT as { runningWorkers?: object[] }).runningWorkers;
+    const lines: string[] = [];
+    pool.instrumentPoolGrowth(PT, (l) => lines.push(l), () => 0);
+    PT.getNewWorker();
+    expect(lines).toEqual(["[pool] grew to 23 Workers at 0 ms (live 22, finished-unreturned 2, unused 1, parked -1; growth 1, starts 1)"]);
+  });
+
   it("instruments once, and does nothing without a pool object that can allocate", () => {
     const pool = load();
     const PT = fakePool();

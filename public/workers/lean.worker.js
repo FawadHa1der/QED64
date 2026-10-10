@@ -673,7 +673,9 @@ function instrumentPoolGrowth(PT, log, now = () => performance.now()) {
     const live = PT.pthreads ? Object.keys(PT.pthreads).length : -1;
     const finished = PT.finishedThreads && typeof PT.finishedThreads.size === "number" ? PT.finishedThreads.size : -1;
     const parkedFn = M && typeof M._lean_wasm_task_manager_parked_threads === "function" ? M._lean_wasm_task_manager_parked_threads : null;
-    log(`[pool] grew to ${unused >= 0 && busy >= 0 ? unused + busy : -1} Workers at ${Math.round(now() - poolSince)} ms (live ${live}, finished-unreturned ${finished}, unused ${unused}, parked ${parkedFn ? Number(parkedFn()) : -1}; growth ${poolGrowths}, starts ${poolStarts})`);
+    // This glue (e1a79c1) has no runningWorkers array: a Worker is unused or carries a thread in `pthreads`.
+    const total = unused < 0 ? -1 : busy >= 0 ? unused + busy : live >= 0 ? unused + live : -1;
+    log(`[pool] grew to ${total} Workers at ${Math.round(now() - poolSince)} ms (live ${live}, finished-unreturned ${finished}, unused ${unused}, parked ${parkedFn ? Number(parkedFn()) : -1}; growth ${poolGrowths}, starts ${poolStarts})`);
     return result;
   };
   PT.__qed64PoolGrowth = true;
