@@ -1796,6 +1796,29 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   No export, type or worker-revision change: `EMBED_API_REVISION` stays
   `1.0.0-pre.7`, the four worker scripts keep `REVISION` "1". A page that
   stages QED64's workers gets it with the pin.
+- **A replacement waits for its own predecessor's Workers (HARDENING #68,
+  2026-10-09, reported by the widgets showcase):** `LeanSession.dispose()`
+  records its runtime id (lib/client.ts module state: the last 4, for 10 s),
+  and every later `boot` in the same document names them in the boot
+  message's `instance.predecessors`, never itself. The worker then waits,
+  within the same 6 s budget, until no Worker of a named runtime is alive;
+  other stopping runtimes keep #55's tolerance of 12. A document's first
+  runtime names none, so a reload is unchanged; a relay restart or reboot
+  allocates about 0.25-0.5 s later, a heartbeat-loss reboot about 2 s later
+  (estimates until the restart-overlap lane measures them). The field is
+  additive and advisory: an older worker ignores it and keeps the
+  tolerance, and the worker reads a missing or malformed field as none and
+  never fails a boot over it. The `[boot] waited` console line gains a LAST
+  suffix, "; a → b of them replaced by this page", only when a named
+  runtime was alive; its start and the " — budget spent" group are
+  unchanged. An embedder that drives `LeanSession` directly gets it too,
+  and one that boots a replacement right after `dispose()`, without the
+  relay's 1.5 s settle, waits up to about 2 s for the predecessor's busy
+  threads (within the 6 s budget); a
+  second module copy of lib/client.ts in one document keeps its own list,
+  so its replacements keep the tolerance, as before. No API change:
+  `EMBED_API_REVISION` stays `1.0.0-pre.7`, `PROTOCOL` and the four worker
+  scripts' `REVISION` "1" are unchanged.
 - **`qed64/edge` routes a toolchain release (plan step B2b, 2026-10-06):**
   additive options, every default unchanged (`QED64_LEGACY` and the hardened
   defaults keep `release: null`). `release` takes a `lean4-wasm64.release/v1`

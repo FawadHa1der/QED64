@@ -192,14 +192,21 @@ interface Pending {
 const HEARTBEAT_LOSS_MS = 6000;
 const HEARTBEAT_PROBE_MS = 2000;
 
-// Runtime lifetime locks (HARDENING #55; lean.worker.js has the other half):
-// the session holds `qed64-wanted:<runtime id>` from construction until
+// Runtime lifetime locks (HARDENING #55, #68; lean.worker.js has the other
+// half): the session holds `qed64-wanted:<runtime id>` from construction until
 // dispose()/terminate() (or the document's end), and its worker waits before
 // allocating — at most this long — while runtimes still alive but no longer
-// wanted keep more Workers alive than a ready runtime's busy threads.
+// wanted keep more Workers alive than a ready runtime's busy threads, or while
+// any Worker of a runtime this document replaced (and names at boot) is alive.
 const PREDECESSOR_WAIT_MS = 6000;
 const newRuntimeId = (): string =>
   globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+// HARDENING #68: runtimes this document disposed, newest last. A later runtime
+// of the same document names them at boot, and its worker waits for every one
+// of their Workers. A document's first runtime names none, so a reload is
+// unchanged.
+const REPLACED_KEPT = 4, REPLACED_FOR_MS = 10_000;
+const replacedHere: { id: string; at: number }[] = [];
 
 let sessionSeq = 0;
 
@@ -400,7 +407,13 @@ export class LeanSession {
         transfer.push(pack.bytes.buffer);
       }
     }
-    return this.request<ReadyInfo>("boot", { config, instance: { id: this.runtimeId, waitMs: PREDECESSOR_WAIT_MS } }, transfer);
+    // HARDENING #68: the runtimes this document replaced in the last 10 s,
+    // never this one. The 10 s cover the longest a replaced runtime's Workers
+    // live by Blink's rules (~4.25 s for a frozen lean.worker), and keep a
+    // Worker that never dies from charging every later boot the budget.
+    const now = performance.now();
+    const predecessors = replacedHere.filter((r) => r.id !== this.runtimeId && now - r.at < REPLACED_FOR_MS).map((r) => r.id);
+    return this.request<ReadyInfo>("boot", { config, instance: { id: this.runtimeId, waitMs: PREDECESSOR_WAIT_MS, predecessors } }, transfer);
   }
 
   compile(source: string, fileName?: string): Promise<CompileResult> {
@@ -454,6 +467,13 @@ export class LeanSession {
    * relay reboot cannot re-enter death handling (bug class C4). */
   dispose() {
     this.detached = true;
+    // Recorded once per runtime (HARDENING #68); terminate() records through
+    // here too. On pagehide (the relay's unload) that is harmless: the
+    // document is ending.
+    if (!this.unwanted) {
+      replacedHere.push({ id: this.runtimeId, at: performance.now() });
+      if (replacedHere.length > REPLACED_KEPT) replacedHere.shift();
+    }
     this.unwanted = true;
     this.releaseWanted();
     clearTimeout(this.heartbeatTimer);

@@ -342,6 +342,38 @@ describe("relay: RestartRequested (§2.3; §3 row 8)", () => {
   });
 });
 
+describe("relay: replacement order (HARDENING #68 — a disposed LeanSession records its runtime for the next boot to name)", () => {
+  it("every replacement's factory runs after its predecessor's dispose: restart(), a death reboot, rearm()", async () => {
+    // A relay whose factory notes, per call, whether the session being replaced is disposed already.
+    relay.clientPort.close();
+    FakeSession.all.length = 0;
+    const seen: Array<[string, boolean | null]> = [];
+    let via = "construct";
+    relay = new LspRelay(
+      (opts) => {
+        const prev = FakeSession.all[FakeSession.all.length - 1];
+        seen.push([via, prev ? prev.disposed : null]);
+        return new FakeSession(opts);
+      },
+      { status: (s) => statuses.push(s) },
+      () => { settles += 1; return Promise.resolve(); },
+      () => clock,
+    );
+    relay.clientPort.onmessage = (e) => toClient.push(e.data as Msg);
+    relay.fromClient(didOpen(1, "A"));
+    await bootCurrent();
+    via = "restart";
+    relay.restart({});
+    await bootCurrent();
+    for (const n of [1, 2, 3]) { via = `death ${n}`; current().onDied(null, "abort", "x"); await settle(); clock += 1000; await settle(); }
+    expect(relay.state).toEqual({ kind: "halted" }); // the third death reboots nothing
+    via = "rearm";
+    expect(relay.rearm()).toBe(true);
+    await bootCurrent();
+    expect(seen).toEqual([["construct", null], ["restart", true], ["death 1", true], ["death 2", true], ["rearm", true]]);
+  });
+});
+
 describe("relay: text-hash property", () => {
   it("over random interleavings of edits, deaths, boots and restarts the worker's text equals lastText", async () => {
     let seed = 12345;

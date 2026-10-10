@@ -1285,9 +1285,11 @@ function makeOutputCollector(requestId, fallbackFile) {
 // the prelude below — holds `qed64-alive:<id>` (shared) until Blink destroys
 // its context. Before a runtime allocates its memory and its pool it waits,
 // bounded, until the runtimes that are alive but no longer wanted — the
-// previous page of this tab, or the runtime a relay restart just killed —
-// keep at most STOPPING_WORKERS_TOLERATED Workers alive. Live runtimes in
-// other tabs or frames are still wanted, so never waited for.
+// previous page of this tab, a stopping runtime of another tab or frame —
+// keep at most STOPPING_WORKERS_TOLERATED Workers alive, and until no Worker
+// is alive of a runtime its own page replaced and names at boot (a relay
+// restart's or reboot's predecessor, HARDENING #68). Live runtimes in other
+// tabs or frames are still wanted, so never waited for.
 // ---------------------------------------------------------------------------
 
 const ALIVE_LOCK = "qed64-alive:";
@@ -1314,13 +1316,40 @@ function pthreadPrelude(id, glueUrl) {
 // crashed; what crashed is more — #53's 18–20 parked threads, or all 25
 // Workers of a runtime caught mid-boot. Waiting for those last busy threads
 // too would add ~1.9 s to every reload of a ready page. A host whose ready
-// runtime keeps more threads busy waits for them.
+// runtime keeps more threads busy waits for them. The tolerance is the
+// reload's only (HARDENING #68): a runtime this page replaced itself and
+// names is waited for to its last Worker, since its replacement queries
+// after the relay's 1.5 s settle, when those threads have ~0.2–0.5 s left.
 const STOPPING_WORKERS_TOLERATED = 12;
 
-async function waitForUnwantedRuntimes(selfId, budgetMs) {
+// The runtimes the page names as the ones this runtime replaces
+// (`instance.predecessors`, client.ts `replacedHere`). Advisory: a bad entry
+// is dropped, anything but an array is none (an older page's boot), and the
+// field never fails a boot. The pattern takes randomUUID ids and client.ts's
+// fallback ids.
+const MAX_NAMED_PREDECESSORS = 8;
+function namedPredecessors(instance, selfId) {
+  const list = instance && Array.isArray(instance.predecessors) ? instance.predecessors : [];
+  const ok = list.filter((id) => typeof id === "string" && /^[A-Za-z0-9-]{1,64}$/.test(id) && id !== selfId);
+  return [...new Set(ok)].slice(-MAX_NAMED_PREDECESSORS);
+}
+
+/** The boot's one line about the wait. Its start and the " — budget spent" group are parsed downstream (the widgets
+ * showcase's BOOT_WAITED_RE, reload-storm.mjs, restart-overlap.mjs): the replaced-runtime suffix stays LAST, and is
+ * printed whenever a named runtime had a Worker alive at the first or the last count (tests/unit/runtime-locks.test.ts). */
+function waitedLine(waited) {
+  const own = waited.own || [0, 0];
+  return `[boot] waited ${waited.waitedMs} ms for ${waited.ids.length} stopping runtime(s) (${(waited.workers || []).join(" → ")} Workers alive)`
+    + `${waited.timedOut ? " — budget spent, booting anyway" : ""}${waited.error ? ` (lock query failed: ${waited.error})` : ""}`
+    + `${own[0] || own[1] ? `; ${own.join(" → ")} of them replaced by this page` : ""}`;
+}
+
+async function waitForUnwantedRuntimes(selfId, budgetMs, named = []) {
   const t0 = performance.now();
   const locks = typeof navigator !== "undefined" ? navigator.locks : undefined;
-  if (!locks || !selfId) return { ids: [], waitedMs: 0, timedOut: false, workers: [0, 0] };
+  if (!locks || !selfId) return { ids: [], waitedMs: 0, timedOut: false, workers: [0, 0], own: [0, 0] };
+  const own = new Set(named);
+  const ownCount = (a) => a.reduce((n, id) => n + (own.has(id) ? 1 : 0), 0);
   // One held (or pending) alive lock per live Worker: count them per poll.
   const stopping = async () => {
     const { held = [], pending = [] } = await locks.query();
@@ -1333,13 +1362,16 @@ async function waitForUnwantedRuntimes(selfId, budgetMs) {
   let alive = await stopping();
   const ids = [...new Set(alive)];
   const first = alive.length;
+  const firstOwn = ownCount(alive);
   let timedOut = false;
-  while (alive.length > STOPPING_WORKERS_TOLERATED) {
+  // Done: none of the named runtimes' Workers is alive and the others number
+  // at most STOPPING_WORKERS_TOLERATED.
+  while (alive.length > STOPPING_WORKERS_TOLERATED || ownCount(alive) > 0) {
     if (performance.now() - t0 > budgetMs) { timedOut = true; break; }
     await new Promise((resolve) => setTimeout(resolve, 25));
     alive = await stopping();
   }
-  return { ids, waitedMs: Math.round(performance.now() - t0), timedOut, workers: [first, alive.length] };
+  return { ids, waitedMs: Math.round(performance.now() - t0), timedOut, workers: [first, alive.length], own: [firstOwn, ownCount(alive)] };
 }
 
 // ---------------------------------------------------------------------------
@@ -1401,7 +1433,7 @@ async function boot(msg) {
   // HARDENING #55: measured while the chunks download and verify.
   const instanceId = msg.instance && typeof msg.instance.id === "string" ? msg.instance.id : null;
   if (instanceId) holdAliveLock(instanceId);
-  const predecessors = waitForUnwantedRuntimes(instanceId, Number(msg.instance && msg.instance.waitMs) || 6000)
+  const predecessors = waitForUnwantedRuntimes(instanceId, Number(msg.instance && msg.instance.waitMs) || 6000, namedPredecessors(msg.instance, instanceId))
     .catch((error) => ({ ids: [], waitedMs: 0, timedOut: false, error: String(error) }));
 
   let scriptUrl;
@@ -1419,15 +1451,13 @@ async function boot(msg) {
     : scriptUrl;
 
   // Nothing of this runtime's memory, glue or pool exists while a stopping
-  // predecessor keeps more Workers alive than tolerated (or until the wait's
-  // budget is spent).
+  // predecessor keeps more Workers alive than tolerated, or while a Worker of
+  // a runtime this page replaced is alive (or until the wait's budget is
+  // spent). The replaced-runtime suffix stays LAST: the widgets showcase's
+  // BOOT_WAITED_RE is anchored at the start, with "budget spent" right after
+  // "Workers alive)", and reload-storm.mjs slices the line.
   const waited = await predecessors;
-  if (waited.ids.length || waited.error) {
-    event(null, "log", {
-      stream: "stderr",
-      text: `[boot] waited ${waited.waitedMs} ms for ${waited.ids.length} stopping runtime(s) (${(waited.workers || []).join(" → ")} Workers alive)${waited.timedOut ? " — budget spent, booting anyway" : ""}${waited.error ? ` (lock query failed: ${waited.error})` : ""}`,
-    });
-  }
+  if (waited.ids.length || waited.error) event(null, "log", { stream: "stderr", text: waitedLine(waited) });
 
   let mem;
   try {
@@ -2073,8 +2103,9 @@ self.__qed64TestExports = {
   // bookkeeping with a fake clock, the mailbox kick, and the live state.
   liveness: { LIVENESS, LIVENESS_PROBE_PREFIX, createLiveness, livenessClientRequest, livenessServerFrame, livenessTick, mailboxTick, mailboxConfirm, locateRuntimeMailbox, readMailboxWord, kickMailbox, instrumentRuntimeMailbox, runtimeMailbox, state: () => liveness, step: () => livenessStep() },
   // Runtime lifetime locks under test (tests/unit/runtime-locks.test.ts): the
-  // predecessor wait against a fake navigator.locks, and the pthread prelude.
-  lifetime: { ALIVE_LOCK, WANTED_LOCK, STOPPING_WORKERS_TOLERATED, waitForUnwantedRuntimes, pthreadPrelude },
+  // predecessor wait against a fake navigator.locks, the named-predecessor
+  // validation (HARDENING #68), and the pthread prelude.
+  lifetime: { ALIVE_LOCK, WANTED_LOCK, STOPPING_WORKERS_TOLERATED, MAX_NAMED_PREDECESSORS, namedPredecessors, waitForUnwantedRuntimes, waitedLine, pthreadPrelude },
   // Front-door host wiring under test (tests/unit/front-door.test.ts): the
   // machine's state and the merged status, read-only.
   frontDoor: {

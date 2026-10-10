@@ -343,6 +343,7 @@ Fix (`lean.worker.js` "Runtime lifetime locks", `lib/client.ts`, at the time `sr
 - 12 tolerates exactly what every release has always overlapped after an ordinary reload: a ready runtime's ~10 busy pthreads in their grace. Waiting for those too measured +1.9 s on every reload of a ready page (reload→ready 7.9 s vs 6.0 s); with the tolerance it is 6.0–6.3 s vs 5.9–6.2 s.
 - A host whose ready runtime keeps more threads busy waits for them.
 - Live runtimes in other tabs or frames are still wanted, so they are never waited for.
+- The 12 is the reload's only: a runtime that replaces one of its own document's (a relay restart or reboot) names the replaced runtime at boot and waits for every one of its Workers (#68).
 
 Rule: a runtime is not gone when its Worker objects are. Count Blink's teardown rules (the 2 s forced-termination grace; nested Workers die only after their parent's shutdown task). When one runtime fills most of the cage, the next must not allocate until the previous one's isolates are disposed. Wait on the browser's own lifetime signal (a lock held by each Worker's context), not on a timer or a page-side teardown.
 
@@ -665,3 +666,26 @@ With 8192 the over-deep side stays safe: K=28 and the lane's Fin 40 cases (seede
 - Fix (the kernel's): patch 0038, a new runtime that probes 4× as often with a quarter of the headroom (every 4 levels / 4th `checkSystem`, 4096 slots = 32 KiB). 0038 still reads `LEAN_WASM_STACK_PROBE_SLOTS` as an override, so **adopting 0038 must delete this worker setting** (8192 would override its tuned 4096). Its acceptance: the `legal` scenario at K = 24 passes, K = 28 and Fin 40 stay Lean's error.
 - lean4game's `bound` report is a different case: it needs more than 500 KiB and fails without 0036 too; 0036 only made its error clean.
 
+### 68. A same-document replacement allocated beside its own predecessor's Workers (#55's tolerance, narrowed)
+
+Reported 2026-10-09 by the widgets showcase, pin J (QED64 5e63edd, runtime wasm64-f69cca24; `out/ux/j-full4/tests/C21.s9.*`). The stall card's Restart Lean (`api.restart` → `relay.restart`) produced this timeline, measured from the restart:
+- +1.78 s: `[boot] waited 0 ms for 1 stopping runtime(s) (9 → 9 Workers alive)`, at the allocation
+- +1.88 s: the pool spawned
+- +3.50 s: the renderer crashed, before `runtime-initialized`
+
+The 9 are the replaced runtime's busy pthreads in their 2 s grace. #55 tolerates 12. On f69cca24, 1 of 9 C21 restarts crashed, against 0 of 14 on 3ab1c6a9 (p ≈ 0.39). Every non-crashing restart showed the same 9 → 9.
+
+Why 12 does not carry over: the 12 was bought for reloads, where waiting for a ready runtime's last busy threads costs about 1.9 s on every reload (#55). A same-document replacement queries only after the relay's 1.5 s settle, when those threads have about 0.2-0.5 s left, and the page knows the replaced ids. A frozen lean.worker (heartbeat loss) is the case that matters: its busy pthreads live to about +4.25 s, across the new runtime's start-up peak.
+
+Change (`lib/client.ts`, `public/workers/lean.worker.js` "Runtime lifetime locks"; lsp-relay.ts, `ResidentSession` and lean4game unchanged): `LeanSession.dispose()` records its runtime id (the last 4, for 10 s), and `boot` names them in `instance.predecessors`. The worker (`namedPredecessors`: strings matching `/^[A-Za-z0-9-]{1,64}$/`, deduplicated, never itself, the newest 8) waits until no Worker of a named runtime is alive and the others keep at most 12, within the same 6 s budget. A document's first runtime names none, so reloads are unchanged. Old pages and old workers behave as before: the field is additive and advisory, and `PROTOCOL` and the worker revision are unchanged. The log gains "; a → b of them replaced by this page", as the line's last suffix.
+
+What it is not:
+- By Blink's rules, the C21 predecessor's 9 should have died about 1.2-1.5 s before that crash. So this is not expected to change that crash unless they outlived their grace, and no sampler recorded whether they did.
+- It does nothing for C10. The predecessor there is another document's, and both f69cca24 crashes counted no stopping Worker.
+- It does nothing for the new runtime's own peak or for a heavy page. Those belong to the kernel: a pool-size knob and smaller glue.
+
+Measured: (pending the restart-overlap lane)
+
+Tests: `tests/unit/runtime-locks.test.ts` (the `[boot] waited` line, `waitedLine`, pinned against a verbatim copy of the showcase's BOOT_WAITED_RE: the suffix LAST, after " — budget spent", printed when a named runtime had a Worker alive at the first or the last count; `boot()` passing the page's `instance.predecessors` into the wait, run through the real worker in a vm with a named runtime's one alive Worker keeping the poll going and none without the field; a named predecessor is waited for to its last Worker even at 9 ≤ 12; one already gone costs nothing and the others keep the tolerance; others above it still wait and exactly 12 releases, with nothing named too; a named runtime that is still wanted is never waited for; one that never dies spends the budget and says so; never itself; the validation), `tests/unit/replaced-runtimes.test.ts` (a document's first runtime names none; a replacement names the runtime the document disposed, never itself; recorded once, the last 4, not after 10 s), `tests/unit/relay.test.ts` (restart, a death reboot and rearm each build the replacement after the predecessor's dispose, the order the page-side list relies on). Mutation: each of eight one-line reversals (the loop's named condition; self, dedupe and the newest 8 in the validation; the record-once guard, self in the boot list, the cap and the expiry in client.ts) fails at least one test. Review follow-ups, each reverted in place: `boot()` not passing the named list fails 1; the suffix moved ahead of " — budget spent" fails 2; the suffix printed on the first count only fails 1.
+
+Rule: a tolerance bought for one path's latency belongs to that path only. Where the wait is mostly paid already and the predecessor is known by id, wait for all of it.
