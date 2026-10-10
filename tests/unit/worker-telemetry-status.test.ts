@@ -12,7 +12,7 @@ import path from "node:path";
 import vm from "node:vm";
 
 const workers = path.resolve(__dirname, "../../public/workers");
-type Posted = { type: string; kind?: string; requestId?: string; pool?: { unused: number; running: number; parked: number; grown: number }; result?: { operation: string } };
+type Posted = { type: string; kind?: string; requestId?: string; pool?: { unused: number; running: number; parked: number; grown: number; starts: number }; result?: { operation: string } };
 
 function leanWorker() {
   const posted: Posted[] = [];
@@ -44,7 +44,7 @@ describe("lean.worker.js: a telemetry request is preceded by a status event when
     expect(replyIndex("t1")).toBeGreaterThan(-1);
     expect(statuses()).toHaveLength(1);
     expect(posted.indexOf(statuses()[0]!)).toBeLessThan(replyIndex("t1")); // the event first, then the reply
-    expect(statuses()[0]!.pool).toEqual({ unused: 3, running: 2, parked: -1, grown: 0 });
+    expect(statuses()[0]!.pool).toEqual({ unused: 3, running: 2, parked: -1, grown: 0, starts: 0 });
 
     deliver({ protocol: 1, requestId: "t2", type: "telemetry" }); // nothing changed: the reply alone
     expect(replyIndex("t2")).toBeGreaterThan(-1);
@@ -54,7 +54,7 @@ describe("lean.worker.js: a telemetry request is preceded by a status event when
     delete PThread.pthreads.b;
     deliver({ protocol: 1, requestId: "t3", type: "telemetry" });
     expect(statuses()).toHaveLength(2);
-    expect(statuses()[1]!.pool).toEqual({ unused: 4, running: 1, parked: -1, grown: 0 });
+    expect(statuses()[1]!.pool).toEqual({ unused: 4, running: 1, parked: -1, grown: 0, starts: 0 });
     expect(posted.indexOf(statuses()[1]!)).toBeLessThan(replyIndex("t3"));
     expect(posted.filter((m) => m.type === "result" && m.result?.operation === "telemetry")).toHaveLength(3);
   });

@@ -647,10 +647,23 @@ function poolThreads() {
 // on record had 31-43 DedicatedWorkers against a session's 26). Each growth is logged with what was live at that
 // moment, so the two kinds can be told apart: finished threads not yet returned (a cleanup that lost the race to a
 // create, which a few ms of deferral absorbs) or live threads at the pool size (a real burst: #59's cap, parking).
-// Diagnostic only: the allocation itself is unchanged.
+// Each line carries its time since the runtime was ready and the thread starts so far. Diagnostic only: the
+// allocation and the start are unchanged.
 let poolGrowths = 0;
-function instrumentPoolGrowth(PT, log) {
+let poolStarts = 0;
+let poolSince = 0;
+function instrumentPoolGrowth(PT, log, now = () => performance.now()) {
   if (!PT || typeof PT.allocateUnusedWorker !== "function" || PT.__qed64PoolGrowth) return false;
+  poolSince = now();
+  // Thread starts: the glue's spawnThread calls getNewWorker through the object once per pthread start, so
+  // growths ÷ starts (with F at each growth) tells a create/cleanup race from a burst.
+  if (typeof PT.getNewWorker === "function") {
+    const getNew = PT.getNewWorker;
+    PT.getNewWorker = function () {
+      poolStarts += 1;
+      return getNew.apply(this, arguments);
+    };
+  }
   const allocate = PT.allocateUnusedWorker;
   PT.allocateUnusedWorker = function () {
     const result = allocate.apply(this, arguments);
@@ -660,7 +673,7 @@ function instrumentPoolGrowth(PT, log) {
     const live = PT.pthreads ? Object.keys(PT.pthreads).length : -1;
     const finished = PT.finishedThreads && typeof PT.finishedThreads.size === "number" ? PT.finishedThreads.size : -1;
     const parkedFn = M && typeof M._lean_wasm_task_manager_parked_threads === "function" ? M._lean_wasm_task_manager_parked_threads : null;
-    log(`[pool] grew to ${unused >= 0 && busy >= 0 ? unused + busy : -1} Workers (live ${live}, finished-unreturned ${finished}, unused ${unused}, parked ${parkedFn ? Number(parkedFn()) : -1}; growth ${poolGrowths})`);
+    log(`[pool] grew to ${unused >= 0 && busy >= 0 ? unused + busy : -1} Workers at ${Math.round(now() - poolSince)} ms (live ${live}, finished-unreturned ${finished}, unused ${unused}, parked ${parkedFn ? Number(parkedFn()) : -1}; growth ${poolGrowths}, starts ${poolStarts})`);
     return result;
   };
   PT.__qed64PoolGrowth = true;
@@ -680,6 +693,7 @@ function poolSample() {
     running: PT ? Object.keys(PT.pthreads || {}).length : -1,
     parked: parkedFn ? Number(parkedFn()) : -1,
     grown: poolGrowths,
+    starts: poolStarts,
   };
 }
 
@@ -2139,7 +2153,7 @@ self.__qed64TestExports = {
   // validation (HARDENING #68), and the pthread prelude.
   lifetime: { ALIVE_LOCK, WANTED_LOCK, STOPPING_WORKERS_TOLERATED, MAX_NAMED_PREDECESSORS, namedPredecessors, waitForUnwantedRuntimes, waitedLine, pthreadPrelude },
   // Pool-growth diagnostic under test (tests/unit/pool-growth.test.ts, HARDENING #55 addendum).
-  pool: { instrumentPoolGrowth, poolSample, growths: () => poolGrowths },
+  pool: { instrumentPoolGrowth, poolSample, growths: () => poolGrowths, starts: () => poolStarts },
   // Front-door host wiring under test (tests/unit/front-door.test.ts): the
   // machine's state and the merged status, read-only.
   frontDoor: {

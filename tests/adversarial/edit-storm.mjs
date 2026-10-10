@@ -87,8 +87,12 @@ async function run(browser, sc, rep) {
   const page = await context.newPage();
   // The session's back-pressure record, from its log lines (resident-session.ts: one per hold, release and cap).
   const bp = { holds: 0, releases: 0, caps: 0, longestHoldMs: 0 };
+  // The worker's pool-growth lines (HARDENING #55 addendum: "[pool] grew to N Workers (live L, finished-unreturned F, …)").
+  const poolGrowth = [];
   page.on("console", (m) => {
     const t = m.text();
+    const g = /\[pool\] grew to .*/.exec(t);
+    if (g) { poolGrowth.push(g[0].slice(0, 200)); return; }
     if (!t.startsWith("[qed64] edit back-pressure:")) return;
     const held = Number(/(?:released after|cap at) (\d+) ms/.exec(t)?.[1] ?? 0);
     if (t.includes("holding")) bp.holds += 1; else if (t.includes("released after")) bp.releases += 1; else if (t.includes("cap at")) bp.caps += 1;
@@ -170,6 +174,7 @@ async function run(browser, sc, rep) {
     lastDeath: after?.status?.lastDeath ?? null,
     // The console-derived counts (they survive a crash) under the session's own record when the page is still there.
     backPressure: { ...bp, ...(after?.backPressure ?? {}) },
+    poolGrowth,
   };
   fs.writeFileSync(OUT.replace(/\.json$/, `-${sc}-${rep}-samples.json`), JSON.stringify(samples.map(({ at, ...s }) => s)));
   await context.close().catch(() => {});
@@ -193,7 +198,7 @@ try {
 const grownBy = (r) => (r.poolBefore ? r.peakPool - (r.poolBefore.unused + r.poolBefore.running) : null);
 const failed = (r) => !!r.infra || r.typedError !== null || r.lastVersion === null || r.crashedAt !== null || !r.settled || (r.deaths ?? 1) > 0 || (r.reboots ?? 1) > 0 || (grownBy(r) ?? 0) > GROW;
 const why = (r) => r.crashedAt !== null ? `renderer crashed at ${(r.crashedAt / 1000).toFixed(1)} s` : r.typedError !== null ? `the typing failed: ${r.typedError}` : r.lastVersion === null ? "the typing never ended" : !r.settled ? `never ready at the last version (${r.lastVersion})` : (r.deaths ?? 1) > 0 || (r.reboots ?? 1) > 0 ? `${r.deaths} death(s), ${r.reboots} reboot(s)` : `ready at the last version, ${r.deaths} deaths`;
-for (const r of results) if (!r.infra) console.log(`${failed(r) ? "FAIL" : "PASS"} ${r.sc}#${r.rep}: ${why(r)}; ${r.changesSeen ?? "?"} changes and ${r.requestsSeen ?? "?"} requests reached the relay; pool ${r.poolBefore.unused + r.poolBefore.running} → peak ${r.peakPool} (grown by ${Math.max(0, grownBy(r))}, running peak ${r.peakRunning}); ready ${r.readyAfterTypingMs ?? "-"} ms after the typing ended (${r.readyAfterFirstKeyMs} ms after its first key); back-pressure held ${r.backPressure.holds} time(s), released ${r.backPressure.releases}, capped ${r.backPressure.caps}, longest hold ${r.backPressure.longestHoldMs} ms; ${r.backPressure.waits ?? "?"} requests waited for a slot, ${r.backPressure.cancelled ?? "?"} answered cancelled here, ${r.backPressure.superseded ?? "?"} superseded`);
+for (const r of results) if (!r.infra) console.log(`${failed(r) ? "FAIL" : "PASS"} ${r.sc}#${r.rep}: ${why(r)}; ${r.changesSeen ?? "?"} changes and ${r.requestsSeen ?? "?"} requests reached the relay; pool ${r.poolBefore.unused + r.poolBefore.running} → peak ${r.peakPool} (grown by ${Math.max(0, grownBy(r))}, running peak ${r.peakRunning}); ready ${r.readyAfterTypingMs ?? "-"} ms after the typing ended (${r.readyAfterFirstKeyMs} ms after its first key); back-pressure held ${r.backPressure.holds} time(s), released ${r.backPressure.releases}, capped ${r.backPressure.caps}, longest hold ${r.backPressure.longestHoldMs} ms; ${r.backPressure.waits ?? "?"} requests waited for a slot, ${r.backPressure.cancelled ?? "?"} answered cancelled here, ${r.backPressure.superseded ?? "?"} superseded; ${r.poolGrowth.length} pool growth line(s)${r.poolGrowth.length ? `, the last: ${r.poolGrowth.at(-1)}` : ""}`);
 const bad = results.filter(failed).length;
 console.log(`edit-storm: ${results.length - bad}/${results.length} pass; report ${path.relative(root, OUT)}`);
 process.exit(results.some((r) => r.infra) && bad === results.length ? 3 : bad ? 1 : 0);
