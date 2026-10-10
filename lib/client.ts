@@ -164,7 +164,11 @@ export interface WorkerStatus {
   ring: { bytesQueued: number; refused: number };
   /** `grown`: how often the pool grew past its preallocated Workers since the runtime initialised; `starts`: pthread
    * starts in that time (HARDENING #55 addendum). */
-  pool: { unused: number; running: number; parked?: number; grown?: number; starts?: number };
+  pool: {
+    unused: number; running: number; parked?: number; grown?: number; starts?: number;
+    /** Thread lifetimes (start to return) in buckets: every thread, and those whose start grew the pool. */
+    lifetimes?: Record<"all" | "grown", { lt100: number; lt1000: number; lt5000: number; ge5000: number }>;
+  };
   dropped: number;
   /** The front door's collision fact (`statusOf().collision`; §3 row 8,
    * HARDENING #43): names the worker's last publish reported "already

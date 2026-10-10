@@ -13,6 +13,7 @@ interface FakePT {
   finishedThreads: Set<number>;
   allocateUnusedWorker(): void;
   getNewWorker(): object | undefined;
+  returnWorkerToPool(worker: object): void;
   __qed64PoolGrowth?: boolean;
 }
 interface Pool {
@@ -20,6 +21,7 @@ interface Pool {
   poolSample(): { unused: number; running: number; parked: number; grown: number; starts: number };
   growths(): number;
   starts(): number;
+  lifetimes(): Record<"all" | "grown", Record<string, number>>;
 }
 
 function load(): Pool {
@@ -49,6 +51,7 @@ function fakePool(): FakePT {
     allocateUnusedWorker() { this.unusedWorkers.push({}); },
     // as the glue's: allocate when none is unused, then hand one out
     getNewWorker() { if (this.unusedWorkers.length === 0) this.allocateUnusedWorker(); return this.unusedWorkers.pop(); },
+    returnWorkerToPool(worker: object) { this.unusedWorkers.push(worker); },
   };
 }
 
@@ -82,6 +85,28 @@ describe("the pool-growth diagnostic (HARDENING #55 addendum)", () => {
     pool.instrumentPoolGrowth(PT, (l) => lines.push(l), () => 0);
     PT.getNewWorker();
     expect(lines).toEqual(["[pool] grew to 23 Workers at 0 ms (live 22, finished-unreturned 2, unused 1, parked -1; growth 1, starts 1)"]);
+  });
+
+  it("each thread's lifetime (start to return) is bucketed; a thread whose start grew the pool also logs its return", () => {
+    const pool = load();
+    const PT = fakePool();
+    const lines: string[] = [];
+    let clock = 0;
+    pool.instrumentPoolGrowth(PT, (l) => lines.push(l), () => clock);
+    const grownWorker = PT.getNewWorker()!; // grows the pool (none unused)
+    PT.unusedWorkers.push({});
+    const pooledWorker = PT.getNewWorker()!; // served from the pool
+    clock = 50;
+    PT.returnWorkerToPool(grownWorker);
+    clock = 2050;
+    PT.returnWorkerToPool(pooledWorker);
+    PT.returnWorkerToPool({}); // a Worker started before the instrumentation: not counted
+    expect(lines.filter((l) => l.startsWith("[pool] thread from growth"))).toEqual(["[pool] thread from growth 1 returned after 50 ms"]);
+    expect(pool.lifetimes()).toEqual({
+      all: { lt100: 1, lt1000: 0, lt5000: 1, ge5000: 0 },
+      grown: { lt100: 1, lt1000: 0, lt5000: 0, ge5000: 0 },
+    });
+    expect(PT.unusedWorkers).toContain(grownWorker); // the original return still ran
   });
 
   it("instruments once, and does nothing without a pool object that can allocate", () => {

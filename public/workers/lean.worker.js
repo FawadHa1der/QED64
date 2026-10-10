@@ -652,16 +652,44 @@ function poolThreads() {
 let poolGrowths = 0;
 let poolStarts = 0;
 let poolSince = 0;
+// Thread lifetimes, start (getNewWorker) to return (returnWorkerToPool), bucketed: whether a burst's threads finish
+// in ms (a deferral at the pool's ceiling drains them) or sit waiting (only a bound on demand helps). `grown`
+// counts the threads whose start grew the pool; each of those also logs its return.
+const newLifetimes = () => ({ lt100: 0, lt1000: 0, lt5000: 0, ge5000: 0 });
+const poolLifetimes = { all: newLifetimes(), grown: newLifetimes() };
+function countLifetime(b, ms) {
+  if (ms < 100) b.lt100 += 1; else if (ms < 1000) b.lt1000 += 1; else if (ms < 5000) b.lt5000 += 1; else b.ge5000 += 1;
+}
 function instrumentPoolGrowth(PT, log, now = () => performance.now()) {
   if (!PT || typeof PT.allocateUnusedWorker !== "function" || PT.__qed64PoolGrowth) return false;
   poolSince = now();
   // Thread starts: the glue's spawnThread calls getNewWorker through the object once per pthread start, so
   // growths ÷ starts (with F at each growth) tells a create/cleanup race from a burst.
+  const started = new WeakMap(); // Worker → { t, growth: the growth its start made, or 0 }
   if (typeof PT.getNewWorker === "function") {
     const getNew = PT.getNewWorker;
     PT.getNewWorker = function () {
       poolStarts += 1;
-      return getNew.apply(this, arguments);
+      const growthsBefore = poolGrowths;
+      const worker = getNew.apply(this, arguments);
+      if (worker && typeof worker === "object") started.set(worker, { t: now(), growth: poolGrowths > growthsBefore ? poolGrowths : 0 });
+      return worker;
+    };
+  }
+  if (typeof PT.returnWorkerToPool === "function") {
+    const giveBack = PT.returnWorkerToPool;
+    PT.returnWorkerToPool = function (worker) {
+      const rec = worker && typeof worker === "object" ? started.get(worker) : undefined;
+      if (rec) {
+        started.delete(worker);
+        const ms = now() - rec.t;
+        countLifetime(poolLifetimes.all, ms);
+        if (rec.growth) {
+          countLifetime(poolLifetimes.grown, ms);
+          log(`[pool] thread from growth ${rec.growth} returned after ${Math.round(ms)} ms`);
+        }
+      }
+      return giveBack.apply(this, arguments);
     };
   }
   const allocate = PT.allocateUnusedWorker;
@@ -696,6 +724,7 @@ function poolSample() {
     parked: parkedFn ? Number(parkedFn()) : -1,
     grown: poolGrowths,
     starts: poolStarts,
+    lifetimes: { all: { ...poolLifetimes.all }, grown: { ...poolLifetimes.grown } },
   };
 }
 
@@ -2155,7 +2184,7 @@ self.__qed64TestExports = {
   // validation (HARDENING #68), and the pthread prelude.
   lifetime: { ALIVE_LOCK, WANTED_LOCK, STOPPING_WORKERS_TOLERATED, MAX_NAMED_PREDECESSORS, namedPredecessors, waitForUnwantedRuntimes, waitedLine, pthreadPrelude },
   // Pool-growth diagnostic under test (tests/unit/pool-growth.test.ts, HARDENING #55 addendum).
-  pool: { instrumentPoolGrowth, poolSample, growths: () => poolGrowths, starts: () => poolStarts },
+  pool: { instrumentPoolGrowth, poolSample, growths: () => poolGrowths, starts: () => poolStarts, lifetimes: () => poolLifetimes },
   // Front-door host wiring under test (tests/unit/front-door.test.ts): the
   // machine's state and the merged status, read-only.
   frontDoor: {

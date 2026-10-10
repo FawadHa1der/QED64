@@ -91,7 +91,7 @@ async function run(browser, sc, rep) {
   const poolGrowth = [];
   page.on("console", (m) => {
     const t = m.text();
-    const g = /\[pool\] grew to .*/.exec(t);
+    const g = /\[pool\] (?:grew to|thread from growth) .*/.exec(t);
     if (g) { poolGrowth.push(g[0].slice(0, 200)); return; }
     if (!t.startsWith("[qed64] edit back-pressure:")) return;
     const held = Number(/(?:released after|cap at) (\d+) ms/.exec(t)?.[1] ?? 0);
@@ -198,7 +198,15 @@ try {
 const grownBy = (r) => (r.poolBefore ? r.peakPool - (r.poolBefore.unused + r.poolBefore.running) : null);
 const failed = (r) => !!r.infra || r.typedError !== null || r.lastVersion === null || r.crashedAt !== null || !r.settled || (r.deaths ?? 1) > 0 || (r.reboots ?? 1) > 0 || (grownBy(r) ?? 0) > GROW;
 const why = (r) => r.crashedAt !== null ? `renderer crashed at ${(r.crashedAt / 1000).toFixed(1)} s` : r.typedError !== null ? `the typing failed: ${r.typedError}` : r.lastVersion === null ? "the typing never ended" : !r.settled ? `never ready at the last version (${r.lastVersion})` : (r.deaths ?? 1) > 0 || (r.reboots ?? 1) > 0 ? `${r.deaths} death(s), ${r.reboots} reboot(s)` : `ready at the last version, ${r.deaths} deaths`;
-for (const r of results) if (!r.infra) console.log(`${failed(r) ? "FAIL" : "PASS"} ${r.sc}#${r.rep}: ${why(r)}; ${r.changesSeen ?? "?"} changes and ${r.requestsSeen ?? "?"} requests reached the relay; pool ${r.poolBefore.unused + r.poolBefore.running} → peak ${r.peakPool} (grown by ${Math.max(0, grownBy(r))}, running peak ${r.peakRunning}); ready ${r.readyAfterTypingMs ?? "-"} ms after the typing ended (${r.readyAfterFirstKeyMs} ms after its first key); back-pressure held ${r.backPressure.holds} time(s), released ${r.backPressure.releases}, capped ${r.backPressure.caps}, longest hold ${r.backPressure.longestHoldMs} ms; ${r.backPressure.waits ?? "?"} requests waited for a slot, ${r.backPressure.cancelled ?? "?"} answered cancelled here, ${r.backPressure.superseded ?? "?"} superseded; ${r.poolGrowth.length} pool growth line(s)${r.poolGrowth.length ? `, the last: ${r.poolGrowth.at(-1)}` : ""}`);
+/** The worker's pool lines (HARDENING #55 addendum): growths, the last growth line, and how soon the threads whose
+ * start grew the pool came back (≤ 100 ms, ≤ 1 s, ≤ 5 s, later or never within the run). */
+function poolSummary(lines) {
+  const grew = lines.filter((l) => l.startsWith("[pool] grew to"));
+  const back = lines.map((l) => /^\[pool\] thread from growth \d+ returned after (\d+) ms/.exec(l)).filter(Boolean).map((m) => Number(m[1]));
+  const within = (ms) => back.filter((x) => x <= ms).length;
+  return `${grew.length} pool growth(s)${grew.length ? ` (the last: ${grew.at(-1)})` : ""}; growth threads back within 100 ms ${within(100)}, 1 s ${within(1000)}, 5 s ${within(5000)}, of ${grew.length}`;
+}
+for (const r of results) if (!r.infra) console.log(`${failed(r) ? "FAIL" : "PASS"} ${r.sc}#${r.rep}: ${why(r)}; ${r.changesSeen ?? "?"} changes and ${r.requestsSeen ?? "?"} requests reached the relay; pool ${r.poolBefore.unused + r.poolBefore.running} → peak ${r.peakPool} (grown by ${Math.max(0, grownBy(r))}, running peak ${r.peakRunning}); ready ${r.readyAfterTypingMs ?? "-"} ms after the typing ended (${r.readyAfterFirstKeyMs} ms after its first key); back-pressure held ${r.backPressure.holds} time(s), released ${r.backPressure.releases}, capped ${r.backPressure.caps}, longest hold ${r.backPressure.longestHoldMs} ms; ${r.backPressure.waits ?? "?"} requests waited for a slot, ${r.backPressure.cancelled ?? "?"} answered cancelled here, ${r.backPressure.superseded ?? "?"} superseded; ${poolSummary(r.poolGrowth)}`);
 const bad = results.filter(failed).length;
 console.log(`edit-storm: ${results.length - bad}/${results.length} pass; report ${path.relative(root, OUT)}`);
 process.exit(results.some((r) => r.infra) && bad === results.length ? 3 : bad ? 1 : 0);
