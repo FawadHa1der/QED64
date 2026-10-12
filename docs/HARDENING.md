@@ -824,5 +824,10 @@ What it does not cover:
 - An overflow in a request handler after the file is checked (Verso's `documentSymbol` on the proof sheets, #71): the last fileProgress lists nothing, so the note sits on the first import line, replaces Lean's diagnostics, and every edit re-sends the request and pauses again. Still one boot per edit, not the breaker's three.
 - The line is a hint: it comes from the last fileProgress forwarded, which can predate the latest edit (clamped to the document; the next session's publish replaces the note).
 
+Gate (80ada50 on fix/stack-pause, :5301, 2026-10-12; control = main 5e63edd on :5302):
+- `pause`, 3 of 3: halted at 5.3-5.4 s after exactly 1 death, code ENGINE_STACK_OVERFLOW, still 1 death 10 s later, the note on the checked line, ready after the edit.
+- The control on main: 3 deaths, code `crash`, no note, the breaker halted at 14.1 s.
+- Also: deep-recursion seeded, typing and theorems PASS; `decide` over `Fin 16` checks, over `Fin 20` Lean's clean error (#71); e2e 23/23; page-api 6/6; InfoView 4/4; liveness 6/6; edit-storm pageslow PASS (no pool growth); reload-storm 0/3; restart-overlap idle PASS.
+
 Lane: `tests/adversarial/deep-recursion.mjs --scenarios pause` (opt-in): an Init-only `example : True := by trivial <;> … <;> trivial` (25 steps), seeded. PASS = exactly 1 death, relay halted with code `ENGINE_STACK_OVERFLOW`, still 1 death 10 s later, the note published; then `setDocument("example : True := trivial")` settles ready with no further death.
 Tests: `tests/unit/stack-pause.test.ts` (the worker's listener in a vm: prevented and one classified death for both engines' words, anything else untouched); `tests/unit/embed-library.test.ts` (the classification, a coded failure not a pause); `tests/unit/resident-session.test.ts` (the line from the last fileProgress, fatal ranges skipped); `tests/unit/relay.test.ts` (the pause, its note and reply, the re-arm, the breaker still needing 3 ordinary deaths, the kept restart options, no note after a listener's synchronous re-arm); `tests/unit/page-api.test.ts` (`settled()`'s pause words; the note and reply are synthetic frames).
