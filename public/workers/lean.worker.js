@@ -846,8 +846,7 @@ function writeFiles(msg) {
       if (typeof f?.path !== "string" || !f.path.startsWith("/")) {
         throw new Error(`writeFiles: bad path ${String(f?.path)}`);
       }
-      const dir = f.path.slice(0, f.path.lastIndexOf("/"));
-      FS.mkdirTree ? FS.mkdirTree(dir) : mkdirTree(dir);
+      mkdirp(FS, f.path.slice(0, f.path.lastIndexOf("/")));
       FS.writeFile(f.path, f.bytes instanceof Uint8Array ? f.bytes : String(f.text ?? ""));
       written += 1;
     }
