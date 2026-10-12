@@ -1819,6 +1819,30 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   so its replacements keep the tolerance, as before. No API change:
   `EMBED_API_REVISION` stays `1.0.0-pre.7`, `PROTOCOL` and the four worker
   scripts' `REVISION` "1" are unchanged.
+- **A thread budget (HARDENING #69, 2026-10-10, found by the kernel):**
+  the worker builds Lean's task manager with min(hardwareConcurrency, 8)
+  workers (4 when the host does not say) instead of the core count, and
+  keeps up to 4 finished dedicated threads parked for reuse; a
+  `[boot] task manager: n worker(s)` console line records it. On hosts
+  with more than 8 cores, standard-thread parallelism is capped at 8.
+  No API change.
+- **Synchronous elaboration (HARDENING #70, 2026-10-10):** the resident
+  loop starts Lean with `-DElab.async=false`. Under Lean's default,
+  every blocked theorem task started a thread that never exits, and a
+  document of ~20 Mathlib theorems crashed the tab. Theorems now
+  elaborate and check in order on the command's own task. Messages and
+  diagnostics are the same; measured settle times are equal or shorter.
+  Proofs deep enough to be near the browser's stack limit fail about one
+  step earlier, with Lean's "stack is exhausted". A document can opt back
+  in with `set_option Elab.async true`, at its own risk. No API change.
+- **The engine-stack probe size is the runtime's own again (HARDENING
+  #71, 2026-10-12):** `lean.worker.js` no longer sets
+  `LEAN_WASM_STACK_PROBE_SLOTS` (#67's interim 8192 let heavy tactic
+  recursion kill the FileWorker on two proof sheets). Kernel patch 0036's
+  default 16384 applies: deep but legal proofs get Lean's "stack is
+  exhausted" a little earlier (`decide` over `Fin 18` and up), and the
+  widgets showcase's deepest DistLens examples fail. QED64 does not tune
+  the guard; deaths are handled by #72. No API change.
 - **`qed64/edge` routes a toolchain release (plan step B2b, 2026-10-06):**
   additive options, every default unchanged (`QED64_LEGACY` and the hardened
   defaults keep `release: null`). `release` takes a `lean4-wasm64.release/v1`

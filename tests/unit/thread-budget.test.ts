@@ -36,7 +36,7 @@ describe("the worker's thread budget (HARDENING #69)", () => {
     expect([undefined, 0, -3, 2.5, "8"].map((hc) => p.leanWorkers(hc))).toEqual([4, 4, 4, 4, 4]);
   });
 
-  it("parking is one digits-only literal within the runtime's clamp, set at preRun beside the probe size", () => {
+  it("parking is one digits-only literal within the runtime's clamp, set at preRun", () => {
     const consts = [...src.matchAll(/const PARKED_DEDICATED = (".*?"|[^;]+);/g)].map((m) => m[1]);
     expect(consts).toEqual(['"4"']);
     expect(pool().PARKED_DEDICATED).toBe("4");

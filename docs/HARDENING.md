@@ -648,7 +648,7 @@ Found 2026-10-09 by the kernel while porting snapshot-probe to the lean4-wasm64 
 - `node-runner.mjs` was right all along (its preRun sets `LEAN_PATH`, `QED64_ALLOW_LEGACY_IMPORTS`, `LEAN_COMPACTOR_RESERVE` and `QED64_PROFILE_INIT`).
 - Tests: `tests/unit/probe-env.test.ts` runs the probe over a fake glue that replaces `Module.ENV` and runs preRun as the real glue does, and checks the environment getenv would read (`{LEAN_PATH}`; with `QED64_PROFILE_INIT=1`, both). The watchdog test's fake glue keeps the literal's `ENV` and runs no preRun, which is why no test saw this. Mutation: the old literal back fails 1.
 
-### 67. Kernel patch 0036's engine-stack probe rejects deep but legal proofs in Chrome (interim: probe size 8192; fix: kernel patch 0038)
+### 67. Kernel patch 0036's engine-stack probe rejects deep but legal proofs in Chrome (interim 8192, withdrawn by #71)
 
 Reported 2026-10-09 by the widgets showcase (pin I = QED64 385a1ac, runtime wasm64-f69cca24d0878a58): its DistLens click-all went from 21/21 on runtime 3ab1c6a9 (no 0036) to 12/21, every failure "maximum recursion depth has been reached: the WebAssembly runtime's stack is exhausted". #60's fix (patch 0036) probes the engine stack (`engine_stack_has_headroom`, at the kernel guard's outermost level then every 16 levels, and every 16th `Core.checkSystem`) and raises Lean's error when fewer than `LEAN_WASM_STACK_PROBE_SLOTS` 8-byte slots are free: 16384 = 128 KiB of a Chrome Worker's ~500 KiB stack. Proofs that need ~370-500 KiB, which checked before 0036, are now rejected. Node runs (the battery, snapshot-probe) have larger stacks and never see it; the browser's FileWorker path also starts deeper than the one-shot compile, so headless repros undercount (the kernel could not reproduce DistLens headlessly).
 
@@ -772,3 +772,24 @@ The one-shot `compile` path (`lean_wasm_compile`, kernel 0037) is untouched. It 
 
 Lane: `tests/adversarial/deep-recursion.mjs --scenarios theorems`, 20 theorems plus one wrong `decide`. PASS = no crash, death or halt, the document settles, and there is exactly one error, on the last line. It fails (crashes) on 5e63edd.
 Tests: `tests/unit/thread-budget.test.ts` (the frozen argv; the loop's only `callMain` passes it).
+
+### 71. QED64 does not tune Lean's stack guard (withdraws #67's 8192; stack-overflow deaths go to #72)
+
+Decided 2026-10-12 by the user, preferring a simpler architecture to covering every case: QED64 leaves the runtime's engine-stack guard (kernel patch 0036) as shipped. The fork's planned stack changes (patch 0038's depth-based probing and related items) are not pursued.
+
+Why the interim went:
+- The proof-sheets site's 28-sheet Chrome scan (2026-10-10) found that at 8192 two sheets (L02_Propositional_Logic_2 sheet 1, L08_Strong_Induction sheet 1) kill the FileWorker 3 of 3 while elaborating. At the runtime's default 16384 they give Lean's clean error.
+- The kernel named the frames: core's native `evalTactic` recursing through Waterproof tactic macros. 0036 probes only on every 16th `checkSystem`, and a heavy level can overrun a 64 KiB reserve between two probes.
+- The stack used between probes depends on the content, so no value has a margin that holds. Choosing one is a runtime concern, not the page's.
+
+Fix (`public/workers/lean.worker.js`): the worker no longer sets `LEAN_WASM_STACK_PROBE_SLOTS`.
+
+Known limits, accepted (Chrome gives a Worker 500 KiB of engine stack, Firefox 1 MiB; no web API raises it):
+- **Legal deep proofs get Lean's "maximum recursion depth has been reached: the WebAssembly runtime's stack is exhausted".**
+  - With #70's synchronous elaboration, `decide` over `Fin K` checks up to K 16; K 18 and 20 are rejected.
+  - The widgets showcase's C20 DistLens checks 13 or 14 of 21. Which links fail varies by run, because the stack a document's first elaboration starts with varies.
+  - The proof-sheets site sees 53 extra stack errors on 16 of 28 sheets.
+- **Some guard trips are turned into ordinary tactic failures** by the tactics that catch them (e.g. "ennreal_num: cannot close this ℝ≥0∞ goal"). They read as wrong proofs. Nothing dies, so #72 does not see them.
+- **Some recursion still overruns the engine stack and kills the FileWorker at any reserve**: a 25-step `<;>` chain, 25 or more nested `have … := by` blocks, and interpreted recursion such as Verso's `documentSymbol` handler on the proof sheets. #72 turns those deaths into one paused checker with a clear message.
+
+Tests: `tests/unit/stack-probe-slots.test.ts` (the worker never sets the variable).
