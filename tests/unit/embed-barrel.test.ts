@@ -18,7 +18,7 @@ const LEAN4GAME = [
   "LeanSession", "deathCause", "failureCauseOf", "loadSnapshotByName",
 ];
 /** Runtime names frontend/src/main.ts (the stock page) imports from the barrel ("../../lib"). */
-const STOCK_PAGE = ["LspRelay", "ResidentSession", "entryLabel", "failureCauseOf", "installArtifacts", "makeEditorPolicy"];
+const STOCK_PAGE = ["ENGINE_STACK_OVERFLOW", "LspRelay", "ResidentSession", "entryLabel", "failureCauseOf", "installArtifacts", "makeEditorPolicy"];
 const INTERNAL = [
   "installProfile", "ensureProfile", "fetchProfileIndex", "parseBootParams", "overridesOf", "NO_OVERRIDES",
   "memoryCandidates", "rawRegionName", "httpStatusOf", "failureKindOf", "isImport",

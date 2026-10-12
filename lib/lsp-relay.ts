@@ -2,10 +2,12 @@
 // three states, zero timers, zero regexes. The worker owns the document, the queue
 // and every header verdict (§2.4); this relay only remembers what re-establishes
 // the document on a fresh session (§2.3 data), fails requests a death orphaned
-// (§3 row 11), and breaks crash loops. It reads four fields: method, id, version, text
-// — and, since the pump's retirement (PUMP-REMOVAL-ASSESSMENT gaps 2 and 5), the
-// text's import lines: where the halted note sits, and which header a restart served.
+// (§3 row 11), breaks crash loops and pauses on an engine-stack death (HARDENING #72).
+// It reads four fields: method, id, version, text — and, since the pump's retirement
+// (PUMP-REMOVAL-ASSESSMENT gaps 2 and 5), the text's import lines: where the halted
+// note sits, and which header a restart served; of a death's cause, its code and line (#72).
 import type { JsonRpcMessage as JsonRpc, WorkerStatus } from "./client";
+import { ENGINE_STACK_OVERFLOW } from "./failure";
 
 /** The typed L2 surface the relay drives (LeanSession + an async boot). */
 export interface RelaySession {
@@ -15,7 +17,7 @@ export interface RelaySession {
   lsp(msg: JsonRpc, replay?: boolean): void;
   onLsp: (msg: JsonRpc) => void;
   onStatus: (status: WorkerStatus) => void;
-  onDied: (code: number | null, reason: string, message: string, cause?: unknown) => void; // cause: the adapter's FailureCause, carried unread
+  onDied: (code: number | null, reason: string, message: string, cause?: unknown) => void; // cause: the adapter's FailureCause, carried; read only for ENGINE_STACK_OVERFLOW (#72)
   dispose(): void; // detaches first, never emits a death (§2.2 L2)
   /** Kill the worker NOW (Unload only): LeanSession.terminate(), the synchronous kill — dispose() alone hard-terminates
    * 250 ms later behind a timer a closing document never runs (reload storms stacked dead multi-GiB heaps). */
@@ -31,6 +33,8 @@ const EMPTY: WorkerStatus = { phase: "booting", version: null, header: null, rin
 const BREAKER_DEATHS = 3;
 const BREAKER_WINDOW_MS = 120_000;
 const HALTED_NOTE = "imports could not be loaded: the checker crashed repeatedly while processing this content. Edit the file (or pick an example from the menu) to restart it.";
+const STACK_REPLY = "QED64: checking paused: Lean ran out of the browser's stack; edit the file to check it again";
+const STACK_NOTE = "Lean ran out of the browser's stack while checking here, so checking is paused. A browser gives Lean far less stack than desktop Lean has, so the proof may still be correct. Edit the file to check it again.";
 
 /** `s` past `word` and the ≥ 1 whitespace the regex's `word\s+` demands (trimStart strips the same set as \s), else null. */
 function afterWord(s: string, word: string): string | null {
@@ -62,14 +66,14 @@ export class LspRelay {
   readonly pending = new Map<number | string, string>();
   deaths: number[] = [];
   lastStatus: WorkerStatus | null = null;
-  /** Set by every counted death, cleared when a session reports phase "ready"; halted-before-ready is the page's boot-failure card. */
+  /** Set by every counted death, cleared when a session reports phase "ready"; halted-before-ready is the page's boot-failure card (a stack pause's is not, #72). */
   lastDeath: Death | null = null;
   /** The last restart(opts), reused by a death-reboot while the header it was chosen for stands — "Load exact imports"
    * survives a crash instead of coming back covered with the collision note. A header change forgets it, and so
    * does the breaker: a header whose exact import itself kills the worker must not re-arm into the same mode. */
   restartOpts: RestartOptions | null = null;
   private restartHeader = "";
-  readonly stats = { reboots: 0, userRestarts: 0, workerDeaths: 0, breakerTrips: 0, failedInFlight: 0, staleDeaths: 0, rangedChanges: 0 }; // rangedChanges: didChanges that ignored change = 1
+  readonly stats = { reboots: 0, userRestarts: 0, workerDeaths: 0, breakerTrips: 0, stackPauses: 0, failedInFlight: 0, staleDeaths: 0, rangedChanges: 0 }; // rangedChanges: didChanges that ignored change = 1
 
   constructor(
     private readonly makeSession: (opts?: RestartOptions) => RelaySession,
@@ -107,7 +111,8 @@ export class LspRelay {
     }
     const isRequest = msg.id !== undefined && msg.method !== undefined;
     if (this.state.kind === "halted") {
-      if (isRequest) return this.toClient({ jsonrpc: "2.0", id: msg.id, error: { code: -32603, message: "QED64: checker halted after repeated crashes; edit the file to restart it", data: { qed64: { kind: "halted", reason: "repeated crashes" } } } });
+      const stack = this.lastDeath?.cause?.code === ENGINE_STACK_OVERFLOW;
+      if (isRequest) return this.toClient({ jsonrpc: "2.0", id: msg.id, error: { code: -32603, message: stack ? STACK_REPLY : "QED64: checker halted after repeated crashes; edit the file to restart it", data: { qed64: { kind: "halted", reason: stack ? "stack limit" : "repeated crashes" } } } });
       if (msg.method !== "textDocument/didChange") return;
       this.rearm(); // the user changed something: recovery gets a fresh chance
     }
@@ -157,7 +162,7 @@ export class LspRelay {
     this.sink.status(this.status());
   }
 
-  /** SessionDied / BootFailed (§2.3): once per session, current only; ≥ 3 in 120 s halts. */
+  /** SessionDied / BootFailed (§2.3): once per session, current only; ≥ 3 in 120 s halts, an engine-stack death at once. */
   private onDied(s: RelaySession, reason: string, message: string, cause?: unknown, code?: number | null): void {
     if (s !== this.session || this.state.kind === "halted") { this.stats.staleDeaths += 1; return; }
     this.stats.workerDeaths += 1;
@@ -165,6 +170,8 @@ export class LspRelay {
     const next: Reason = reason === "bootFailed" || reason === "heartbeat" || reason === "wedged" ? reason : "crash";
     this.failInFlight(`the Lean checker died (${reason})`, "orphaned", next); // out of "serving" first; the breaker below may still halt
     s.dispose();
+    // HARDENING #72: the same text would only overflow again — pause now, uncounted, restartOpts kept; an edit resumes.
+    if (this.lastDeath.cause?.code === ENGINE_STACK_OVERFLOW) { this.stats.stackPauses += 1; return this.halt(); }
     const t = this.now();
     this.deaths = [...this.deaths.filter((d) => t - d < BREAKER_WINDOW_MS), t];
     if (this.deaths.length < BREAKER_DEATHS) return this.reboot(next, true);
@@ -172,20 +179,20 @@ export class LspRelay {
     // the default (umbrella) session: the remembered exact mode may be the very thing that dies (it serves the header, with the offer back).
     this.stats.breakerTrips += 1;
     this.restartOpts = null;
-    this.state = { kind: "halted" };
-    this.sink.status(this.status());
-    this.haltedNote();
+    this.halt();
   }
+  private halt(): void { this.state = { kind: "halted" }; this.sink.status(this.status()); this.haltedNote(); }
 
-  /** Gap 5: the dead session's markers would outlive it, so the breaker publishes ONE whole-document replacement (LSP
-   * diagnostics replace per URI) — the halted note on the first import line, else line 0, spanning the line. A later
-   * didChange re-arms as usual and the next session's own first publish replaces the note in turn. */
+  /** Gap 5: the dead session's markers would outlive it, so a halt publishes ONE whole-document replacement (LSP
+   * diagnostics replace per URI) — the halted note on the first import line, else line 0 (a stack pause's on its
+   * cause.line, #72), spanning the line; none once a status listener re-armed. A later didChange re-arms as usual and
+   * the next session's own first publish replaces the note in turn. */
   private haltedNote(): void {
-    if (!this.doc) return;
-    const lines = linesOf(this.lastText);
-    const line = Math.max(0, lines.findIndex(isImport));
+    if (!this.doc || this.state.kind !== "halted") return;
+    const lines = linesOf(this.lastText), stack = this.lastDeath?.cause?.code === ENGINE_STACK_OVERFLOW, at = this.lastDeath?.cause?.line;
+    const line = stack && typeof at === "number" ? Math.min(at, lines.length - 1) : Math.max(0, lines.findIndex(isImport));
     const range = { start: { line, character: 0 }, end: { line, character: lines[line]?.length || 1 } };
-    const diagnostics = [{ range, severity: 1, source: "QED64", message: HALTED_NOTE }];
+    const diagnostics = [{ range, severity: 1, source: "QED64", ...(stack ? { code: ENGINE_STACK_OVERFLOW, message: STACK_NOTE } : { message: HALTED_NOTE }) }];
     this.toClient({ jsonrpc: "2.0", method: "textDocument/publishDiagnostics", params: { uri: this.doc.uri, version: this.doc.version, diagnostics } });
   }
 

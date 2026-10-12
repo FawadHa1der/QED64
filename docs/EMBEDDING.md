@@ -204,7 +204,9 @@ interface LivenessInfo {              // the worker's liveness machine (HARDENIN
     after the call), so a restart made by any listener of that status, or
     later in the same turn, supersedes it.
   * It rejects with `Error & {code: "HALTED"}` when the crash-loop breaker
-    trips, and with `{code: "TIMEOUT"}` after `timeoutMs`.
+    trips or the relay pauses for a stack overflow (§7.2; tell them apart by
+    `status().lastDeath.cause.code`), and with `{code: "TIMEOUT"}` after
+    `timeoutMs`.
 * **`restart({snapshots, initialBytes})`**
   * With no `snapshots`, it reuses **the current session's boot inputs** under
     the relay's own rule: the remembered "Load exact imports" options
@@ -767,7 +769,8 @@ library contract a dist was built from without opening the bundle.
   `unload()`, `status()`, `rearm()`, `restart()`), `RelaySession`,
   `RelayStatus`, `RestartOptions` and `Death`.
 - **causes (§7.2):** `failureCauseOf`, `deathCause`,
-  `WORKER_SCRIPT_LOAD_FAILED` and `WORKER_DEP_MISMATCH`.
+  `WORKER_SCRIPT_LOAD_FAILED`, `WORKER_DEP_MISMATCH` and
+  `ENGINE_STACK_OVERFLOW`.
 - **offline:** `runtimeUrls(manifest)` and `WORKER_URLS`.
 - **internal re-exports** (`/** @internal */` in the barrel): `memoryCandidates`,
   `fetchProfileIndex`, `installProfile`, `ensureProfile`, `overridesOf`,
@@ -808,7 +811,7 @@ Units:
 
 ```ts
 type FailureKind = "network" | "missing" | "corrupt" | "unpaired" | "oom" | "storage" | "stale" | "other";
-interface FailureCause { kind: FailureKind; httpStatus?: number; stage?: BootStage; subject?: string; code?: string; message: string }
+interface FailureCause { kind: FailureKind; httpStatus?: number; stage?: BootStage; subject?: string; code?: string; message: string; line?: number }
 ```
 
 | kind | meaning | e.g. |
@@ -820,7 +823,7 @@ interface FailureCause { kind: FailureKind; httpStatus?: number; stage?: BootSta
 | `oom` | an allocation or reservation failed | `MEMORY_FAILED`, `could not allocate`, `Cannot enlarge memory` |
 | `storage` | OPFS or quota | `QuotaExceededError` |
 | `stale` | the site was deployed under this page: the worker scripts it loaded are of different revisions (§7.7). **Reload the page.** Retrying in place does not help: the relay heals by itself (its replacement worker loads the new scripts, and the relay replays `initialize` and the document, so the language client never re-initializes), but it then serves under this page's older bundle, which holds only while the worker protocol changes additively | `WORKER_DEP_MISMATCH` (`code` is always `"WORKER_DEP_MISMATCH"`, exported as `WORKER_DEP_MISMATCH`) |
-| `other` | the checker's own failure, with **one exception**: `code: "WORKER_SCRIPT_LOAD_FAILED"` means a worker script never ran, which looks the same offline as on a 404, so probe the link | `abort`, `wedged`, `SNAPSHOT_URL_REFUSED` |
+| `other` | the checker's own failure, with **one exception**: `code: "WORKER_SCRIPT_LOAD_FAILED"` means a worker script never ran, which looks the same offline as on a 404, so probe the link | `abort`, `wedged`, `SNAPSHOT_URL_REFUSED`, `ENGINE_STACK_OVERFLOW` |
 
 An `unpaired` failure is decided by the page wherever it holds both facts,
 the index entry's `runtime` and the runtime manifest's `buildId`: the same
@@ -871,6 +874,33 @@ classifies, so the same table holds against every worker version.
 - An unrecoverable error code (`RUNTIME_FETCH_FAILED`, `MEMORY_FAILED`,
   `INIT_FAILED`, `CAPABILITY_MISSING`, `WRITE_FILES_FAILED`, …) is
   classified by the table.
+- An uncoded death whose words name an engine-stack overflow ("Maximum
+  call stack size exceeded", "too much recursion") is `other` with `code:
+  "ENGINE_STACK_OVERFLOW"` (exported as `ENGINE_STACK_OVERFLOW`): the
+  worker turns a Lean thread's overflow into one death named so (HARDENING
+  #72). Its `line`, when known, is the 0-based line Lean was checking (the
+  first processing range, not a fatal error, of the last
+  `$/lean/fileProgress`), in the coordinates of the document the relay
+  forwarded: a consumer that translates its text (lean4game's offset) maps
+  it back. No other cause sets `line`. The relay does not reboot it: it
+  **pauses** at once (`relay: "halted"`, not counted toward the breaker,
+  restart options kept). The contract:
+  - **Recognize** the pause as `relay === "halted" &&
+    lastDeath.cause.code === "ENGINE_STACK_OVERFLOW"`.
+  - **The note**: one severity-1 diagnostic, source `QED64`, `code:
+    "ENGINE_STACK_OVERFLOW"`, on `line` (else the first import line, else
+    line 0): "Lean ran out of the browser's stack while checking here, so
+    checking is paused. A browser gives Lean far less stack than desktop
+    Lean has, so the proof may still be correct. Edit the file to check it
+    again."
+  - **The reply** to a request while paused: `reason: "stack limit"`
+    (below). The page API's `settled()` rejects `HALTED` in the pause's
+    words.
+  - **Resume**: any `didChange`, `rearm()`, or the page API's `restart()`
+    with no arguments (with `snapshots` or `initialBytes` it answers
+    `accepted: false` while halted, as for the breaker). A `didOpen` of
+    another document does not resume: a consumer that switches documents
+    calls `rearm()`.
 - Every other death is `other`, or `oom` when its message says so.
 - A death while booting carries the boot `stage`. Booting lasts until the
   relay's `arm()` resolves, so a death during the replay and the arm carries
@@ -894,8 +924,11 @@ cause?}`:
   compare across copies.
 
 Errors the relay invents carry
-`error.data.qed64 = {kind: "orphaned" | "halted" | "restart", reason}`.
-The message prefix `QED64:` stays as a fallback. `LspRelay.rearm()` re-arms a
+`error.data.qed64 = {kind: "orphaned" | "halted" | "restart", reason}`. A
+halted relay answers every request -32603 with `reason: "repeated crashes"`
+(the breaker) or `reason: "stack limit"` (the stack pause: "QED64: checking
+paused: Lean ran out of the browser's stack; edit the file to check it
+again"). The message prefix `QED64:` stays as a fallback. `LspRelay.rearm()` re-arms a
 halted relay without an edit; it returns false unless the relay is halted.
 
 ### 7.3 Session files and the pre-arm hook
@@ -1843,6 +1876,25 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   exhausted" a little earlier (`decide` over `Fin 18` and up), and the
   widgets showcase's deepest DistLens examples fail. QED64 does not tune
   the guard; deaths are handled by #72. No API change.
+- **A stack-overflow death pauses checking (HARDENING #72, 2026-10-12):**
+  a Lean thread that ran out of the browser's engine stack reached the page
+  as "Uncaught [object ErrorEvent]", classified as an ordinary `crash`, and
+  the relay rebooted into the same death until its breaker halted. The
+  worker now dies once in words `deathCause` classifies as `code:
+  "ENGINE_STACK_OVERFLOW"`, and the relay pauses at once (no reboot, not
+  counted toward the breaker, `stats.stackPauses`) with its own note (that
+  code, on the new optional `FailureCause.line`) and reply (`reason: "stack
+  limit"`, a new text still prefixed `QED64:`: console allowlists keyed on
+  the breaker's text need it); any edit resumes. The contract is in §7.2.
+  No new relay state or status field: a page that ignores the code sees a
+  halt it words as the breaker's. The stock page's pill says "paused — Lean
+  ran out of the browser's stack; edit the file to check again", never the
+  boot-failure card. Additive (a new export, one optional field on the
+  shared `FailureCause`), so `EMBED_API_REVISION` → `1.0.0-pre.8`; the
+  page API's `API_REVISION` and `capabilities` are unchanged (no new method
+  or event; `death.cause` and `status().lastDeath.cause` may carry `line`),
+  and so are the worker's `PROTOCOL` and `REVISION` (an older page reads
+  the `died` event as an ordinary crash).
 - **`qed64/edge` routes a toolchain release (plan step B2b, 2026-10-06):**
   additive options, every default unchanged (`QED64_LEGACY` and the hardened
   defaults keep `release: null`). `release` takes a `lean4-wasm64.release/v1`

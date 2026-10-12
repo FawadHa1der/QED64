@@ -14,7 +14,7 @@
 // budget-capped, tests/unit/relay.test.ts).
 //
 // Pure of the DOM: unit-tested under node over a fake relay and editor.
-import type { BootStage, FailureCause } from "../../lib/failure";
+import { ENGINE_STACK_OVERFLOW, type BootStage, type FailureCause } from "../../lib/failure";
 import type { ProgressInfo } from "../../lib/qed64-boot";
 import type { RelayStatus, RestartOptions } from "../../lib/lsp-relay";
 import type { LspMessage, RelayTaps } from "./relay-taps";
@@ -327,7 +327,7 @@ export function createPageApi(
         // the session and so supersede it, before or after this one runs.
         const check = (): boolean => {
           const s = statusNow();
-          if (s.phase === "halted") { done(); reject(err("HALTED", "the checker halted after repeated crashes; edit the document to restart it")); return true; }
+          if (s.phase === "halted") { done(); reject(err("HALTED", s.lastDeath?.cause?.code === ENGINE_STACK_OVERFLOW ? "checking paused: Lean ran out of the browser's stack; edit the document to check it again" : "the checker halted after repeated crashes; edit the document to restart it")); return true; }
           if (opts.afterSession !== undefined && (s.session === null || s.session === opts.afterSession)) return false;
           if (settledPhase(s.phase) && s.relay === "serving" && (want === null || (s.version ?? -1) >= want)) { done(); resolve(s); return true; }
           return false;

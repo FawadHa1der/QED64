@@ -333,13 +333,13 @@ of a `didOpen` / full-text `didChange` into `lastText` (equal to the
 worker's document by construction) — and keeps `initialize`, `doc {uri,
 languageId, version}`, `pending: Map<id, method>`, `deaths: number[]` and
 counters `stats {reboots, userRestarts, workerDeaths, breakerTrips,
-failedInFlight, staleDeaths, rangedChanges}`. States:
+stackPauses, failedInFlight, staleDeaths, rangedChanges}`. States:
 
 | state | what it does |
 |---|---|
 | `rebooting {reason: boot \| crash \| heartbeat \| user \| bootFailed}` | a fresh session is booting; client messages are recorded and forwarded (the worker queues them) |
 | `serving` | steady state; every request id is remembered until its response passes back |
-| `halted` | the breaker tripped: ≥ 3 deaths in 120 s. Requests are answered `-32603 "QED64: checker halted after repeated crashes; edit the file to restart it"`, notifications are dropped, and the next `didChange` clears the death window and reboots (`user`) |
+| `halted` | the breaker tripped: ≥ 3 deaths in 120 s. Requests are answered `-32603 "QED64: checker halted after repeated crashes; edit the file to restart it"`, notifications are dropped, and the next `didChange` clears the death window and reboots (`user`). One `ENGINE_STACK_OVERFLOW` death halts the same way at once, uncounted, with its own note and reply (the stack pause, HARDENING #72) |
 
 Events: **BootOk** — after `start()` resolves the relay replays `initialize`
 (`replay: true`, cached only) and a `didOpen` carrying `doc` + `lastText`

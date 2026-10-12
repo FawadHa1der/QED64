@@ -35,6 +35,8 @@ export interface FailureCause {
   /** The worker's error code (`SNAPSHOT_FAILED`, …) when there was one. */
   code?: string;
   message: string;
+  /** The 0-based document line Lean was checking when it died, when known (ENGINE_STACK_OVERFLOW only, HARDENING #72). */
+  line?: number;
 }
 
 /** Classify a failure by the worker's error code and its message text (the
@@ -80,6 +82,13 @@ export const WORKER_DEP_MISMATCH = "WORKER_DEP_MISMATCH";
  * uncaught error event, which carries the message but no code. */
 const STALE_MESSAGE = /\ba deploy mixed versions\b/;
 
+/** A Lean thread ran out of the browser's engine stack (HARDENING #72): the
+ * relay pauses checking at once instead of rebooting into the same death. Its
+ * kind stays `other` (the checker's own failure). */
+export const ENGINE_STACK_OVERFLOW = "ENGINE_STACK_OVERFLOW";
+/** The engines' words for it: Chrome/Safari, Firefox (lean.worker.js's error listener quotes them). */
+const STACK_MESSAGE = /Maximum call stack size exceeded|too much recursion/;
+
 /** The HTTP status a worker or page message names ("HTTP 404"), if any. */
 export function httpStatusOf(message: string): number | undefined {
   const m = /\bHTTP (\d{3})\b/.exec(message);
@@ -118,8 +127,10 @@ export const WORKER_SCRIPT_LOAD_FAILED = "WORKER_SCRIPT_LOAD_FAILED";
  * script of another revision is `stale` (WORKER_DEP_MISMATCH, by its code or,
  * on the uncaught error event of the same refusal, by its words); a worker
  * that never said hello, or could not import a script, is
- * WORKER_SCRIPT_LOAD_FAILED; an error code is classified by the table; every
- * other death is the checker's own (`other`, or `oom` when its message says so). */
+ * WORKER_SCRIPT_LOAD_FAILED; an error code is classified by the table (a coded
+ * boot failure is not a stack pause, whatever its words); an uncoded death whose
+ * words name an engine-stack overflow is ENGINE_STACK_OVERFLOW (`other`, HARDENING
+ * #72); every other death is the checker's own (`other`, or `oom` when its message says so). */
 export function deathCause(reason: string, message: string, facts: { beforeHello?: boolean; bare?: boolean; errorCode?: string } = {}, at: { stage?: BootStage; subject?: string } = {}): FailureCause | null {
   if (reason === "crash" && facts.bare && !facts.beforeHello) return null;
   if (facts.errorCode === WORKER_DEP_MISMATCH || STALE_MESSAGE.test(message)) return { kind: "stale", ...at, code: WORKER_DEP_MISMATCH, message };
@@ -127,6 +138,7 @@ export function deathCause(reason: string, message: string, facts: { beforeHello
     return { kind: "other", ...at, code: WORKER_SCRIPT_LOAD_FAILED, message: message || "the worker script did not load" };
   }
   if (facts.errorCode) return failureCauseOf(Object.assign(new Error(message), { code: facts.errorCode }), at);
+  if (STACK_MESSAGE.test(message)) return { kind: "other", ...at, code: ENGINE_STACK_OVERFLOW, message };
   const kind = failureKindOf(undefined, message) === "oom" ? "oom" : "other";
   return { kind, ...at, code: reason, message };
 }

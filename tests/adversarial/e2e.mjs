@@ -14,8 +14,9 @@
 // work/adversarial/runs/<ts>-<buildId>-<mode>/ (plus the legacy
 // work/adversarial/e2e-report.json for existing scripts); the relay's
 // counters (`globalThis.qed64.relay.stats`: reboots, userRestarts,
-// workerDeaths, breakerTrips, failedInFlight, staleDeaths, rangedChanges)
-// are snapshotted around every scenario and their deltas recorded.
+// workerDeaths, breakerTrips, stackPauses, failedInFlight, staleDeaths,
+// rangedChanges) are snapshotted around every scenario and their deltas
+// recorded.
 //
 // The page speaks ONE transport (resident: front door + relay; the pump shim
 // left the page on 2026-09-04), so the taps below are direct reads of
@@ -188,8 +189,8 @@ async function memSample() {
   ]);
 }
 /** The relay's counters (`globalThis.qed64.relay.stats`: reboots,
- * userRestarts, workerDeaths, breakerTrips, failedInFlight, staleDeaths,
- * rangedChanges — lib/lsp-relay.ts). Null only when the page
+ * userRestarts, workerDeaths, breakerTrips, stackPauses, failedInFlight,
+ * staleDeaths, rangedChanges — lib/lsp-relay.ts). Null only when the page
  * cannot be read (dead / closed / no relay); the kill drill treats null as
  * a failure, the corpus loop records it. */
 async function statsSnap() {

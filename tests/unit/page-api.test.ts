@@ -270,6 +270,9 @@ describe("setDocument / settled", () => {
     report(t, { phase: "halted", relay: "halted", version: 1 });
     await expect(halted).rejects.toMatchObject({ code: "HALTED" });
     await expect(t.api.settled()).rejects.toMatchObject({ code: "HALTED" }); // still halted: at once
+    // A stack pause (HARDENING #72) is the same HALTED, in its own words.
+    report(t, { phase: "halted", relay: "halted", version: 1, lastDeath: { reason: "crash", message: "x", seq: 1, session: "s1", cause: { kind: "other", code: "ENGINE_STACK_OVERFLOW", message: "x" } } });
+    await expect(t.api.settled()).rejects.toMatchObject({ code: "HALTED", message: expect.stringContaining("checking paused: Lean ran out of the browser's stack") });
     report(t, { phase: "elaborating", version: 1 }); // re-armed by an edit
     const slow = t.api.settled({ version: 9, timeoutMs: 1000 });
     t.clock.advance(1000);
@@ -854,6 +857,9 @@ describe("liveness", () => {
     expect(isSyntheticFrame({ method: "textDocument/publishDiagnostics", params: { diagnostics: [{ source: "QED64", message: "x", range: {} }] } })).toBe(true);
     expect(isSyntheticFrame({ method: "textDocument/publishDiagnostics", params: { diagnostics: [] } })).toBe(false);
     expect(isSyntheticFrame({ id: 1, error: { code: -32603, message: "unknown method" } })).toBe(false);
+    // The stack pause's note (with its code) and reply (HARDENING #72).
+    expect(isSyntheticFrame({ method: "textDocument/publishDiagnostics", params: { diagnostics: [{ source: "QED64", code: "ENGINE_STACK_OVERFLOW", message: "x", range: {} }] } })).toBe(true);
+    expect(isSyntheticFrame({ id: 1, error: { code: -32603, message: "QED64: checking paused: Lean ran out of the browser's stack; edit the file to check it again" } })).toBe(true);
   });
 });
 

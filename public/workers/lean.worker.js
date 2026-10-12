@@ -893,9 +893,10 @@ function fail(requestId, error, code, recoverable, extra) {
 }
 
 // One death event (spec W2): `died` is emitted AT MOST ONCE per worker, from
-// whichever of onAbort (post-boot), onExit, or an unhandled rejection fires
-// first. It replaces `resident-exit`; pre-boot failures keep their error
-// replies (the boot's settled-once guard) and are not deaths of a session.
+// whichever of onAbort (post-boot), onExit, an unhandled rejection, or an
+// engine-stack overflow (HARDENING #72, at any stage) fires first. It replaces
+// `resident-exit`; other pre-boot failures keep their error replies (the boot's
+// settled-once guard) and are not deaths of a session.
 // The payload carries `mode` because not every death is a crashed LSP
 // session: `reason:"exit"` with code 0 is `lean --worker` returning normally
 // (a watchdog restart request), and mode "batch" means no resident session
@@ -949,6 +950,19 @@ self.addEventListener("unhandledrejection", (e) => {
     event(null, "log", { stream: "stderr", text: `unhandled rejection: ${error.message}` });
     if (lspMode && state !== "idle" && state !== "booting") die(null, "unhandled", error.message);
   }
+});
+
+// HARDENING #72: a pthread that overflows the browser's engine stack throws
+// "RangeError: Maximum call stack size exceeded" (Firefox: "InternalError: too
+// much recursion"), which Emscripten's per-pthread `worker.onerror` rethrows
+// here. Keep it from the page (an ordinary "crash" there) and die once, in words
+// lib/failure.ts classifies as ENGINE_STACK_OVERFLOW; any other error propagates.
+const STACK_OVERFLOW = /Maximum call stack size exceeded|too much recursion/;
+self.addEventListener("error", (e) => {
+  const text = [e.error && e.error.message, e.message].find((t) => typeof t === "string" && STACK_OVERFLOW.test(t));
+  if (text === undefined) return;
+  e.preventDefault();
+  die(null, "crash", `a Lean thread ran out of the browser's stack (${text.replace(/^Uncaught /, "")})`);
 });
 
 // ---------------------------------------------------------------------------

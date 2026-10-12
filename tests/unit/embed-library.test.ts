@@ -5,7 +5,7 @@
 // prefetch as a function, and the offline URL list. Over a fake Worker, a
 // spied LeanSession and an OPFS stub — no wasm.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { deathCause, failureCauseOf, failureKindOf, stageOfWorkerPhase } from "../../lib/failure";
+import { deathCause, failureCauseOf, failureKindOf, stageOfWorkerPhase, ENGINE_STACK_OVERFLOW } from "../../lib/failure";
 import { runtimeUrls } from "../../lib/urls";
 import { PREFETCH_SILENCE_MS, prefetchRaw, type ProgressInfo, type Qed64Artifacts, type StatusSink } from "../../lib/qed64-boot";
 import { LspRelay, type RestartOptions } from "../../lib/lsp-relay";
@@ -76,6 +76,20 @@ describe("failureKindOf: the worker's real messages", () => {
     expect(deathCause("abort", "Aborted(Cannot enlarge memory)")).toEqual({ kind: "oom", code: "abort", message: "Aborted(Cannot enlarge memory)" });
     expect(deathCause("wedged", "no frame for 16 s")).toEqual({ kind: "other", code: "wedged", message: "no frame for 16 s" });
     expect(deathCause("crash", "Uncaught RuntimeError: memory access out of bounds", { beforeHello: false })).toMatchObject({ kind: "other", code: "crash" });
+  });
+
+  it("deathCause: an engine-stack overflow, in either engine's words, is ENGINE_STACK_OVERFLOW, kind other (HARDENING #72)", () => {
+    const chrome = "a Lean thread ran out of the browser's stack (RangeError: Maximum call stack size exceeded)";
+    const firefox = "a Lean thread ran out of the browser's stack (InternalError: too much recursion)";
+    expect(deathCause("crash", chrome)).toEqual({ kind: "other", code: ENGINE_STACK_OVERFLOW, message: chrome });
+    expect(deathCause("crash", firefox, {}, { stage: "files" })).toEqual({ kind: "other", stage: "files", code: ENGINE_STACK_OVERFLOW, message: firefox });
+    expect(ENGINE_STACK_OVERFLOW).toBe("ENGINE_STACK_OVERFLOW");
+    expect(embed.ENGINE_STACK_OVERFLOW).toBe(ENGINE_STACK_OVERFLOW);
+    // A coded (boot) failure is classified by its code, whatever its words: not a pause.
+    expect(deathCause("INIT_FAILED", chrome, { errorCode: "INIT_FAILED" })).toMatchObject({ kind: "other", code: "INIT_FAILED" });
+    // An ordinary crash stays the checker's own crash; a bare event stays no evidence.
+    expect(deathCause("crash", "Uncaught RuntimeError: unreachable", { beforeHello: false })).toEqual({ kind: "other", code: "crash", message: "Uncaught RuntimeError: unreachable" });
+    expect(deathCause("crash", "", { bare: true })).toBeNull();
   });
 
   it("maps every worker progress phase to a stage", () => {

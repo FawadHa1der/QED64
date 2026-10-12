@@ -21,7 +21,7 @@ import {
   snapshotsForHeader,
   type ResidentHost,
 } from "../../lib/resident-session";
-import { LeanSession, type WorkerStatus } from "../../lib/client";
+import { LeanSession, type JsonRpcMessage, type WorkerStatus } from "../../lib/client";
 
 const MiB = 1048576;
 const GiB = 1073741824;
@@ -193,6 +193,45 @@ describe("ResidentSession: terminate() is the synchronous kill (the relay's unlo
     expect(() => s.terminate()).not.toThrow(); // idempotent
     vi.advanceTimersByTime(1000);
     expect(deaths).toBe(0);
+  });
+});
+
+describe("ResidentSession: a stack-overflow death names the line Lean was checking (HARDENING #72)", () => {
+  beforeEach(() => { FakeWorker.instances.length = 0; vi.stubGlobal("Worker", FakeWorker); });
+  afterEach(() => { vi.unstubAllGlobals(); });
+  const progress = (...lines: number[]): JsonRpcMessage => ({ jsonrpc: "2.0", method: "$/lean/fileProgress", params: { textDocument: { uri: "file:///x.lean", version: 3 }, processing: lines.map((line) => ({ range: { start: { line, character: 0 }, end: { line: 9, character: 0 } }, kind: 1 })) } });
+  const STACK = "a Lean thread ran out of the browser's stack (RangeError: Maximum call stack size exceeded)";
+
+  it("the first processing range's start line of the LAST fileProgress forwarded; the frame still reaches the host", () => {
+    const s = new ResidentSession(editorHost(INIT_ONLY));
+    const seen: unknown[] = [];
+    const causes: unknown[] = [];
+    s.onLsp = (m) => seen.push(m.method);
+    s.onDied = (_c, _r, _m, cause) => causes.push(cause);
+    s.lean.onLsp(progress(2, 5));
+    const withFatal = progress(1, 4, 7) as { params: { processing: { kind: number }[] } };
+    withFatal.params.processing[0]!.kind = 2; // a fatal error's range is not where Lean is checking
+    s.lean.onLsp(withFatal as JsonRpcMessage);
+    s.lean.onDied(null, "crash", STACK);
+    expect(seen).toEqual(["$/lean/fileProgress", "$/lean/fileProgress"]);
+    expect(causes).toEqual([{ kind: "other", stage: "runtime", code: "ENGINE_STACK_OVERFLOW", message: STACK, line: 4 }]);
+  });
+  it("no line when the last fileProgress listed nothing, or none came; and only a stack death gets one", () => {
+    const done = new ResidentSession(editorHost(INIT_ONLY));
+    const causes: unknown[] = [];
+    done.onDied = (_c, _r, _m, cause) => causes.push(cause);
+    done.lean.onLsp(progress(4));
+    done.lean.onLsp(progress());
+    done.lean.onDied(null, "crash", STACK);
+    const none = new ResidentSession(editorHost(INIT_ONLY));
+    none.onDied = (_c, _r, _m, cause) => causes.push(cause);
+    none.lean.onDied(null, "crash", STACK);
+    const other = new ResidentSession(editorHost(INIT_ONLY));
+    other.onDied = (_c, _r, _m, cause) => causes.push(cause);
+    other.lean.onLsp(progress(4));
+    other.lean.onDied(null, "abort", "boom");
+    expect(causes.map((c) => (c as { line?: number }).line)).toEqual([undefined, undefined, undefined]);
+    expect(causes.map((c) => (c as { code?: string }).code)).toEqual(["ENGINE_STACK_OVERFLOW", "ENGINE_STACK_OVERFLOW", "abort"]);
   });
 });
 

@@ -141,8 +141,9 @@ describe("relay: line and timer budget (§8 item 9)", () => {
     ];
     for (const line of lines) expect(isImport(line), JSON.stringify(line)).toBe(IMPORT_LINE.test(line));
   });
-  it("stays within the line budget (hard cap 220 including comments; ~150 before the pump-retirement contract)", () => {
-    expect(source.split("\n").length).toBeLessThanOrEqual(220);
+  // 220 → 227 for HARDENING #72's stack pause: its note and reply, the halt shared with the breaker, and the uncounted death.
+  it("stays within the line budget (hard cap 227 including comments; ~150 before the pump-retirement contract)", () => {
+    expect(source.split("\n").length).toBeLessThanOrEqual(227);
   });
 });
 
@@ -573,6 +574,92 @@ describe("relay contract: the halted note (gap 5 — one whole-document publish 
     await halt();
     expect(publishes()).toEqual([]);
     expect(relay.status().phase).toBe("halted");
+  });
+});
+
+describe("relay contract: an engine-stack death pauses at once (HARDENING #72)", () => {
+  const STACK = "a Lean thread ran out of the browser's stack (RangeError: Maximum call stack size exceeded)";
+  const stackCause = (line?: number) => ({ kind: "other" as const, code: "ENGINE_STACK_OVERFLOW", message: STACK, ...(line === undefined ? {} : { line }) });
+  const BODY = "  trivial <;> trivial";
+  it("halts with no reboot and no breaker count, notes the line Lean was checking, answers requests with the stack reply; an edit resumes", async () => {
+    relay.fromClient(initialize);
+    relay.fromClient(didOpen(1, `${HEADER}\n\nexample : True := by\n${BODY}\n`));
+    await bootCurrent();
+    relay.fromClient(request(5, "textDocument/hover")); // in flight: orphaned as at any death
+    current().onDied(null, "crash", STACK, stackCause(3));
+    await settle();
+    expect(relay.state).toEqual({ kind: "halted" });
+    expect(FakeSession.all).toHaveLength(1); // nothing rebooted
+    expect(relay.stats).toMatchObject({ workerDeaths: 1, stackPauses: 1, breakerTrips: 0, reboots: 0, failedInFlight: 1 });
+    expect(relay.deaths).toEqual([]);
+    expect(relay.status()).toMatchObject({ phase: "halted", relay: "halted", lastDeath: { reason: "crash", cause: { code: "ENGINE_STACK_OVERFLOW", line: 3 } } });
+    expect(publishes()).toEqual([{ jsonrpc: "2.0", method: "textDocument/publishDiagnostics", params: { uri: URI, version: 1, diagnostics: [{
+      range: { start: { line: 3, character: 0 }, end: { line: 3, character: BODY.length } },
+      severity: 1,
+      source: "QED64",
+      code: "ENGINE_STACK_OVERFLOW",
+      message: "Lean ran out of the browser's stack while checking here, so checking is paused. A browser gives Lean far less stack than desktop Lean has, so the proof may still be correct. Edit the file to check it again.",
+    }] } }]);
+    relay.fromClient(request(9, "textDocument/hover"));
+    await settle();
+    expect(errorsToClient().filter((m) => m.id === 9)).toEqual([{ jsonrpc: "2.0", id: 9, error: { code: -32603, message: "QED64: checking paused: Lean ran out of the browser's stack; edit the file to check it again", data: { qed64: { kind: "halted", reason: "stack limit" } } } }]);
+    relay.fromClient(didChange(2, `${HEADER}\n\nexample : True := trivial\n`));
+    expect(relay.state).toEqual({ kind: "rebooting", reason: "user" });
+    await bootCurrent();
+    expect(relay.state.kind).toBe("serving");
+    expect(publishes()).toHaveLength(1);
+  });
+  it("is not counted toward the breaker, which still needs three ordinary deaths and keeps its own note and reply", async () => {
+    relay.fromClient(didOpen(1, "theorem t : True := trivial\n"));
+    await bootCurrent();
+    for (let i = 0; i < 2; i += 1) { current().onDied(null, "abort", "x"); await settle(); clock += 1000; await bootCurrent(); }
+    current().onDied(null, "crash", STACK, stackCause(0));
+    await settle();
+    expect(relay.state).toEqual({ kind: "halted" });
+    expect(relay.deaths).toHaveLength(2); // the window holds the two ordinary deaths only
+    expect(relay.stats).toMatchObject({ stackPauses: 1, breakerTrips: 0 });
+    relay.fromClient(didChange(2, "theorem t : True := by trivial\n"));
+    await bootCurrent();
+    for (let i = 0; i < 2; i += 1) { current().onDied(null, "abort", "x"); await settle(); clock += 1000; await bootCurrent(); }
+    expect(relay.state.kind).toBe("serving");
+    current().onDied(null, "abort", "x");
+    await settle();
+    expect(relay.state).toEqual({ kind: "halted" });
+    expect(relay.stats).toMatchObject({ workerDeaths: 6, stackPauses: 1, breakerTrips: 1 }); // 2 + the pause + 3
+    expect(publishes().at(-1)!.params).toMatchObject({ diagnostics: [{ message: expect.stringContaining("crashed repeatedly") }] });
+    expect((publishes().at(-1)!.params as { diagnostics: object[] }).diagnostics[0]).not.toHaveProperty("code");
+    relay.fromClient(request(9, "textDocument/hover"));
+    await settle();
+    expect(errorsToClient().at(-1)!.error).toMatchObject({ data: { qed64: { kind: "halted", reason: "repeated crashes" } } });
+    relay.fromClient(didChange(3, "x"));
+    await bootCurrent();
+  });
+  it("keeps the restart options (a body edit resumes into the same exact mode); without a line the note sits on the first import line", async () => {
+    const exact: RestartOptions = { snapshots: ["init", "mathlib"], warmHeader: `${HEADER}\nx`, packs: ["essential"] };
+    relay.fromClient(didOpen(1, `-- c\n${HEADER}\nx`));
+    await bootCurrent();
+    relay.restart(exact);
+    await bootCurrent();
+    current().onDied(null, "crash", STACK, stackCause());
+    await settle();
+    expect(relay.state).toEqual({ kind: "halted" });
+    expect(relay.restartOpts).toEqual(exact);
+    expect(publishes()[0]!.params).toMatchObject({ diagnostics: [{ range: { start: { line: 1, character: 0 } }, code: "ENGINE_STACK_OVERFLOW" }] });
+    relay.fromClient(didChange(2, `-- c\n${HEADER}\nxy`));
+    expect(current().opts).toEqual(exact);
+    await bootCurrent();
+  });
+  it("publishes no note once a status listener re-armed in the halt's own status (no stale note on the new session)", async () => {
+    relay.clientPort.close(); // left booting: an unload would reject its boot into a reboot
+    relay = new LspRelay((opts) => new FakeSession(opts), { status: (s) => { statuses.push(s); if (s.relay === "halted") relay.rearm(); } }, () => Promise.resolve(), () => clock);
+    relay.clientPort.onmessage = (e) => toClient.push(e.data as Msg);
+    relay.fromClient(didOpen(1, "example : True := by trivial\n"));
+    await bootCurrent();
+    current().onDied(null, "crash", STACK, stackCause(0));
+    await settle();
+    expect(relay.state).toEqual({ kind: "rebooting", reason: "user" });
+    expect(publishes()).toEqual([]);
+    await bootCurrent();
   });
 });
 

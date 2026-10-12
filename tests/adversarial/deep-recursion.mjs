@@ -26,12 +26,21 @@
 //           theorem task started a standard worker that never exits: this
 //           file held ~46 pthreads and crashed the renderer at ~16 s. PASS =
 //           the legal checks, except exactly one error, on the last line.
+//   pause   (not in the default list; HARDENING #72) the stack-overflow pause:
+//           an Init-only `example : True := by` over a 25-step `<;>` chain of
+//           `trivial`, seeded, kills the FileWorker at any probe size. PASS =
+//           within --wait-ms exactly 1 worker death, relay "halted", lastDeath
+//           code ENGINE_STACK_OVERFLOW, still 1 death 10 s later (no reboot
+//           loop), the QED64 note with code ENGINE_STACK_OVERFLOW published;
+//           then setDocument("example : True := trivial") settles ready with
+//           no further death.
 // Records: final phase/relay, deaths, reboots, halts, lastDeath, every console
 // line mentioning "Maximum call stack" or "RangeError", page crash, pool peak.
 // Verdict per scenario: PASS when no renderer crash, no "Maximum call stack"
 // line, no worker death and no halt (the checker answered the line with a
-// diagnostic instead); FAIL otherwise. Run it through the host browser lock.
-// Usage: node tests/adversarial/deep-recursion.mjs --url http://localhost:5185/ [--scenarios seeded,typing,legal,theorems] [--legal <lean source>] [--wait-ms 120000]
+// diagnostic instead); FAIL otherwise (`pause` has its own, above). Run it
+// through the host browser lock.
+// Usage: node tests/adversarial/deep-recursion.mjs --url http://localhost:5185/ [--scenarios seeded,typing,legal,theorems,pause] [--legal <lean source>] [--wait-ms 120000]
 // Exit 0 = every scenario passed, 1 = one failed.
 import { chromium } from "playwright";
 
@@ -48,17 +57,18 @@ const THEOREMS = HEADER + [
   "theorem wrong : (2 : ℕ) + 2 = 5 := by decide",
 ].join("\n");
 const THEOREMS_LAST = THEOREMS.split("\n").length - 1; // 0-based line of the wrong theorem
+const PAUSE = `example : True := by ${Array(25).fill("trivial").join(" <;> ")}\n`; // HARDENING #72: overruns the engine stack
 if (SCENARIOS.includes("legal") && !LEGAL) { console.log("deep-recursion: usage: --scenarios legal needs --legal <lean source>"); process.exit(2); }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const results = [];
 
 async function run(browser, sc) {
   const context = await browser.newContext();
-  const seed = sc === "seeded" ? HEADER + LINE + "\n" : sc === "legal" ? `${LEGAL}\n` : sc === "theorems" ? `${THEOREMS}\n` : HEADER + "theorem warm : 1 + 1 = 2 := rfl\n";
+  const seed = sc === "seeded" ? HEADER + LINE + "\n" : sc === "legal" ? `${LEGAL}\n` : sc === "theorems" ? `${THEOREMS}\n` : sc === "pause" ? PAUSE : HEADER + "theorem warm : 1 + 1 = 2 := rfl\n";
   await context.addInitScript((t) => { try { localStorage.setItem("qed64.buffer", t); } catch {} }, seed);
-  // The checker's own diagnostics for the document (origin "lean"), newest last.
+  // The checker's own diagnostics for the document (origin "lean"), and the page's own notes (origin "qed64"), newest last.
   await context.addInitScript(() => {
-    const hook = () => { const a = globalThis.qed64?.api; if (!a) return setTimeout(hook, 20); a.on("diagnostics", (d) => { if (d.origin === "lean") globalThis.__deepDiags = d; }); };
+    const hook = () => { const a = globalThis.qed64?.api; if (!a) return setTimeout(hook, 20); a.on("diagnostics", (d) => { if (d.origin === "lean") globalThis.__deepDiags = d; else globalThis.__qedNote = d; }); };
     hook();
   });
   const page = await context.newPage();
@@ -73,7 +83,21 @@ async function run(browser, sc) {
   const sample = () => page.evaluate(() => { const r = globalThis.qed64?.test?.rawStatus?.(); const st = globalThis.qed64?.test?.stats?.(); return r ? { phase: r.phase, relay: r.relay, pool: r.pool, session: r.session, lastDeath: r.lastDeath ? { reason: r.lastDeath.reason, message: String(r.lastDeath.message).slice(0, 160), code: r.lastDeath.cause?.code ?? null } : null, deaths: st?.workerDeaths ?? null, reboots: st?.reboots ?? null, breakerTrips: st?.breakerTrips ?? st?.halts ?? null } : null; }).catch(() => null);
   const samples = [];
   let legal = null;
-  if (sc === "legal" || sc === "theorems") {
+  let pause = null;
+  if (sc === "pause") {
+    const record = async () => { const s = await sample(); if (s) { s.t = Date.now() - t0; samples.push(s); } return s; };
+    let at = null;
+    while (Date.now() - t0 < WAIT && crashedAt === null) { const s = await record(); if (s?.relay === "halted") { at = s; break; } await sleep(500); }
+    await sleep(10000); // a reboot loop would show further deaths here
+    const later = await record();
+    const d = await page.evaluate(() => globalThis.__qedNote ?? null).catch(() => null);
+    const note = (d?.diagnostics ?? []).find((x) => x.source === "QED64" && x.code === "ENGINE_STACK_OVERFLOW") ?? null;
+    await page.evaluate(() => globalThis.qed64.api.setDocument("example : True := trivial\n")).catch(() => {});
+    let resumed = null;
+    const tEdit = Date.now();
+    while (Date.now() - tEdit < WAIT && crashedAt === null) { const s = await record(); if (s?.phase === "ready" && s.relay === "serving") { resumed = s; break; } await sleep(500); }
+    pause = { at, later, note: note ? { line: note.range?.start?.line ?? null, message: String(note.message).slice(0, 160) } : null, resumed };
+  } else if (sc === "legal" || sc === "theorems") {
     // Wait for the checker to settle on the seeded document, then read its last diagnostics.
     const settled = page.evaluate((ms) => globalThis.qed64.api.settled({ timeoutMs: ms }).then(() => true, (e) => String(e?.message ?? e)), WAIT).catch((e) => String(e));
     let result = null;
@@ -99,7 +123,7 @@ async function run(browser, sc) {
   }
   const last = samples.at(-1) ?? null;
   const peakPool = Math.max(-1, ...samples.map((s) => (s.pool ? s.pool.unused + s.pool.running : -1)));
-  const row = { sc, crashedAt, last, legal, peakPool, peakRunning: Math.max(-1, ...samples.map((s) => s.pool?.running ?? -1)), halted: samples.some((s) => s.relay === "halted"), phases: [...new Set(samples.map((s) => `${s.phase}/${s.relay}`))], stackLines: stackLines.slice(0, 8), stackLineCount: stackLines.length };
+  const row = { sc, crashedAt, last, legal, pause, peakPool, peakRunning: Math.max(-1, ...samples.map((s) => s.pool?.running ?? -1)), halted: samples.some((s) => s.relay === "halted"), phases: [...new Set(samples.map((s) => `${s.phase}/${s.relay}`))], stackLines: stackLines.slice(0, 8), stackLineCount: stackLines.length };
   await context.close().catch(() => {});
   return row;
 }
@@ -108,11 +132,15 @@ const browser = await chromium.launch({ args: ["--enable-features=SharedArrayBuf
 try {
   for (const sc of SCENARIOS) {
     const row = await run(browser, sc);
-    const ok = row.crashedAt === null && row.stackLineCount === 0 && !row.halted && (row.last?.deaths ?? 1) === 0
-      && (sc !== "legal" || (row.legal?.settled === true && row.legal.diagnostics !== null && row.legal.errors.length === 0))
-      && (sc !== "theorems" || (row.legal?.settled === true && row.legal.errorLines.length === 1 && row.legal.errorLines[0] === THEOREMS_LAST));
+    const p = row.pause;
+    const ok = sc === "pause"
+      ? row.crashedAt === null && p?.at?.deaths === 1 && p.at.lastDeath?.code === "ENGINE_STACK_OVERFLOW" && p.later?.deaths === 1 && p.later.relay === "halted" && p.note !== null && p.resumed?.deaths === 1
+      : row.crashedAt === null && row.stackLineCount === 0 && !row.halted && (row.last?.deaths ?? 1) === 0
+        && (sc !== "legal" || (row.legal?.settled === true && row.legal.diagnostics !== null && row.legal.errors.length === 0))
+        && (sc !== "theorems" || (row.legal?.settled === true && row.legal.errorLines.length === 1 && row.legal.errorLines[0] === THEOREMS_LAST));
     results.push(ok);
     console.log(`${ok ? "PASS" : "FAIL"} ${sc}: ${row.crashedAt !== null ? `renderer crashed at ${(row.crashedAt / 1000).toFixed(1)} s` : `${row.last?.deaths ?? "?"} death(s), ${row.halted ? "halted" : "not halted"}, ${row.stackLineCount} stack-overflow line(s)`}; pool peak ${row.peakPool}`);
+    if (p) console.log(`  pause: ${p.at ? `halted at ${(p.at.t / 1000).toFixed(1)} s, code ${p.at.lastDeath?.code ?? "none"}` : "never halted"}; 10 s later ${p.later?.deaths ?? "?"} death(s); note ${p.note ? `on line ${p.note.line}` : "missing"}; after the edit ${p.resumed ? `ready, ${p.resumed.deaths} death(s) in all` : "not ready"}`);
     if (row.legal) console.log(`  ${sc}: settled ${JSON.stringify(row.legal.settled)}, ${row.legal.diagnostics ?? "no"} diagnostic(s) at version ${row.legal.version}, errors: ${row.legal.errors.length ? row.legal.errors.map((e) => JSON.stringify(e)).join("; ") : "none"}`);
     console.log(`  RESULT ${sc} :: ${JSON.stringify(row)}`);
     await sleep(5000);

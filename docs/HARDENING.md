@@ -790,6 +790,39 @@ Known limits, accepted (Chrome gives a Worker 500 KiB of engine stack, Firefox 1
   - The widgets showcase's C20 DistLens checks 13 or 14 of 21. Which links fail varies by run, because the stack a document's first elaboration starts with varies.
   - The proof-sheets site sees 53 extra stack errors on 16 of 28 sheets.
 - **Some guard trips are turned into ordinary tactic failures** by the tactics that catch them (e.g. "ennreal_num: cannot close this ℝ≥0∞ goal"). They read as wrong proofs. Nothing dies, so #72 does not see them.
-- **Some recursion still overruns the engine stack and kills the FileWorker at any reserve**: a 25-step `<;>` chain, 25 or more nested `have … := by` blocks, and interpreted recursion such as Verso's `documentSymbol` handler on the proof sheets. #72 turns those deaths into one paused checker with a clear message.
+- **Some recursion still overruns the engine stack and kills the FileWorker at any reserve**: a 25-step `<;>` chain, 25 or more nested `have … := by` blocks, and interpreted recursion such as Verso's `documentSymbol` handler on the proof sheets. #72 turns those deaths into one paused checker instead of a crash loop (a request handler's overflow, such as Verso's, pauses again on every edit: #72's limits).
 
 Tests: `tests/unit/stack-probe-slots.test.ts` (the worker never sets the variable).
+
+### 72. A stack-overflow death pauses checking instead of crash-looping (the shared backstop)
+
+Decided 2026-10-12 with #71: QED64 does not change Lean's stack handling, and handles the deaths that remain (#71's last limit) here, once, for every consumer (the stock page, the widgets showcase, lean4game, the proof sheets) through the worker and the library.
+
+What happened: Chrome gives every Worker about 500 KiB of engine stack (Firefox about 1 MiB). Recursion that overruns it between two probes of Lean's guard makes a pthread throw "RangeError: Maximum call stack size exceeded" (Firefox: "InternalError: too much recursion").
+- Emscripten's glue in lean.worker.js handles each pthread Worker's error with `err("worker sent an error! …"); throw e`, so the ErrorEvent is rethrown into lean.worker.js's global scope.
+- From there it reached the page's Worker `error` event as "Uncaught [object ErrorEvent]": `LeanSession` died "crash", `deathCause` gave `{kind: "other", code: "crash"}`, and the relay rebooted. The same text overflowed again, and after 3 deaths in 120 s the breaker halted with its "imports could not be loaded: the checker crashed repeatedly" note on the first import line. That note blames the imports, costs three boots, and sits away from the proof.
+
+Fix:
+- `public/workers/lean.worker.js`: a global `error` listener beside the `unhandledrejection` one. An event whose `message` or `error.message` names a stack overflow is `preventDefault()`ed (nothing reaches the page) and the worker dies once: `died` with reason "crash" and the message "a Lean thread ran out of the browser's stack (RangeError: Maximum call stack size exceeded)". Any other error event propagates as before.
+- `lib/failure.ts`: `deathCause` classifies an uncoded death whose words name a stack overflow as `{kind: "other", code: ENGINE_STACK_OVERFLOW}` (exported); a coded (boot) failure keeps its table classification and the breaker path, whatever its words. `FailureKind` stays closed. `FailureCause` gains the optional `line`: the 0-based line Lean was checking, set only for this code.
+- `lib/resident-session.ts`: remembers the start line of the first processing range (not a fatal error, kind 2) of the last `$/lean/fileProgress` it forwarded (none when the list was empty) and puts it on a stack-overflow cause.
+- `lib/lsp-relay.ts`: such a death halts at once. No reboot; it does not count toward the breaker's window; `stats.stackPauses` counts it; the restart options ("Load exact imports") are kept, so the resumed session serves the same mode. Every other death takes the breaker path unchanged. A halt's note is published only while still halted (a status listener that re-arms synchronously gets no stale note).
+- `frontend/src/page-api.ts`: `settled()` rejects `HALTED` in the pause's words ("checking paused: Lean ran out of the browser's stack; edit the document to check it again").
+- `frontend/src/main.ts`: the pill says "paused — Lean ran out of the browser's stack; edit the file to check again". A pause is never the boot-failure card, even before the first `ready`: the overlay is finished, so the editor and the note are visible.
+
+The contract, for every consumer:
+- **Recognize the pause** as `relay === "halted"` and `lastDeath.cause.code === "ENGINE_STACK_OVERFLOW"` (exported as `ENGINE_STACK_OVERFLOW`). There is no new relay state or status field. The page API's `death` event carries the same cause with `halted: true`.
+- **The note**: one diagnostic (the relay's whole-document replacement, as the breaker's), severity 1, source "QED64", `code: "ENGINE_STACK_OVERFLOW"`, on `cause.line` (else the first import line, else line 0), spanning that line: "Lean ran out of the browser's stack while checking here, so checking is paused. A browser gives Lean far less stack than desktop Lean has, so the proof may still be correct. Edit the file to check it again."
+- **The reply**: a request while paused gets -32603 "QED64: checking paused: Lean ran out of the browser's stack; edit the file to check it again", `data.qed64 = {kind: "halted", reason: "stack limit"}`. The breaker's reply keeps its text and `reason: "repeated crashes"`.
+- **Resume** = any edit (a `didChange`), `relay.rearm()`, or the page API's `restart()` with no arguments, exactly as for the breaker. A `didOpen` of another document does not resume: a consumer that switches documents calls `rearm()` (the proof sheets do). The page API's `settled()` rejects `HALTED` while paused, as it does while the breaker holds.
+- `cause.line` is in the coordinates of the document the relay forwarded; a consumer that translates its text maps it back (lean4game: minus its proof's start line). Full contract: EMBEDDING §7.2.
+
+What it does not cover:
+- Guard trips that tactics catch and turn into ordinary failures ("ennreal_num: cannot close this ℝ≥0∞ goal", #71): nothing dies, so they still read as wrong proofs.
+- Lean's own clean "maximum recursion depth has been reached: the WebAssembly runtime's stack is exhausted" errors (#67, #71): ordinary diagnostics, the checker alive.
+- An engine whose words are neither of the two above: its death stays `crash` and takes the breaker path.
+- An overflow in a request handler after the file is checked (Verso's `documentSymbol` on the proof sheets, #71): the last fileProgress lists nothing, so the note sits on the first import line, replaces Lean's diagnostics, and every edit re-sends the request and pauses again. Still one boot per edit, not the breaker's three.
+- The line is a hint: it comes from the last fileProgress forwarded, which can predate the latest edit (clamped to the document; the next session's publish replaces the note).
+
+Lane: `tests/adversarial/deep-recursion.mjs --scenarios pause` (opt-in): an Init-only `example : True := by trivial <;> … <;> trivial` (25 steps), seeded. PASS = exactly 1 death, relay halted with code `ENGINE_STACK_OVERFLOW`, still 1 death 10 s later, the note published; then `setDocument("example : True := trivial")` settles ready with no further death.
+Tests: `tests/unit/stack-pause.test.ts` (the worker's listener in a vm: prevented and one classified death for both engines' words, anything else untouched); `tests/unit/embed-library.test.ts` (the classification, a coded failure not a pause); `tests/unit/resident-session.test.ts` (the line from the last fileProgress, fatal ranges skipped); `tests/unit/relay.test.ts` (the pause, its note and reply, the re-arm, the breaker still needing 3 ordinary deaths, the kept restart options, no note after a listener's synchronous re-arm); `tests/unit/page-api.test.ts` (`settled()`'s pause words; the note and reply are synthetic frames).

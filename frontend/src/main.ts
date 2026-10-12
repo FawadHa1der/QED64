@@ -6,7 +6,7 @@ import { LeanMonaco, LeanMonacoEditor, type LeanMonacoOptions } from "lean4monac
 // the stock page is its first consumer. The imports below it are page-internal
 // modules (or names) the barrel does not export.
 import {
-  LspRelay, ResidentSession, entryLabel, failureCauseOf, installArtifacts, makeEditorPolicy,
+  ENGINE_STACK_OVERFLOW, LspRelay, ResidentSession, entryLabel, failureCauseOf, installArtifacts, makeEditorPolicy,
   type FailureCause, type ProgressInfo, type RelayStatus, type ResidentPolicy, type StatusSink,
 } from "../../lib";
 import { registerImportCompletion } from "./import-completion";
@@ -257,6 +257,7 @@ const PHASE_LABEL: Record<RelayStatus["phase"], string> = {
   halted: "the checker keeps crashing on this content — edit the file to retry",
 };
 const WEDGED_LABEL = "the checker stopped responding — restarting (~15 s)";
+const STACK_PAUSED_LABEL = "paused — Lean ran out of the browser's stack; edit the file to check again";
 /** The relay's status as this page consumes it. `lastDeath` is the relay's
  * memory of the death that halted it (`onDied(code, reason, message)`, or
  * the boot rejection), null once a session reaches `ready`; optional here so
@@ -317,6 +318,13 @@ function renderStatus(s: PageStatus) {
   trackSearch(s);
   if (s.phase === "halted") {
     const d = s.lastDeath ?? null;
+    // HARDENING #72: a stack pause is not a failed boot, even before the first
+    // ready: the editor and the relay's note on the line stay visible.
+    if (d?.cause?.code === ENGINE_STACK_OVERFLOW) {
+      bootFinish();
+      ui.idle(STACK_PAUSED_LABEL);
+      return;
+    }
     // Not gated on the overlay: once it is gone (the check fallback, or a
     // first boot that settled in headerRefused) `bootFail` is a no-op and the
     // pill alone must carry the message, not a bare "halted — bootFailed".

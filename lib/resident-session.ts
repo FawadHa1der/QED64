@@ -17,7 +17,7 @@ import { downloadBeforeBoot, ensureProfile, loadSnapshotForBoot, noteBootNetwork
 import type { RelaySession, RestartOptions } from "./lsp-relay";
 import { LeanSession, memoryCandidates, type JsonRpcMessage, type LibraryPack, type WorkerStatus } from "./client";
 import { installProfile } from "./profiles";
-import { deathCause, failureCauseOf, stageOfWorkerPhase, stepOfInstallPhase, type BootStage, type FailureCause } from "./failure";
+import { deathCause, failureCauseOf, stageOfWorkerPhase, stepOfInstallPhase, ENGINE_STACK_OVERFLOW, type BootStage, type FailureCause } from "./failure";
 import { chooseSnapshots, initialBytesForEntries, type SnapshotIndex } from "./snapshots";
 import { CANCELLED, createEditCoalescer, DEFAULT_EDIT_COALESCE_MS, type BackPressureEvent, type BackPressureOptions, type EditCoalescer } from "./edit-coalescer";
 
@@ -206,7 +206,12 @@ export class ResidentSession implements RelaySession {
     // the setter below, so the sample path cannot be the hook itself).
     this.lean.onStatus = (st) => { this.#edits.observe(st.pool); this.#statusHook(st); };
     // Every reply settles its request's slot before the host sees it (the local answers above take this path too, and settle nothing).
-    this.lean.onLsp = (m) => { if (m.id !== undefined && m.method === undefined) this.#edits.settle(m.id); this.#lspHook(m); };
+    // Each fileProgress records the line Lean is checking (kind 2, a fatal error, is not checking): a stack-overflow death names it (HARDENING #72).
+    this.lean.onLsp = (m) => {
+      if (m.id !== undefined && m.method === undefined) this.#edits.settle(m.id);
+      else if (m.method === "$/lean/fileProgress") this.#checkingLine = (m.params as { processing?: { kind?: number; range?: { start?: { line?: number } } }[] } | undefined)?.processing?.find((r) => r?.kind !== 2)?.range?.start?.line ?? null;
+      this.#lspHook(m);
+    };
     const policy = host.policy ?? {};
     this.snapshots = opts.snapshots ?? policy.snapshotsFor?.(host.headerText) ?? ["init", "mathlib"];
     // The commit can never exceed the largest reservation this device will try
@@ -247,8 +252,14 @@ export class ResidentSession implements RelaySession {
   get onDied() { return this.#diedHook; }
   set onDied(f: (code: number | null, reason: string, message: string, cause?: unknown) => void) {
     this.#diedHook = f;
-    this.lean.onDied = (code, reason, message, facts) => f(code, reason, message, deathCause(reason, message, facts, this.#bootStage ? { stage: this.#bootStage } : {}));
+    this.lean.onDied = (code, reason, message, facts) => {
+      const cause = deathCause(reason, message, facts, this.#bootStage ? { stage: this.#bootStage } : {});
+      if (cause?.code === ENGINE_STACK_OVERFLOW && this.#checkingLine !== null) cause.line = this.#checkingLine; // the relay's note sits there (HARDENING #72)
+      f(code, reason, message, cause);
+    };
   }
+  /** The start line of the first processing range (not a fatal error) of the last fileProgress forwarded; null when it listed none. */
+  #checkingLine: number | null = null;
   /** The boot step in progress, null once armed: the relay's boot ends with
    * the arm, so a death or a refusal between start() and the arm is a boot's. */
   #bootStage: BootStage | null = "runtime";
