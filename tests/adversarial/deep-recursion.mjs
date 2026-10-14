@@ -27,8 +27,9 @@
 //           file held ~46 pthreads and crashed the renderer at ~16 s. PASS =
 //           the legal checks, except exactly one error, on the last line.
 //   pause   (not in the default list; HARDENING #72) the stack-overflow pause:
-//           an Init-only `example : True := by` over a 25-step `<;>` chain of
-//           `trivial`, seeded, kills the FileWorker at any probe size. PASS =
+//           an Init-only `#eval deep 100000` of a recursive `def` in the file,
+//           seeded: the interpreted recursion kills the FileWorker before the
+//           guard trips. PASS =
 //           within --wait-ms exactly 1 worker death, relay "halted", lastDeath
 //           code ENGINE_STACK_OVERFLOW, still 1 death 10 s later (no reboot
 //           loop), the QED64 note with code ENGINE_STACK_OVERFLOW published;
@@ -57,7 +58,9 @@ const THEOREMS = HEADER + [
   "theorem wrong : (2 : ℕ) + 2 = 5 := by decide",
 ].join("\n");
 const THEOREMS_LAST = THEOREMS.split("\n").length - 1; // 0-based line of the wrong theorem
-const PAUSE = `example : True := by ${Array(25).fill("trivial").join(" <;> ")}\n`; // HARDENING #72: overruns the engine stack
+// HARDENING #72: interpreted recursion overruns the engine stack before the guard trips (kernel 0040; the
+// 25-step `<;>` chain of `trivial` used until kernel 0040 no longer kills the FileWorker there).
+const PAUSE = "def deep : Nat → Nat\n  | 0 => 0\n  | n + 1 => deep n + 1\n\n#eval deep 100000\n";
 if (SCENARIOS.includes("legal") && !LEGAL) { console.log("deep-recursion: usage: --scenarios legal needs --legal <lean source>"); process.exit(2); }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const results = [];

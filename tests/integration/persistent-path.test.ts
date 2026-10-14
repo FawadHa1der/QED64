@@ -73,11 +73,13 @@ describeIf("persistent runtime path (browser architecture, under Node)", () => {
     );
     expect(out).toContain("init OK");
     expect(out).toContain("PERSISTENT PROBE PASS");
-    // Resident-environment reuse: compile 2 must be at least 100x faster
-    // than the import-paying compile 1.
+    // Resident-environment reuse: compile 2 is ms-scale and at least 10x faster
+    // than the import-paying compile 1 (14.8 s vs 27 ms on kernel 0037; 0.6-0.95 s
+    // vs 26 ms on 0040, whose native wasm EH made the import-paying compile ~20x faster).
     const times = [...out.matchAll(/elapsed=(\d+)ms/g)].map((m) => Number(m[1]));
     expect(times.length).toBeGreaterThanOrEqual(4);
-    expect(times[1]!).toBeLessThan(times[0]! / 100);
+    expect(times[1]!).toBeLessThan(200);
+    expect(times[1]!).toBeLessThan(times[0]! / 10);
   });
 });
 
