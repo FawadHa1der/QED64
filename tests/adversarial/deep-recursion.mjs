@@ -58,7 +58,7 @@ const THEOREMS = HEADER + [
   "theorem wrong : (2 : ℕ) + 2 = 5 := by decide",
 ].join("\n");
 const THEOREMS_LAST = THEOREMS.split("\n").length - 1; // 0-based line of the wrong theorem
-// HARDENING #72: interpreted recursion overruns the engine stack before the guard trips (kernel 0040; the
+// HARDENING #72: interpreted recursion overruns the engine stack before the guard trips (kernels 0037 and 0040; the
 // 25-step `<;>` chain of `trivial` used until kernel 0040 no longer kills the FileWorker there).
 const PAUSE = "def deep : Nat → Nat\n  | 0 => 0\n  | n + 1 => deep n + 1\n\n#eval deep 100000\n";
 if (SCENARIOS.includes("legal") && !LEGAL) { console.log("deep-recursion: usage: --scenarios legal needs --legal <lean source>"); process.exit(2); }
