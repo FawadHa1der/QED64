@@ -79,7 +79,7 @@ same origin.
 
 | Runtime | Served | Kernel |
 |---|---|---|
-| `wasm64-086ef19b1135d43b` | the lean-v4.34.0-64d6ebb landing (feature/adopt-64d6ebb 2708239, 2026-10-13), withdrawn before deploy: since kernel 0039 Binaryen had inlined `lean_apply_m` into `lean_apply_n` and the proof sheets' import died of it (HARDENING #71; fixed by 0041, this landing); snapshots init `ecf69553…`, mathlib `b1ffb871…` | `64d6ebb7b4`, patch 0040 |
+| `wasm64-086ef19b1135d43b` | the lean-v4.34.0-64d6ebb landing (feature/adopt-64d6ebb 2708239, 2026-10-13), withdrawn before deploy: since kernel 0039 Binaryen had folded `lean_apply_16` and `lean_apply_m` into `lean_apply_n` and the proof sheets' bake died of it (HARDENING #71; fixed by 0041, this landing); snapshots init `ecf69553…`, mathlib `b1ffb871…` | `64d6ebb7b4`, patch 0040 |
 | `wasm64-f69cca24d0878a58` | 2026-10-08 (QED64 fc945e4, adopted 2026-10-07; live with the 8c461a8 push) until this landing; release `lean-v4.34.0-e1a79c1` (gate 33/33), snapshots init `fcbe485f…`, mathlib `6ca0fa64…` | `e1a79c1ce9`, patch 0037 |
 | `wasm64-57ae00dc5f6ce958` | the lean-v4.34.0-41ec565 landing (feature/land-41ec565), superseded by e1a79c1's; snapshots init `c185aafb…`, mathlib `bfda2b55…` | `41ec56530d`, patch 0036 |
 | `wasm64-3ab1c6a9da03bc29` | 2026-10-02 (QED64 3b42714) until 2026-10-08 (e1a79c1's landing); release `lean-v4.34.0-a8817d0` (gate 13/13), snapshots init `b6d945e3…`, mathlib `265cd10c…` | `a8817d01f9`, patch 0035b |
