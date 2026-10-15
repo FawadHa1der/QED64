@@ -3,7 +3,7 @@
 Everything the browser executes or mounts arrives through a digest chain:
 
 ```
-runtime-manifest.json ──sha256──► lean.js/lean.wasm chunks (3 + 7) ──whole-file sha256──► importScripts
+runtime-manifest.json ──sha256──► lean.js/lean.wasm chunks (1 + 7) ──whole-file sha256──► importScripts
 profile manifest      ──sha256──► gzip transport parts (8 + 61) ──gunzip──► raw pack
                                     │                                         │
                                     └── byteLength + part digests             └── raw digest re-derived
@@ -79,9 +79,9 @@ same origin.
 
 | Runtime | Served | Kernel |
 |---|---|---|
-| `wasm64-f69cca24d0878a58` | 2026-10-07 (QED64 fc945e4) until this landing; release `lean-v4.34.0-e1a79c1` (gate 33/33), snapshots init `fcbe485f…`, mathlib `6ca0fa64…` | `e1a79c1ce9`, patch 0037 |
+| `wasm64-f69cca24d0878a58` | 2026-10-08 (QED64 fc945e4, adopted 2026-10-07; live with the 8c461a8 push) until this landing; release `lean-v4.34.0-e1a79c1` (gate 33/33), snapshots init `fcbe485f…`, mathlib `6ca0fa64…` | `e1a79c1ce9`, patch 0037 |
 | `wasm64-57ae00dc5f6ce958` | the lean-v4.34.0-41ec565 landing (feature/land-41ec565), superseded by e1a79c1's; snapshots init `c185aafb…`, mathlib `bfda2b55…` | `41ec56530d`, patch 0036 |
-| `wasm64-3ab1c6a9da03bc29` | 2026-10-02 (QED64 3b42714) until this landing; release `lean-v4.34.0-a8817d0` (gate 13/13), snapshots init `b6d945e3…`, mathlib `265cd10c…` | `a8817d01f9`, patch 0035b |
+| `wasm64-3ab1c6a9da03bc29` | 2026-10-02 (QED64 3b42714) until 2026-10-08 (e1a79c1's landing); release `lean-v4.34.0-a8817d0` (gate 13/13), snapshots init `b6d945e3…`, mathlib `265cd10c…` | `a8817d01f9`, patch 0035b |
 | `wasm64-4b025db7729c5f89` | 2026-09-30 to 2026-10-01, and again for a few hours on 2026-10-02 | `9fbb45afcb`, patch 0034 (HARDENING #51) |
 | `wasm64-2c18773ecfba45bb` | 2026-10-01 to 2026-10-02, withdrawn (HARDENING #53: page-reload OOM with parked threads) | `3ae65d36f9`, patch 0035 |
 | `wasm64-36a96239e08fd2e0` | 2026-09-22 to 2026-09-30, the first Lean 4.34.0 pairing (packs cut then, still served) | `8d91aadcda` |

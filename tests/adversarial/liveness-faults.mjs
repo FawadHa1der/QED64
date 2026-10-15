@@ -222,7 +222,7 @@ try {
       const c1 = await edit(longEval(n0), 3, 300000, [String(3 * n0)]);
       const c2 = await edit(longEval(2 * n0), 3, 300000, [String(6 * n0)]);
       const perIter = Math.max(1e-6, (c2.ms - c1.ms) / n0);
-      const MAX_N = 600 * n0; // a faster runtime (kernel 0040, native wasm EH) runs 60·n0 in ~16 s: room to reach 40 s
+      const MAX_N = 600 * n0; // a faster runtime (kernel 0040) runs 60·n0 in ~16 s: room to reach 40 s
       const sized = (ms) => Math.max(n0, Math.min(MAX_N, Math.floor(ms / perIter / 7) * 7));
       let n = sized(40000);
       await edit(DOC, 2, 120000);
