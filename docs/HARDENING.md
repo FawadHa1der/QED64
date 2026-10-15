@@ -794,6 +794,8 @@ Known limits, accepted (Chrome gives a Worker 500 KiB of engine stack, Firefox 1
 
 Tests: `tests/unit/stack-probe-slots.test.ts` (the worker never sets the variable).
 
+Kernel 0041 (lean-v4.34.0-53cb11e, adopted 2026-10-15) gives back part of the chain depth that 0039's static link had taken: with `lean_apply_m` no longer exported, Binaryen inlined it into `lean_apply_n`, its only caller (0 → 26 locals, 913 → 4,037 B), so every over-application in monadic code paid ~1002 B of engine stack per level on 0040 against ~637 B on e1a79c1 (the kernel's measurements, 2026-10-15). The proof sheets' 4,824-module import, one such level per module in an interpreted extension's import handler, died at Node's 4 MB Worker stack on 0040 and passed on e1a79c1; in a Chrome Worker the same chain would end as a pthread RangeError, #72's pause (the kernel's reading, not measured). 0041 exports `lean_apply_16` and `lean_apply_m` in a kept-out-of-line section of the seed (~706 B per level) and a link check fails the build if any `lean_apply_*` is inlined away; its other stack margins are 0040's. lean-v4.34.0-64d6ebb (0040) was adopted on this branch (2708239) and withdrawn before deploy.
+
 ### 72. A stack-overflow death pauses checking instead of crash-looping (the shared backstop)
 
 Decided 2026-10-12 with #71: QED64 does not change Lean's stack handling, and handles the deaths that remain (#71's last limit) here, once, for every consumer (the stock page, the widgets showcase, lean4game, the proof sheets) through the worker and the library.

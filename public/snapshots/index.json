@@ -8,7 +8,7 @@
       "bytes": 122364117,
       "transfer": 32647146,
       "imports": [],
-      "runtime": "wasm64-086ef19b1135d43b"
+      "runtime": "wasm64-5650321f3f58aeb0"
     },
     {
       "name": "mathlib",
@@ -19,7 +19,7 @@
       "imports": [
         "QED64.Essential"
       ],
-      "runtime": "wasm64-086ef19b1135d43b"
+      "runtime": "wasm64-5650321f3f58aeb0"
     }
   ]
 }
