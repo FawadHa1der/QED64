@@ -18,6 +18,7 @@ import { ENGINE_STACK_OVERFLOW, type BootStage, type FailureCause } from "../../
 import type { ProgressInfo } from "../../lib/qed64-boot";
 import type { RelayStatus, RestartOptions } from "../../lib/lsp-relay";
 import type { LspMessage, RelayTaps } from "./relay-taps";
+import { decompressFromBase64, decompressFromEncodedURIComponent } from "./lz-string";
 
 export const API_REVISION = "1.0.0";
 
@@ -558,14 +559,39 @@ export function createPageApi(
   };
 }
 
-/** The boot document from a URL fragment (docs/EMBEDDING.md §3.1): `#code=`
- * (lean4web's spelling), at most 2 MiB of text. */
+/** The most text a URL fragment may carry (docs/EMBEDDING.md §4). */
+const MAX_FRAGMENT_CHARS = 2 * 1048576;
+
+/** The document a URL fragment carries (docs/EMBEDDING.md §3.1), at most 2 MiB
+ * of text: `#code=<encodeURIComponent(text)>` (lean4web's plain spelling) or
+ * `#codez=<LZ-string>` (lean4web's default: `compressToBase64(text)` with the
+ * `=` padding stripped; padding is tolerated, and the URI-safe alphabet is
+ * recognised by its `-` or `$`). `code` outranks `codez` when both are present.
+ * A `codez` that does not decode, decodes to nothing, or decodes to more than
+ * the cap is null, as a malformed or oversize `code` is. */
 export function codeFromHash(hash: string): string | null {
-  const m = /^#(?:.*&)?code=([^&]*)/.exec(hash);
-  if (!m) return null;
-  if (m[1]!.length > 3 * 2 * 1048576) return null; // > 2 MiB of text even fully percent-encoded
-  try {
-    const text = decodeURIComponent(m[1]!);
-    return text.length <= 2 * 1048576 ? text : null;
-  } catch { return null; }
+  const plain = /^#(?:.*&)?code=([^&]*)/.exec(hash);
+  if (plain) {
+    if (plain[1]!.length > 3 * MAX_FRAGMENT_CHARS) return null; // > 2 MiB of text even fully percent-encoded
+    try {
+      const text = decodeURIComponent(plain[1]!);
+      return text.length <= MAX_FRAGMENT_CHARS ? text : null;
+    } catch { return null; }
+  }
+  const packed = /^#(?:.*&)?codez=([^&]*)/.exec(hash)?.[1]?.replace(/=+$/, "");
+  if (!packed) return null;
+  const text = /[-$]/.test(packed) ? decompressFromEncodedURIComponent(packed, MAX_FRAGMENT_CHARS) : decompressFromBase64(packed, MAX_FRAGMENT_CHARS);
+  return text || null;
+}
+
+/** The spellings a shared snippet is labelled for before it is opened on the
+ * plain page (docs/EMBEDDING.md §3.1; HARDENING #77): code that runs when the
+ * file is checked (evaluation, commands, initializers) or renders in the
+ * InfoView (widget modules). A label for the visitor, never a blocker. */
+export const SHARED_LINK_PATTERNS = ["widget_module", "#html", "#widget", "#eval", "IO.", "run_cmd", "run_elab", "initialize", "javascript"] as const;
+
+/** The entries of `SHARED_LINK_PATTERNS` that occur in `text` (`javascript` in any case), in that order. */
+export function sharedLinkFlags(text: string): string[] {
+  const lower = text.toLowerCase();
+  return SHARED_LINK_PATTERNS.filter((p) => (p === "javascript" ? lower : text).includes(p));
 }

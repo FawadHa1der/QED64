@@ -10,9 +10,10 @@
 // LspRelay runs.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  codeFromHash, createPageApi, isSyntheticFrame, pageStatusSink, toApiStatus, FILE_PROGRESS_MS, LIVENESS_TIMING,
+  codeFromHash, createPageApi, isSyntheticFrame, pageStatusSink, sharedLinkFlags, toApiStatus, FILE_PROGRESS_MS, LIVENESS_TIMING,
   type ApiStatus, type Capabilities, type EditorLike, type PageApi, type RelayLike,
 } from "../../frontend/src/page-api";
+import { compressToBase64, compressToEncodedURIComponent } from "../../frontend/src/lz-string";
 import { normalizeMemoryBytes, parseMemoryParam } from "../../lib/params";
 import { LspRelay, type RelaySession, type RelayStatus, type RestartOptions } from "../../lib/lsp-relay";
 import { tapRelay, type LspMessage } from "../../frontend/src/relay-taps";
@@ -21,6 +22,13 @@ import { STAGES, createBootChecklist } from "../../frontend/src/boot-checklist";
 import { STALE_NOTICE, createStaleWatch, isStaleDeath } from "../../frontend/src/stale-notice";
 import { deathCause } from "../../lib/failure";
 import type { JsonRpcMessage, WorkerStatus } from "../../lib/client";
+
+/** lean4web's `#codez=` value for one Lean text: `compressToBase64(text).replace(/=*$/, "")` of lz-string 1.5.0.
+ * The same literal is pinned in tests/unit/lz-string.test.ts and in the Zulip bot's repository (its own port). */
+const VECTOR = {
+  text: "import Mathlib\n\nexample (x : ℝ) (h : 0 < x) : 0 < x ^ 2 + x := by positivity\n-- ∀ α, α = α\n",
+  codez: "JYWwDg9gTgLgBAWQIYwBYBtgCMBQOCmAHkuOvnABSFwBccguIQCUlqtcADHADxyHN2ce1AHpwATHADUvWgF44WAJ5xIAZ2AxgANw2KcAWn1xAAERxAjcAAac3HlmcQA",
+};
 
 const CAPS: Capabilities = {
   editorRpc: true, documents: true, events: true, restart: true, embedMode: true, snapshotRoots: false, postMessage: false,
@@ -202,8 +210,43 @@ describe("the boot document", () => {
     expect(codeFromHash(`#code=${encodeURIComponent("import Mathlib\n-- ∀ x, x = x\n")}`)).toBe("import Mathlib\n-- ∀ x, x = x\n");
     expect(codeFromHash("#foo=1&code=abc")).toBe("abc");
     expect(codeFromHash("")).toBeNull();
-    expect(codeFromHash("#codez=N4Ig")).toBeNull();
+    expect(codeFromHash("#foo=1")).toBeNull();
     expect(codeFromHash("#code=%E0%A4%A")).toBeNull(); // malformed
+  });
+  it("#codez= decodes lean4web's compressToBase64 without padding (the vector the bot repo pins too); padding is tolerated", () => {
+    expect(codeFromHash(`#codez=${VECTOR.codez}`)).toBe(VECTOR.text);
+    expect(codeFromHash(`#codez=${VECTOR.codez}=`)).toBe(VECTOR.text);
+    expect(codeFromHash(`#codez=${VECTOR.codez}==`)).toBe(VECTOR.text);
+    expect(codeFromHash(`#foo=1&codez=${VECTOR.codez}`)).toBe(VECTOR.text);
+    // The literal is the port's own output for the text: a change in either fails here, not on a reader's link.
+    expect(compressToBase64(VECTOR.text).replace(/=*$/, "")).toBe(VECTOR.codez);
+  });
+  it("#codez= in the URI-safe alphabet (a `-` or `$` present) decodes too", () => {
+    const text = "example (p q : Prop) (hp : p) (hq : q) : p ∧ q := ⟨hp, hq⟩\n";
+    const uri = compressToEncodedURIComponent(text);
+    expect(uri).toMatch(/-/); // this text's stream carries a 63, `/` in base64
+    expect(codeFromHash(`#codez=${uri}`)).toBe(text);
+    expect(codeFromHash(`#codez=${compressToBase64(text).replace(/=*$/, "")}`)).toBe(text);
+  });
+  it("an undecodable, empty or oversize #codez= is null; #code= outranks #codez=", () => {
+    expect(codeFromHash("#codez=N4Ig")).toBeNull(); // a stream that ends early
+    expect(codeFromHash("#codez=3")).toBeNull(); // a corrupt first code
+    expect(codeFromHash("#codez=")).toBeNull();
+    expect(codeFromHash("#code=")).toBe(""); // an empty #code= is an empty document (unchanged); the gate opens nothing for it
+    expect(codeFromHash("#codez=Q")).toBeNull(); // compressToBase64("") without padding: no document
+    expect(codeFromHash(`#code=abc&codez=${VECTOR.codez}`)).toBe("abc");
+    expect(codeFromHash(`#codez=${VECTOR.codez}&code=abc`)).toBe("abc");
+    const cap = 2 * 1048576;
+    expect(codeFromHash(`#codez=${compressToBase64("a".repeat(cap)).replace(/=*$/, "")}`)).toHaveLength(cap);
+    expect(codeFromHash(`#codez=${compressToBase64("a".repeat(cap + 1)).replace(/=*$/, "")}`)).toBeNull();
+  });
+  it("sharedLinkFlags names the risky spellings a shared snippet contains (a label, not a blocker)", () => {
+    expect(sharedLinkFlags(VECTOR.text)).toEqual([]);
+    expect(sharedLinkFlags("example : (2 : Nat) + 2 = 4 := rfl\n")).toEqual([]);
+    expect(sharedLinkFlags('#eval IO.println "hi"\n')).toEqual(["#eval", "IO."]);
+    expect(sharedLinkFlags('@[widget_module] def w : Widget.Module where javascript := "export default () => 1"\n#widget w\n')).toEqual(["widget_module", "#widget", "javascript"]);
+    expect(sharedLinkFlags("-- uses JavaScript\n#html <b>hi</b>\n")).toEqual(["#html", "javascript"]);
+    expect(sharedLinkFlags("builtin_initialize ref : IO.Ref Nat ← IO.mkRef 0\nrun_cmd pure ()\nrun_elab pure ()\n")).toEqual(["IO.", "run_cmd", "run_elab", "initialize"]);
   });
 });
 

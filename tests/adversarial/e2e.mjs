@@ -63,7 +63,7 @@ for (const it of corpus) {
 // mode for chasing one flaky scenario without cohort contamination.
 // Whole-name matching lives in harness.mjs (pinned by
 // tests/unit/adversarial-harness.test.ts).
-const FIXED = ["golden-7-battery", "error-clear-staleness", "import-composition", "switch-init", "switch-mathlib", "import-completion", "worker-kill-recovery", "final-memory"];
+const FIXED = ["golden-7-battery", "error-clear-staleness", "import-composition", "switch-init", "switch-mathlib", "import-completion", "shared-link-gate", "worker-kill-recovery", "final-memory"];
 const only = arg("only", "");
 const onlyMatches = (name) => onlyMatchesName(name, only);
 const runs = (name) => !only || onlyMatches(name);
@@ -104,6 +104,16 @@ async function freshPage() {
   const settled = await waitTerminal(bootBudgetMs, 0);
   if (!settled.ok) console.log(`fresh page: interactive at ${interactive.ms} ms but not settled after ${bootBudgetMs} ms more (pill '${settled.s.slice(0, 40)}') — continuing`);
   return Date.now() - t0;
+}
+/** A fresh page at `target` (a share link, say), wired and loaded to
+ * domcontentloaded, nothing more: the caller watches its boot. `before(page)`
+ * runs before the navigation, for listeners that must see the load itself. */
+async function openPage(target, before = () => {}) {
+  try { if (page && !page.isClosed()) await page.close(); } catch { /* gone */ }
+  page = await context.newPage();
+  wirePage(page);
+  before(page);
+  await page.goto(target, { waitUntil: "domcontentloaded" });
 }
 page = await context.newPage();
 wirePage(page);
@@ -268,11 +278,13 @@ try {
   const settled = await waitPill(/^ready$/, 300000, 1000);
   const bootMs = Date.now() - t0;
   const overlayGone = await page.evaluate(() => { const b = document.getElementById("boot"); return !b || b.classList.contains("done"); });
-  const detail = `isolated=${iso} interactive=${interactive.ok} settled=${settled.ok}@${bootMs}ms overlayGone=${overlayGone}`;
+  // Without a #code=/#codez= fragment the share-link gate (HARDENING #77) is never built.
+  const noGate = await page.evaluate(() => document.querySelector("#sharedlink") === null);
+  const detail = `isolated=${iso} interactive=${interactive.ok} settled=${settled.ok}@${bootMs}ms overlayGone=${overlayGone} noGate=${noGate}`;
   // A page that never becomes interactive is infrastructure (runtime,
   // artifacts, headers), and nothing after it measures the product.
   if (!iso || !interactive.ok) throw new InfraError(`boot: ${detail} (pill '${interactive.s.slice(0, 40)}')`);
-  await record("boot", "startup", settled.ok && overlayGone && bootMs < 720000, detail, { bootMs });
+  await record("boot", "startup", settled.ok && overlayGone && noGate && bootMs < 720000, detail, { bootMs });
 }
 
 // ---------- scenario: golden 7-error battery + badge/list consistency --------
@@ -480,6 +492,64 @@ if (runs("import-completion")) {
   const accepted = /^import Mathlib\.Data\.Re[\w.]+$/.test(line1) && line1 !== "import Mathlib.Data.Re";
   await record("import-completion", "functional", appeared && focused !== null && accepted,
     `widget=${appeared} focused='${focused}' line1='${line1}'`);
+}
+
+// ---------- scenario: a share link opens behind the consent gate ------------
+// HARDENING #77 (docs/EMBEDDING.md §3.1): a top-level `#codez=` page boots as
+// it would without the fragment, with the panel up from module start; Open
+// puts the snippet in the editor, drops the fragment and switches this load's
+// persistence off, so localStorage["qed64.buffer"] stays what it was. The
+// literal is lz-string's compressToBase64 of SHARED_SNIPPET without padding
+// (tests/unit/lz-string.test.ts pins the page's port to the npm package).
+if (runs("shared-link-gate")) {
+  const SHARED_SNIPPET = "example : (2 : Nat) + 2 = 4 := rfl\n";
+  const SHARED_CODEZ = "KYDwhgtgDgNsAEAueAKATE+A5MAXAlPANTwYC88ALEhQE4BmMAUEA";
+  // Console errors, judged as the other browser lanes judge them: a non-empty
+  // console.error or a pageerror outside the shapes every page load carries
+  // (lean4monaco's "unsupported" stub, the InfoView's es-module-shims warning,
+  // "Session disposed." / "Outdated RPC session" on a session change).
+  const KNOWN_CONSOLE = /^Session disposed\.$|^Outdated RPC session$|^unsupported(?:\s|$)|^TODO: catch JSON\.parse failure: +SyntaxError: Unexpected token 'e', "esms,true,/;
+  const errors = [];
+  const t0 = Date.now();
+  await openPage(`${url}#codez=${SHARED_CODEZ}`, (p) => {
+    p.on("console", (m) => { const t = m.text(); if (m.type() === "error" && t.trim() && !KNOWN_CONSOLE.test(t)) errors.push(t.slice(0, 200)); });
+    p.on("pageerror", (e) => { if (!KNOWN_CONSOLE.test(e.message)) errors.push(`PAGEERROR: ${e.message.slice(0, 160)}`); });
+  });
+  const gateState = () => page.evaluate(() => ({
+    gate: document.querySelector("#sharedlink") !== null,
+    preview: document.getElementById("sharedlink-text")?.textContent ?? null,
+    flag: document.getElementById("sharedlink-flag") !== null,
+    phase: globalThis.qed64?.status?.()?.phase ?? null,
+    hash: location.hash,
+    doc: globalThis.qed64?.editor?.getModel?.()?.getValue?.() ?? null,
+    stored: localStorage.getItem("qed64.buffer"),
+  })).catch(() => null);
+  // The panel is built at module start, so it is there before the page is
+  // interactive: poll from domcontentloaded.
+  let whileBooting = null;
+  for (;;) {
+    const s = await gateState();
+    if (s?.gate) { whileBooting = s; break; }
+    if (Date.now() - t0 > 20000) break;
+    await page.waitForTimeout(100);
+  }
+  const gateWhileBooting = !!whileBooting && whileBooting.phase !== "ready";
+  const booted = await waitTerminal(bootBudgetMs, 1000);
+  const atReady = await gateState();
+  const notOpened = !!atReady && atReady.doc !== null && atReady.doc !== SHARED_SNIPPET;
+  const gateAtReady = !!atReady && atReady.gate && atReady.hash === `#codez=${SHARED_CODEZ}` && atReady.preview === SHARED_SNIPPET && !atReady.flag;
+  await page.click("#sharedlink-open").catch(() => {});
+  const opened = await (async () => { const t1 = Date.now(); for (;;) { const s = await gateState(); if (s?.doc === SHARED_SNIPPET) return { ok: true, ms: Date.now() - t1, ...s }; if (Date.now() - t1 > 10000) return { ok: false, ms: Date.now() - t1, ...(s ?? {}) }; await page.waitForTimeout(100); } })();
+  const settledOpen = await waitPill(/^ready$/, 120000, 1000);
+  // One more document after Open: the page's 400 ms save debounce must not write it.
+  await page.evaluate(() => globalThis.qed64.api.setDocument("example : (3 : Nat) + 3 = 6 := rfl\n")).catch(() => {});
+  await page.waitForTimeout(1500);
+  const storedAfter = await page.evaluate(() => localStorage.getItem("qed64.buffer")).catch(() => "UNREADABLE");
+  const bufferUntouched = !!atReady && storedAfter === atReady.stored;
+  const pass = gateWhileBooting && booted.ok && gateAtReady && notOpened && opened.ok && opened.gate === false && opened.hash === "" && settledOpen.ok && bufferUntouched && errors.length === 0;
+  await record("shared-link-gate", "functional", pass,
+    `gateWhileBooting=${gateWhileBooting}(phase=${whileBooting?.phase ?? "none"}) booted=${booted.ok}@${booted.ms}ms gateAtReady=${gateAtReady} notOpenedBeforeClick=${notOpened} opened=${opened.ok}@${opened.ms}ms gateGone=${opened.gate === false} hash='${opened.hash ?? "?"}' settled=${settledOpen.ok} bufferUntouched=${bufferUntouched} consoleErrors=${errors.length}${errors.length ? " " + JSON.stringify(errors.slice(0, 3)) : ""}`,
+    { openMs: opened.ms });
 }
 
 // ---------- recovery drill: hard worker kill ---------------------------------

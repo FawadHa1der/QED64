@@ -282,21 +282,40 @@ In embed mode the page:
 
 The first match in this list wins:
 1. a `setDocument` call made before the boot document is read;
-2. `#code=<encodeURIComponent(text)>` in the fragment (lean4web's spelling,
-   at most 2 MiB), **only when the page is framed by a same-origin parent**.
+2. `#code=<encodeURIComponent(text)>` or `#codez=<LZ-string>` in the fragment
+   (lean4web's two spellings; `codez` is its default writer,
+   `compressToBase64(text)` with the `=` padding stripped, padding tolerated,
+   the URI-safe alphabet recognised by a `-` or `$`; `code` outranks `codez`;
+   at most 2 MiB of text), **only when the page is framed by a same-origin
+   parent**.
    - A boot document is code. Lean source can define a widget module whose
      JS runs in the same-origin InfoView iframe with no click.
-   - So a top-level link (anyone can send one) never supplies it; the page
-     logs that it ignored it.
+   - So a top-level link (anyone can send one) never supplies it. On the
+     plain page the fragment is a **share link** instead (HARDENING #77):
+     the page boots exactly as it would without it and shows a panel
+     (`#sharedlink`, from module start, over and after the boot card) with
+     the decoded text (first 12 lines; "show all" expands), its size, the
+     note that opening it runs Lean on it as any typed text would, a stronger
+     notice when the text contains `widget_module`, `#html`, `#widget`,
+     `#eval`, `IO.`, `run_cmd`, `run_elab`, `initialize` or `javascript`
+     (`sharedLinkFlags` in page-api.ts: a label, not a blocker), and two
+     buttons. **Open in editor** calls `setDocument(text)` (it queues until
+     the editor is ready), drops the fragment, and switches persistence off
+     for that page load: no edit is written to `localStorage["qed64.buffer"]`,
+     so the visitor's own buffer survives, and the pill says so once.
+     **Dismiss** drops the fragment and nothing else. A top-level `?embed=1`
+     page still ignores the fragment and logs that it did.
    - A cross-origin frame cannot boot at all (no isolation).
-   - It is **read once**: the page drops the fragment with
+   - In a frame it is **read once**: the page drops the fragment with
      `history.replaceState`, keeping the query, so a reload does not
-     resurrect stale text;
+     resurrect stale text. On the plain page the fragment is dropped when a
+     button is clicked, so a reload before that shows the gate again (the
+     link stays shareable until acted on);
 3. in embed mode, a `setDocument` that arrives at most 5 s after module start
    (the wait runs in parallel with the manifest fetches), else the empty
    document; on the plain page, the stored buffer, else the default example.
 
-Changing only `#code=` on a live frame is a same-document navigation and does
+Changing only `#code=` / `#codez=` on a live frame is a same-document navigation and does
 **not** reboot it. To switch documents use `setDocument`. To replace the
 runtime (one QED64 per page), navigate the frame away first, e.g. to
 `about:blank`, which also releases the old heap.
@@ -309,6 +328,7 @@ runtime (one QED64 per page), navigate the frame away first, e.g. to
 |-----------|---------|-----------|
 | `embed=1` | §3 | exactly `1` |
 | `#code=` | §3.1 | URI-decoded, ≤ 2 MiB |
+| `#codez=` | §3.1 | LZ-string base64 (lean4web's writer; `=` padding optional; the URI-safe alphabet by its `-`/`$`), ≤ 2 MiB decoded; `#code=` outranks it |
 | `snapshots=<dir>` | boot from a snapshot set served at `/<dir>/index.json` on **this origin** | `^(?:snapshots/)?[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`, resolving on this origin |
 | `profiles=<dir>` | an unpromoted profile set | `^(?:profiles/)?…` (same rule) |
 | `runtime=<buildId>` | an unpromoted runtime | `^wasm64-[0-9a-f]{16}$` |
@@ -430,7 +450,8 @@ v1.1 adds:
   `frame-ancestors` and `Cross-Origin-Resource-Policy: cross-origin` on the
   HTML shell only; and a statement that cross-site frames get partitioned
   storage (a separate ~600 MB first visit);
-- `layout=split|stack|auto`, `#codez=`, and an embed `escape` key event.
+- `layout=split|stack|auto` and an embed `escape` key event (`#codez=`
+  landed with HARDENING #77).
 
 ---
 
@@ -1471,8 +1492,9 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   - the profile loaders (index, manifests, parts);
   - `prefetchRaw` and both workers.
 
-  A boot document in the URL (`#code=`) is honoured only inside a
-  same-origin frame (§3.1).
+  A boot document in the URL (`#code=` / `#codez=`) is honoured only inside
+  a same-origin frame; on the plain page it opens behind a consent gate
+  (§3.1, HARDENING #77).
 - **Caches written before the fix.** A region fetched from another origin
   before #57 was committed under the key the hostile index named. A copied
   `name` and `digest` would persist under a genuine key, and later visits
@@ -1974,3 +1996,19 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   `EMBED_API_REVISION` stays `1.0.0-pre.6` (§7: the revision is the semver
   of the library API) and the page API's revision is unchanged; the workers
   and their protocol revision are untouched.
+- **Share links on the plain page (HARDENING #77, 2026-10-16):**
+  `codeFromHash` accepts lean4web's `#codez=` beside `#code=` through a
+  vendored LZ-string port (`frontend/src/lz-string.ts`, MIT, no npm
+  dependency; padding tolerated, the URI-safe alphabet recognised, `code`
+  outranks `codez`, the 2 MiB cap enforced before the text is built), and a
+  top-level `#code=`/`#codez=` page opens the fragment behind the consent
+  gate of §3.1 (`#sharedlink`: Open calls `setDocument` and switches that
+  load's persistence off; Dismiss drops the fragment) instead of logging that
+  it ignored it. A framed same-origin page and embed mode behave as before,
+  except that `#codez=` now decodes there too; a page without a fragment
+  builds nothing new. §4 gains the `#codez=` row, §5's backlog loses it,
+  §11's note names the gate. Page tier only: no new parameter, event or
+  method, so `API_REVISION` stays `1.0.0` and `EMBED_API_REVISION` stays
+  `1.0.0-pre.8`; `qed64/embed` and the workers are untouched. Tests:
+  tests/unit/lz-string.test.ts, tests/unit/page-api.test.ts, and the e2e
+  corpus's `shared-link-gate` and `boot` (docs/TESTING.md).

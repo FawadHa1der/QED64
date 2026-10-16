@@ -65,7 +65,10 @@ and `/snapshots/` beside it. Then frame `/?embed=1`:
 - **Embed mode** (`?embed=1`) hides the examples menu and leaves persistence to
   you: listen for the `document` event and call `setDocument`.
 - **URL parameters** ([docs/EMBEDDING.md](docs/EMBEDDING.md) §3–§4):
-  `#code=<text>` (a boot document, honoured only in a same-origin frame),
+  `#code=<text>` and `#codez=<LZ-string>` (lean4web's spellings: a boot
+  document only in a same-origin frame; on the plain page the fragment is a
+  share link that opens behind a consent gate,
+  [docs/HARDENING.md](docs/HARDENING.md) #77),
   `snapshots=<dir>` and `profiles=<dir>` (overlay sets on this origin),
   `runtime=<buildId>`, `memory=<GiB>` and `edithold=<n>`. A refused value
   fails the boot and names the parameter.

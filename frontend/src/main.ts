@@ -12,7 +12,7 @@ import {
 import { registerImportCompletion } from "./import-completion";
 import { selfWiden } from "./self-widen";
 import { installInfoviewEditorApi, type EditsEditor } from "./editor/infoview-edits";
-import { codeFromHash, createPageApi, pageStatusSink, type EditorLike } from "./page-api";
+import { codeFromHash, createPageApi, pageStatusSink, sharedLinkFlags, type EditorLike } from "./page-api";
 import { normalizeMemoryBytes, parseEditHoldParam, parseMemoryParam } from "../../lib/params";
 import { tapRelay } from "./relay-taps";
 import { installWidgetSourceCache } from "./widget-source-cache";
@@ -439,13 +439,15 @@ async function main() {
   // before this point wins; in embed mode (docs/EMBEDDING.md §3.1) the buffer
   // is neither read nor written: `#code=`, else `setDocument` (waited for up
   // to 5 s from module start), else the empty document.
-  // `#code=` (lean4web's spelling) is honoured only in a same-origin frame
-  // (FRAMED_SAME_ORIGIN above), and read ONCE: it is dropped from the URL so a
-  // reload does not resurrect stale text.
+  // `#code=` / `#codez=` (lean4web's spellings) are a boot document only in a
+  // same-origin frame (FRAMED_SAME_ORIGIN above), and read ONCE: the fragment
+  // is dropped from the URL so a reload does not resurrect stale text. On the
+  // top-level plain page the same fragment is a share link: `sharedLinkGate`
+  // (end of this module) shows it and opens it only on a click (HARDENING #77).
   let restored: string | null = null;
   let initialText: string;
   const hashCode = FRAMED_SAME_ORIGIN ? codeFromHash(location.hash) : null;
-  if (!FRAMED_SAME_ORIGIN && codeFromHash(location.hash) !== null) console.warn("[qed64] #code= ignored: a boot document in the URL is honoured only from a same-origin embedding frame");
+  if (!FRAMED_SAME_ORIGIN && EMBED && codeFromHash(location.hash) !== null) console.warn("[qed64] #code= ignored: a boot document in the URL is honoured only from a same-origin embedding frame");
   if (hashCode !== null) {
     try { history.replaceState(history.state, "", `${location.pathname}${location.search}`); } catch { /* sandboxed */ }
   }
@@ -592,13 +594,15 @@ async function main() {
   let saveTimer: number | undefined;
   if (!EMBED) editor.editor?.getModel()?.onDidChangeContent(() => {
     window.clearTimeout(saveTimer);
-    saveTimer = window.setTimeout(() => {
-      try {
-        const text = editor.editor?.getModel()?.getValue();
-        if (typeof text === "string") window.localStorage.setItem("qed64.buffer", text);
-      } catch { /* quota or private mode — persistence is best-effort */ }
-    }, 400);
+    saveTimer = window.setTimeout(saveNow, 400);
   });
+  function saveNow() {
+    try {
+      const text = editor.editor?.getModel()?.getValue();
+      if (typeof text === "string" && persistBuffer) window.localStorage.setItem("qed64.buffer", text);
+    } catch { /* quota or private mode — persistence is best-effort */ }
+  }
+  if (!EMBED) flushBufferSave = () => { window.clearTimeout(saveTimer); saveNow(); };
 
   // Example switching = a document edit; a header change is resolved
   // in-kernel against the loaded environments (K1), a light session widens
@@ -666,6 +670,75 @@ function startMemoryMeter(getSession: () => Tel | null) {
   };
   sampleMemoryNow = sample;
   window.setInterval(sample, 12000);
+}
+
+// ---- Share links on the plain page: the consent gate (HARDENING #77) -------
+// A top-level `#code=` / `#codez=` link (lean4web's spellings; the Zulip bot's
+// links) is not the boot document: a Lean file can carry a widget module whose
+// JS runs in the same-origin InfoView with no click. So the page boots as it
+// would without the fragment, and a panel shows the decoded text instead. Open
+// hands the text to the page API (it queues until the editor is ready) and
+// turns this load's persistence off, so the visitor's own saved buffer is never
+// overwritten by a snippet somebody sent them; Dismiss only drops the fragment.
+// Built with createElement/textContent: the snippet is never markup. A page
+// without such a fragment runs none of this.
+let persistBuffer = true;
+// main() installs this once the editor persists: Open flushes the visitor's own pending edit before turning persistence off.
+let flushBufferSave: (() => void) | null = null;
+function sharedLinkGate(text: string): void {
+  const PREVIEW_LINES = 12;
+  const lines = text.split("\n");
+  const lineCount = text.endsWith("\n") ? lines.length - 1 : lines.length;
+  const el = <K extends keyof HTMLElementTagNameMap>(tag: K, id: string, content?: string): HTMLElementTagNameMap[K] => {
+    const e = document.createElement(tag);
+    e.id = id;
+    if (content !== undefined) e.textContent = content;
+    return e;
+  };
+  const button = (id: string, label: string, onClick: () => void): HTMLButtonElement => {
+    const b = el("button", id, label);
+    b.type = "button";
+    b.addEventListener("click", onClick);
+    return b;
+  };
+  const panel = el("div", "sharedlink");
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("aria-labelledby", "sharedlink-title");
+  const pre = el("pre", "sharedlink-text", lines.slice(0, PREVIEW_LINES).join("\n"));
+  const close = () => {
+    panel.remove();
+    try { history.replaceState(history.state, "", `${location.pathname}${location.search}`); } catch { /* sandboxed */ }
+  };
+  panel.append(
+    el("h2", "sharedlink-title", "This link carries Lean code"),
+    el("p", "sharedlink-size", `${lineCount} lines, ${text.length} characters`),
+    pre,
+  );
+  if (lineCount > PREVIEW_LINES) {
+    const more = button("sharedlink-more", `show all ${lineCount} lines`, () => { pre.textContent = text; more.remove(); });
+    panel.append(more);
+  }
+  panel.append(el("p", "sharedlink-note", "Opening it runs Lean on it in your browser, as any text you type would."));
+  if (sharedLinkFlags(text).length > 0) {
+    panel.append(el("p", "sharedlink-flag", "This snippet contains code that runs when checked (evaluation or widgets): open it only if you trust the sender."));
+  }
+  const actions = el("div", "sharedlink-actions");
+  actions.append(
+    button("sharedlink-open", "Open in editor", () => {
+      close();
+      flushBufferSave?.();
+      persistBuffer = false;
+      void pageApi.api.setDocument(text).catch((e: unknown) => console.warn("[qed64] shared snippet not opened:", e));
+      ui.progress("shared snippet opened; your saved buffer is untouched");
+    }),
+    button("sharedlink-dismiss", "Dismiss", close),
+  );
+  panel.append(actions);
+  document.body.append(panel);
+}
+if (!FRAMED_SAME_ORIGIN && !EMBED) {
+  const shared = codeFromHash(location.hash);
+  if (shared) sharedLinkGate(shared); // an empty document is nothing to open
 }
 
 void main().catch((err) => {

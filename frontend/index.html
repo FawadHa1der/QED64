@@ -88,6 +88,30 @@
       margin-top: 14px; padding: 7px 18px; border-radius: 6px; border: 1px solid #4f6df5;
       background: #4f6df5; color: #fff; font: 13px system-ui, sans-serif; cursor: pointer;
     }
+    /* The share-link gate (main.ts sharedLinkGate; HARDENING #77): built only
+       when the URL carries #code=/#codez=; fixed over the boot card (#boot is
+       z-index 10 inside #split) and still there after it. */
+    #sharedlink {
+      position: fixed; right: 16px; bottom: 16px; z-index: 30; box-sizing: border-box;
+      width: min(540px, calc(100% - 32px)); background: #fff; border: 1px solid #dfe2ec;
+      border-radius: 12px; padding: 16px 20px; box-shadow: 0 12px 40px rgba(27, 29, 41, .18);
+      font: 14px/1.5 system-ui, sans-serif; color: #2a2d3d;
+    }
+    #sharedlink h2 { margin: 0; font-size: 16px; color: #1b1d29; }
+    #sharedlink p { margin: 6px 0; }
+    #sharedlink-size { font: 12px ui-monospace, monospace; color: #5a5f78; }
+    #sharedlink-text {
+      margin: 8px 0; padding: 8px 10px; max-height: 40vh; overflow: auto; background: #f6f7fb;
+      border: 1px solid #e8eaf3; border-radius: 6px; font: 12px/1.45 ui-monospace, monospace; color: #1b1d29;
+    }
+    #sharedlink-flag { color: #c0392b; font-weight: 600; }
+    #sharedlink button {
+      padding: 6px 14px; border-radius: 6px; border: 1px solid #4f6df5; background: #fff;
+      color: #4f6df5; font: 13px system-ui, sans-serif; cursor: pointer;
+    }
+    #sharedlink #sharedlink-more { padding: 2px 8px; font-size: 12px; }
+    #sharedlink #sharedlink-open { background: #4f6df5; color: #fff; }
+    #sharedlink-actions { display: flex; gap: 8px; margin-top: 10px; }
   </style>
 </head>
 <body>
