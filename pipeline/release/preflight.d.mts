@@ -22,6 +22,8 @@ export interface PreflightResult {
 /** What bootSmoke needs of the playwright module. */
 export interface PlaywrightLike {
   chromium: { launch(options?: { args?: string[] }): Promise<unknown> };
+  /** Playwright's Firefox, launched with no options (HARDENING #75). */
+  firefox?: { launch(options?: { args?: string[] }): Promise<unknown> };
 }
 
 export interface BootSmokeOptions {
@@ -33,6 +35,8 @@ export interface BootSmokeOptions {
    * included, is `playwright could not be imported (<code>): <its first
    * message line>`. Every reason is one line. */
   importPlaywright?: () => Promise<PlaywrightLike>;
+  /** The engine to launch (default chromium): Chromium with the SharedArrayBuffer flag, Firefox with no flags or prefs (HARDENING #75); an unknown name is a refusal. */
+  browserName?: "chromium" | "firefox";
 }
 
 export type BootSmokeResult = { ok: true; ms: number } | { ok: false; reason: string };

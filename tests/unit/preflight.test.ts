@@ -71,6 +71,20 @@ describe("preflight's boot smoke: playwright is the caller's", () => {
     expect(r).toEqual({ ok: false, reason: `${LAUNCH_ONE_LINE.slice(0, 160)}; console tail: ` });
   });
 
+  it("launches the engine `browserName` names: Firefox with no flags, Chromium with the SharedArrayBuffer flag; an unknown name is a refusal, not a throw (HARDENING #75)", async () => {
+    const seen: Array<[string, unknown]> = [];
+    const pw = {
+      chromium: { launch: (o: unknown) => { seen.push(["chromium", o]); return Promise.reject(new Error(LAUNCH_MSG)); } },
+      firefox: { launch: (o: unknown) => { seen.push(["firefox", o]); return Promise.reject(new Error(LAUNCH_MSG)); } },
+      webkit: { launch: (o: unknown) => { seen.push(["webkit", o]); return Promise.reject(new Error(LAUNCH_MSG)); } }, // present, as in real Playwright: refused by name, never launched
+    };
+    await bootSmoke("http://127.0.0.1:9/", 1000, { importPlaywright: async () => pw, browserName: "firefox" });
+    await bootSmoke("http://127.0.0.1:9/", 1000, { importPlaywright: async () => pw });
+    expect(seen).toEqual([["firefox", undefined], ["chromium", { args: ["--enable-features=SharedArrayBuffer"] }]]);
+    expect(await bootSmoke("http://127.0.0.1:9/", 1000, { importPlaywright: async () => pw, browserName: "webkit" as unknown as "firefox" /* a name the types forbid: the runtime refuses it */ })).toEqual({ ok: false, reason: "--browser webkit: chromium or firefox" });
+    expect(seen.some(([e]) => e === "webkit")).toBe(false);
+  });
+
   it("a missing dependency of playwright is named, not reported as playwright unresolvable", async () => {
     // playwright/index.js is `module.exports = require('playwright-core')`: a pruned tree throws a CJS MODULE_NOT_FOUND for the dependency.
     const noCore = () => Promise.reject(Object.assign(new Error("Cannot find module 'playwright-core'\nRequire stack:\n- /x/node_modules/playwright/index.js"), { code: "MODULE_NOT_FOUND" }));

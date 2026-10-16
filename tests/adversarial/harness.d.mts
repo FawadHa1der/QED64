@@ -3,6 +3,12 @@
 export const root: string;
 export function arg(name: string, fallback: string): string;
 export function has(flag: string): boolean;
+/** `--browser chromium|firefox` (default chromium), validated when asked (HARDENING #75). */
+export function browserName(): "chromium" | "firefox";
+/** The flag to forward to a child lane: [] for the default, ["--browser", "firefox"] otherwise. */
+export function browserArgv(): string[];
+/** Launch the chosen engine headless (Chromium with the SharedArrayBuffer flag; Firefox with no flags or prefs). */
+export function launchBrowser(opts?: { headless?: boolean }): Promise<import("playwright").Browser>;
 export const MODE: "resident";
 export function resolveTarget(url: string): {
   url: string; origin: string; mode: "resident"; runtimeOverride: string | null;

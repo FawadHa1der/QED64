@@ -8,6 +8,9 @@
 //     constant "resident" since the pump transport left the page, 2026-09-04;
 //     the field survives so run-dir names and old report readers keep their shape);
 //   - teeLog(): console output mirrored into that directory;
+//   - browserName()/browserArgv()/launchBrowser(): `--browser chromium|firefox`
+//     (default chromium), the engine the suite's browsers launch with
+//     (HARDENING #75); run.mjs forwards it to e2e.mjs;
 //   - coolDown(): the between-browser-lanes discipline of HARDENING #34
 //     (refuse while a chrome-headless-shell or a Playwright Firefox exists — `--kill-strays` to kill
 //     them instead — then wait for free+inactive memory). The memory reading
@@ -28,6 +31,25 @@ import { fileURLToPath } from "node:url";
 export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 export const arg = (n, d) => { const i = process.argv.indexOf(`--${n}`); return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : d; };
 export const has = (f) => process.argv.includes(f);
+
+/** `--browser chromium|firefox` (default chromium): the engine the suite's
+ * browsers launch with (HARDENING #75). Validated when asked, not at import. */
+export function browserName() {
+  const b = arg("browser", "chromium");
+  if (b !== "chromium" && b !== "firefox") throw new Error(`--browser ${b}: chromium or firefox`);
+  return b;
+}
+/** The flag to forward to a child lane (nothing for the default). */
+export const browserArgv = () => (browserName() === "chromium" ? [] : ["--browser", browserName()]);
+/** Launch the chosen engine headless. Chromium's headless shell needs the
+ * SharedArrayBuffer feature flag; Firefox takes no flags (an unknown flag
+ * swallows the next argument) and no prefs (Memory64 is its default since
+ * 134, the pref is gone since 141). Playwright is imported here, not at the
+ * top: the unit tests import this module without a browser. */
+export async function launchBrowser({ headless = true } = {}) {
+  const pw = await import("playwright");
+  return browserName() === "firefox" ? pw.firefox.launch({ headless }) : pw.chromium.launch({ headless, args: ["--enable-features=SharedArrayBuffer"] });
+}
 
 // MODE, resolveTarget and fetchJson live in the pipeline (preflight ships
 // in the package and needs them); re-exported here for the lanes.

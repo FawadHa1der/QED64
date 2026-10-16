@@ -12,7 +12,7 @@
 //      (an entry without the field is reported as "no pairing fact", the
 //      pre-field indexes; the resident adapter treats that as unknown);
 //   5. the profile index names a core profile (boot needs it);
-//   6. one boot smoke in headless Chromium: the pill reaches `ready` within
+//   6. one boot smoke in headless Chromium (or Firefox: `browserName`): the pill reaches `ready` within
 //      the budget (skip with --no-boot for fetch-only checks).
 // Exit 3 with one line `PREFLIGHT REFUSED: <reason>` on any failure (a
 // multi-line cause, such as Playwright's launch error, is folded to one line).
@@ -57,7 +57,7 @@ async function probeFile(url) {
 
 /** Run the checks; returns {ok, reason, buildId, mode, checks}. Never throws.
  * `importPlaywright` is passed to bootSmoke. */
-export async function runPreflight(target, { boot = true, bootBudgetMs = 180000, log = console.log, importPlaywright } = {}) {
+export async function runPreflight(target, { boot = true, bootBudgetMs = 180000, log = console.log, importPlaywright, browserName = "chromium" } = {}) {
   const checks = [];
   const ok = (what) => { checks.push({ ok: true, what }); log(`ok    ${what}`); };
   const warn = (what) => { checks.push({ ok: true, warn: true, what }); log(`warn  ${what}`); };
@@ -112,7 +112,7 @@ export async function runPreflight(target, { boot = true, bootBudgetMs = 180000,
   } catch (e) { return refuse(`profile index: ${e.message}`, buildId); }
 
   if (boot) {
-    const r = await bootSmoke(target.url, bootBudgetMs, { importPlaywright });
+    const r = await bootSmoke(target.url, bootBudgetMs, { importPlaywright, browserName });
     if (!r.ok) return refuse(`boot smoke: ${r.reason}`, buildId);
     ok(`boot smoke: ready in ${r.ms} ms`);
   } else {
@@ -137,17 +137,21 @@ function playwrightImportFault(e) {
  * throws: a playwright that does not resolve from this file (the caller's
  * install), or a Chromium that does not launch, is `{ok: false, reason}`.
  * `importPlaywright` replaces the import (tests). */
-export async function bootSmoke(url, budgetMs, { importPlaywright = () => import("playwright") } = {}) {
+export async function bootSmoke(url, budgetMs, { importPlaywright = () => import("playwright"), browserName = "chromium" } = {}) {
   const tail = [];
   let browser = null;
   try {
-    let chromium;
+    if (browserName !== "chromium" && browserName !== "firefox") return { ok: false, reason: `--browser ${browserName}: chromium or firefox` };
+    let engine;
     try {
-      ({ chromium } = await importPlaywright());
+      engine = (await importPlaywright())[browserName];
     } catch (e) {
       return { ok: false, reason: playwrightImportFault(e) };
     }
-    browser = await chromium.launch({ args: ["--enable-features=SharedArrayBuffer"] });
+    if (!engine) return { ok: false, reason: `playwright has no browser "${browserName}" (a pruned install)` };
+    // Chromium's headless shell needs the SharedArrayBuffer flag; Firefox takes no flags (an unknown
+    // flag swallows the next argument) and no prefs (Memory64 is its default since 134; HARDENING #75).
+    browser = await (browserName === "firefox" ? engine.launch() : engine.launch({ args: ["--enable-features=SharedArrayBuffer"] }));
     const page = await browser.newPage();
     page.on("console", (m) => { tail.push(oneLine(m.text()).slice(0, 200)); if (tail.length > 20) tail.shift(); });
     page.on("pageerror", (e) => tail.push(`PAGEERROR: ${oneLine(e.message).slice(0, 200)}`));

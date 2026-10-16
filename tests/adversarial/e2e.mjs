@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Adversarial E2E harness: drives the lean4monaco front end in REAL headless
-// Chromium (Playwright), independent of any interactive browser. Covers:
+// Chromium (Playwright; `--browser firefox` drives Playwright's Firefox instead,
+// HARDENING #75), independent of any interactive browser. Covers:
 // boot timing + overlay behavior, golden message batteries (badge/list
 // consistency), UI-glitch checks (stuck pill, stale diagnostics, frame-leak
 // garbage in the InfoView), editor action storms with recovery expectations,
@@ -24,11 +25,13 @@
 // an undefined tap is a harness/page defect and is reported, never passed.
 //
 // Usage: node tests/adversarial/e2e.mjs [--url http://localhost:5187/] [--corpus corpus.json]
-//        [--only <exact scenario name>] [--run-dir <dir>] [--boot-budget-ms 480000]
+//        [--only <exact scenario name>] [--run-dir <dir>] [--boot-budget-ms 480000] [--browser chromium|firefox]
 import fs from "node:fs";
 import path from "node:path";
-import { chromium } from "playwright";
-import { arg, fetchJson, onlyMatches as onlyMatchesName, resolveTarget, root, runDir, settleClass, settleClassFromPhase, teeLog } from "./harness.mjs";
+import { arg, browserName, fetchJson, launchBrowser, onlyMatches as onlyMatchesName, resolveTarget, root, runDir, settleClass, settleClassFromPhase, teeLog } from "./harness.mjs";
+
+// `--browser` is validated before the manifest fetch: a typo is this lane's refusal (exit 3), not an uncaught throw.
+try { browserName(); } catch (e) { console.error(`e2e: refused — ${e.message}`); process.exit(3); }
 
 const url = arg("url", "http://localhost:5187/");
 const corpusPath = arg("corpus", path.join(root, "tests/adversarial/corpus.json"));
@@ -38,12 +41,12 @@ const target = resolveTarget(url);
 // unreachable manifest is an infrastructure refusal, not a scenario result.
 const manifest = await fetchJson(target.manifestUrl).catch((e) => { console.error(`e2e: refused — ${e.message}`); process.exit(3); });
 const buildId = manifest.buildId ?? "unknown";
-const dir = runDir(buildId, target.mode);
+const dir = runDir(buildId, browserName() === "firefox" ? `${target.mode}-firefox` : target.mode);
 teeLog(dir, "e2e.log");
 const artDir = path.join(dir, "artifacts");
 fs.mkdirSync(artDir, { recursive: true });
 fs.mkdirSync(path.join(root, "work/adversarial"), { recursive: true });
-console.log(`e2e: ${url} → ${buildId} (${target.mode}); reports in ${path.relative(root, dir)}`);
+console.log(`e2e: ${url} → ${buildId} (${target.mode}, ${browserName()}); reports in ${path.relative(root, dir)}`);
 
 const corpus = fs.existsSync(corpusPath) ? JSON.parse(fs.readFileSync(corpusPath, "utf8")).items : [];
 // Battery-only keys on an editor-action item are dead here (review C7: four
@@ -75,7 +78,7 @@ let pageCrashes = 0;
 /** Thrown when the page cannot boot: the run is not measuring the product. */
 class InfraError extends Error {}
 
-const browser = await chromium.launch({ args: ["--enable-features=SharedArrayBuffer"] });
+const browser = await launchBrowser();
 const context = await browser.newContext();
 let page;
 function wirePage(p) {
@@ -212,7 +215,7 @@ const statsDelta = (before, after) => {
 function writeReport(inProgress) {
   const counts = { total: results.length, failed: results.filter((r) => r.outcome !== "pass").length };
   for (const o of ["pass", "fail", "infra", "refused", "aborted"]) counts[o] = results.filter((r) => r.outcome === o).length;
-  const report = { lane: "e2e", url, buildId, mode: target.mode, runDir: dir, inProgress, ...counts, results };
+  const report = { lane: "e2e", url, buildId, mode: target.mode, browser: browserName(), runDir: dir, inProgress, ...counts, results };
   const text = JSON.stringify(report, null, 2);
   fs.writeFileSync(path.join(dir, "e2e-report.json"), text);
   fs.writeFileSync(path.join(root, "work/adversarial/e2e-report.json"), text);
@@ -233,7 +236,7 @@ async function record(name, category, outcome, detail, extra = {}) {
   writeReport(true);
   console.log(`${outcome === "pass" ? "ok  " : outcome.toUpperCase().padEnd(4)} [${category}] ${name}${outcome === "pass" ? "" : " — " + detail}`);
 }
-const panicsInConsole = () => consoleLog.filter((l) => /PANIC|assertion violation|Maximum call stack/.test(l)).length;
+const panicsInConsole = () => consoleLog.filter((l) => /PANIC|assertion violation|Maximum call stack|too much recursion/.test(l)).length;
 /** The in-kernel resolver's refusal note (patch 0032, FileWorker.setupImports):
  * `modules [...] are not loaded in this session — use "Load exact imports"`.
  * Pinned in ONE place so a kernel wording change fails import-composition

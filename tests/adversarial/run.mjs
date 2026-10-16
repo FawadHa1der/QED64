@@ -5,18 +5,22 @@
 // cool-down (HARDENING #34), then the Playwright E2E lane; one report
 // directory per run under work/adversarial/runs/<ts>-<buildId>-<mode>/ plus
 // the legacy work/adversarial/report.md.
-// Usage: node tests/adversarial/run.mjs [--skip-compiler] [--skip-e2e] [--url <page url>]
+// Usage: node tests/adversarial/run.mjs [--skip-compiler] [--skip-e2e] [--url <page url>] [--browser chromium|firefox]
 //        [--no-boot] [--skip-pretest] [--cooldown-gb 6]
 //        [--snap <mathlib.snap>] [--artifact <stage1>] [--lib <tree>]   (the battery's pairing,
 //        forwarded; else its QED64_MATHLIB_SNAP / QED64_LEAN_ARTIFACT / QED64_LIB_TREE)
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { arg, batteryArgv, coolDown, has, laneSections, resolveTarget, root, runDir, strayBrowsers, suiteExitCode, teeLog } from "./harness.mjs";
+import { arg, batteryArgv, browserArgv, browserName, coolDown, has, laneSections, resolveTarget, root, runDir, strayBrowsers, suiteExitCode, teeLog } from "./harness.mjs";
 import { runPreflight } from "../../pipeline/release/preflight.mjs";
 
 fs.mkdirSync(path.join(root, "work/adversarial"), { recursive: true });
 const refuse = (why) => { console.error(`run: REFUSED — ${why}`); process.exit(3); };
+// `--browser` is validated before the pretest and before Vite is spawned: a typo is a refusal (exit 3), not an
+// uncaught throw after a detached Vite was started (HARDENING #75).
+let browser;
+try { browser = browserName(); } catch (e) { refuse(e.message); }
 
 // 0) pretest: `npx tsc --noEmit` at the root does not cover frontend/
 // (HARDENING #35); a front end that does not type-check has broken boot in
@@ -46,8 +50,8 @@ const stopVite = () => { if (vite) { try { process.kill(-vite.pid); } catch { /*
 // 2) preflight: manifest + chunks + snapshot index + pairing (+ one boot
 // smoke unless --no-boot). A refusal is the whole verdict: no lanes run.
 console.log("=== preflight ===");
-const pre = await runPreflight(target, { boot: !has("--no-boot") && !has("--skip-e2e"), bootBudgetMs: Number(arg("boot-budget-ms", "180000")) });
-const dir = runDir(pre.buildId ?? "unknown", target.mode);
+const pre = await runPreflight(target, { boot: !has("--no-boot") && !has("--skip-e2e"), bootBudgetMs: Number(arg("boot-budget-ms", "180000")), browserName: browser });
+const dir = runDir(pre.buildId ?? "unknown", browser === "firefox" ? `${target.mode}-firefox` : target.mode);
 teeLog(dir, "run.log");
 fs.writeFileSync(path.join(dir, "preflight.json"), JSON.stringify({ target, ...pre }, null, 2));
 if (!pre.ok) {
@@ -68,16 +72,16 @@ if (!has("--skip-e2e")) {
   // memory turned one dead page into "the product cannot boot" for every
   // later stage (HARDENING #34). Refuse to start a browser while one exists.
   console.log("=== cool-down ===");
-  if (!(await coolDown())) { stopVite(); refuse(`browser lane not started (${strayBrowsers().length} stray chrome-headless-shell)`); }
-  console.log("=== e2e (headless chromium) ===");
-  e2eCode = spawnSync("node", [path.join(root, "tests/adversarial/e2e.mjs"), "--url", url, "--run-dir", dir], { stdio: "inherit", cwd: root }).status ?? 1;
+  if (!(await coolDown())) { stopVite(); refuse(`browser lane not started (${strayBrowsers().length} stray browser process(es))`); }
+  console.log(`=== e2e (headless ${browser}) ===`);
+  e2eCode = spawnSync("node", [path.join(root, "tests/adversarial/e2e.mjs"), "--url", url, "--run-dir", dir, ...browserArgv()], { stdio: "inherit", cwd: root }).status ?? 1;
 }
 stopVite();
 
 // merged markdown report (per-run dir + legacy path)
 const load = (f) => { try { return JSON.parse(fs.readFileSync(path.join(dir, f), "utf8")); } catch { return null; } };
 const comp = load("compiler-report.json"), e2e = load("e2e-report.json");
-const lines = [`# Adversarial suite report`, "", `run: ${path.relative(root, dir)} — runtime ${pre.buildId} (${target.mode}) — ${url}`, ""];
+const lines = [`# Adversarial suite report`, "", `run: ${path.relative(root, dir)} — runtime ${pre.buildId} (${target.mode}, ${browser}) — ${url}`, ""];
 lines.push(...laneSections([
   { name: "compiler", report: comp, code: compilerCode, log: "compiler.log / run.log" },
   { name: "e2e", report: e2e, code: e2eCode, log: "run.log" },

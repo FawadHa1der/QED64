@@ -5,7 +5,7 @@ import { describe, expect, test } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { MODE, batteryArgv, coolDown, laneSections, memoryReading, onlyMatches, parseMeminfo, parseVmStat, resolveTarget, settleClass, settleClassFromPhase, suiteExitCode } from "../../tests/adversarial/harness.mjs";
+import { MODE, batteryArgv, browserArgv, browserName, coolDown, laneSections, memoryReading, onlyMatches, parseMeminfo, parseVmStat, resolveTarget, settleClass, settleClassFromPhase, suiteExitCode } from "../../tests/adversarial/harness.mjs";
 import { classify, missingInputs } from "../../tests/adversarial/compiler-battery.mjs";
 
 describe("onlyMatches", () => {
@@ -263,5 +263,18 @@ describe("the cool-down's memory reading", () => {
     log.length = 0;
     expect(await coolDown({ minFreeGB: 6, maxWaitS: 0, log: (l) => log.push(l), strays: () => ["123 chrome-headless-shell --x"], reading: () => { throw new Error("not read while a browser is alive"); } })).toBe(false);
     expect(log[0]).toMatch(/^cool-down: 1 browser process\(es\) alive .* refusing to start a browser lane:/);
+  });
+});
+
+describe("--browser (HARDENING #75)", () => {
+  const withArgv = <T>(extra: string[], f: () => T): T => {
+    const saved = process.argv;
+    process.argv = [...saved, ...extra];
+    try { return f(); } finally { process.argv = saved; }
+  };
+  test("defaults to chromium and forwards nothing; firefox is forwarded as the flag; anything else is refused when asked", () => {
+    expect(withArgv([], () => [browserName(), browserArgv()])).toEqual(["chromium", []]);
+    expect(withArgv(["--browser", "firefox"], () => [browserName(), browserArgv()])).toEqual(["firefox", ["--browser", "firefox"]]);
+    expect(() => withArgv(["--browser", "webkit"], () => browserName())).toThrow(/--browser webkit: chromium or firefox/);
   });
 });
