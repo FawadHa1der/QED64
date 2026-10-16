@@ -1913,6 +1913,14 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   classification change only:
   no export, type or revision change (`EMBED_API_REVISION` stays
   `1.0.0-pre.8`).
+- **`installProfile` no longer waits for `navigator.storage.persist()`
+  (HARDENING #75, 2026-10-16):** in Playwright Firefox 153 the awaited
+  `persist()` never settled, so the stock page's install sat at the first
+  pack (Firefox prompts for persistent storage; the wait on the prompt is
+  inferred; an embedder calling `installProfile` in Firefox was exposed the
+  same way, by the code path, not measured). The ask is still made,
+  fire-and-forget; a denied request is best-effort storage as before. No API
+  or revision change.
 - **`qed64/edge` routes a toolchain release (plan step B2b, 2026-10-06):**
   additive options, every default unchanged (`QED64_LEGACY` and the hardened
   defaults keep `release: null`). `release` takes a `lean4-wasm64.release/v1`

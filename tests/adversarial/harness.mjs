@@ -9,7 +9,7 @@
 //     the field survives so run-dir names and old report readers keep their shape);
 //   - teeLog(): console output mirrored into that directory;
 //   - coolDown(): the between-browser-lanes discipline of HARDENING #34
-//     (refuse while a chrome-headless-shell exists — `--kill-strays` to kill
+//     (refuse while a chrome-headless-shell or a Playwright Firefox exists — `--kill-strays` to kill
 //     them instead — then wait for free+inactive memory). The memory reading
 //     is macOS vm_stat, else Linux /proc/meminfo, else os.freemem() (free
 //     pages only, so it waits longer); with none of them it prints
@@ -134,11 +134,14 @@ export function reclaimableBytes() {
   return memoryReading().bytes ?? 0;
 }
 
-/** `pid cmdline` lines of every live chrome-headless-shell (pgrep -fl prints
+/** `pid cmdline` lines of every live chrome-headless-shell or Playwright Firefox
+ * (its binary lives under ms-playwright/firefox-<build>/; the Firefox lane,
+ * HARDENING #75) (pgrep -fl prints
  * the full argument list on both BSD and procps). */
-export const strayBrowsers = () => (spawnSync("pgrep", ["-fl", "chrome-headless-shell"], { encoding: "utf8" }).stdout || "").split("\n").filter(Boolean);
+const STRAY_BROWSER = "chrome-headless-shell|ms-playwright/firefox-";
+export const strayBrowsers = () => (spawnSync("pgrep", ["-fl", STRAY_BROWSER], { encoding: "utf8" }).stdout || "").split("\n").filter(Boolean);
 
-/** Between browser lanes: a chrome-headless-shell that is not ours is either
+/** Between browser lanes: a headless browser that is not ours is either
  * a leak from a probe that died before browser.close() (HARDENING #34) or a
  * SIBLING RUN's live browser — parallel worktree tracks and interactive
  * sessions run Playwright on this machine at the same time, so the default
@@ -149,13 +152,13 @@ export const strayBrowsers = () => (spawnSync("pgrep", ["-fl", "chrome-headless-
 export async function coolDown({ minFreeGB = Number(arg("cooldown-gb", "6")), maxWaitS = Number(arg("cooldown-max-s", "180")), killStrays = has("--kill-strays"), log = console.log, reading = memoryReading, strays: listStrays = strayBrowsers } = {}) {
   let strays = listStrays();
   if (strays.length && killStrays) {
-    log(`cool-down: --kill-strays — SIGKILL ${strays.length} chrome-headless-shell process(es):\n  ${strays.map((s) => s.slice(0, 160)).join("\n  ")}`);
-    spawnSync("pkill", ["-9", "-f", "chrome-headless-shell"]);
+    log(`cool-down: --kill-strays — SIGKILL ${strays.length} browser process(es):\n  ${strays.map((s) => s.slice(0, 160)).join("\n  ")}`);
+    spawnSync("pkill", ["-9", "-f", STRAY_BROWSER]);
     await new Promise((r) => setTimeout(r, 2000));
     strays = listStrays();
   }
   if (strays.length) {
-    log(`cool-down: ${strays.length} chrome-headless-shell process(es) alive${killStrays ? " after SIGKILL" : " (another run's, or a leak — pass --kill-strays to kill leaks)"} — refusing to start a browser lane:\n  ${strays.map((s) => s.slice(0, 160)).join("\n  ")}`);
+    log(`cool-down: ${strays.length} browser process(es) alive${killStrays ? " after SIGKILL" : " (another run's, or a leak — pass --kill-strays to kill leaks)"} — refusing to start a browser lane:\n  ${strays.map((s) => s.slice(0, 160)).join("\n  ")}`);
     return false;
   }
   const need = minFreeGB * 1024 ** 3;

@@ -567,12 +567,13 @@ export async function installProfile(
   }
 
   // Ask for durable storage before a multi-hundred-MB write; a denied request
-  // is fine (best-effort mode), but Firefox quotas want the ask.
-  try {
-    await navigator.storage.persist?.();
-  } catch {
-    /* best-effort */
-  }
+  // is fine (best-effort mode), but Firefox quotas want the ask. Not awaited:
+  // in Playwright Firefox 153 the page's persist() never settled (45 s), so an
+  // await here held the install at "installing the Lean core library" for
+  // every Firefox boot; Firefox prompts the user for persistent storage, and
+  // that the promise waits on that prompt is the inference (headless runs only;
+  // HARDENING #75). Chrome answers without a prompt.
+  Promise.resolve().then(() => navigator.storage.persist?.()).catch(() => { /* best-effort */ });
 
   const stagingName = `${packName}.staging`;
   try {

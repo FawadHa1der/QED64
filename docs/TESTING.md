@@ -12,13 +12,14 @@ Three gates:
   table below.
 - **G2** (the consumer's view): `npm run test:consumer`.
 
-**Browser lanes run one at a time.** Each starts a Chromium that boots a
-multi-GB runtime. Where several sessions share one machine, run every lane
+**Browser lanes run one at a time.** Each starts a browser (a Chromium; the
+Firefox boot lane, Playwright's Firefox) that boots a multi-GB runtime. Where several sessions share one machine, run every lane
 marked "lock" through the host's browser lock (a FIFO wrapper outside this
 repository that admits one browser lane at a time) and never `resident-gate.sh`,
 which kills whatever listens on :5184. On a machine of your own, running them
 one after another is enough. Between lanes the harness's cool-down
-(`harness.mjs cooldown`, below) refuses while a headless Chromium is alive.
+(`harness.mjs cooldown`, below) refuses while a headless Chromium or a
+Playwright Firefox is alive.
 
 **What a lane is pointed at.** "Dev" means the Vite dev server, `npm run dev`
 (http://localhost:5184/), or one started on another port with `PORT=<port>
@@ -53,6 +54,7 @@ paired build outputs of "Environment" below.
 | Unpaired snapshot | `node tests/adversarial/unpaired-snapshot.mjs --url <served url> [--scenario unpaired\|rescued]` | a snapshot of another runtime is refused before the runtime starts and before a byte of it downloads (HARDENING #62); `rescued`: a mispaired served index is replaced by the pinned runtime's per-build copy (HARDENING #64) | served build (with its per-build copies) | lock | `unpaired-snapshot: PASS (n/n checks, <scenario>)` |
 | Snapshot network cut | `node tests/adversarial/snapshot-network-cut.mjs --url <served url> [--scenarios once,lasting,manifest] [--cut-mode truncate\|abort]` | a single cut `.snapz` response is absorbed (ready, 0 deaths); a lasting cut halts the relay with a `network` death after one runtime start, not three, and a reload after the network returns is ready, in both cut modes (truncate: a body that ends early is `network`; abort: "Failed to fetch") (HARDENING #63) | served build | lock | `snapshot-network-cut: 2/2 pass` |
 | Deep recursion | `node tests/adversarial/deep-recursion.mjs --url <served url> [--scenarios seeded,typing,legal,theorems,pause] [--legal <lean source>]` | deep `decide` recursion ends in Lean's own error with the checker alive, not a pthread JS-stack overflow (HARDENING #60); `legal` (opt-in, needs `--legal`): a proof that is deep but within a browser's stack CHECKS, no error diagnostic (no "stack is exhausted"), no death or halt (the other side of the guard: kernel 0036's probe reserved 128 KiB of a Chrome Worker's stack, 2026-10-09); its calibrated cases (HARDENING #67, Init only): `--legal 'theorem deepLegal : ∀ n : Fin K, ∀ m : Fin K, n * m = m * n := by decide'` with K = 16 (must pass: the runtime's default probe with #70's synchronous elaboration), K = 18 and 20 (Lean's "stack is exhausted", 0 deaths: an accepted limit, HARDENING #71), K = 28 (must FAIL with Lean's error and 0 deaths: the over-deep side); `theorems` (opt-in, HARDENING #70): 20 Mathlib theorems and a wrong 21st, seeded, settle with exactly one error, on the last line, and no renderer crash (Lean's default Elab.async held ~46 pthreads and crashed the tab); `pause` (opt-in, HARDENING #72): an Init-only `#eval deep 100000` of a recursive `def`, seeded, overruns the engine stack in the IR interpreter (a 25-step `<;>` chain did until kernel 0040): exactly 1 death, relay halted with `lastDeath` code `ENGINE_STACK_OVERFLOW`, still 1 death 10 s later (no reboot loop), the QED64 note with that code published; then `setDocument("example : True := trivial")` settles ready with no further death | served build | lock | `deep-recursion: 2/2 pass`. It passed both scenarios on wasm64-57ae00dc5f6ce958 (kernel patch 0036, adopted with lean-v4.34.0-41ec565) and fails on 0035b and earlier: it is #60's regression check |
+| Firefox boot | `node tests/adversarial/firefox-boot.mjs --url <served url> [--wait-ms 180000] [--check-ms 120000]` | Playwright's Firefox (`npx playwright install firefox`) boots a served build to ready, then a correct proof settles with 0 errors and a wrong one with exactly 1, with 0 deaths and no failed request; it counts Firefox's legacy-EH deprecation warnings (one per instantiation) and prints console and page errors; exit 3 `REFUSED` when Firefox did not launch or the served page is not cross-origin isolated (no Firefox flag fakes COOP/COEP), exit 1 only for the product (never ready, wrong diagnostics, deaths). No prefs are passed: Memory64 is on since Firefox 134 and the `javascript.options.wasm_memory64` pref is gone since 141. Until 2026-10-16 no Playwright Firefox boot ever reached ready: `installProfile` awaited `navigator.storage.persist()`, which never settled there (Firefox prompts for persistent storage; the wait on the prompt is inferred, HARDENING #75); a Chromium lane cannot see a Firefox-only stall, which is why this lane is in the regular gate | served build | lock | `firefox-boot: PASS ready in N s, good check N ms (0 errors), bad check N ms (1 error), 0 deaths, N Workers, N legacy-EH warnings (Firefox <version>)` |
 | Resident gate | `tests/adversarial/resident-gate.sh` | the post-rebuild gate: typecheck, a restarted dev server on :5184, preflight, e2e, latency, battery, with cool-downs | the staged pairing (`resident-url.sh`) | not on a shared host (it kills the :5184 listener) | each lane's line; `GATE-REFUSED: …` exit 3 |
 
 Helpers, not lanes: `tests/adversarial/harness.mjs run-dir|cooldown` (the run
@@ -110,7 +112,7 @@ A fresh clone runs G1 after `npm run fetch:artifacts`, in two halves:
 
 1. **The page lanes, from the clone alone.**
    ```sh
-   npm ci && npm --prefix frontend ci && npx playwright install chromium
+   npm ci && npm --prefix frontend ci && npx playwright install chromium firefox
    npm run fetch:artifacts          # public/: runtime chunks, profile parts, snapshots (~1.6 GB), verified
    npm test                         # G0's unit suite
    npm run test:adversarial -- --skip-compiler   # preflight, cool-down, e2e (23/23)

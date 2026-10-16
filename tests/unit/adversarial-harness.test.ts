@@ -262,6 +262,6 @@ describe("the cool-down's memory reading", () => {
     expect(log).toEqual(["cool-down: REFUSED — no memory reading (vm_stat ENOENT; /proc/meminfo ENOENT; os.freemem() returned 0)"]);
     log.length = 0;
     expect(await coolDown({ minFreeGB: 6, maxWaitS: 0, log: (l) => log.push(l), strays: () => ["123 chrome-headless-shell --x"], reading: () => { throw new Error("not read while a browser is alive"); } })).toBe(false);
-    expect(log[0]).toMatch(/^cool-down: 1 chrome-headless-shell process\(es\) alive .* refusing to start a browser lane:/);
+    expect(log[0]).toMatch(/^cool-down: 1 browser process\(es\) alive .* refusing to start a browser lane:/);
   });
 });
