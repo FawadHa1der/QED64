@@ -14,6 +14,11 @@ import type { RelayStatus } from "../../lib/lsp-relay";
 /** What the stock page says beside its Reload button. */
 export const STALE_NOTICE = "QED64 was updated while this page was open — reload to use the new version";
 
+/** The boot card's words for a stale cause (HARDENING #74): a lazily imported chunk of the page's own bundle
+ * failed, which a deploy under the open page explains, and a connection cut during that import would read the
+ * same; the module map keeps the failure for the document, so a reload is the fix either way. */
+export const STALE_BOOT_NOTICE = "this page's own files could not be loaded, probably because QED64 was updated while it was open — reload to continue";
+
 /** Is this death a stale page's (its cause kind, from failure.ts)? */
 export const isStaleDeath = (d: RelayStatus["lastDeath"] | null | undefined): boolean => d?.cause?.kind === "stale";
 

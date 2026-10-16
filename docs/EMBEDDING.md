@@ -822,7 +822,7 @@ interface FailureCause { kind: FailureKind; httpStatus?: number; stage?: BootSta
 | `unpaired` | a snapshot baked by another runtime build | `SNAPSHOT_UNPAIRED` |
 | `oom` | an allocation or reservation failed | `MEMORY_FAILED`, `could not allocate`, `Cannot enlarge memory` |
 | `storage` | OPFS or quota | `QuotaExceededError` |
-| `stale` | the site was deployed under this page: the worker scripts it loaded are of different revisions (§7.7). **Reload the page.** Retrying in place does not help: the relay heals by itself (its replacement worker loads the new scripts, and the relay replays `initialize` and the document, so the language client never re-initializes), but it then serves under this page's older bundle, which holds only while the worker protocol changes additively | `WORKER_DEP_MISMATCH` (`code` is always `"WORKER_DEP_MISMATCH"`, exported as `WORKER_DEP_MISMATCH`) |
+| `stale` | the site was deployed under this page: the worker scripts it loaded are of different revisions (§7.7), or a lazily imported chunk of the page's own bundle (`/assets/<name>-<hash>.js`) could not be fetched (the browser's `Failed to fetch dynamically imported module: …/assets/…`; a deploy that replaced the assets under the open page explains it, and a connection cut during that import reads the same; HARDENING #74). **Reload the page.** A lost chunk is a boot failure (`stage: "failed"`, `boot.failed`, every `settled()` waiter rejects): nothing serves until the reload. For the worker scripts, retrying in place does not help: the relay heals by itself (its replacement worker loads the new scripts, and the relay replays `initialize` and the document, so the language client never re-initializes), but it then serves under this page's older bundle, which holds only while the worker protocol changes additively | `WORKER_DEP_MISMATCH` (`code` is always `"WORKER_DEP_MISMATCH"`, exported as `WORKER_DEP_MISMATCH`) |
 | `other` | the checker's own failure, with **one exception**: `code: "WORKER_SCRIPT_LOAD_FAILED"` means a worker script never ran, which looks the same offline as on a 404, so probe the link | `abort`, `wedged`, `SNAPSHOT_URL_REFUSED`, `ENGINE_STACK_OVERFLOW` |
 
 An `unpaired` failure is decided by the page wherever it holds both facts,
@@ -1895,6 +1895,24 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   or event; `death.cause` and `status().lastDeath.cause` may carry `line`),
   and so are the worker's `PROTOCOL` and `REVISION` (an older page reads
   the `died` event as an ordinary crash).
+- **A lost shell chunk during a deploy is `stale` (HARDENING #74,
+  2026-10-16):** a page booting while a deploy replaced `/assets/` lost its
+  lazily imported chunk; the browser's "Failed to fetch dynamically imported
+  module: …/assets/…" (Firefox: "error loading dynamically imported module")
+  was classified `network`. `failureKindOf` and `deathCause` now return
+  `stale` for those words when the URL is under `/assets/`, with code
+  `WORKER_DEP_MISMATCH` as every stale cause (§7.2); the stock page's boot
+  card says "this page's own files could not be loaded, probably because
+  QED64 was updated while it was open — reload to continue", the browser's
+  words as its title. The words do not say why the fetch failed: a
+  connection cut during that import reads `stale` too (accepted: the module
+  map keeps a failed fetch for the document, so a reload is right for both).
+  A module whose URL has no `/assets/` segment stays `network`; `/assets/`
+  is Vite's default `assetsDir`, so a Vite-default embedder that classifies
+  such an error through `failureCauseOf` is covered as well. A
+  classification change only:
+  no export, type or revision change (`EMBED_API_REVISION` stays
+  `1.0.0-pre.8`).
 - **`qed64/edge` routes a toolchain release (plan step B2b, 2026-10-06):**
   additive options, every default unchanged (`QED64_LEGACY` and the hardened
   defaults keep `release: null`). `release` takes a `lean4-wasm64.release/v1`

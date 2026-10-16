@@ -19,7 +19,7 @@ import { installWidgetSourceCache } from "./widget-source-cache";
 import { createTestHatch } from "./test-hatch";
 import { createCheckFallback } from "./check-fallback";
 import { STAGES, createBootChecklist } from "./boot-checklist";
-import { STALE_NOTICE, createStaleWatch } from "./stale-notice";
+import { STALE_BOOT_NOTICE, STALE_NOTICE, createStaleWatch } from "./stale-notice";
 
 // The embedder-facing surface (docs/EMBEDDING.md §2), published synchronously
 // at module start — before any of the page's own listeners matter — so an
@@ -183,12 +183,18 @@ function bootFinish() {
   window.setTimeout(() => bootEl.remove(), 600);
 }
 
+// The first failure with a cause is the one the card keeps: main()'s catch reports the cause, then
+// `ui.idle("FAILED: …")` re-enters here without one (HARDENING #74).
+let bootFailShown = false;
 function bootFail(message: string, cause?: FailureCause) {
-  if (bootDone) return;
+  if (bootDone || (bootFailShown && !cause)) return;
+  bootFailShown ||= cause !== undefined;
   pageApi.bootFailed(message, cause);
   bootCard.classList.add("failed");
   bootCard.querySelector("h1")!.textContent = "QED64 could not start";
-  bootLabel.textContent = message;
+  // A stale cause (HARDENING #74) gets words that say what to do; the browser's own stay as the title.
+  bootLabel.textContent = cause?.kind === "stale" ? STALE_BOOT_NOTICE : message;
+  bootLabel.title = message;
   bootNums.textContent = "";
   bootBar.classList.remove("busy");
   bootReload.hidden = false;

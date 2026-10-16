@@ -20,7 +20,8 @@ export type BootStep = "check" | "download" | "inflate" | "commit" | "verify" | 
  * region the loader refuses); unpaired: a snapshot of another runtime build; oom: an
  * allocation or memory reservation failed; storage: OPFS/quota; stale: the
  * site was updated under this page (its worker scripts are of another
- * revision than each other: WORKER_DEP_MISMATCH) — reload the page; other: the
+ * revision than each other: WORKER_DEP_MISMATCH; or a lazily imported chunk of
+ * its own bundle is gone) — reload the page; other: the
  * checker's own failure. A death with NO cause is "no evidence" (a bare worker
  * error event) — see docs/EMBEDDING.md §7.2. */
 export type FailureKind = "network" | "missing" | "corrupt" | "unpaired" | "oom" | "storage" | "stale" | "other";
@@ -79,8 +80,19 @@ export const TRANSFER_ENDED_EARLY = /\bthe transfer of .+ ended early\b/;
  * serves again, but under this page's older bundle — reload the page. */
 export const WORKER_DEP_MISMATCH = "WORKER_DEP_MISMATCH";
 /** The refusal's own words (lean.worker.js checkSibling), for the same throw's
- * uncaught error event, which carries the message but no code. */
-const STALE_MESSAGE = /\ba deploy mixed versions\b/;
+ * uncaught error event, which carries the message but no code; and the
+ * browser's words for a lazily imported chunk of the page's own bundle (Vite's
+ * `/assets/<name>-<hash>.js`) that a deploy replaced under the open page
+ * (Chrome "Failed to fetch dynamically imported module: <url>", Firefox "error
+ * loading dynamically imported module: <url>"; observed live 2026-10-16,
+ * HARDENING #74). Checked before the network rule: the words contain "Failed to
+ * fetch". The words do not say why the fetch failed: a connection cut during
+ * that import reads the same and is called stale too; accepted, since the
+ * module map keeps a failed fetch for the document, so retrying in place helps
+ * in neither case and a reload is right for both. A module whose URL has no
+ * /assets/ segment stays the network's (/assets/ is Vite's default assetsDir,
+ * so a Vite-default embedder's own chunk is covered as well). */
+const STALE_MESSAGE = /\ba deploy mixed versions\b|\b(?:Failed to fetch|error loading) dynamically imported module\b.*\/assets\//i;
 
 /** A Lean thread ran out of the browser's engine stack (HARDENING #72): the
  * relay pauses checking at once instead of rebooting into the same death. Its
