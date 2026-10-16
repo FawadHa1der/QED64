@@ -901,6 +901,10 @@ function fail(requestId, error, code, recoverable, extra) {
 // (a watchdog restart request), and mode "batch" means no resident session
 // existed — the port must key on {mode, reason, code}, not on the event's
 // presence.
+// Emscripten's abort(what) passes the raw `what`: "" for a plain abort(), whose
+// engine words ("RuntimeError: unreachable") reach only the console (HARDENING #73).
+const ABORT_NO_REASON = "no reason given; the engine's error is in the console";
+
 let died = false;
 function die(code, reason, message) {
   if (died) return;
@@ -1717,7 +1721,7 @@ async function boot(msg) {
       onAbort(reason) {
         memCheckpoint("abort");
         if (!settled) {
-          finishBoot(false, new Error(`Lean aborted during boot: ${reason || "unknown"}`));
+          finishBoot(false, new Error(`Lean aborted during boot: ${reason || ABORT_NO_REASON}`));
           return;
         }
         // A post-boot abort means the wasm runtime is gone for good: report
@@ -1725,8 +1729,8 @@ async function boot(msg) {
         // error reply settles the batch caller (compile / loadSnapshot);
         // `died` is the one death fact (W2) for the resident port.
         state = "dead";
-        fail(currentRequest, new Error(`Lean runtime aborted: ${reason || "unknown"}`), "RUNTIME_ABORTED", false);
-        die(null, "abort", String(reason || "unknown"));
+        fail(currentRequest, new Error(`Lean runtime aborted: ${reason || ABORT_NO_REASON}`), "RUNTIME_ABORTED", false);
+        die(null, "abort", reason ? String(reason) : `the Lean runtime aborted: ${ABORT_NO_REASON}`);
       },
     };
 
