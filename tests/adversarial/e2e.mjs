@@ -46,7 +46,7 @@ teeLog(dir, "e2e.log");
 const artDir = path.join(dir, "artifacts");
 fs.mkdirSync(artDir, { recursive: true });
 fs.mkdirSync(path.join(root, "work/adversarial"), { recursive: true });
-console.log(`e2e: ${url} → ${buildId} (${target.mode}, ${browserName()}); reports in ${path.relative(root, dir)}`);
+console.log(`e2e: ${url} → ${buildId} (${target.mode}${browserName() === "firefox" ? ", firefox" : ""}); reports in ${path.relative(root, dir)}`);
 
 const corpus = fs.existsSync(corpusPath) ? JSON.parse(fs.readFileSync(corpusPath, "utf8")).items : [];
 // Battery-only keys on an editor-action item are dead here (review C7: four
@@ -78,7 +78,8 @@ let pageCrashes = 0;
 /** Thrown when the page cannot boot: the run is not measuring the product. */
 class InfraError extends Error {}
 
-const browser = await launchBrowser();
+// A browser that does not launch (Playwright's Firefox not installed) is this lane's refusal, as a typo in the flag is.
+const browser = await launchBrowser().catch((e) => { console.error(`e2e: refused — ${String(e?.message ?? e).split("\n")[0].slice(0, 200)}`); process.exit(3); });
 const context = await browser.newContext();
 let page;
 function wirePage(p) {

@@ -81,7 +81,7 @@ stopVite();
 // merged markdown report (per-run dir + legacy path)
 const load = (f) => { try { return JSON.parse(fs.readFileSync(path.join(dir, f), "utf8")); } catch { return null; } };
 const comp = load("compiler-report.json"), e2e = load("e2e-report.json");
-const lines = [`# Adversarial suite report`, "", `run: ${path.relative(root, dir)} — runtime ${pre.buildId} (${target.mode}, ${browser}) — ${url}`, ""];
+const lines = [`# Adversarial suite report`, "", `run: ${path.relative(root, dir)} — runtime ${pre.buildId} (${target.mode}${browser === "firefox" ? ", firefox" : ""}) — ${url}`, ""];
 lines.push(...laneSections([
   { name: "compiler", report: comp, code: compilerCode, log: "compiler.log / run.log" },
   { name: "e2e", report: e2e, code: e2eCode, log: "run.log" },
