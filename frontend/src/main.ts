@@ -320,7 +320,13 @@ function renderStatus(s: PageStatus) {
     checkFallback.observe(s);
     if (checklist.observe(s)) renderStages(); // a deliberate replacement's first status: back to the runtime step
   }
-  if (s.phase === "ready") everReady = true;
+  if (s.phase === "ready") {
+    everReady = true;
+    // The memory meter samples on the TRANSITION into ready (HARDENING #76), not
+    // on every ready-phase status the relay forwards (several a second).
+    if (!wasReady) sampleMemoryNow?.();
+  }
+  wasReady = s.phase === "ready";
   trackSearch(s);
   if (s.phase === "halted") {
     const d = s.lastDeath ?? null;
@@ -620,13 +626,18 @@ async function main() {
  * heap nears its cap — growth past it is a recoverable worker abort, but the
  * OS may kill the whole tab first when other heavy tabs crowd the machine. */
 type Tel = { request(type: string, payload: Record<string, unknown>): Promise<unknown> };
+// The memory meter's sampler, also run when the relay enters `ready` (HARDENING
+// #76): the interval alone left `status().memory` null until its first tick,
+// 12 s in, which a runtime that is ready in 3 s exposed.
+let sampleMemoryNow: (() => void) | null = null;
+let wasReady = false;
 function startMemoryMeter(getSession: () => Tel | null) {
   const el = document.getElementById("buildinfo");
   if (!el) return;
   const base = el.textContent ?? "";
   let warned = false;
   const gib = (n: number) => (n / 1073741824).toFixed(1);
-  window.setInterval(() => {
+  const sample = () => {
     const session = getSession();
     if (!session) return;
     void Promise.race([
@@ -651,8 +662,10 @@ function startMemoryMeter(getSession: () => Tel | null) {
         console.warn(`[qed64] wasm heap at ${(frac * 100) | 0}% of its ${gib(mem.maximumBytes)} GiB cap — heavy elaboration may restart the checker`);
       }
       if (frac < 0.8) warned = false;
-    });
-  }, 12000);
+    }, () => { /* the session was disposed or died mid-request (a restart at ready): nothing to show */ });
+  };
+  sampleMemoryNow = sample;
+  window.setInterval(sample, 12000);
 }
 
 void main().catch((err) => {

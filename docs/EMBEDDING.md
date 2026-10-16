@@ -1913,6 +1913,17 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   classification change only:
   no export, type or revision change (`EMBED_API_REVISION` stays
   `1.0.0-pre.8`).
+- **`status().memory` is requested when the relay enters `ready` (HARDENING
+  #76, 2026-10-16):** the stock page fed the projection only from its 12 s
+  heap-meter interval, so on a runtime that is ready in a few seconds
+  `currentBytes`/`maximumBytes` read null until that tick (an embedder
+  reading `status()` within ~12 s of ready saw nulls; the showcase's C3,
+  about 9 s in, did). The page now also requests the worker's telemetry when
+  the relay enters `ready`, so the numbers arrive one worker round-trip
+  (milliseconds) later; a `ready` listener or a `settled()` continuation that
+  reads `status()` synchronously still sees the previous value (null for a
+  new session, as §status's contract says): read it on a later turn. No API
+  or revision change.
 - **`installProfile` no longer waits for `navigator.storage.persist()`
   (HARDENING #75, 2026-10-16):** in Playwright Firefox 153 the awaited
   `persist()` never settled, so the stock page's install sat at the first

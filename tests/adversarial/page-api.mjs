@@ -16,6 +16,8 @@
 //                  booted light (snapshots ["init"]).
 //   embed-setdoc   ?embed=1 without #code: setDocument from the `qed64:api`
 //                  listener becomes the boot document.
+//   memory         status().memory.currentBytes/maximumBytes are positive numbers once settled
+//                  (read on a later turn; the page requests telemetry when the relay enters ready, HARDENING #76).
 //   events         plain mode: boot events carry stages and end with done;
 //                  setDocument of a broken proof → settled({version}) →
 //                  a `document` event with that text, a `diagnostics` event
@@ -127,9 +129,16 @@ try {
     await context.close();
   }
 
-  if (runs("events") || runs("restart")) {
+  if (runs("events") || runs("restart") || runs("memory")) {
     const { page, context } = await open(url, { seed: INIT_DOC });
     const s0 = await settle(page);
+    if (runs("memory")) {
+      // The memory projection is numbers once ready (EMBEDDING's `status().memory`): until HARDENING #76 the page fed it
+      // only from a 12 s interval, so a read at ready on a fast runtime found null; only a consumer's test noticed.
+      const mem = await page.evaluate(() => globalThis.qed64.api.status().memory);
+      const ok = s0.phase === "ready" && Number.isFinite(mem?.currentBytes) && mem.currentBytes > 0 && Number.isFinite(mem?.maximumBytes) && mem.maximumBytes >= mem.currentBytes;
+      record("memory", ok, `phase ${s0.phase}, status().memory ${JSON.stringify(mem)}`);
+    }
     const boots = await events(page, "boot");
     const stages = [...new Set(boots.map((b) => b.stage))];
     const bootOk = ["manifests", "profile", "runtime", "snapshot"].every((st) => stages.includes(st)) && boots.at(-1)?.done === true;
