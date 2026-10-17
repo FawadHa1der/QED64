@@ -270,7 +270,7 @@ its prerequisites and its pass line):
   ```
 - **G1**, end to end in a real browser, against the fetched artifacts
   (`npx playwright install chromium` first): `npm run test:adversarial`
-  (preflight, then the compiler battery, then e2e 23/23; `-- --skip-compiler`
+  (preflight, then the compiler battery, then e2e 24/24; `-- --skip-compiler`
   on a fresh clone, because the battery needs Node-side build outputs). Add
   the page lanes `tests/adversarial/{page-api,infoview-actions,liveness-faults,reload-storm,edit-storm,…}.mjs`
   and the integration tier `npm run test:integration` (the real runtime under

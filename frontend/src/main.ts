@@ -198,6 +198,8 @@ function bootFail(message: string, cause?: FailureCause) {
   bootNums.textContent = "";
   bootBar.classList.remove("busy");
   bootReload.hidden = false;
+  // A failed boot cannot open a shared snippet (HARDENING #77): drop the gate; the fragment stays, so Reload offers it again.
+  document.getElementById("sharedlink")?.remove();
 }
 bootReload.addEventListener("click", () => window.location.reload());
 
@@ -447,7 +449,7 @@ async function main() {
   let restored: string | null = null;
   let initialText: string;
   const hashCode = FRAMED_SAME_ORIGIN ? codeFromHash(location.hash) : null;
-  if (!FRAMED_SAME_ORIGIN && EMBED && codeFromHash(location.hash) !== null) console.warn("[qed64] #code= ignored: a boot document in the URL is honoured only from a same-origin embedding frame");
+  if (!FRAMED_SAME_ORIGIN && EMBED && codeFromHash(location.hash) !== null) console.warn("[qed64] #code=/#codez= ignored: a boot document in the URL is honoured only from a same-origin embedding frame");
   if (hashCode !== null) {
     try { history.replaceState(history.state, "", `${location.pathname}${location.search}`); } catch { /* sandboxed */ }
   }
@@ -590,7 +592,7 @@ async function main() {
   await editor.start(editorEl, "/project/Probe.lean", initialText);
   docText = () => editor.editor?.getModel()?.getValue() ?? relay.lastText;
   pageApi.editorReady();
-  if (restored) ui.progress("restored your last buffer");
+  if (restored && persistBuffer) ui.progress("restored your last buffer"); // not when a shared snippet's Open replaced it (HARDENING #77)
   let saveTimer: number | undefined;
   if (!EMBED) editor.editor?.getModel()?.onDidChangeContent(() => {
     window.clearTimeout(saveTimer);

@@ -303,8 +303,10 @@ The first match in this list wins:
      the editor is ready), drops the fragment, and switches persistence off
      for that page load: no edit is written to `localStorage["qed64.buffer"]`,
      so the visitor's own buffer survives, and the pill says so once.
-     **Dismiss** drops the fragment and nothing else. A top-level `?embed=1`
-     page still ignores the fragment and logs that it did.
+     **Dismiss** drops the fragment and nothing else. A boot that fails
+     removes the panel; the fragment stays, so Reload offers it again. A
+     top-level `?embed=1` page still ignores the fragment and logs that it
+     did.
    - A cross-origin frame cannot boot at all (no isolation).
    - In a frame it is **read once**: the page drops the fragment with
      `history.replaceState`, keeping the query, so a reload does not
@@ -1935,6 +1937,14 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   classification change only:
   no export, type or revision change (`EMBED_API_REVISION` stays
   `1.0.0-pre.8`).
+- **`installProfile` no longer waits for `navigator.storage.persist()`
+  (HARDENING #75, 2026-10-16):** in Playwright Firefox 153 the awaited
+  `persist()` never settled, so the stock page's install sat at the first
+  pack (Firefox prompts for persistent storage; the wait on the prompt is
+  inferred; an embedder calling `installProfile` in Firefox was exposed the
+  same way, by the code path, not measured). The ask is still made,
+  fire-and-forget; a denied request is best-effort storage as before. No API
+  or revision change.
 - **`status().memory` is requested when the relay enters `ready` (HARDENING
   #76, 2026-10-16):** the stock page fed the projection only from its 12 s
   heap-meter interval, so on a runtime that is ready in a few seconds
@@ -1946,14 +1956,22 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   reads `status()` synchronously still sees the previous value (null for a
   new session, as §status's contract says): read it on a later turn. No API
   or revision change.
-- **`installProfile` no longer waits for `navigator.storage.persist()`
-  (HARDENING #75, 2026-10-16):** in Playwright Firefox 153 the awaited
-  `persist()` never settled, so the stock page's install sat at the first
-  pack (Firefox prompts for persistent storage; the wait on the prompt is
-  inferred; an embedder calling `installProfile` in Firefox was exposed the
-  same way, by the code path, not measured). The ask is still made,
-  fire-and-forget; a denied request is best-effort storage as before. No API
-  or revision change.
+- **Share links on the plain page (HARDENING #77, 2026-10-16):**
+  `codeFromHash` accepts lean4web's `#codez=` beside `#code=` through a
+  vendored LZ-string port (`frontend/src/lz-string.ts`, MIT, no npm
+  dependency; padding tolerated, the URI-safe alphabet recognised, `code`
+  outranks `codez`, the 2 MiB cap enforced before the text is built), and a
+  top-level `#code=`/`#codez=` page opens the fragment behind the consent
+  gate of §3.1 (`#sharedlink`: Open calls `setDocument` and switches that
+  load's persistence off; Dismiss drops the fragment) instead of logging that
+  it ignored it. A framed same-origin page and embed mode behave as before,
+  except that `#codez=` now decodes there too; a page without a fragment
+  builds nothing new. §4 gains the `#codez=` row, §5's backlog loses it,
+  §11's note names the gate. Page tier only: no new query parameter, event
+  or method, so `API_REVISION` stays `1.0.0` and `EMBED_API_REVISION` stays
+  `1.0.0-pre.8`; `qed64/embed` and the workers are untouched. Tests:
+  tests/unit/lz-string.test.ts, tests/unit/page-api.test.ts, and the e2e
+  corpus's `shared-link-gate` and `boot` (docs/TESTING.md).
 - **`qed64/edge` routes a toolchain release (plan step B2b, 2026-10-06):**
   additive options, every default unchanged (`QED64_LEGACY` and the hardened
   defaults keep `release: null`). `release` takes a `lean4-wasm64.release/v1`
@@ -1996,19 +2014,3 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   `EMBED_API_REVISION` stays `1.0.0-pre.6` (§7: the revision is the semver
   of the library API) and the page API's revision is unchanged; the workers
   and their protocol revision are untouched.
-- **Share links on the plain page (HARDENING #77, 2026-10-16):**
-  `codeFromHash` accepts lean4web's `#codez=` beside `#code=` through a
-  vendored LZ-string port (`frontend/src/lz-string.ts`, MIT, no npm
-  dependency; padding tolerated, the URI-safe alphabet recognised, `code`
-  outranks `codez`, the 2 MiB cap enforced before the text is built), and a
-  top-level `#code=`/`#codez=` page opens the fragment behind the consent
-  gate of §3.1 (`#sharedlink`: Open calls `setDocument` and switches that
-  load's persistence off; Dismiss drops the fragment) instead of logging that
-  it ignored it. A framed same-origin page and embed mode behave as before,
-  except that `#codez=` now decodes there too; a page without a fragment
-  builds nothing new. §4 gains the `#codez=` row, §5's backlog loses it,
-  §11's note names the gate. Page tier only: no new parameter, event or
-  method, so `API_REVISION` stays `1.0.0` and `EMBED_API_REVISION` stays
-  `1.0.0-pre.8`; `qed64/embed` and the workers are untouched. Tests:
-  tests/unit/lz-string.test.ts, tests/unit/page-api.test.ts, and the e2e
-  corpus's `shared-link-gate` and `boot` (docs/TESTING.md).
