@@ -198,7 +198,7 @@ function bootFail(message: string, cause?: FailureCause) {
   bootNums.textContent = "";
   bootBar.classList.remove("busy");
   bootReload.hidden = false;
-  // A failed boot cannot open a shared snippet (HARDENING #77): drop the gate; the fragment stays, so Reload offers it again.
+  // A failed boot drops the share-link gate (HARDENING #77); the fragment stays, so Reload offers it again.
   document.getElementById("sharedlink")?.remove();
 }
 bootReload.addEventListener("click", () => window.location.reload());
