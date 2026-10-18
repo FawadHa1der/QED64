@@ -301,8 +301,10 @@ The first match in this list wins:
      (`sharedLinkFlags` in page-api.ts: a label, not a blocker), and two
      buttons. **Open in editor** calls `setDocument(text)` (it queues until
      the editor is ready), drops the fragment, and switches persistence off
-     for that page load: no edit is written to `localStorage["qed64.buffer"]`,
-     so the visitor's own buffer survives, and the pill says so once.
+     for that page load: an edit of the visitor's still waiting in the 400 ms
+     save debounce is written first, then no edit is written to
+     `localStorage["qed64.buffer"]`, so the visitor's own buffer survives (a
+     first visit, with nothing saved, stores nothing), and the pill says so once.
      **Dismiss** drops the fragment and nothing else. A boot that fails
      removes the panel; the fragment stays, so Reload offers it again. A
      top-level `?embed=1` page still ignores the fragment and logs that it
@@ -1971,7 +1973,10 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   or method, so `API_REVISION` stays `1.0.0` and `EMBED_API_REVISION` stays
   `1.0.0-pre.8`; `qed64/embed` and the workers are untouched. Tests:
   tests/unit/lz-string.test.ts, tests/unit/page-api.test.ts, and the e2e
-  corpus's `shared-link-gate` and `boot` (docs/TESTING.md).
+  corpus's `shared-link-gate` and `boot` (docs/TESTING.md). Follow-up
+  2026-10-18: Open no longer stores the default example on a first visit
+  (it flushed the save debounce even with nothing pending); the scenario
+  now runs a first visit and a saved-buffer visit.
 - **`qed64/edge` routes a toolchain release (plan step B2b, 2026-10-06):**
   additive options, every default unchanged (`QED64_LEGACY` and the hardened
   defaults keep `release: null`). `release` takes a `lean4-wasm64.release/v1`

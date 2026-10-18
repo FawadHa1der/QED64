@@ -596,7 +596,7 @@ async function main() {
   let saveTimer: number | undefined;
   if (!EMBED) editor.editor?.getModel()?.onDidChangeContent(() => {
     window.clearTimeout(saveTimer);
-    saveTimer = window.setTimeout(saveNow, 400);
+    saveTimer = window.setTimeout(() => { saveTimer = undefined; saveNow(); }, 400);
   });
   function saveNow() {
     try {
@@ -604,7 +604,9 @@ async function main() {
       if (typeof text === "string" && persistBuffer) window.localStorage.setItem("qed64.buffer", text);
     } catch { /* quota or private mode — persistence is best-effort */ }
   }
-  if (!EMBED) flushBufferSave = () => { window.clearTimeout(saveTimer); saveNow(); };
+  // Only a save the debounce still owes: with none pending the store already holds the visitor's text, and a first
+  // visit has none to keep (flushing then stored the default example as their buffer; HARDENING #77, 2026-10-18).
+  if (!EMBED) flushBufferSave = () => { if (saveTimer === undefined) return; window.clearTimeout(saveTimer); saveTimer = undefined; saveNow(); };
 
   // Example switching = a document edit; a header change is resolved
   // in-kernel against the loaded environments (K1), a light session widens
