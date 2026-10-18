@@ -67,6 +67,8 @@
       font: 12px ui-monospace, monospace; color: #5a5f78;
     }
     #bootstat #bootlabel { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* A failed boot's label is advice (the stale and capability notices), not a progress line: it wraps. */
+    #bootcard.failed #bootstat #bootlabel { white-space: normal; overflow: visible; }
     #bootstat #bootnums { flex: none; }
     #bootstages { margin: 0; padding: 0 0 0 2px; list-style: none; }
     #bootstages li {
