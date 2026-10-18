@@ -35,6 +35,18 @@
 //                         the ring): the death is reported at once as "exit"
 //                         (not as a 22 s liveness verdict), and the relay
 //                         reboots to the same messages.
+//   early-death-detected  a fresh session's Worker is terminated at its first
+//                         ready, before its first heartbeat (HARDENING #78):
+//                         the heartbeat watchdog, armed by the page's arm, must
+//                         report a "heartbeat" death (6 s + 2 s) and the relay
+//                         reboots and replays an edit made while the Worker was
+//                         dead (only the replay publishes its "8"). It first
+//                         waits until its death cannot trip the crash-loop
+//                         breaker (earlier scenarios' deaths). Before #78 the watchdog
+//                         started only at the first beat, so this death was
+//                         never seen and the page stayed "ready" with nothing
+//                         checking. A kill that lands after a beat is reported
+//                         as a failed precondition, never as a pass.
 //
 // Usage: node tests/adversarial/liveness-faults.mjs [--url http://localhost:5197/]
 //          [--only <scenario>] [--run-dir <dir>] [--boot-budget-ms 300000]
@@ -90,6 +102,12 @@ let page;
 try {
   const context = await browser.newContext();
   await context.addInitScript((text) => { try { window.localStorage.setItem("qed64.buffer", text); } catch { /* storage off */ } }, DOC);
+  // Heartbeats per Worker (early-death-detected kills a Worker that has not beaten yet; the wrapper only listens).
+  await context.addInitScript(() => {
+    if (window !== window.top) return;
+    const W = window.Worker; const beats = (window.__qed64Beats = new Map());
+    window.Worker = class extends W { constructor(...a) { super(...a); beats.set(this, 0); this.addEventListener("message", (e) => { const m = e.data; if (m && m.type === "event" && m.kind === "heartbeat") beats.set(this, beats.get(this) + 1); }); } };
+  });
   page = await context.newPage();
   page.on("pageerror", (e) => pageErrors.push(String(e).slice(0, 200)));
   // Everything (the worker's stderr arrives as `[lean:stderr] …` page console lines), capped.
@@ -347,6 +365,44 @@ try {
       record("exit-detected", ok,
         `death ${sawExit ? `'${sawExit.reason}' at ${sawExit.ms} ms (${sawExit.message})` : "NEVER seen"}; ready again ${recovered.ok} at ${recovered.ms} ms on a new session; stats ${JSON.stringify(d)}`,
         { exit: sawExit, recoveryMs: recovered.ms, stats: d });
+    }
+
+    // ---------- early-death-detected (HARDENING #78) ----------
+    if (runs("early-death-detected")) {
+      // The crash-loop breaker is not under test here: wedge-recovery's and exit-detected's deaths count toward its
+      // 3 in 120 s (lib/lsp-relay.ts BREAKER_*; the relay stamps deaths with the page's Date.now()), so wait until
+      // this scenario's death cannot be the third.
+      const calm = await waitFor(() => page.evaluate(() => { const t = Date.now(); return globalThis.qed64.relay.deaths.filter((d) => t - d < 120000).length < 2; }).catch(() => false), 130000, 1000);
+      const s0 = await stats();
+      const session0 = (await status())?.session;
+      await page.evaluate(() => globalThis.qed64.api.restart());
+      // The new session's first ready, polled tightly: its loop opened at most a moment ago and beats 2 s after.
+      const atReady = await waitFor(async () => { const s = await status(); return s?.phase === "ready" && s.session && s.session !== session0 ? s : null; }, 300000, 25);
+      const kill = atReady.ok ? await page.evaluate(() => {
+        const w = globalThis.qed64?.relay?.session?.lean?.worker;
+        const r = { session: globalThis.qed64?.relay?.session?.id ?? null, beats: w && window.__qed64Beats.has(w) ? window.__qed64Beats.get(w) : null };
+        if (w) w.terminate();
+        return r;
+      }).catch((e) => ({ error: String(e).slice(0, 160) })) : null;
+      const t0 = Date.now();
+      // An edit while the dead Worker is still the session: it drops it, the relay keeps it as the text to replay, and
+      // only the replacement session can then publish the third message, "8" (as in wedge-recovery).
+      const text = withEvals(1, 7);
+      if (kill && !kill.error) await setBuffer(text);
+      let sawDeath = null;
+      const recovered = await waitFor(async () => {
+        const s = await status();
+        if (s?.lastDeath && s.lastDeath.session === kill?.session && !sawDeath) sawDeath = { ms: Date.now() - t0, reason: s.lastDeath.reason, message: s.lastDeath.message };
+        if (!(sawDeath && s?.phase === "ready" && s.session !== kill?.session)) return null;
+        return (await badge()) === "3" && (await diagText()).split("\n").includes("8") ? s : null;
+      }, 120000, 200);
+      const d = delta(s0, await stats());
+      const before = kill?.beats === 0;
+      const ok = calm.ok && atReady.ok && before && sawDeath?.reason === "heartbeat" && sawDeath.ms <= 15000 && recovered.ok && d?.workerDeaths === 1 && d?.breakerTrips === 0;
+      record("early-death-detected", ok,
+        `${!atReady.ok ? "the restarted session never reached ready" : !before ? `PRECONDITION: the kill landed after ${kill?.beats} heartbeat(s) (${JSON.stringify(kill)}), so it did not test the window` : `killed at the first ready before any beat (session ${kill.session})`}; death ${sawDeath ? `'${sawDeath.reason}' at ${sawDeath.ms} ms (${sawDeath.message})` : "NEVER seen (the page stayed ready with nothing checking)"}; the replayed edit settled (3 messages, '8') ${recovered.ok} at ${recovered.ms} ms on a new session; breaker window clear ${calm.ok} after ${calm.ms} ms; stats ${JSON.stringify(d)}`,
+        { kill, death: sawDeath, recoveryMs: recovered.ms, calmMs: calm.ms, stats: d });
+      await edit(DOC, 2, 120000);
     }
   }
 } catch (e) {

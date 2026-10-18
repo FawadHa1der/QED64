@@ -322,7 +322,7 @@ it); `arm()` is the `lsp-arm` request; `telemetry()` (the public wrapper of
 `{state, memory:{currentBytes, initialBytes, maximumBytes, regionBytes, …},
 status}`. `onDied(code, reason, message)` fires **once** per session from a
 worker `error`, an unrecoverable error reply, the worker's `died` event, or
-**heartbeat loss**: 6 s without a beat, then a telemetry probe unanswered for
+**heartbeat loss** (the window runs from the arm, then from each beat or answered probe; HARDENING #78): 6 s without a beat, then a telemetry probe unanswered for
 2 s (a frozen page timer fires late, never falsely). `dispose()` detaches
 every listener *first*, then terminates — a deliberate teardown is never a
 death.

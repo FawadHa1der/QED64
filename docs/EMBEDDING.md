@@ -1958,6 +1958,20 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   reads `status()` synchronously still sees the previous value (null for a
   new session, as §status's contract says): read it on a later turn. No API
   or revision change.
+- **A session that dies before its first heartbeat is a death (HARDENING
+  #78, 2026-10-18):** `LeanSession`'s heartbeat-loss watchdog now runs from
+  the moment the worker accepts `arm()`, not from the first beat (about 2 s
+  after the loop opens), so a Worker that dies or whose JS thread stops in
+  that window is reported dead (`reason: "heartbeat"`) and the relay
+  reboots, where before the page kept showing `ready` with nothing checking
+  (a Lean-side wedge is still reported `wedged`). The rule is the documented
+  one (6 s without a beat, then a telemetry probe unanswered for 2 s); a
+  booting worker is still never probed. A direct `LeanSession` user must keep
+  `arm()` the last runtime step: a `compile` or `loadSnapshot` after it
+  blocks the worker and now reads as heartbeat loss. `EMBED_API_REVISION`
+  stays `1.0.0-pre.8`: no export, type or event changes, and `heartbeat` was
+  already a documented `rebootReason` and `DeathInfo.kind` (§2.2); this makes
+  the implementation keep that contract in the window.
 - **Share links on the plain page (HARDENING #77, 2026-10-16):**
   `codeFromHash` accepts lean4web's `#codez=` beside `#code=` through a
   vendored LZ-string port (`frontend/src/lz-string.ts`, MIT, no npm

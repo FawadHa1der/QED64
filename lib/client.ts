@@ -193,8 +193,9 @@ interface Pending {
 
 // Heartbeat loss (§2.2 L2; §6 first pass 6): the worker beats every 2 s once
 // its loop is open; three missed beats then a telemetry probe unanswered for
-// 2 s is the ONLY page-side timer with lifecycle meaning. A frozen page
-// timer (HARDENING #10) fires late, never falsely.
+// 2 s is the ONLY page-side timer with lifecycle meaning. The window runs from
+// the arm (`arm()` resolved, HARDENING #78), then from each beat or answered
+// probe. A frozen page timer (HARDENING #10) fires late, never falsely.
 const HEARTBEAT_LOSS_MS = 6000;
 const HEARTBEAT_PROBE_MS = 2000;
 
@@ -459,7 +460,14 @@ export class LeanSession {
    * never overtake a queued loadSnapshot; the worker refuses it BAD_STATE
    * while anything owns the runtime. */
   arm(): Promise<void> {
-    return this.exclusive(() => this.request<{ operation: string }>("lsp-arm")).then(() => undefined);
+    return this.exclusive(() => this.request<{ operation: string }>("lsp-arm")).then(() => {
+      // The watchdog runs from the arm, not from the first beat (HARDENING #78): the loop opens at the arm (a
+      // queued didOpen) or on the first didOpen after it and beats 2 s later, and a Worker that died in between
+      // was never declared dead. Not earlier: a booting worker does not beat and can be busy for minutes. The arm
+      // is the session start's LAST runtime step (no compile or loadSnapshot after it), so the worker's JS thread
+      // is then free and the telemetry probe answers for a live worker whose loop has not opened yet.
+      if (!this.detached && !this.diedReported) this.armHeartbeat();
+    });
   }
 
   private rejectAll(error: Error & { code?: string }) {
