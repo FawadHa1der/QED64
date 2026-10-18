@@ -19,7 +19,7 @@ import { LspRelay, type RelaySession, type RelayStatus, type RestartOptions } fr
 import { tapRelay, type LspMessage } from "../../frontend/src/relay-taps";
 import { createCheckFallback } from "../../frontend/src/check-fallback";
 import { STAGES, createBootChecklist } from "../../frontend/src/boot-checklist";
-import { STALE_NOTICE, createStaleWatch, isStaleDeath } from "../../frontend/src/stale-notice";
+import { CAPABILITY_BOOT_NOTICE, STALE_BOOT_NOTICE, STALE_NOTICE, bootFailLabel, createStaleWatch, isStaleDeath } from "../../frontend/src/stale-notice";
 import { deathCause } from "../../lib/failure";
 import type { JsonRpcMessage, WorkerStatus } from "../../lib/client";
 
@@ -973,5 +973,21 @@ describe("cursor, focus, memory, offer", () => {
     expect(parseMemoryParam("?memory=0.25")).toBe(1 * GiB);
     expect(parseMemoryParam("?memory=99")).toBe(6 * GiB);
     for (const bad of ["abc", "-1", "1e3", "3GiB", "0", "1.2345"]) expect(() => parseMemoryParam(`?memory=${bad}`), bad).toThrow(/refused \?memory=/);
+  });
+});
+
+describe("the boot card's words for a failed boot (bootFailLabel)", () => {
+  // The worker's refusal in a browser without a working shared Memory64 (lean.worker.js boot, CAPABILITY_MISSING).
+  const CAPABILITY = "Missing capability: Memory64, SharedArrayBuffer, Atomics, or cross-origin isolation.";
+  it("a browser that cannot run QED64 is told which browsers can, and that a share link keeps its code (HARDENING #77)", () => {
+    expect(bootFailLabel(CAPABILITY, { kind: "other", code: "CAPABILITY_MISSING" })).toBe(CAPABILITY_BOOT_NOTICE);
+    expect(bootFailLabel(CAPABILITY)).toBe(CAPABILITY_BOOT_NOTICE); // the message alone: a cause-less re-entry
+    expect(CAPABILITY_BOOT_NOTICE).toMatch(/Chrome or Firefox/);
+    expect(CAPABILITY_BOOT_NOTICE).toMatch(/shared link keeps its code/);
+  });
+  it("a stale cause keeps its notice (HARDENING #74), any other failure its own message", () => {
+    expect(bootFailLabel("Failed to fetch dynamically imported module: /assets/x.js", { kind: "stale" })).toBe(STALE_BOOT_NOTICE);
+    expect(bootFailLabel("Failed to fetch", { kind: "network", code: "RUNTIME_FETCH_FAILED" })).toBe("Failed to fetch");
+    expect(bootFailLabel("could not allocate 16 GiB", { kind: "oom" })).toBe("could not allocate 16 GiB");
   });
 });

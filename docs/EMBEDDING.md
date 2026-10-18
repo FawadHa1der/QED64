@@ -293,7 +293,8 @@ The first match in this list wins:
    - So a top-level link (anyone can send one) never supplies it. On the
      plain page the fragment is a **share link** instead (HARDENING #77):
      the page boots exactly as it would without it and shows a panel
-     (`#sharedlink`, from module start, over and after the boot card) with
+     (`#sharedlink`, from module start, centered over the page and the boot
+     card, the rest dimmed, and still there after the boot) with
      the decoded text (first 12 lines; "show all" expands), its size, the
      note that opening it runs Lean on it as any typed text would, a stronger
      notice when the text contains `widget_module`, `#html`, `#widget`,
@@ -306,7 +307,11 @@ The first match in this list wins:
      `localStorage["qed64.buffer"]`, so the visitor's own buffer survives (a
      first visit, with nothing saved, stores nothing), and the pill says so once.
      **Dismiss** drops the fragment and nothing else. A boot that fails
-     removes the panel; the fragment stays, so Reload offers it again. A
+     removes the panel; the fragment stays, so Reload offers it again (a
+     browser that cannot run QED64, Safari today, gets a card naming Chrome
+     and Firefox). The same link pasted into a plain page that is already
+     open changes only the fragment, which reloads nothing: the page shows
+     the panel for it then (`hashchange`), one panel at a time. A
      top-level `?embed=1` page still ignores the fragment and logs that it
      did.
    - A cross-origin frame cannot boot at all (no isolation).
@@ -320,7 +325,7 @@ The first match in this list wins:
    document; on the plain page, the stored buffer, else the default example.
 
 Changing only `#code=` / `#codez=` on a live frame is a same-document navigation and does
-**not** reboot it. To switch documents use `setDocument`. To replace the
+**not** reboot it (on the top-level plain page it shows the share panel, §3.1 above). To switch documents use `setDocument`. To replace the
 runtime (one QED64 per page), navigate the frame away first, e.g. to
 `about:blank`, which also releases the old heap.
 
@@ -1990,7 +1995,11 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   corpus's `shared-link-gate` and `boot` (docs/TESTING.md). Follow-up
   2026-10-18: Open no longer stores the default example on a first visit
   (it flushed the save debounce even with nothing pending); the scenario
-  now runs a first visit and a saved-buffer visit.
+  now runs a first visit and a saved-buffer visit. Second follow-up the same
+  day (the owner's report): a link pasted into an already open plain page
+  shows the panel (`hashchange`; it reloaded nothing before), the panel is
+  centered with the page dimmed, and a browser without a working shared
+  Memory64 (`CAPABILITY_MISSING`) gets a boot card naming Chrome and Firefox.
 - **`qed64/edge` routes a toolchain release (plan step B2b, 2026-10-06):**
   additive options, every default unchanged (`QED64_LEGACY` and the hardened
   defaults keep `release: null`). `release` takes a `lean4-wasm64.release/v1`

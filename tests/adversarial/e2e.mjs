@@ -533,6 +533,8 @@ if (runs("shared-link-gate")) {
       hash: location.hash,
       doc: globalThis.qed64?.editor?.getModel?.()?.getValue?.() ?? null,
       stored: localStorage.getItem("qed64.buffer"),
+      // Centered over the page (2026-10-18): the panel's middle within 2 px of the viewport's, horizontally and vertically.
+      centered: (() => { const r = document.querySelector("#sharedlink")?.getBoundingClientRect(); return !!r && Math.abs(r.left + r.width / 2 - innerWidth / 2) <= 2 && Math.abs(r.top + r.height / 2 - innerHeight / 2) <= 2; })(),
     })).catch(() => null);
     // The panel is built at module start, so it is there before the page is
     // interactive: poll from domcontentloaded.
@@ -547,7 +549,7 @@ if (runs("shared-link-gate")) {
     const booted = await waitTerminal(bootBudgetMs, 1000);
     const atReady = await gateState();
     const notOpened = !!atReady && atReady.doc !== null && atReady.doc !== SHARED_SNIPPET && (seed === null || atReady.doc === seed);
-    const gateAtReady = !!atReady && atReady.gate && atReady.hash === `#codez=${SHARED_CODEZ}` && atReady.preview === SHARED_SNIPPET && !atReady.flag;
+    const gateAtReady = !!atReady && atReady.gate && atReady.centered && atReady.hash === `#codez=${SHARED_CODEZ}` && atReady.preview === SHARED_SNIPPET && !atReady.flag;
     if (seed !== null) {
       // The visitor's last edit, still inside the page's 400 ms save debounce when Open is clicked (if the debounce
       // fires first, the store holds the same text: either way the edit is the expected buffer).
@@ -564,7 +566,7 @@ if (runs("shared-link-gate")) {
     const bufferKept = storedAfter === (seed === null ? null : OWN_EDITED);
     const pass = gateWhileBooting && booted.ok && gateAtReady && notOpened && opened.ok && opened.gate === false && opened.hash === "" && settledOpen.ok && bufferKept;
     const shown = storedAfter === null ? "none" : storedAfter === OWN_EDITED ? "own+edit" : JSON.stringify(String(storedAfter).slice(0, 40));
-    return { pass, ms: opened.ms, detail: `gateWhileBooting=${gateWhileBooting}(phase=${whileBooting?.phase ?? "none"}) booted=${booted.ok}@${booted.ms}ms gateAtReady=${gateAtReady} notOpenedBeforeClick=${notOpened} opened=${opened.ok}@${opened.ms}ms gateGone=${opened.gate === false} hash='${opened.hash ?? "?"}' settled=${settledOpen.ok} stored=${shown} bufferKept=${bufferKept}` };
+    return { pass, ms: opened.ms, gateState, detail: `gateWhileBooting=${gateWhileBooting}(phase=${whileBooting?.phase ?? "none"}) booted=${booted.ok}@${booted.ms}ms gateAtReady=${gateAtReady} notOpenedBeforeClick=${notOpened} opened=${opened.ok}@${opened.ms}ms gateGone=${opened.gate === false} hash='${opened.hash ?? "?"}' settled=${settledOpen.ok} stored=${shown} bufferKept=${bufferKept}` };
   };
   // The corpus shares one context: put back what the scenarios before this one saved, so the next scenario boots
   // as it did before this one ran (the saved-buffer visit's Init-only text would make worker-kill-recovery boot
@@ -572,9 +574,26 @@ if (runs("shared-link-gate")) {
   const storedBefore = await page.evaluate(() => localStorage.getItem("qed64.buffer")).catch(() => null);
   const first = await visit(null);
   const saved = await visit(OWN);
+  // The same link pasted into this tab, already booted with the snippet opened (2026-10-18, the owner's report): a
+  // fragment-only change is a same-document navigation, no reload, and the panel must follow it; Open still loads
+  // it, and the store keeps the visitor's text (this load's persistence is off since the first Open).
+  const pasted = await (async () => {
+    const g = saved.gateState;
+    const origin = await page.evaluate(() => performance.timeOrigin).catch(() => null);
+    await page.goto(`${url}#codez=${SHARED_CODEZ}`, { waitUntil: "domcontentloaded" }).catch(() => {});
+    let st = null;
+    for (let i = 0; i < 30; i++) { st = await g(); if (st?.gate) break; await page.waitForTimeout(100); }
+    const reloaded = (await page.evaluate(() => performance.timeOrigin).catch(() => null)) !== origin;
+    const shown = !!st?.gate && st.preview === SHARED_SNIPPET && st.centered;
+    await page.click("#sharedlink-open").catch(() => {});
+    let after = null;
+    for (let i = 0; i < 100; i++) { after = await g(); if (after?.doc === SHARED_SNIPPET) break; await page.waitForTimeout(100); }
+    const ok = !reloaded && shown && after?.doc === SHARED_SNIPPET && after.gate === false && after.hash === "" && after.stored === OWN_EDITED;
+    return { ok, detail: `reloaded=${reloaded} shown=${shown} opened=${after?.doc === SHARED_SNIPPET} gateGone=${after?.gate === false} hash='${after?.hash ?? "?"}' storedKept=${after?.stored === OWN_EDITED}` };
+  })();
   await page.evaluate((v) => { if (v === null) localStorage.removeItem("qed64.buffer"); else localStorage.setItem("qed64.buffer", v); }, storedBefore).catch(() => {});
-  await record("shared-link-gate", "functional", first.pass && saved.pass && errors.length === 0,
-    `first visit: ${first.detail}; saved buffer: ${saved.detail}; consoleErrors=${errors.length}${errors.length ? " " + JSON.stringify(errors.slice(0, 3)) : ""}`,
+  await record("shared-link-gate", "functional", first.pass && saved.pass && pasted.ok && errors.length === 0,
+    `first visit: ${first.detail}; saved buffer: ${saved.detail}; pasted into the open tab: ${pasted.detail}; consoleErrors=${errors.length}${errors.length ? " " + JSON.stringify(errors.slice(0, 3)) : ""}`,
     { openMs: saved.ms });
 }
 

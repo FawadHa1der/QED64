@@ -89,12 +89,14 @@
       background: #4f6df5; color: #fff; font: 13px system-ui, sans-serif; cursor: pointer;
     }
     /* The share-link gate (main.ts sharedLinkGate; HARDENING #77): built only
-       when the URL carries #code=/#codez=; fixed over the boot card (#boot is
-       z-index 10 inside #split) and still there after it. */
+       when the URL carries #code=/#codez=; centered over the page and the boot
+       card (#boot is z-index 10 inside #split; the top bar keeps the boot
+       progress), still there after it; its shadow's spread dims the rest. */
     #sharedlink {
-      position: fixed; right: 16px; bottom: 16px; z-index: 30; box-sizing: border-box;
-      width: min(540px, calc(100% - 32px)); background: #fff; border: 1px solid #dfe2ec;
-      border-radius: 12px; padding: 16px 20px; box-shadow: 0 12px 40px rgba(27, 29, 41, .18);
+      position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 30;
+      box-sizing: border-box; width: min(560px, calc(100% - 32px)); max-height: calc(100% - 32px);
+      overflow: auto; background: #fff; border: 1px solid #dfe2ec; border-radius: 12px;
+      padding: 18px 22px; box-shadow: 0 12px 40px rgba(27, 29, 41, .22), 0 0 0 100vmax rgba(27, 29, 41, .28);
       font: 14px/1.5 system-ui, sans-serif; color: #2a2d3d;
     }
     #sharedlink h2 { margin: 0; font-size: 16px; color: #1b1d29; }

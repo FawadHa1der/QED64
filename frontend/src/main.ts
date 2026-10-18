@@ -19,7 +19,7 @@ import { installWidgetSourceCache } from "./widget-source-cache";
 import { createTestHatch } from "./test-hatch";
 import { createCheckFallback } from "./check-fallback";
 import { STAGES, createBootChecklist } from "./boot-checklist";
-import { STALE_BOOT_NOTICE, STALE_NOTICE, createStaleWatch } from "./stale-notice";
+import { STALE_NOTICE, bootFailLabel, createStaleWatch } from "./stale-notice";
 
 // The embedder-facing surface (docs/EMBEDDING.md §2), published synchronously
 // at module start — before any of the page's own listeners matter — so an
@@ -192,8 +192,9 @@ function bootFail(message: string, cause?: FailureCause) {
   pageApi.bootFailed(message, cause);
   bootCard.classList.add("failed");
   bootCard.querySelector("h1")!.textContent = "QED64 could not start";
-  // A stale cause (HARDENING #74) gets words that say what to do; the browser's own stay as the title.
-  bootLabel.textContent = cause?.kind === "stale" ? STALE_BOOT_NOTICE : message;
+  // A stale cause (HARDENING #74) or a browser that cannot run QED64 (#77) gets words that say what to do; the
+  // browser's own stay as the title.
+  bootLabel.textContent = bootFailLabel(message, cause);
   bootLabel.title = message;
   bootNums.textContent = "";
   bootBar.classList.remove("busy");
@@ -690,6 +691,7 @@ let persistBuffer = true;
 // main() installs this once the editor persists: Open flushes the visitor's own pending edit before turning persistence off.
 let flushBufferSave: (() => void) | null = null;
 function sharedLinkGate(text: string): void {
+  document.getElementById("sharedlink")?.remove(); // one panel: a newer link replaces it
   const PREVIEW_LINES = 12;
   const lines = text.split("\n");
   const lineCount = text.endsWith("\n") ? lines.length - 1 : lines.length;
@@ -743,6 +745,12 @@ function sharedLinkGate(text: string): void {
 if (!FRAMED_SAME_ORIGIN && !EMBED) {
   const shared = codeFromHash(location.hash);
   if (shared) sharedLinkGate(shared); // an empty document is nothing to open
+  // A link pasted into a tab already on QED64 changes only the fragment: the browser does not reload, so the
+  // panel follows the fragment (HARDENING #77). Not after a failed boot: nothing could open it.
+  window.addEventListener("hashchange", () => {
+    const next = codeFromHash(location.hash);
+    if (next && !bootCard.classList.contains("failed")) sharedLinkGate(next);
+  });
 }
 
 void main().catch((err) => {

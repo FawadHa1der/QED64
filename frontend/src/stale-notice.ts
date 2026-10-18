@@ -19,6 +19,19 @@ export const STALE_NOTICE = "QED64 was updated while this page was open — relo
  * same; the module map keeps the failure for the document, so a reload is the fix either way. */
 export const STALE_BOOT_NOTICE = "this page's own files could not be loaded, probably because QED64 was updated while it was open — reload to continue";
 
+/** The boot card's words for a browser without what QED64 needs (the worker's CAPABILITY_MISSING: a working
+ * shared Memory64, SharedArrayBuffer, Atomics): Safari today. The stock page is always cross-origin isolated, so
+ * switching browsers is the fix, and a share link's code is still in the address bar (HARDENING #77). */
+export const CAPABILITY_BOOT_NOTICE = "this browser cannot run QED64 (it needs WebAssembly Memory64) — open this page in Chrome or Firefox; a shared link keeps its code";
+
+/** What the boot card says for a failed boot: the stale and capability causes get words that say what to do,
+ * every other failure its own message (the stock page keeps that message as the label's title either way). */
+export function bootFailLabel(message: string, cause?: { kind?: string; code?: string } | null): string {
+  if (cause?.kind === "stale") return STALE_BOOT_NOTICE;
+  if (cause?.code === "CAPABILITY_MISSING" || /^Missing capability:/.test(message)) return CAPABILITY_BOOT_NOTICE;
+  return message;
+}
+
 /** Is this death a stale page's (its cause kind, from failure.ts)? */
 export const isStaleDeath = (d: RelayStatus["lastDeath"] | null | undefined): boolean => d?.cause?.kind === "stale";
 
