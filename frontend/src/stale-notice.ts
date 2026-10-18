@@ -20,9 +20,9 @@ export const STALE_NOTICE = "QED64 was updated while this page was open — relo
 export const STALE_BOOT_NOTICE = "this page's own files could not be loaded, probably because QED64 was updated while it was open — reload to continue";
 
 /** The boot card's words for a browser without what QED64 needs (the worker's CAPABILITY_MISSING: a working
- * shared Memory64, SharedArrayBuffer, Atomics): Safari today. The stock page is always cross-origin isolated, so
- * switching browsers is the fix, and a share link's code is still in the address bar (HARDENING #77). */
-export const CAPABILITY_BOOT_NOTICE = "this browser cannot run QED64 (it needs WebAssembly Memory64) — open this page in Chrome or Firefox; a shared link keeps its code";
+ * shared Memory64, SharedArrayBuffer, Atomics): Safari, and every iOS browser (all WebKit). The stock page is always
+ * cross-origin isolated, so a desktop Chrome or Firefox is the fix; a share link carries its code to it (HARDENING #77). */
+export const CAPABILITY_BOOT_NOTICE = "this browser cannot run QED64 (it needs WebAssembly Memory64) — open this page, or the link you were sent, in desktop Chrome or Firefox";
 
 /** What the boot card says for a failed boot: the stale and capability causes get words that say what to do,
  * every other failure its own message (the stock page keeps that message as the label's title either way). */

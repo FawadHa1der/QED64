@@ -593,6 +593,7 @@ async function main() {
   await editor.start(editorEl, "/project/Probe.lean", initialText);
   docText = () => editor.editor?.getModel()?.getValue() ?? relay.lastText;
   pageApi.editorReady();
+  document.getElementById("sharedlink")?.focus(); // the editor's start took focus from a panel already up
   if (restored && persistBuffer) ui.progress("restored your last buffer"); // not when a shared snippet's Open replaced it (HARDENING #77)
   let saveTimer: number | undefined;
   if (!EMBED) editor.editor?.getModel()?.onDidChangeContent(() => {
@@ -686,7 +687,7 @@ function startMemoryMeter(getSession: () => Tel | null) {
 // turns this load's persistence off, so the visitor's own saved buffer is never
 // overwritten by a snippet somebody sent them; Dismiss only drops the fragment.
 // Built with createElement/textContent: the snippet is never markup. A page
-// without such a fragment runs none of this.
+// without such a fragment builds no panel until one arrives (`hashchange`).
 let persistBuffer = true;
 // main() installs this once the editor persists: Open flushes the visitor's own pending edit before turning persistence off.
 let flushBufferSave: (() => void) | null = null;
@@ -741,6 +742,9 @@ function sharedLinkGate(text: string): void {
   );
   panel.append(actions);
   document.body.append(panel);
+  // Focus the panel (not Open: no accidental Enter), so Tab reaches its buttons; the editor keeps Tab for itself.
+  panel.tabIndex = -1;
+  panel.focus();
 }
 if (!FRAMED_SAME_ORIGIN && !EMBED) {
   const shared = codeFromHash(location.hash);
@@ -749,7 +753,7 @@ if (!FRAMED_SAME_ORIGIN && !EMBED) {
   // panel follows the fragment (HARDENING #77). Not after a failed boot: nothing could open it.
   window.addEventListener("hashchange", () => {
     const next = codeFromHash(location.hash);
-    if (next && !bootCard.classList.contains("failed")) sharedLinkGate(next);
+    if (next && (bootDone || !bootCard.classList.contains("failed"))) sharedLinkGate(next); // a failed boot that recovered counts as up
   });
 }
 

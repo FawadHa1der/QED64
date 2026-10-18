@@ -93,9 +93,10 @@
     /* The share-link gate (main.ts sharedLinkGate; HARDENING #77): built only
        when the URL carries #code=/#codez=; centered over the page and the boot
        card (#boot is z-index 10 inside #split; the top bar keeps the boot
-       progress), still there after it; its shadow's spread dims the rest. */
+       progress) and above Monaco's hover/suggest/find widgets (z-index 35-50),
+       still there after it; its shadow's spread dims the rest. */
     #sharedlink {
-      position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 30;
+      position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 60;
       box-sizing: border-box; width: min(560px, calc(100% - 32px)); max-height: calc(100% - 32px);
       overflow: auto; background: #fff; border: 1px solid #dfe2ec; border-radius: 12px;
       padding: 18px 22px; box-shadow: 0 12px 40px rgba(27, 29, 41, .22), 0 0 0 100vmax rgba(27, 29, 41, .28);

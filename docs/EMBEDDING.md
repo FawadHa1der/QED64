@@ -308,10 +308,11 @@ The first match in this list wins:
      first visit, with nothing saved, stores nothing), and the pill says so once.
      **Dismiss** drops the fragment and nothing else. A boot that fails
      removes the panel; the fragment stays, so Reload offers it again (a
-     browser that cannot run QED64, Safari today, gets a card naming Chrome
-     and Firefox). The same link pasted into a plain page that is already
-     open changes only the fragment, which reloads nothing: the page shows
-     the panel for it then (`hashchange`), one panel at a time. A
+     browser that cannot run QED64, Safari or any iOS browser, gets a card
+     naming desktop Chrome and Firefox). The same link pasted into a plain
+     page that is already open changes only the fragment, which reloads
+     nothing: the page shows the panel for it then (`hashchange`; not after
+     a failed boot), one panel at a time, focused. A
      top-level `?embed=1` page still ignores the fragment and logs that it
      did.
    - A cross-origin frame cannot boot at all (no isolation).
@@ -1999,7 +2000,8 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   day (the owner's report): a link pasted into an already open plain page
   shows the panel (`hashchange`; it reloaded nothing before), the panel is
   centered with the page dimmed, and a browser without a working shared
-  Memory64 (`CAPABILITY_MISSING`) gets a boot card naming Chrome and Firefox.
+  Memory64 (`CAPABILITY_MISSING`) gets a boot card naming desktop Chrome and
+  Firefox (iOS browsers are all WebKit).
 - **`qed64/edge` routes a toolchain release (plan step B2b, 2026-10-06):**
   additive options, every default unchanged (`QED64_LEGACY` and the hardened
   defaults keep `release: null`). `release` takes a `lean4-wasm64.release/v1`
