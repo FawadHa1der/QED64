@@ -112,7 +112,7 @@ async function openPage(target, before = () => {}) {
   try { if (page && !page.isClosed()) await page.close(); } catch { /* gone */ }
   page = await context.newPage();
   wirePage(page);
-  before(page);
+  await before(page);
   await page.goto(target, { waitUntil: "domcontentloaded" });
 }
 page = await context.newPage();
@@ -498,7 +498,8 @@ if (runs("import-completion")) {
 // HARDENING #77 (docs/EMBEDDING.md §3.1): a top-level `#codez=` page boots as
 // it would without the fragment, with the panel up from module start; Open
 // puts the snippet in the editor, drops the fragment and switches this load's
-// persistence off, so localStorage["qed64.buffer"] stays what it was. The
+// persistence off after writing an edit the save debounce still owes, so
+// localStorage["qed64.buffer"] keeps the visitor's text (none on a first visit). The
 // literal is lz-string's compressToBase64 of SHARED_SNIPPET without padding
 // (tests/unit/lz-string.test.ts pins the page's port to the npm package).
 if (runs("shared-link-gate")) {
@@ -522,7 +523,7 @@ if (runs("shared-link-gate")) {
       p.on("console", (m) => { const t = m.text(); if (m.type() === "error" && t.trim() && !KNOWN_CONSOLE.test(t)) errors.push(t.slice(0, 200)); });
       p.on("pageerror", (e) => { if (!KNOWN_CONSOLE.test(e.message)) errors.push(`PAGEERROR: ${e.message.slice(0, 160)}`); });
       // Top frame only: the InfoView iframe is same-origin and loads after Open.
-      void p.addInitScript((v) => { if (window !== window.top) return; try { if (v === null) localStorage.removeItem("qed64.buffer"); else localStorage.setItem("qed64.buffer", v); } catch { /* no storage */ } }, seed);
+      return p.addInitScript((v) => { if (window !== window.top) return; try { if (v === null) localStorage.removeItem("qed64.buffer"); else localStorage.setItem("qed64.buffer", v); } catch { /* no storage */ } }, seed);
     });
     const gateState = () => page.evaluate(() => ({
       gate: document.querySelector("#sharedlink") !== null,
@@ -565,8 +566,13 @@ if (runs("shared-link-gate")) {
     const shown = storedAfter === null ? "none" : storedAfter === OWN_EDITED ? "own+edit" : JSON.stringify(String(storedAfter).slice(0, 40));
     return { pass, ms: opened.ms, detail: `gateWhileBooting=${gateWhileBooting}(phase=${whileBooting?.phase ?? "none"}) booted=${booted.ok}@${booted.ms}ms gateAtReady=${gateAtReady} notOpenedBeforeClick=${notOpened} opened=${opened.ok}@${opened.ms}ms gateGone=${opened.gate === false} hash='${opened.hash ?? "?"}' settled=${settledOpen.ok} stored=${shown} bufferKept=${bufferKept}` };
   };
+  // The corpus shares one context: put back what the scenarios before this one saved, so the next scenario boots
+  // as it did before this one ran (the saved-buffer visit's Init-only text would make worker-kill-recovery boot
+  // light and widen first). The page left open has persistence off, so nothing writes the key back.
+  const storedBefore = await page.evaluate(() => localStorage.getItem("qed64.buffer")).catch(() => null);
   const first = await visit(null);
   const saved = await visit(OWN);
+  await page.evaluate((v) => { if (v === null) localStorage.removeItem("qed64.buffer"); else localStorage.setItem("qed64.buffer", v); }, storedBefore).catch(() => {});
   await record("shared-link-gate", "functional", first.pass && saved.pass && errors.length === 0,
     `first visit: ${first.detail}; saved buffer: ${saved.detail}; consoleErrors=${errors.length}${errors.length ? " " + JSON.stringify(errors.slice(0, 3)) : ""}`,
     { openMs: saved.ms });
