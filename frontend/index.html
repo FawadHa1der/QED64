@@ -28,6 +28,12 @@
     @keyframes pulse { 50% { opacity: .3; } }
     #pill #ptext { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     #pill #ptime { color: #9aa0b8; flex: none; }
+    /* Source links, after the pill: one line, never wrapping (the bar's height is what #split subtracts). */
+    #repolinks { display: flex; gap: 10px; flex: none; white-space: nowrap; font-size: 12px; }
+    #repolinks a { color: #9aa0b8; text-decoration: none; }
+    #repolinks a:hover { color: #fff; text-decoration: underline; }
+    /* Narrow screens: no links, so the bar is exactly as before (it already overflows a phone). */
+    @media (max-width: 959px) { #repolinks { display: none; } }
     #split { display: flex; height: calc(100% - 33px); }
     #editor { flex: 1 1 55%; min-width: 0; }
     #infoview { flex: 1 1 45%; min-width: 0; border-left: 1px solid #ccc; background: #fff; }
@@ -128,6 +134,10 @@
       <option value="init">Lean core — induction</option>
     </select>
     <div id="pill" class="busy"><span class="dot"></span><span id="ptext">booting…</span><span id="ptime"></span></div>
+    <span id="repolinks">
+      <a href="https://github.com/FawadHa1der/QED64" target="_blank" rel="noopener noreferrer" title="QED64's source on GitHub">QED64 on GitHub</a>
+      <a href="https://github.com/FawadHa1der/lean4/tree/qed64-wasm64" target="_blank" rel="noopener noreferrer" title="The Lean 4 fork with the wasm64 runtime (branch qed64-wasm64)">Lean wasm64 fork</a>
+    </span>
   </div>
   <div id="split">
     <div id="editor"></div>
