@@ -102,7 +102,7 @@ only as a process (`node <tools>/cli.mjs …`; `<tools>` is `--tools`, else
 npm run -s fetch:artifacts -- --out <tree> --with-manifests --release <the SERVED release dir|url>
 pipeline/release/adopt-release.sh --id <lean-vX.Y.Z-hash> --digest sha256:<hex> \
   (--from https://github.com/FawadHa1der/lean4/releases/download/<id>/ | --from-dir <release dir>) \
-  --public <tree> [--tools <package dir>] (--umbrella <dir with QED64/Essential.olean{,.server}> | --rebuild-umbrella) \
+  --public <tree> [--tools <package dir>] (--umbrella <dir with QED64/Essential.olean> | --rebuild-umbrella) \
   [--fat-tree] [--gate] [--init-lib lean-lib|lean-core] [--allow-served] [--dry-run] [--keep]
 ```
 
@@ -139,18 +139,24 @@ fetching and writing nothing):
    and, with `--fat-tree`, `$W/lib-tree` (the same without `--slim`; the
    showcase's heavy path uses a fat tree).
 5. **umbrella**: a runtime-only release (every served pack's raw digest is
-   one of `release.packs`) REUSES the served pair (`--umbrella`): its header
+   one of `release.packs`) REUSES the served umbrella (`--umbrella`): its header
    carries the packs' compiler githash, and a recompile would change the base
    tree's bytes. Otherwise `--rebuild-umbrella` regenerates and compiles it
    against the fat tree (`gen-umbrella.mjs`, `supervised-run.mjs`), runs the
    `olean-imports --audit`, and the packs are staged (`stage-profiles.mjs`).
-   The pair is copied into each lib tree's `QED64/`, and into the fat tree
-   also `Essential.olean.private` when the source has it (the slim served
-   dir has only the pair; main's `work/lib-tree` has all three).
+   `Essential.olean`, with its `.olean.server` when the source has one, is
+   copied into each lib tree's `QED64/`, and into the fat tree also
+   `Essential.olean.private` when the source has it (`copy_umbrella`). Lean
+   writes the two facets only for a split `module`: the 4.34 umbrella was
+   compiled before kernel 0034, when every file was read as a `module`
+   (HARDENING #51), so it has all three (`.olean.server` in every lib tree,
+   `.olean.private` in the fat one, 96 bytes each); compiled since 0034, as
+   for 4.35, it is one legacy `.olean` (HARDENING #79).
 6. **base-tree**: `$W/base-tree.json` (`qed64.base-tree/v1`): the release id
    and digest, per tree the pack ids and raw digests it came from, the
    umbrella files it carries (sha256 and bytes; top-level `umbrella` is the
-   pair), and a tree digest (sha256 over the sorted `"<relpath>\0<sha256>\n"`
+   slim tree's: `Essential.olean`, and `.olean.server` for a split umbrella),
+   and a tree digest (sha256 over the sorted `"<relpath>\0<sha256>\n"`
    lines of every file) a downstream checks byte identity by.
 7. **gate** (`--gate`, recommended for an unpublished release): the
    package's gate on `$W/artifact`, ` ok ` lines and `GATE PASSED`.

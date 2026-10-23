@@ -76,7 +76,9 @@ beforeAll(() => {
     fs.mkdirSync(path.dirname(path.join(tree, p)), { recursive: true });
     fs.writeFileSync(path.join(tree, p), atHead(p));
   }
-  // The fake umbrella, and base-tree.json naming it (top-level pair, and each tree's files).
+  // The fake umbrella, and base-tree.json naming it. Pinned to a split umbrella (a `module` compile, as the 4.34 one
+  // was: .olean.server at the top and in every lib tree, .olean.private in the fat tree), whatever HEAD's is, so the
+  // bundle is tested over all three facets; the one-file legacy umbrella (HARDENING #79) has a test of its own.
   umbrella = path.join(tmp, "umbrella");
   for (const [p, text] of Object.entries(UMB)) {
     fs.mkdirSync(path.dirname(path.join(umbrella, p)), { recursive: true });
@@ -85,8 +87,9 @@ beforeAll(() => {
   fs.writeFileSync(path.join(umbrella, "QED64/unrelated.txt"), "not named by base-tree.json, not shipped\n");
   const bt = JSON.parse(fs.readFileSync(path.join(tree, "embedding/base-tree.json"), "utf8"));
   const fake = (u: { path: string }) => ({ path: u.path, sha256: sha(UMB[u.path as keyof typeof UMB]), bytes: Buffer.byteLength(UMB[u.path as keyof typeof UMB]) });
-  bt.umbrella = bt.umbrella.map(fake);
-  for (const t of Object.values<any>(bt.trees)) t.umbrella = t.umbrella.map(fake);
+  const [OLEAN, SERVER, PRIVATE] = ["QED64/Essential.olean", "QED64/Essential.olean.server", "QED64/Essential.olean.private"];
+  bt.umbrella = [OLEAN, SERVER].map((p) => fake({ path: p }));
+  for (const [name, t] of Object.entries<any>(bt.trees)) t.umbrella = name === "core-lib-slim" ? [] : (t.slim ? [OLEAN, SERVER] : [OLEAN, PRIVATE, SERVER]).map((p) => fake({ path: p }));
   fs.writeFileSync(path.join(tree, "embedding/base-tree.json"), `${JSON.stringify(bt, null, 2)}\n`);
   // A minimal vite-shaped dist built "from HEAD": workers verbatim, the bundle pinning the runtime.
   buildId = JSON.parse(atHead("public/runtime/runtime-manifest.json").toString()).buildId;
@@ -188,6 +191,23 @@ describe.skipIf(!hasGit)("write-bundle.mjs", () => {
     const gz = gzipPinned(Buffer.from("same"));
     expect(gz.equals(gzipPinned(Buffer.from("same")))).toBe(true);
     expect(zlib.gunzipSync(gz).toString()).toBe("same");
+  });
+
+  test("a legacy umbrella (one .olean, HARDENING #79) ships that one file", () => {
+    const btPath = path.join(tree, "embedding/base-tree.json");
+    const original = fs.readFileSync(btPath);
+    try {
+      const bt = JSON.parse(original.toString());
+      const olean = (list: { path: string }[]) => list.filter((u) => u.path === "QED64/Essential.olean");
+      bt.umbrella = olean(bt.umbrella);
+      for (const t of Object.values<any>(bt.trees)) t.umbrella = olean(t.umbrella);
+      fs.writeFileSync(btPath, `${JSON.stringify(bt, null, 2)}\n`);
+      const out = writeBundleDir(buildBundle(source(), { dist, umbrella }).files, path.join(tmp, "out-legacy"));
+      const w = (rel: string): string[] => fs.readdirSync(path.join(out, rel), { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? w(path.posix.join(rel, e.name)) : [path.posix.join(rel, e.name)]));
+      expect(w("").sort(byteOrder)).toEqual(["SHA256SUMS", "qed64-manifests.tar.gz", "qed64-shell.tar.gz", "release.json", "umbrella/QED64/Essential.olean"]);
+    } finally {
+      fs.writeFileSync(btPath, original);
+    }
   });
 
   test("a tampered or missing umbrella file is refused, and nothing is written", () => {

@@ -180,7 +180,7 @@ describe.skipIf(!hasGit)("release-manifest.mjs CLI", () => {
     const union = new Map<string, unknown>();
     for (const u of [...bt.umbrella, ...Object.values<any>(bt.trees).flatMap((t) => t.umbrella)]) union.set(u.path, u);
     expect(m.baseTree.umbrellaFiles).toEqual([...union.keys()].sort().map((k) => union.get(k)));
-    expect(m.baseTree.umbrellaFiles.map((u) => u.path)).toEqual(expect.arrayContaining(["QED64/Essential.olean", "QED64/Essential.olean.server"]));
+    expect(m.baseTree.umbrellaFiles.map((u) => u.path)).toContain("QED64/Essential.olean");
     expect(m.runtime.buildId).toBe(rt.buildId);
     expect(m.runtime.manifest).toEqual({
       path: "runtime/runtime-manifest.json", sha256: sha(rtBytes), gitBlob: blobAtHead("public/runtime/runtime-manifest.json"),
@@ -444,15 +444,48 @@ describe.skipIf(!hasGit)("cross-checks refuse doctored inputs", () => {
     doctored(BASE_TREE, editBt((o) => { o.packs = o.packs.filter((p: any) => p.id !== "mathlib-essential"); }), () => {
       expect(refusal(build)).toMatch(/: packs does not list mathlib-essential, a served pack/);
     });
-    // Every tree but core-lib-slim carries the umbrella pair.
+    // Every tree but core-lib-slim carries every umbrella file the top lists; the top always lists the olean.
     doctored(BASE_TREE, editBt((o) => { o.trees["lib-tree-slim"].umbrella = []; }), () => {
-      expect(refusal(build)).toMatch(/: trees\.lib-tree-slim\.umbrella does not list QED64\/Essential\.olean \(every tree but core-lib-slim carries the pair\)/);
+      expect(refusal(build)).toMatch(/: trees\.lib-tree-slim\.umbrella does not list QED64\/Essential\.olean \(every tree but core-lib-slim carries the umbrella\)/);
     });
-    doctored(BASE_TREE, editBt((o) => { o.trees["lib-tree"].umbrella = o.trees["lib-tree"].umbrella.filter((u: any) => !u.path.endsWith(".server")); }), () => {
-      expect(refusal(build)).toMatch(/: trees\.lib-tree\.umbrella does not list QED64\/Essential\.olean\.server/);
+    doctored(BASE_TREE, editBt((o) => { o.umbrella = o.umbrella.filter((u: any) => u.path !== "QED64/Essential.olean"); }), () => {
+      expect(refusal(build)).toMatch(/: umbrella does not list QED64\/Essential\.olean \(the olean every base tree carries\)/);
     });
-    doctored(BASE_TREE, editBt((o) => { o.umbrella = o.umbrella.filter((u: any) => !u.path.endsWith(".server")); }), () => {
-      expect(refusal(build)).toMatch(/umbrella does not list QED64\/Essential\.olean\.server/);
+    // A legacy umbrella is one .olean (Lean writes .olean.server and .olean.private for a split `module` only,
+    // HARDENING #79): with no facet at the top or in any tree it is accepted, and the bundle ships the one file.
+    doctored(BASE_TREE, editBt((o) => {
+      const olean = (list: any[]) => list.filter((u: any) => u.path === "QED64/Essential.olean");
+      o.umbrella = olean(o.umbrella);
+      for (const t of Object.values<any>(o.trees)) t.umbrella = olean(t.umbrella);
+    }), () => {
+      expect(build().baseTree.umbrellaFiles.map((u: { path: string }) => u.path)).toEqual(["QED64/Essential.olean"]);
+    });
+    // A split umbrella (a `module` compile, as the 4.34 one was): .olean.server at the top and in every lib tree,
+    // .olean.private in the fat tree only. Doctored into that shape here, whatever HEAD's umbrella is.
+    const SERVER = { path: "QED64/Essential.olean.server", sha256: "5".repeat(64), bytes: 96 };
+    const PRIVATE = { path: "QED64/Essential.olean.private", sha256: "6".repeat(64), bytes: 96 };
+    const split = (fn: (o: any) => void = () => {}) => editBt((o) => {
+      const olean = (list: any[]) => list.filter((u: any) => u.path === "QED64/Essential.olean");
+      o.umbrella = [...olean(o.umbrella), SERVER];
+      for (const [name, t] of Object.entries<any>(o.trees)) {
+        if (name !== "core-lib-slim") t.umbrella = [...olean(t.umbrella), ...(t.slim ? [] : [PRIVATE]), SERVER];
+      }
+      fn(o);
+    });
+    doctored(BASE_TREE, split(), () => {
+      expect(build().baseTree.umbrellaFiles.map((u: { path: string }) => u.path)).toEqual(["QED64/Essential.olean", "QED64/Essential.olean.private", "QED64/Essential.olean.server"]);
+    });
+    doctored(BASE_TREE, split((o) => { o.trees["lib-tree"].umbrella = o.trees["lib-tree"].umbrella.filter((u: any) => !u.path.endsWith(".server")); }), () => {
+      expect(refusal(build)).toMatch(/: trees\.lib-tree\.umbrella does not list QED64\/Essential\.olean\.server \(every tree but core-lib-slim carries the umbrella\)/);
+    });
+    doctored(BASE_TREE, split((o) => { o.umbrella = o.umbrella.filter((u: any) => !u.path.endsWith(".server")); }), () => {
+      expect(refusal(build)).toMatch(/: umbrella does not list QED64\/Essential\.olean\.server, which trees\.lib-tree-slim\.umbrella carries/);
+    });
+    doctored(BASE_TREE, split((o) => { o.trees["lib-tree-slim"].umbrella.push(PRIVATE); }), () => {
+      expect(refusal(build)).toMatch(/: trees\.lib-tree-slim\.umbrella lists QED64\/Essential\.olean\.private, but lib-tree-slim is a slim tree/);
+    });
+    doctored(BASE_TREE, split((o) => { o.umbrella.push(PRIVATE); }), () => {
+      expect(refusal(build)).toMatch(/: umbrella lists QED64\/Essential\.olean\.private \(the top lists the slim tree's umbrella files/);
     });
     doctored(BASE_TREE, editBt((o) => { o.trees["lib-tree-slim"].umbrella[0].sha256 = "3".repeat(64); }), () => {
       expect(refusal(build)).toMatch(/QED64\/Essential\.olean is listed with two contents/);

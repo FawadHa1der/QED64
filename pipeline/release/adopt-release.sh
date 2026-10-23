@@ -8,14 +8,17 @@
 #   pipeline/release/adopt-release.sh --id <lean-vX.Y.Z-hash> --digest sha256:<hex>
 #     (--from <https://github.com/FawadHa1der/lean4/releases/download/<id>/> | --from-dir <release dir>)
 #     --public <isolated served tree> [--tools <lean4-wasm64 dir>]
-#     [--umbrella <dir with QED64/Essential.olean{,.server}> | --rebuild-umbrella] [--fat-tree]
+#     [--umbrella <dir with QED64/Essential.olean> | --rebuild-umbrella] [--fat-tree]
 #     [--gate] [--init-lib lean-lib|lean-core] [--allow-served] [--dry-run] [--keep]
 #
 # lean4-wasm64 runs only as a process: node <tools>/cli.mjs … (<tools>: --tools, else
 # $LEAN4_WASM64_DIR, else node_modules/lean4-wasm64). Writes go to work/adopt/<id>/ ($W),
 # work/staging/<buildId>/ and --public, never under the release dir, this checkout's or main's public/.
 # A runtime-only release (every served pack's raw digest is in release.packs) reuses the umbrella
-# pair (--umbrella); otherwise --rebuild-umbrella recompiles it and the packs are staged too.
+# (--umbrella); otherwise --rebuild-umbrella recompiles it and the packs are staged too. The umbrella
+# is QED64/Essential.olean plus the facets Lean wrote beside it: .olean.server (and .olean.private,
+# fat tree only) exist only when it was compiled as a split `module`, which the 4.34 umbrella was
+# (HARDENING #51); a legacy compile, as from 4.35 on, writes the one .olean (HARDENING #79).
 # --fat-tree also writes $W/lib-tree (no --slim). --dry-run validates and prints the plan, fetching
 # and writing nothing. --keep keeps $W/release's chunks and pack parts after a successful run.
 # Refusals: one stderr line `adopt-release: …`, exit 2. A failed step: ADOPT-FAIL <step>, exit 1.
@@ -73,17 +76,30 @@ checkrecord() { # <release.json>: the pin, the floor, the served check and the u
   IFS=$'\t' read -r _ _ BID PATCH KCOMMIT LEANVER MODE <<< "$LINE"
   patch_ge "$PATCH" "$FLOOR" || refuse "the release's kernel.patch $PATCH is below embedding/closure.json runtime.minKernelPatch $FLOOR"
   if [ "$MODE" = runtime-only ]; then
-    [ $REBUILD = 0 ] || refuse "a runtime-only release reuses the served umbrella pair: pass --umbrella <dir>, not --rebuild-umbrella (a recompile changes the base tree's bytes)"
-    [ -n "$UMBD" ] || refuse "a runtime-only release reuses the umbrella pair: pass --umbrella <dir holding QED64/Essential.olean and .olean.server>"
+    [ $REBUILD = 0 ] || refuse "a runtime-only release reuses the served umbrella: pass --umbrella <dir>, not --rebuild-umbrella (a recompile changes the base tree's bytes)"
+    [ -n "$UMBD" ] || refuse "a runtime-only release reuses the served umbrella: pass --umbrella <dir holding QED64/Essential.olean, with its .olean.server and .olean.private when it has them>"
   else
     [ $REBUILD = 1 ] || refuse "the release's packs are not the served ones: pass --rebuild-umbrella (the umbrella is compiled from the new packs)"
     FAT=1
   fi
 }
+copy_umbrella() { # <src> <W> <fat 0|1> <notes>: the umbrella into each lib tree's QED64/ (HARDENING #79): Essential.olean,
+  # its .olean.server when the source has one (a split `module` compile), and into the fat tree its .olean.private
+  local src=$1 w=$2 fat=$3 notes=$4 t
+  [ -s "$src/Essential.olean" ] || { echo "umbrella: $src/Essential.olean is absent or empty"; return 1; }
+  for t in lib-tree-slim $([ "$fat" = 1 ] && echo lib-tree); do
+    { mkdir -p "$w/$t/QED64" && cp "$src/Essential.olean" "$w/$t/QED64/" && { [ ! -f "$src/Essential.olean.server" ] || cp "$src/Essential.olean.server" "$w/$t/QED64/"; }; } \
+      || { echo "umbrella: the copy into $w/$t failed"; return 1; }
+  done
+  [ -f "$src/Essential.olean.server" ] || echo "note: $src has no Essential.olean.server: the umbrella is one legacy .olean (Lean splits a \`module\` only)" | tee -a "$notes"
+  [ "$fat" = 1 ] || return 0
+  if [ -f "$src/Essential.olean.private" ]; then cp "$src/Essential.olean.private" "$w/lib-tree/QED64/" || { echo "umbrella: the copy into $w/lib-tree failed"; return 1; }
+  else echo "note: $src has no Essential.olean.private: $w/lib-tree carries the slim tree's umbrella files only" | tee -a "$notes"; fi
+}
 BID="?"; PATCH="?"; KCOMMIT="?"; LEANVER="?"; MODE="?"
 if [ $FROMDIR = 1 ]; then checkrecord "$SRC/release.json"; fi
-if [ -n "$UMBD" ]; then for f in Essential.olean Essential.olean.server; do [ -s "$UMBD/QED64/$f" ] || refuse "--umbrella $UMBD has no QED64/$f"; done; UMBD=$(cd "$UMBD" && pwd -P)
-  case "$UMBD/" in "$Q/work/adopt/"*|"$Q/work/staging/"*) refuse "--umbrella $UMBD lies inside $Q/work/adopt or work/staging, which an adoption deletes and rewrites: copy the pair out first";; esac; fi
+if [ -n "$UMBD" ]; then [ -s "$UMBD/QED64/Essential.olean" ] || refuse "--umbrella $UMBD has no QED64/Essential.olean"; UMBD=$(cd "$UMBD" && pwd -P)
+  case "$UMBD/" in "$Q/work/adopt/"*|"$Q/work/staging/"*) refuse "--umbrella $UMBD lies inside $Q/work/adopt or work/staging, which an adoption deletes and rewrites: copy the umbrella out first";; esac; fi
 derive() { # what follows from the record: re-run once a URL release's record is fetched
   STAGING="$Q/work/staging/$BID"; NEED_GB=12; [ $FAT = 1 ] && NEED_GB=16
   SKIP=""; [ "$MODE" = runtime-only ] && SKIP=" --skip-packs"; TREES="core-lib-slim lib-tree-slim"; [ $FAT = 1 ] && TREES="$TREES lib-tree"
@@ -107,7 +123,7 @@ plan for $ID: runtime $BID, Lean $LEANVER, kernel $KCOMMIT (patch $PATCH, floor 
   base-trees      rm -rf $(for t in $TREES; do printf '%s ' "$W/$t"; done)
                   node $T/cli.mjs unpack --slim --manifest $R/$INITLIB.manifest.json --out $W/core-lib-slim
                   node $T/cli.mjs unpack --slim --manifest $R/{lean-core,mathlib-essential}.manifest.json --out $W/lib-tree-slim$([ $FAT = 1 ] && printf '\n                  node %s unpack --manifest %s/{lean-core,mathlib-essential}.manifest.json --out %s/lib-tree' "$T/cli.mjs" "$R" "$W")
-  umbrella        $([ $REBUILD = 1 ] && echo "node pipeline/artifacts/gen-umbrella.mjs --manifest $R/mathlib-essential.manifest.json --out $USRC/Essential.lean; node pipeline/snapshot/supervised-run.mjs --target $USRC/Essential.olean -- --artifact $W/artifact --work $USRC --lib $W/lib-tree -- -o /work/Essential.olean /work/Essential.lean; then " || echo "reuse ")cp $USRC/Essential.olean{,.server} → $(for t in $TREES; do [ $t = core-lib-slim ] || printf '%s ' "$W/$t/QED64/"; done)$([ $FAT = 1 ] && echo " (+ Essential.olean.private into lib-tree: $([ $REBUILD = 1 ] || [ -f "$USRC/Essential.olean.private" ] && echo present || echo "ABSENT in the source, pair only"))")$([ $REBUILD = 1 ] && echo "; node $T/cli.mjs olean-imports --audit $W/lib-tree")
+  umbrella        $([ $REBUILD = 1 ] && echo "node pipeline/artifacts/gen-umbrella.mjs --manifest $R/mathlib-essential.manifest.json --out $USRC/Essential.lean; node pipeline/snapshot/supervised-run.mjs --target $USRC/Essential.olean -- --artifact $W/artifact --work $USRC --lib $W/lib-tree -- -o /work/Essential.olean /work/Essential.lean; then " || echo "reuse ")cp $USRC/Essential.olean$(if [ $REBUILD = 1 ]; then echo " (+ .olean.server if the compile writes one)"; elif [ -f "$USRC/Essential.olean.server" ]; then echo "{,.server}"; fi) → $(for t in $TREES; do [ $t = core-lib-slim ] || printf '%s ' "$W/$t/QED64/"; done)$([ $FAT = 1 ] && echo " (+ Essential.olean.private into lib-tree: $([ $REBUILD = 1 ] && echo "if the compile writes one" || { [ -f "$USRC/Essential.olean.private" ] && echo present || echo "ABSENT in the source"; }))")$([ $REBUILD = 1 ] && echo "; node $T/cli.mjs olean-imports --audit $W/lib-tree")
   base-tree       node pipeline/release/adopt-helper.mjs base-tree → $W/base-tree.json (packs, umbrella sha256/bytes, tree digests of: $TREES)
   gate            $([ $GATE = 1 ] && echo "node $T/cli.mjs gate --artifact $W/artifact > $W/logs/gate.log (' ok ' lines and GATE PASSED)" || echo "skipped (no --gate; recommended for an unpublished release)")
   bake-init       ${BAKE[*]} --name init --lib $W/core-lib-slim --reserve 1073741824
@@ -153,9 +169,7 @@ if [ $REBUILD = 1 ]; then
   rm -rf "$USRC"; mkdir -p "$USRC"; step umbrella-gen node pipeline/artifacts/gen-umbrella.mjs --manifest "$R/mathlib-essential.manifest.json" --out "$USRC/Essential.lean"
   step umbrella-compile node pipeline/snapshot/supervised-run.mjs --target "$USRC/Essential.olean" -- --artifact "$W/artifact" --work "$USRC" --lib "$W/lib-tree" -- -o /work/Essential.olean /work/Essential.lean
 fi
-for t in $TREES; do [ $t = core-lib-slim ] || { mkdir -p "$W/$t/QED64" && cp "$USRC/Essential.olean" "$USRC/Essential.olean.server" "$W/$t/QED64/"; } || fail "umbrella copy into $W/$t"; done
-if [ $FAT = 1 ]; then if [ -f "$USRC/Essential.olean.private" ]; then cp "$USRC/Essential.olean.private" "$W/lib-tree/QED64/" || fail "umbrella copy into $W/lib-tree"
-  else echo "note: $USRC has no Essential.olean.private: $W/lib-tree carries the umbrella pair only" | tee -a "$L/notes.log"; fi; fi
+copy_umbrella "$USRC" "$W" "$FAT" "$L/notes.log" || fail "umbrella copy"
 [ $REBUILD = 0 ] || { step audit pkg olean-imports --audit "$W/lib-tree"; grep -E '^import-all audit|outside Init' "$L/audit.log"; }
 say base-tree; step base-tree "${H[@]}" base-tree --work "$W" --release "$W/release/release.json" --init-lib "$INITLIB" --umbrella-source "$([ $REBUILD = 1 ] && echo "rebuilt with $BID" || echo "reused from $UMBD")" $([ $FAT = 1 ] && echo --fat); cat "$L/base-tree.log"
 [ $GATE = 0 ] || { say gate; pkg gate --artifact "$W/artifact" > "$L/gate.log" 2>&1; grep -E '^(FAIL| ok )' "$L/gate.log"; grep -q '^ ok ' "$L/gate.log" && grep -q '^GATE PASSED' "$L/gate.log" || fail "gate ($L/gate.log)"; }

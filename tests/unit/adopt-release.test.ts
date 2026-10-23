@@ -144,7 +144,7 @@ describe("adopt-release.sh --dry-run", () => {
     expect(plan).toContain(`node ${tools}/cli.mjs unpack --manifest ${W}/release/profiles/lean-lib.manifest.json --out ${W}/artifact/lib/lean`);
     expect(plan).toContain(`node ${tools}/cli.mjs unpack --slim --manifest ${W}/release/profiles/lean-lib.manifest.json --out ${W}/core-lib-slim`);
     expect(plan).toContain(`node ${tools}/cli.mjs unpack --manifest ${W}/release/profiles/{lean-core,mathlib-essential}.manifest.json --out ${W}/lib-tree`);
-    expect(plan).toContain(`reuse cp ${umbrella}/QED64/Essential.olean{,.server} → ${W}/lib-tree-slim/QED64/ ${W}/lib-tree/QED64/  (+ Essential.olean.private into lib-tree: ABSENT in the source, pair only)`);
+    expect(plan).toContain(`reuse cp ${umbrella}/QED64/Essential.olean{,.server} → ${W}/lib-tree-slim/QED64/ ${W}/lib-tree/QED64/  (+ Essential.olean.private into lib-tree: ABSENT in the source)`);
     expect(plan).toContain(`node ${tools}/cli.mjs gate --artifact ${W}/artifact > ${W}/logs/gate.log`);
     const staging = path.join(root, "work/staging", NEW_ID);
     expect(plan).toContain(`node --stack-size=8192 pipeline/snapshot/bake-snapshot.mjs --artifact ${W}/artifact --work ${W}/snapshot --out ${staging}/snapshots --name init --lib ${W}/core-lib-slim --reserve 1073741824`);
@@ -246,9 +246,17 @@ describe("adopt-release.sh --dry-run", () => {
   test("the umbrella mode follows the record: runtime-only reuses (--umbrella), changed packs rebuild and stage the packs", () => {
     const rel = fakeRelease("rel-umbrella");
     const noUmbrella = valid(rel).filter((a) => a !== "--umbrella" && a !== umbrella);
-    refused(adopt(noUmbrella), /a runtime-only release reuses the umbrella pair: pass --umbrella/);
+    refused(adopt(noUmbrella), /a runtime-only release reuses the served umbrella: pass --umbrella/);
     refused(adopt([...noUmbrella, "--rebuild-umbrella"]), /pass --umbrella <dir>, not --rebuild-umbrella/);
     refused(adopt([...noUmbrella, "--umbrella", path.join(tmp, "tools")]), /--umbrella .* has no QED64\/Essential\.olean/);
+    // A legacy umbrella is the one .olean (HARDENING #79): reused as it is, nothing to pair it with.
+    const legacy = path.join(tmp, "umbrella-legacy");
+    fs.mkdirSync(path.join(legacy, "QED64"), { recursive: true });
+    fs.writeFileSync(path.join(legacy, "QED64/Essential.olean"), "olean");
+    const one = adopt([...noUmbrella, "--umbrella", legacy, "--fat-tree"]);
+    expect(one.status, one.stderr).toBe(0);
+    const WL = path.join(root, "work/adopt", ID);
+    expect(one.stdout).toContain(`reuse cp ${legacy}/QED64/Essential.olean → ${WL}/lib-tree-slim/QED64/ ${WL}/lib-tree/QED64/  (+ Essential.olean.private into lib-tree: ABSENT in the source)`);
     refused(adopt([...valid(rel), "--rebuild-umbrella"]), /--umbrella and --rebuild-umbrella are exclusive/);
     const changed = fakeRelease("rel-changed", (r) => { (r.packs as { id: string; rawSha256: string }[])[1]!.rawSha256 = sha("new essential"); });
     refused(adopt(valid(changed)), /the release's packs are not the served ones: pass --rebuild-umbrella/);
@@ -260,6 +268,7 @@ describe("adopt-release.sh --dry-run", () => {
     expect(r.stdout).toContain(`node ${tools}/cli.mjs verify --release ${changed.dir}\n`);
     expect(r.stdout).toContain(`node pipeline/snapshot/supervised-run.mjs --target ${W}/umbrella/Essential.olean -- --artifact ${W}/artifact --work ${W}/umbrella --lib ${W}/lib-tree -- -o /work/Essential.olean /work/Essential.lean`);
     expect(r.stdout).toContain(`node ${tools}/cli.mjs olean-imports --audit ${W}/lib-tree`);
+    expect(r.stdout).toContain(`then cp ${W}/umbrella/Essential.olean (+ .olean.server if the compile writes one) → ${W}/lib-tree-slim/QED64/ ${W}/lib-tree/QED64/  (+ Essential.olean.private into lib-tree: if the compile writes one)`);
     expect(r.stdout).toContain(`node pipeline/release/stage-profiles.mjs --packs ${W}/release/profiles --build-id ${NEW_ID} --lean-version 9.9.9 --expect-modules ${W}/release/lists/essential-modules.txt --out ${path.join(root, "work/staging", NEW_ID)}/profiles`);
     expect(r.stdout).toMatch(/disk {5}\d+ GB free under .*, floor 16 GB/); // the fat tree is implied
   });
@@ -377,6 +386,35 @@ describe("adopt-release.sh: its own work dirs, the URL record and the patch orde
     expect(fs.existsSync(repo.W)).toBe(false);
   });
 
+  test("copy_umbrella puts Essential.olean and the facets its source has into the lib trees (HARDENING #79)", () => {
+    const fn = spawnSync("sed", ["-n", "/^copy_umbrella()/,/^}$/p", script], { encoding: "utf8" }).stdout;
+    expect(fn).toMatch(/^copy_umbrella\(\)/);
+    const run = (name: string, files: Record<string, string>, fat: 0 | 1) => {
+      const src = path.join(tmp, `cu-${name}`, "src");
+      const W = path.join(tmp, `cu-${name}`, "W");
+      const notes = path.join(tmp, `cu-${name}`, "notes.log");
+      fs.mkdirSync(src, { recursive: true });
+      for (const [f, text] of Object.entries(files)) fs.writeFileSync(path.join(src, f), text);
+      const r = spawnSync("bash", ["-c", `${fn}\ncopy_umbrella "$@"`, "_", src, W, String(fat), notes], { encoding: "utf8" });
+      const ls = (t: string) => (fs.existsSync(path.join(W, t, "QED64")) ? fs.readdirSync(path.join(W, t, "QED64")).sort() : null);
+      return { status: r.status, stdout: r.stdout, slim: ls("lib-tree-slim"), fat: ls("lib-tree"), notes: fs.existsSync(notes) ? fs.readFileSync(notes, "utf8") : "" };
+    };
+    // A legacy umbrella (4.35 on): the one .olean in both trees, and the notes say why.
+    const legacy = run("legacy", { "Essential.olean": "o", "Essential.lean": "-- source, never copied" }, 1);
+    expect(legacy).toMatchObject({ status: 0, slim: ["Essential.olean"], fat: ["Essential.olean"] });
+    expect(legacy.notes).toMatch(/has no Essential\.olean\.server: the umbrella is one legacy \.olean/);
+    expect(legacy.notes).toMatch(/has no Essential\.olean\.private: .*lib-tree carries the slim tree's umbrella files only/);
+    // A split umbrella (the 4.34 bytes): .server in both trees, .private in the fat one only.
+    const split = run("split", { "Essential.olean": "o", "Essential.olean.server": "s", "Essential.olean.private": "p" }, 1);
+    expect(split).toMatchObject({ status: 0, slim: ["Essential.olean", "Essential.olean.server"], fat: ["Essential.olean", "Essential.olean.private", "Essential.olean.server"], notes: "" });
+    // No fat tree: nothing written beside the slim one.
+    expect(run("slim-only", { "Essential.olean": "o", "Essential.olean.server": "s" }, 0)).toMatchObject({ status: 0, slim: ["Essential.olean", "Essential.olean.server"], fat: null, notes: "" });
+    // An empty olean (a compile that wrote nothing) fails before anything is copied.
+    const empty = run("empty", { "Essential.olean": "", "Essential.olean.server": "s" }, 1);
+    expect(empty).toMatchObject({ status: 1, slim: null, fat: null });
+    expect(empty.stdout).toMatch(/umbrella: .*Essential\.olean is absent or empty/);
+  });
+
   test("patch_ge orders kernel patches like comparePatchIds: NNNN by number, then the suffix (\"\" first)", () => {
     const fn = spawnSync("sed", ["-n", "/^patch_ge()/,/; }$/p", script], { encoding: "utf8" }).stdout;
     expect(fn).toMatch(/^patch_ge\(\)/);
@@ -421,7 +459,7 @@ describe("adopt-helper.mjs: the tree digest and base-tree.json", () => {
     expect(() => treeDigest(t)).toThrow(/is a symlink/);
   });
 
-  test("base-tree writes per tree the packs, the umbrella pair and the digest; kernel-pin is retired (plan B2c)", () => {
+  test("base-tree writes per tree the packs, the umbrella files and the digest; kernel-pin is retired (plan B2c)", () => {
     const rel = fakeRelease("rel-base");
     const W = path.join(tmp, "W");
     const files: Record<string, string> = {
@@ -441,6 +479,17 @@ describe("adopt-helper.mjs: the tree digest and base-tree.json", () => {
     expect(doc.trees["lib-tree-slim"].umbrella).toEqual(doc.umbrella);
     expect(doc.trees["lib-tree"]).toMatchObject({ slim: false, files: 5, digest: treeDigest(path.join(W, "lib-tree")).digest });
     expect(doc.trees["lib-tree"].umbrella.map((u: { path: string }) => u.path)).toEqual(["QED64/Essential.olean", "QED64/Essential.olean.private", "QED64/Essential.olean.server"]);
+    // A legacy umbrella (one .olean, HARDENING #79): the top-level umbrella and every tree's are that one file.
+    const WL = path.join(tmp, "W-legacy");
+    for (const [p, text] of Object.entries({ "core-lib-slim/Init.olean": "i", "lib-tree-slim/Init.olean": "i", "lib-tree-slim/QED64/Essential.olean": "olean", "lib-tree/Init.olean": "i", "lib-tree/QED64/Essential.olean": "olean" })) {
+      fs.mkdirSync(path.dirname(path.join(WL, p)), { recursive: true }); fs.writeFileSync(path.join(WL, p), text);
+    }
+    const bl = spawnSync("node", [helper, "base-tree", "--work", WL, "--release", path.join(rel.dir, "release.json"), "--init-lib", "lean-lib", "--umbrella-source", "rebuilt", "--fat"], { encoding: "utf8" });
+    expect(bl.status, bl.stderr).toBe(0);
+    const legacy = JSON.parse(fs.readFileSync(path.join(WL, "base-tree.json"), "utf8"));
+    expect(legacy.umbrella).toEqual([{ path: "QED64/Essential.olean", sha256: sha("olean"), bytes: 5 }]);
+    expect(legacy.trees["lib-tree-slim"].umbrella).toEqual(legacy.umbrella);
+    expect(legacy.trees["lib-tree"].umbrella).toEqual(legacy.umbrella);
     // The kernel pin is the record's kernel.commit now (toolchain.kernel in qed64.release/v1): no generated file.
     const k = spawnSync("node", [helper, "kernel-pin", "--work", W, "--release", path.join(rel.dir, "release.json"), "--init-lib", "lean-lib", "--staging", "work/staging/x"], { encoding: "utf8" });
     expect(k.status).toBe(2);

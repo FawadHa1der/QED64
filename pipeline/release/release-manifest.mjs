@@ -45,7 +45,9 @@
 // base-tree.json names a pack (at the top or in any tree) the record does not
 // carry or with other raw bytes, names the record's id with another
 // releaseDigest or runtime, does not list exactly the served packs at the
-// top, or has a tree other than core-lib-slim without the umbrella pair; with
+// top, or has a tree other than core-lib-slim that does not carry exactly the
+// umbrella files the top lists (Essential.olean always; its .olean.server for a
+// split `module`), a fat tree also .olean.private; with
 // another release id its releaseDigest and runtime are recorded as null (the
 // record cannot vouch for them); a snapshot entry or the profile index is paired with
 // another runtime; a pack was built for another Lean version; the per-build
@@ -327,7 +329,9 @@ export function toolchainRecordOf(r) {
 
 const TREE_ORDER = ["core-lib-slim", "lib-tree-slim", "lib-tree"];
 const UMBRELLA_PATH = /^QED64\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
-const UMBRELLA_PAIR = ["QED64/Essential.olean", "QED64/Essential.olean.server"];
+/** The umbrella file every base tree lists; its .olean.server facet exists only for a split `module` umbrella (HARDENING #79). */
+const UMBRELLA_OLEAN = "QED64/Essential.olean";
+const UMBRELLA_PRIVATE = "QED64/Essential.olean.private";
 /** The init library's tree (adopt-release.sh): the one tree without the umbrella. */
 const CORE_TREE = "core-lib-slim";
 
@@ -362,7 +366,8 @@ export function baseTreeOf(bt, { record, packs, tracked }) {
   if (typeof bt.slim !== "boolean") bad("slim", bt.slim);
   const top = packList(bt.packs, "packs");
   const umbrella = umbrellaList(bt.umbrella, "umbrella");
-  for (const p of UMBRELLA_PAIR) if (!umbrella.some((u) => u.path === p)) refuse(`${at}: umbrella does not list ${p} (the pair every base tree carries)`);
+  if (!umbrella.some((u) => u.path === UMBRELLA_OLEAN)) refuse(`${at}: umbrella does not list ${UMBRELLA_OLEAN} (the olean every base tree carries)`);
+  if (umbrella.some((u) => u.path === UMBRELLA_PRIVATE)) refuse(`${at}: umbrella lists ${UMBRELLA_PRIVATE} (the top lists the slim tree's umbrella files, never .olean.private)`);
   if (!bt.trees || typeof bt.trees !== "object" || Array.isArray(bt.trees)) bad("trees", bt.trees);
   const names = Object.keys(bt.trees).sort((a, b) => {
     const ia = TREE_ORDER.indexOf(a) === -1 ? TREE_ORDER.length : TREE_ORDER.indexOf(a);
@@ -419,10 +424,16 @@ export function baseTreeOf(bt, { record, packs, tracked }) {
   }
   for (const id of servedIds) if (!top.some((p) => p.id === id)) refuse(`${at}: packs does not list ${id}, a served pack — the base trees were not unpacked from the served packs`);
   if (new Set(top.map((p) => p.id)).size !== top.length) refuse(`${at}: packs lists a pack twice`);
-  // Every tree but the core one carries the umbrella pair.
+  // Every tree but the core one carries exactly the umbrella files the top lists (the slim tree's),
+  // a fat tree also its .olean.private.
   for (const [name, t] of Object.entries(trees)) {
     if (name === CORE_TREE) continue;
-    for (const u of UMBRELLA_PAIR) if (!t.umbrella.some((x) => x.path === u)) refuse(`${at}: trees.${name}.umbrella does not list ${u} (every tree but ${CORE_TREE} carries the pair)`);
+    for (const u of umbrella) if (!t.umbrella.some((x) => x.path === u.path)) refuse(`${at}: trees.${name}.umbrella does not list ${u.path} (every tree but ${CORE_TREE} carries the umbrella)`);
+    for (const x of t.umbrella) {
+      if (x.path === UMBRELLA_PRIVATE) {
+        if (t.slim) refuse(`${at}: trees.${name}.umbrella lists ${UMBRELLA_PRIVATE}, but ${name} is a slim tree (only a fat tree carries .olean.private)`);
+      } else if (!umbrella.some((u) => u.path === x.path)) refuse(`${at}: umbrella does not list ${x.path}, which trees.${name}.umbrella carries (the top lists the slim tree's umbrella files)`);
+    }
   }
   // One umbrella file, one content, in every tree that carries it.
   const union = new Map();

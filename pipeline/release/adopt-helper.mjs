@@ -15,7 +15,8 @@
 //              three mutable manifests and every profile manifest its profiles/index.json lists).
 //   base-tree  --work <W> --release <release.json> --init-lib <id> --umbrella-source <text> [--fat]
 //              Write <W>/base-tree.json: per tree the packs it was unpacked from, the umbrella files it
-//              carries (sha256/bytes) and the tree digest (treeDigest below); top-level `umbrella` is the pair.
+//              carries (sha256/bytes) and the tree digest (treeDigest below); top-level `umbrella` is the slim
+//              tree's: Essential.olean, and its .olean.server when the umbrella is a split `module` (HARDENING #79).
 //              The landing copies it to embedding/base-tree.json, which release-manifest.mjs reads.
 //   (kernel-pin, which wrote a generated KERNEL-PIN, is retired 2026-10 with that file (plan B2c): the
 //   kernel commit is the pinned record's kernel.commit, toolchain.kernel in qed64.release/v1.)
@@ -30,6 +31,7 @@ export const RELEASE_SCHEMA = "lean4-wasm64.release/v1";
 export const BASE_TREE_SCHEMA = "qed64.base-tree/v1";
 export const PROFILE_INDEX_SCHEMA = "qed64.profile-index/v1";
 export const TREE_DIGEST_RULE = 'sha256 over the lines "<relpath>\\0<sha256 hex>\\n" of every file, relpath /-separated, sorted by byte order';
+/** The umbrella files of a slim tree: the olean, and the .olean.server facet only a split `module` umbrella has. */
 const UMBRELLA = ["QED64/Essential.olean", "QED64/Essential.olean.server"];
 
 const refuse = (line) => { console.error(`adopt-release: ${line}`); process.exit(2); };
@@ -174,7 +176,7 @@ function baseTree(o) {
   const packs = packsOf(r);
   const pack = (id) => ({ id, release: packs.get(id)?.release ?? null, rawSha256: `sha256:${strip(packs.get(id)?.rawSha256)}` });
   const work = path.resolve(o.work);
-  const umbrella = UMBRELLA.map((p) => {
+  const umbrella = UMBRELLA.filter((p, i) => i === 0 || fs.existsSync(path.join(work, "lib-tree-slim", p))).map((p) => {
     const file = path.join(work, "lib-tree-slim", p);
     if (!fs.existsSync(file)) refuse(`base-tree: ${file} is absent`);
     return { path: p, sha256: sha256File(file), bytes: fs.statSync(file).size };
@@ -185,7 +187,7 @@ function baseTree(o) {
     if (!fs.existsSync(dir)) refuse(`base-tree: ${dir} is absent`);
     let d;
     try { d = treeDigest(dir); } catch (e) { refuse(`base-tree: ${e.message}`); }
-    // The umbrella files this tree carries: the pair, and in a fat tree Essential.olean.private when its source had one.
+    // The umbrella files this tree carries: the slim tree's, and in a fat tree Essential.olean.private when its source had one.
     const umbrellaFiles = withUmbrella
       ? fs.readdirSync(path.join(dir, "QED64")).sort().map((f) => ({ path: `QED64/${f}`, sha256: sha256File(path.join(dir, "QED64", f)), bytes: fs.statSync(path.join(dir, "QED64", f)).size }))
       : [];

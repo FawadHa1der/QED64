@@ -172,7 +172,7 @@ checked here instead:
 | The record's `runtime.buildId` is not the served `buildId` | The pinned release and the served runtime are different builds (land the adoption's runtime manifest with its record) |
 | The commit prefix in the runtime manifest's `sourceRevision` (`qed64-wasm64@<commit>`) is not a prefix of the record's `kernel.commit`, or there is no commit in it | The record and the served binary disagree, so a rebuild from the pin will not reproduce what is served (REBUILD.md) |
 | A file the hosting rule stores under the toolchain prefix (the runtime manifest and its per-build copy `runtime/runtime-manifest.<buildId>.json`, always, whether or not the record lists it; every profile manifest except `profiles/index.json`; every chunk and part) is not in the record's `files` with that sha256 and size | The Worker serves that path from `lean4-wasm64/<id>/`, where the release's bytes are, not QED64's. The pinned shell fetches the per-build copy first |
-| `base-tree.json` lists a pack, at the top or in any `trees.<name>.packs`, that the record does not carry, or with another raw digest (or another `release`, when given) than the record's, whatever release it names; it names the record's own release id with another `releaseDigest` or `runtime` than the record's; its top-level `packs` are not exactly the served packs (matched by the record's pack `manifest` path); a tree other than `core-lib-slim`, or the top-level `umbrella`, lacks the umbrella pair; or it lists one umbrella file with two contents | The snapshots were baked from trees the served packs do not make, and `baseTree` would hand a downstream wrong rebuild facts. When it names another release (a runtime-only successor that kept the trees, its packs the record's raw bytes), `baseTree.releaseDigest` and `baseTree.runtime` are `null`: the record cannot vouch for that release's digest or runtime |
+| `base-tree.json` lists a pack, at the top or in any `trees.<name>.packs`, that the record does not carry, or with another raw digest (or another `release`, when given) than the record's, whatever release it names; it names the record's own release id with another `releaseDigest` or `runtime` than the record's; its top-level `packs` are not exactly the served packs (matched by the record's pack `manifest` path); the top-level `umbrella` lacks `QED64/Essential.olean` or lists `.olean.private`; a tree other than `core-lib-slim` does not carry exactly the top's umbrella files (a fat tree may add `.olean.private`, a slim one may not); or it lists one umbrella file with two contents | The snapshots were baked from trees the served packs do not make, and `baseTree` would hand a downstream wrong rebuild facts. When it names another release (a runtime-only successor that kept the trees, its packs the record's raw bytes), `baseTree.releaseDigest` and `baseTree.runtime` are `null`: the record cannot vouch for that release's digest or runtime |
 | A snapshot entry's `runtime`, or `profiles/index.json` `runtime.buildId`, is not the `buildId` (or `runtime.leanVersion` is not the runtime's Lean) | Snapshots are binary-paired to the runtime. The index's runtime is the commit record of a promote (promote-staging.mjs) |
 | A pack's `content.lean.version` is not the runtime's Lean version | The runtime does not reject oleans from another Lean version; it misreads them (the githash gate is off) |
 | `public/runtime/runtime-manifest.<buildId>.json` is tracked (in `--commit` mode) or present (in `--worktree` mode) and is not byte-identical to the default manifest | The pinned shell would boot different chunk digests than the unpinned path |
@@ -211,7 +211,7 @@ renamed into place:
 | `release.json` | the manifest of `--commit` with the shell section of `--dist` |
 | `qed64-shell.tar.gz` | every file of `dist/`, `qed64-build.json` included (5.8 MB today) |
 | `qed64-manifests.tar.gz` | the tracked digest roots from the commit's git objects: `toolchain/lean4-wasm64-release.json`, `embedding/base-tree.json`, `public/runtime/runtime-manifest.json`, `public/snapshots/index.json`, `public/profiles/*.json` (1.7 MB) |
-| `umbrella/QED64/Essential.olean`, `.olean.server`, `.olean.private` | `baseTree.umbrellaFiles`, each checked against its sha256 and size (396,664 + 96 + 96 bytes today; `.olean.private` because the fat tree carries it). These bytes are not in git. A downstream that rebuilds a base tree copies only that tree's `baseTree.trees.<name>.umbrella` files from here (see "Rebuilding a base tree") |
+| `umbrella/QED64/Essential.olean`, and `.olean.server` and `.olean.private` when the umbrella has them | `baseTree.umbrellaFiles`, each checked against its sha256 and size. Lean writes the two facets only for a split `module`: the 4.34 umbrella had all three (396,664 + 96 + 96 bytes; `.olean.private` because the fat tree carries it), the 4.35 one is a single legacy `.olean` (HARDENING #79). These bytes are not in git. A downstream that rebuilds a base tree copies only that tree's `baseTree.trees.<name>.umbrella` files from here (see "Rebuilding a base tree") |
 | `SHA256SUMS` | `<sha256>  <path>` of every other file, byte-ordered (`shasum -a 256 -c SHA256SUMS` checks it) |
 
 It refuses (exit 1, one line) whatever `release-manifest.mjs` refuses, a
@@ -245,7 +245,7 @@ release id, never a site-owned R2 path:
 ```
 https://github.com/FawadHa1der/QED64/releases/download/<releaseId>/<file>
   release.json  qed64-shell.tar.gz  qed64-manifests.tar.gz  SHA256SUMS
-  umbrella-QED64-Essential.olean  umbrella-QED64-Essential.olean.server  umbrella-QED64-Essential.olean.private
+  umbrella-QED64-Essential.olean  (+ umbrella-QED64-Essential.olean.server, …olean.private: a split umbrella's facets)
 ```
 
 (GitHub release assets are flat, so `umbrella/QED64/<f>` would be uploaded as
@@ -344,9 +344,10 @@ the umbrella files are per tree, not the bundle's whole `umbrella/` set:
    `rawSha256`.
 3. Copy exactly the files `trees.<name>.umbrella` lists, each from the
    bundle's `umbrella/<path>` to `<dir>/<path>`, and nothing else.
-   `core-lib-slim` lists none; `lib-tree-slim` lists the pair
-   (`QED64/Essential.olean`, `.olean.server`); `lib-tree` adds
-   `QED64/Essential.olean.private`.
+   `core-lib-slim` lists none; `lib-tree-slim` lists the top-level
+   `umbrella` (`QED64/Essential.olean`, and `.olean.server` for a split
+   umbrella); `lib-tree` lists the same, plus `QED64/Essential.olean.private`
+   when the umbrella has one.
 4. Count the files (`trees.<name>.files`) and compute the digest by
    `baseTree.digestRule`: sha256 over the lines `<relpath>\0<sha256 hex>\n`
    of every file, relpath `/`-separated, sorted by byte order, compared with
@@ -355,7 +356,8 @@ the umbrella files are per tree, not the bundle's whole `umbrella/` set:
 This is what `adopt-release.sh` does (its `core-lib-slim`, `lib-tree-slim`,
 `lib-tree` and `umbrella` steps), and the order `release-manifest.mjs`
 checks: every listed pack is the record's, and every tree but
-`core-lib-slim` carries the pair.
+`core-lib-slim` carries exactly the umbrella files the top lists (a fat tree
+also `.olean.private`).
 
 ## PROPOSED: publishing from CI (not applied)
 
@@ -402,7 +404,7 @@ jobs:
           # (write-bundle refuses any other bytes); an adoption that rebuilds it uploads the new files first.
           mkdir -p umbrella/QED64
           LAST=$(gh release list --limit 1 --json tagName --jq '.[0].tagName')
-          for f in Essential.olean Essential.olean.server Essential.olean.private; do
+          for f in $(node -e 'const b = require("./embedding/base-tree.json"); console.log([...new Set([...b.umbrella, ...Object.values(b.trees).flatMap((t) => t.umbrella)].map((u) => u.path.slice(6)))].join(" "))'); do
             gh release download "$LAST" -p "umbrella-QED64-$f" -O "umbrella/QED64/$f"
           done
           node pipeline/release/write-bundle.mjs --commit "$GITHUB_SHA" --dist dist --umbrella umbrella --out release
