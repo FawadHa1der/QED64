@@ -1895,11 +1895,17 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   loop starts Lean with `-DElab.async=false`. Under Lean's default,
   every blocked theorem task started a thread that never exits, and a
   document of ~20 Mathlib theorems crashed the tab. Theorems now
-  elaborate and check in order on the command's own task. Messages and
-  diagnostics are the same; measured settle times are equal or shorter.
-  Proofs deep enough to be near the browser's stack limit fail about one
-  step earlier, with Lean's "stack is exhausted". A document can opt back
-  in with `set_option Elab.async true`, at its own risk. No API change.
+  elaborate and check in order on the command's own task. A document's
+  messages and diagnostics are the same; measured settle times are equal
+  or shorter. Proofs deep enough to be near the browser's stack limit fail
+  about one step earlier, with Lean's "stack is exhausted". A document can
+  opt back in with `set_option Elab.async true`, at its own risk. No API
+  change. An embedder whose own Lean code elaborates tactic blocks and runs
+  linters on them should test under this setting: lean4game's `Runner`
+  (its levels' tactic checker) had its linters flag every tactic, so that
+  no correct proof completed on 8 of 10 games, until it set
+  `set_option Elab.async true` on the `Runner` line of its worker document
+  (reported by the lean4game session, 2026-10-23, on QED64 73d7f3b).
 - **The engine-stack probe size is the runtime's own again (HARDENING
   #71, 2026-10-12):** `lean.worker.js` no longer sets
   `LEAN_WASM_STACK_PROBE_SLOTS` (#67's interim 8192 let heavy tactic
