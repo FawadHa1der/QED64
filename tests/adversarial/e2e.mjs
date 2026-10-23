@@ -63,7 +63,7 @@ for (const it of corpus) {
 // mode for chasing one flaky scenario without cohort contamination.
 // Whole-name matching lives in harness.mjs (pinned by
 // tests/unit/adversarial-harness.test.ts).
-const FIXED = ["golden-7-battery", "error-clear-staleness", "import-composition", "switch-init", "switch-mathlib", "import-completion", "shared-link-gate", "worker-kill-recovery", "final-memory"];
+const FIXED = ["golden-7-battery", "error-clear-staleness", "import-composition", "switch-init", "switch-mathlib", "import-completion", "hover-docstring", "shared-link-gate", "worker-kill-recovery", "final-memory"];
 const only = arg("only", "");
 const onlyMatches = (name) => onlyMatchesName(name, only);
 const runs = (name) => !only || onlyMatches(name);
@@ -492,6 +492,39 @@ if (runs("import-completion")) {
   const accepted = /^import Mathlib\.Data\.Re[\w.]+$/.test(line1) && line1 !== "import Mathlib.Data.Re";
   await record("import-completion", "functional", appeared && focused !== null && accepted,
     `widget=${appeared} focused='${focused}' line1='${line1}'`);
+}
+
+// ---------- scenario: the hover of an imported name carries its docstring ---
+// Kernel patch 0042 imports at the `.server` level, where the docstrings live;
+// the 4.34 pairings imported at `.exported` and a hover showed the signature
+// and the defining module only (2026-10-22 probe). Lean's hover markdown is
+// "```lean sig```", then `***`-separated parts: the docstring, "*import M*".
+// The request goes through the relay as the editor's own does (the client
+// port is the test hatch the InfoView lane also listens on). Go-to-definition
+// stays empty: no .lean sources are served.
+if (runs("hover-docstring")) {
+  await setBuffer("import Mathlib\n\n#check List.map\n#check Finset.sum\n");
+  const settled = await waitTerminal(420000, 1500);
+  const hover = (line, character) => Promise.race([
+    deadline(30000, "hover request"),
+    page.evaluate(({ line, character }) => new Promise((resolve) => {
+      const relay = globalThis.qed64.relay;
+      const id = `e2e-hover-${line}-${character}`;
+      const port = relay.clientPort;
+      const on = (e) => { const m = e.data; if (m && m.id === id) { port.removeEventListener("message", on); resolve(m.error ? { error: String(m.error.message ?? m.error).slice(0, 120) } : { md: m.result?.contents?.value ?? null }); } };
+      port.addEventListener("message", on); port.start?.();
+      relay.fromClient({ jsonrpc: "2.0", id, method: "textDocument/hover", params: { textDocument: { uri: relay.doc.uri }, position: { line, character } } });
+    }), { line, character }),
+  ]).catch((e) => ({ error: String(e).slice(0, 120) }));
+  const docOf = (md) => { const parts = String(md ?? "").split(/\n\*\*\*\n/); return parts.length >= 3 ? parts.slice(1, -1).join("\n").trim() : ""; };
+  const rows = [];
+  for (const [name, line, character] of [["List.map", 2, 9], ["Finset.sum", 3, 10]]) {
+    const h = settled.ok ? await hover(line, character) : { error: "not settled" };
+    rows.push({ name, doc: docOf(h.md), error: h.error ?? null, signature: Boolean(h.md && h.md.includes(name)) });
+  }
+  const pass = settled.ok && settled.terminal === "ready" && rows.every((r) => r.signature && r.doc.length > 0);
+  await record("hover-docstring", "functional", pass,
+    `terminal=${settled.terminal} ${rows.map((r) => `${r.name}: ${r.error ? `error ${r.error}` : `signature=${r.signature} doc='${r.doc.replace(/\s+/g, " ").slice(0, 60)}'`}`).join("; ")}`);
 }
 
 // ---------- scenario: a share link opens behind the consent gate ------------

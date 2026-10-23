@@ -2229,6 +2229,151 @@
         "budgetMs": 20000
       },
       "rationale": "HARDENING #61 (probe P8): the valid twin of the async cases above; it must stay error-free after kernel patch 0037."
+    },
+    {
+      "name": "module-public-import-lean",
+      "category": "module-system",
+      "source": "module\npublic import Lean\npublic def probeName : Lean.Name := Lean.Name.anonymous\n",
+      "expect": {
+        "panicFree": true,
+        "mustSucceed": true,
+        "budgetMs": 60000
+      },
+      "rationale": "Until kernel patch 0042 (lean-v4.35.0-b081e7c) every `module` file served from a SHARED environment (a baked snapshot, wasmCompile's cache) saw no imported public constant: the env was imported as legacy and 0034's setIsModule flipped the flag without building the public map. The live 53cb11e site (2026-10-22 probe, qed64/work/module-probe) answered \"Unknown identifier `Lean.Name` … A public declaration `Lean.Name` exists but is imported privately\". 0042 rebuilds the public map from every loaded module."
+    },
+    {
+      "name": "module-init-only",
+      "category": "module-system",
+      "source": "module\npublic def pubN : Nat := 4\n",
+      "expect": {
+        "panicFree": true,
+        "mustSucceed": true,
+        "budgetMs": 60000
+      },
+      "rationale": "Until kernel patch 0042 (lean-v4.35.0-b081e7c) every `module` file served from a SHARED environment (a baked snapshot, wasmCompile's cache) saw no imported public constant: the env was imported as legacy and 0034's setIsModule flipped the flag without building the public map. The live 53cb11e site (2026-10-22 probe, qed64/work/module-probe) answered \"Unknown identifier `Nat`\" for a module with no import at all (Init only)."
+    },
+    {
+      "name": "module-public-import-mathlib",
+      "category": "module-system",
+      "source": "module\npublic import Mathlib.Data.Real.Basic\npublic def r : ℝ := 1\n",
+      "expect": {
+        "panicFree": true,
+        "mustSucceed": true,
+        "budgetMs": 60000
+      },
+      "rationale": "Until kernel patch 0042 (lean-v4.35.0-b081e7c) every `module` file served from a SHARED environment (a baked snapshot, wasmCompile's cache) saw no imported public constant: the env was imported as legacy and 0034's setIsModule flipped the flag without building the public map. The live 53cb11e site (2026-10-22 probe, qed64/work/module-probe) answered \"Unknown constant `Real`\" through the covering Mathlib umbrella."
+    },
+    {
+      "name": "module-public-meta-def",
+      "category": "module-system",
+      "source": "module\npublic meta import Lean\npublic meta def qedMetaName : Lean.Name := `qed64.meta\n",
+      "expect": {
+        "panicFree": true,
+        "mustSucceed": true,
+        "budgetMs": 60000
+      },
+      "rationale": "Kernel 0042 sets irPhases := .all on the shared env, so a `public meta import` with a `public meta def` elaborates; its review found a later file's `public meta def` failing once a first file's `meta` flags had stuck (the browser twin runs it after another module file)."
+    },
+    {
+      "name": "module-resident-public-import-lean",
+      "category": "module-system",
+      "source": "",
+      "actions": [
+        {
+          "op": "setValue",
+          "text": "module\npublic import Lean\npublic def probeName : Lean.Name := Lean.Name.anonymous\n",
+          "ms": 300
+        },
+        {
+          "op": "pause",
+          "ms": 1500
+        }
+      ],
+      "expect": {
+        "mustSucceed": true,
+        "panicFree": true,
+        "settleMs": 300000,
+        "zeroErrors": true
+      },
+      "rationale": "The browser twin of module-public-import-lean: the resident FileWorker on the umbrella snapshot (the path the 2026-10-22 probe found failing on the live site)."
+    },
+    {
+      "name": "module-resident-init-only",
+      "category": "module-system",
+      "source": "",
+      "actions": [
+        {
+          "op": "setValue",
+          "text": "module\npublic def pubN : Nat := 4\n",
+          "ms": 300
+        },
+        {
+          "op": "pause",
+          "ms": 1500
+        }
+      ],
+      "expect": {
+        "mustSucceed": true,
+        "panicFree": true,
+        "settleMs": 300000,
+        "zeroErrors": true
+      },
+      "rationale": "The browser twin of module-init-only: a `module` buffer with no import, served from the session's environment."
+    },
+    {
+      "name": "module-resident-public-import-mathlib",
+      "category": "module-system",
+      "source": "",
+      "actions": [
+        {
+          "op": "setValue",
+          "text": "module\npublic import Mathlib.Data.Real.Basic\npublic def r : ℝ := 1\n",
+          "ms": 300
+        },
+        {
+          "op": "pause",
+          "ms": 1500
+        }
+      ],
+      "expect": {
+        "mustSucceed": true,
+        "panicFree": true,
+        "settleMs": 300000,
+        "zeroErrors": true
+      },
+      "rationale": "The browser twin of module-public-import-mathlib: `public import` of a Mathlib module covered by the umbrella snapshot."
+    },
+    {
+      "name": "module-resident-meta-after-module",
+      "category": "module-system",
+      "source": "",
+      "actions": [
+        {
+          "op": "setValue",
+          "text": "module\npublic import Lean\npublic def probeName : Lean.Name := Lean.Name.anonymous\n",
+          "ms": 300
+        },
+        {
+          "op": "pause",
+          "ms": 4000
+        },
+        {
+          "op": "setValue",
+          "text": "module\npublic meta import Lean\npublic meta def qedMetaName : Lean.Name := `qed64.meta\n",
+          "ms": 300
+        },
+        {
+          "op": "pause",
+          "ms": 1500
+        }
+      ],
+      "expect": {
+        "mustSucceed": true,
+        "panicFree": true,
+        "settleMs": 300000,
+        "zeroErrors": true
+      },
+      "rationale": "The browser twin of module-public-meta-def, run after another `module` buffer in the same session: 0042's review found a later file's `public meta def` failing once a first file's `meta` flags had stuck."
     }
   ]
 }

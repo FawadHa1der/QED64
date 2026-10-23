@@ -113,3 +113,27 @@ output reserve no longer fit the 16 GiB space — recorded in the kernel
 repo's PATCHES.md; the fat-import differential is the audit method from now
 on. Repeat this audit at every Mathlib pin.
 
+
+## Audit at Mathlib `56a0058` (v4.35.0), 2026-10-23 — slim ships
+
+Runtime `wasm64-36d7f415704473d9` (kernel patch 0042, which imports at the
+`.server` level), essential 4,438 modules (incl. 82 deprecated shims),
+umbrella of 5,092 modules, now one legacy `.olean` (HARDENING #79). Static
+half: 302 `import all` edges in the tree, 15 outside Init/Std/Lean/Lake, all
+library-internal: Batteries.Control.{AlternativeMonad,Lemmas} and
+Batteries.Tactic.Lint.Simp, ImportGraph.{Lean.Syntax,Shake.DeclNeeds,
+Shake.EnvExtension}, and Mathlib.{Data.Nat.Digits.Defs, Tactic.ClickSuggestions.Apply,
+Tactic.FieldSimp.Discharger, Tactic.ToDual, Tactic.WLOG}, each opening an
+Init or Lean module; the slim bake imported every umbrella module with zero
+errors. Differential half (`work/slim-stress-435.lean`: the 4.34 file plus
+`Nat.digits` by `norm_num` and `#eval`, `Nat.toDigits` by `decide`, and an
+`OrderDual.toDual` term, the targets of the new edges): the slim snapshot
+(`--via-mem`) and a fresh import of the fat tree print byte-identical
+messages, 6 lines each: the unused-variable linter on the `linarith` case,
+"unsolved goals ⊢ Nat.Prime 37" (outside the closure, as before), the
+`#check`, the two `#eval`s, and `decide` stuck at `Nat.toDigits 10 123`. The
+last is the import level, not slim: a non-`@[expose]` body of a `module`
+file lives in its `.olean.private`, which an import at `.server` does not
+read from either tree (stock Lean imports a legacy file at `.private`; the
+fork's wasm level is `.server` since kernel 0042, `.exported` before it). Repeat
+this audit at every Mathlib pin.

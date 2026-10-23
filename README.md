@@ -4,10 +4,10 @@ QED64 is a Lean 4 editor in the spirit of
 [live.lean-lang.org](https://live.lean-lang.org), with one difference: **no
 server checks your proofs**. The real Lean 4 compiler and language server run
 in a Web Worker as **WebAssembly Memory64** (64-bit pointers, shared memory,
-pthreads). Lean's core library and a 4,354-module **Mathlib** environment are
+pthreads). Lean's core library and a 4,438-module **Mathlib** environment are
 mounted from verified, content-addressed artifacts. The page is lean4monaco
 (Monaco plus the vscode-lean4 InfoView) over that in-browser LSP. It serves
-Lean 4.34.0 and Mathlib v4.34.0 ([docs/PROVENANCE.md](docs/PROVENANCE.md)).
+Lean 4.35.0 and Mathlib v4.35.0 ([docs/PROVENANCE.md](docs/PROVENANCE.md)).
 
 Live: **https://qed64.fawadworkaddress.workers.dev/**
 
@@ -29,9 +29,9 @@ Live: **https://qed64.fawadworkaddress.workers.dev/**
 
 **To build or test it:**
 - macOS or Linux, **Node 24+** (Memory64 on by default) and npm.
-- Disk: `npm run fetch:artifacts` writes about 1.65 GB into `public/` (the
-  runtime, 159 MB; the two profile packs, 1.13 GB; the two snapshots,
-  354 MB). Adopting a release and rebaking needs 12 GB free under `work/`
+- Disk: `npm run fetch:artifacts` writes about 1.6 GB into `public/` (the
+  runtime, 106 MB; the two profile packs, 1.14 GB; the two snapshots,
+  351 MB). Adopting a release and rebaking needs 12 GB free under `work/`
   (16 GB with `--fat-tree`), the floor `pipeline/release/adopt-release.sh`
   checks.
 
@@ -270,7 +270,7 @@ its prerequisites and its pass line):
   ```
 - **G1**, end to end in a real browser, against the fetched artifacts
   (`npx playwright install chromium` first): `npm run test:adversarial`
-  (preflight, then the compiler battery, then e2e 24/24; `-- --skip-compiler`
+  (preflight, then the compiler battery, then e2e 29/29; `-- --skip-compiler`
   on a fresh clone, because the battery needs Node-side build outputs). Add
   the page lanes `tests/adversarial/{page-api,infoview-actions,liveness-faults,reload-storm,edit-storm,…}.mjs`
   and the integration tier `npm run test:integration` (the real runtime under

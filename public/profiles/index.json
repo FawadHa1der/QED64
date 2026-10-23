@@ -1,21 +1,21 @@
 {
   "schema": "qed64.profile-index/v1",
   "runtime": {
-    "buildId": "wasm64-5650321f3f58aeb0",
-    "leanVersion": "4.34.0"
+    "buildId": "wasm64-36d7f415704473d9",
+    "leanVersion": "4.35.0"
   },
   "profiles": [
     {
       "id": "core",
       "manifest": "/profiles/lean-core.manifest.json",
-      "release": "lean-core-4.34.0-wasm64-36a96239e08fd2e0",
-      "modules": 649
+      "release": "lean-core-4.35.0-wasm64-36d7f415704473d9",
+      "modules": 653
     },
     {
       "id": "essential",
       "manifest": "/profiles/mathlib-essential.manifest.json",
-      "release": "mathlib-essential-5ed2965-wasm64-36a96239e08fd2e0",
-      "modules": 4354
+      "release": "mathlib-essential-56a0058-wasm64-36d7f415704473d9",
+      "modules": 4438
     }
   ]
 }
