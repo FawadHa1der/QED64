@@ -13,10 +13,9 @@
 // environment passes its own snapshot map and a tighter memory cap). The
 // header text the policy reads is the document this session will serve:
 // the initial text at first boot, the relay's last full text on a reboot.
-import { downloadBeforeBoot, ensureProfile, loadSnapshotForBoot, noteBootNetworkFailure, refuseUnpairedSnapshot, type Qed64Artifacts, type Qed64Session, type StatusSink } from "./qed64-boot";
+import { downloadBeforeBoot, ensureProfile, loadSnapshotForBoot, noteBootNetworkFailure, refuseUnpairedSnapshot, reinstallProfile, type Qed64Artifacts, type Qed64Session, type StatusSink } from "./qed64-boot";
 import type { RelaySession, RestartOptions } from "./lsp-relay";
 import { LeanSession, memoryCandidates, type JsonRpcMessage, type LibraryPack, type WorkerStatus } from "./client";
-import { installProfile } from "./profiles";
 import { deathCause, failureCauseOf, stageOfWorkerPhase, stepOfInstallPhase, ENGINE_STACK_OVERFLOW, type BootStage, type FailureCause } from "./failure";
 import { chooseSnapshots, initialBytesForEntries, type SnapshotIndex } from "./snapshots";
 import { CANCELLED, createEditCoalescer, DEFAULT_EDIT_COALESCE_MS, type BackPressureEvent, type BackPressureOptions, type EditCoalescer } from "./edit-coalescer";
@@ -359,7 +358,7 @@ export class ResidentSession implements RelaySession {
       if (!entry) { a.installed.delete(id); console.warn(`[qed64] pack ${id} was consumed by the previous worker and is not in the index; dropped from LEAN_PATH`); continue; }
       ui.busy(`re-preparing the ${id} library for the new session`, { stage: "profile", subject: id });
       this.#installing = id;
-      a.installed.set(id, await installProfile(entry, (p) => ui.progress(`${p.phase} ${id}`, { phase: `pack-${p.phase}`, loaded: p.loaded, total: p.total ?? 0, unit: "bytes", stage: "profile", subject: id, step: stepOfInstallPhase(p.phase) })));
+      a.installed.set(id, await reinstallProfile(entry, (p) => ui.progress(`${p.phase} ${id}`, { phase: `pack-${p.phase}`, loaded: p.loaded, total: p.total ?? 0, unit: "bytes", stage: "profile", subject: id, step: stepOfInstallPhase(p.phase) })));
       this.#installing = null;
     }
     const packs: LibraryPack[] = [...a.installed.values()].flatMap((p) =>

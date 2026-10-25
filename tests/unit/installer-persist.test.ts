@@ -3,10 +3,13 @@
 // awaited call held every Firefox boot at "installing the Lean core library" (Firefox prompts for persistent storage;
 // that the promise waits on the prompt is inferred from headless runs). The install here runs against
 // a fake OPFS with a persist() that never settles, and must still download, inflate, commit and return.
+// HARDENING #81, on the same fakes: a manifest of another release than the index entry names is refused
+// before any part is fetched or the cache is touched.
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { gzipSync } from "node:zlib";
 import { createHash } from "node:crypto";
 import { installProfile, type ProfileIndexEntry, type ProfileManifest } from "../../lib/profiles";
+import { failureCauseOf, WORKER_DEP_MISMATCH } from "../../lib/failure";
 
 const sha256 = (b: Uint8Array) => createHash("sha256").update(b).digest("hex");
 
@@ -106,4 +109,44 @@ describe("installProfile and navigator.storage.persist (HARDENING #75)", () => {
     expect(names.some((n) => n.endsWith(".pack.meta.json"))).toBe(true);
     expect(names.some((n) => n.endsWith(".staging"))).toBe(false);
   }, 15_000);
+});
+
+describe("installProfile and the index entry's release (HARDENING #81)", () => {
+  /** A site whose /core.manifest.json is the manifest of `served`, recording every fetch. */
+  function site(served: string, opfs: boolean) {
+    const raw = new Uint8Array(2048).map((_, i) => i % 239);
+    const { manifest, parts } = makeManifest(raw);
+    (manifest.content as { release: string }).release = served;
+    const root = fakeOpfs();
+    vi.stubGlobal("navigator", { storage: opfs ? { getDirectory: async () => root, persist: async () => true } : {} });
+    const fetched: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      fetched.push(url);
+      if (url === "/core.manifest.json") return new Response(JSON.stringify(manifest), { status: 200, headers: { "content-type": "application/json" } });
+      const i = Number(/part-(\d+)/.exec(url)![1]);
+      return new Response(parts[i]!.slice() as unknown as BodyInit, { status: 200 });
+    });
+    return { raw, root, fetched };
+  }
+  const entry = (release: string): ProfileIndexEntry => ({ id: "core", manifest: "/core.manifest.json", release, modules: 1 });
+
+  test.each([["OPFS", true], ["memory", false]] as const)("%s: a manifest of the next release is refused as stale before a part is fetched or the store touched", async (_mode, opfs) => {
+    const { root, fetched } = site("lean-core-4.35.0-wasm64-new", opfs);
+    const err = await installProfile(entry("lean-core-4.34.0-wasm64-old")).then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as { code?: string }).code).toBe(WORKER_DEP_MISMATCH);
+    expect((err as Error).message).toBe("library pack core: the site serves release lean-core-4.35.0-wasm64-new, this page pairs with lean-core-4.34.0-wasm64-old (a deploy mixed versions) — reload the page");
+    expect(failureCauseOf(err, { stage: "profile", subject: "core" })).toMatchObject({ kind: "stale", code: WORKER_DEP_MISMATCH, stage: "profile", subject: "core" });
+    expect(fetched).toEqual(["/core.manifest.json"]);
+    expect(root.dirs.size).toBe(0); // the pack store was never opened, so nothing was read, staged or collected
+  });
+
+  test("the release the entry names installs; an entry that names no release is not checked", async () => {
+    for (const named of ["lean-core-4.35.0-wasm64-new", ""]) {
+      const { raw, fetched } = site("lean-core-4.35.0-wasm64-new", true);
+      const installed = await installProfile(entry(named));
+      expect(installed).toMatchObject({ id: "core", release: "lean-core-4.35.0-wasm64-new", fromCache: false, totalBytes: raw.length });
+      expect(fetched.filter((u) => u.startsWith("/part-")).length).toBeGreaterThan(0);
+    }
+  });
 });

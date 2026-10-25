@@ -13,7 +13,7 @@
 // boot), and the shell goes through it; a copy is used only when it is
 // paired with the pinned runtime.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchSnapshotIndexFor, installArtifacts, pinnedIndexUrls, snapshotPairingFault, type StatusSink } from "../../lib/qed64-boot";
+import { fetchSnapshotIndexFor, installArtifacts, pinnedIndexUrls, reinstallProfile, snapshotPairingFault, type StatusSink } from "../../lib/qed64-boot";
 import { fetchSnapshotIndex, loadSnapshotIndex, pairedIndexCopyUrl } from "../../lib/snapshots";
 import { NO_OVERRIDES } from "../../lib/params";
 import type { RuntimeManifest } from "../../lib/client";
@@ -284,6 +284,11 @@ describe("installArtifacts: both indexes", () => {
     const staged = await installArtifacts(sink(), { overrides: { profiles: "profiles-staged" }, profiles: [], runtime, snapshots: null });
     expect(staged.index.runtime.buildId).toBe(NEW);
     expect(asked).toEqual(["/profiles-staged/index.json"]);
+    // A memory pack re-prepared for a new session comes from the same staged set (HARDENING #81: the served
+    // set's manifest would be refused as another release), not from /profiles/.
+    const reinstall = await reinstallProfile({ id: "core", manifest: "/profiles/lean-core.manifest.json", release: "staged", modules: 1 }).then(() => null, (e: unknown) => e);
+    expect(reinstall).toBeInstanceOf(Error); // the stub site has no manifest there; only the URL asked matters
+    expect(asked.at(-1)).toBe("/profiles-staged/lean-core.manifest.json");
     vi.unstubAllGlobals();
     asked = site({ ...WINDOW, ...COPIES });
     const unpinned = await installArtifacts(sink(), { overrides: "none", profiles: [], runtime, snapshots: null });

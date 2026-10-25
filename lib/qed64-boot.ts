@@ -5,7 +5,7 @@
 // one — so the pieces a session boot needs (pack install on demand, snapshot
 // prefetch + load) live here, and the boot itself in resident-session.ts.
 import { runtimeManifestIdFault, type LeanSession, type RuntimeManifest } from "./client";
-import { fetchProfileIndex, installProfile, type InstalledProfile, type ProfileIndex } from "./profiles";
+import { fetchProfileIndex, installProfile, type InstalledProfile, type InstallProgress, type ProfileIndex, type ProfileIndexEntry } from "./profiles";
 import { entryLabel, fetchSnapshotIndex, loadSnapshotIndex, pairedCopyOr, pairedIndexCopyUrl, snapshotCacheKey, type SnapshotEntry, type SnapshotIndex } from "./snapshots";
 import { NO_OVERRIDES, parseBootParams, validateBootOverrides, type BootOverrides } from "./params";
 import { failureCauseOf, stepOfInstallPhase, type BootStage, type BootStep, type FailureCause } from "./failure";
@@ -246,6 +246,14 @@ export async function ensureProfile(
     }, profileReroot),
   );
   return true;
+}
+
+/** Install `entry` again from the set this boot installed from (`?profiles=<dir>`
+ * included): a memory pack re-prepared for a new session (lib/resident-session.ts)
+ * must come from where the boot's came from, or its manifest is the served set's,
+ * which `installProfile` refuses as another release (HARDENING #81). */
+export function reinstallProfile(entry: ProfileIndexEntry, onProgress?: (p: InstallProgress) => void): Promise<InstalledProfile> {
+  return installProfile(entry, onProgress, profileReroot);
 }
 
 // The raw prefetch lives in raw-cache.ts (single-flight, cross-tab

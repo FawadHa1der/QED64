@@ -393,19 +393,28 @@ Worker routes by the release record (`infra/worker.js`:
   after a deploy nothing of an older release's runtime or packs is
   reachable. A tab that booted before the deploy keeps the runtime it has
   in memory; a reload loads the new shell (the HTML is `must-revalidate`).
-  Until then it can trip in two places. A session restart re-fetches its
+  Until then it can trip in three places. A session restart re-fetches its
   runtime chunks by URL: the HTTP cache usually has them (immutable), and
-  a miss is now a 404. An on-demand pack install fetches
+  a miss is a 404. An on-demand pack install fetches
   `/profiles/<pack>.manifest.json`, a name that is the same in every
-  release, so it gets the NEW release's manifest and packs (oleans of
-  another Lean version under the old runtime; `installProfile` does not yet
-  compare the manifest's `content.release` with the index entry's
-  `release`). An old shell that boots after the deploy (a page restored
-  from a cache) asks for `/runtime/runtime-manifest.<its buildId>.json`: a
-  404 (no-store), then the mutable `/runtime/runtime-manifest.json`, the new
-  runtime, which its pinned snapshot index copy refuses (`unpaired`) or,
-  once that copy is gone, pairs with the new snapshots under the old page.
-  Snapshots and `profiles/index.json` never moved.
+  release, so after a release that changed the packs it gets the NEW
+  release's manifest, which `installProfile` refuses as `stale` because its
+  `content.release` is not the index entry's `release` (HARDENING #81): the
+  page offers a reload instead of mounting another Lean version's oleans
+  under the old runtime (a kernel-only release keeps the packs, and their
+  `content.release`, so nothing is refused). And a tab of the new release
+  that installs a pack deletes the superseded pack files from OPFS, which
+  the old tab may still have mounted (not observed; a reload re-installs).
+  An old shell that boots after the deploy (a page restored from a cache)
+  asks for `/runtime/runtime-manifest.<its buildId>.json`: a 404
+  (no-store), then the mutable `/runtime/runtime-manifest.json`, the new
+  runtime. Its pinned profile index copy still names the old packs, so the
+  stock page's boot install of the core pack is refused `stale` (#81) and
+  its boot card says to reload. A page that installs no pack at boot
+  (`profiles: "none"`) gets as far as its pinned snapshot index copy, which
+  refuses the new runtime (`unpaired`), or, once the copies are gone, pairs
+  with the new snapshots under the old page. Snapshots and
+  `profiles/index.json` never moved.
 
 ## Security model: who can write what
 

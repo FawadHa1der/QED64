@@ -14,10 +14,17 @@
 // covers the inflate). The pipeline's `verify-release` recomputes the raw
 // digest out-of-band.
 //
+// Identity: the manifest must be the release the page's profile index names
+// (the index entry's `release`). Its URL is the same in every release, so a
+// page loaded before a deploy would otherwise install the next release's pack
+// (HARDENING #81).
+//
 // Storage: OPFS under /qed64/packs/<digest-prefix>. A `.meta.json` marker
 // records the manifest pack digest + byte length; a cached pack is reused only
 // when both match. Installs are transactional: written to `<name>.staging`,
 // then renamed (move) into place; a failed install removes its staging file.
+
+import { WORKER_DEP_MISMATCH } from "./failure";
 
 export interface ProfileIndexEntry {
   id: string;
@@ -519,6 +526,16 @@ export async function installProfile(
   // yet. The pack cache is keyed by the pack digest, so a staged pack never
   // collides with a served one.
   const manifest = await fetchManifest(reroot(entry.manifest));
+  // The index entry names the release this page pairs with; the manifest's URL is the same in every release, so
+  // after a deploy a page loaded before it is served the next release's manifest. Refused before a part is fetched
+  // or the cache is read: those oleans are another Lean build's, which the runtime misreads rather than refuses.
+  // A `stale` cause (the page reloads into the new release); an entry that names no release is not checked.
+  if (entry.release && manifest.content.release !== entry.release) {
+    throw Object.assign(
+      new Error(`library pack ${entry.id}: the site serves release ${manifest.content.release}, this page pairs with ${entry.release} (a deploy mixed versions) — reload the page`),
+      { code: WORKER_DEP_MISMATCH },
+    );
+  }
   for (const part of manifest.content.pack.transport.parts) part.url = reroot(part.url);
   const { pack, workerfs, release, modules } = manifest.content;
   const expected: PackMeta = {

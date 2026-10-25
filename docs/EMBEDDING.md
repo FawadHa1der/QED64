@@ -853,7 +853,7 @@ interface FailureCause { kind: FailureKind; httpStatus?: number; stage?: BootSta
 | `unpaired` | a snapshot baked by another runtime build | `SNAPSHOT_UNPAIRED` |
 | `oom` | an allocation or reservation failed | `MEMORY_FAILED`, `could not allocate`, `Cannot enlarge memory` |
 | `storage` | OPFS or quota | `QuotaExceededError` |
-| `stale` | the site was deployed under this page: the worker scripts it loaded are of different revisions (§7.7), or a lazily imported chunk of the page's own bundle (`/assets/<name>-<hash>.js`) could not be fetched (the browser's `Failed to fetch dynamically imported module: …/assets/…`; a deploy that replaced the assets under the open page explains it, and a connection cut during that import reads the same; HARDENING #74). **Reload the page.** A lost chunk is a boot failure (`stage: "failed"`, `boot.failed`, every `settled()` waiter rejects): nothing serves until the reload. For the worker scripts, retrying in place does not help: the relay heals by itself (its replacement worker loads the new scripts, and the relay replays `initialize` and the document, so the language client never re-initializes), but it then serves under this page's older bundle, which holds only while the worker protocol changes additively | `WORKER_DEP_MISMATCH` (`code` is always `"WORKER_DEP_MISMATCH"`, exported as `WORKER_DEP_MISMATCH`) |
+| `stale` | the site was deployed under this page: the worker scripts it loaded are of different revisions (§7.7), or a lazily imported chunk of the page's own bundle (`/assets/<name>-<hash>.js`) could not be fetched (the browser's `Failed to fetch dynamically imported module: …/assets/…`; a deploy that replaced the assets under the open page explains it, and a connection cut during that import reads the same; HARDENING #74). Also a library pack manifest of another release than the page's profile index names (`installProfile`, HARDENING #81): it does not heal, the relay's retries fail the same way and halt, and only a reload helps. **Reload the page.** A lost chunk is a boot failure (`stage: "failed"`, `boot.failed`, every `settled()` waiter rejects): nothing serves until the reload. For the worker scripts, retrying in place does not help: the relay heals by itself (its replacement worker loads the new scripts, and the relay replays `initialize` and the document, so the language client never re-initializes), but it then serves under this page's older bundle, which holds only while the worker protocol changes additively | `WORKER_DEP_MISMATCH` (`code` is always `"WORKER_DEP_MISMATCH"`, exported as `WORKER_DEP_MISMATCH`) |
 | `other` | the checker's own failure, with **one exception**: `code: "WORKER_SCRIPT_LOAD_FAILED"` means a worker script never ran, which looks the same offline as on a 404, so probe the link | `abort`, `wedged`, `SNAPSHOT_URL_REFUSED`, `ENGINE_STACK_OVERFLOW` |
 
 An `unpaired` failure is decided by the page wherever it holds both facts,
@@ -2008,6 +2008,24 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   centered with the page dimmed, and a browser without a working shared
   Memory64 (`CAPABILITY_MISSING`) gets a boot card naming desktop Chrome and
   Firefox (iOS browsers are all WebKit).
+- **A pack manifest of another release is refused as `stale` (HARDENING
+  #81, 2026-10-25):** `installProfile` compares the fetched manifest's
+  `content.release` with the profile index entry's `release` and, when they
+  differ, throws before a part is fetched or the pack cache is read
+  (`code: "WORKER_DEP_MISMATCH"`, cause kind `stale`, the message naming
+  both releases). A manifest's URL is the same in every release
+  (`/profiles/<pack>.manifest.json`), so a page loaded before a deploy would
+  otherwise install the next release's oleans under its own runtime, which
+  misreads them. An entry that names no `release` is not checked. A stock
+  page that hits it (an on-demand pack install, or a session restart that
+  re-prepares a memory pack, after a deploy) shows the stale reload prompt;
+  the relay's retries fail the same way and its breaker halts after three,
+  so a reload is the fix. `reinstallProfile` (lib/qed64-boot.ts) re-prepares
+  a memory pack from the set the boot installed from (`?profiles=<dir>`
+  included); the session used the served set before.
+  `EMBED_API_REVISION` stays `1.0.0-pre.8`: no export, type or event change;
+  an embedder that serves its own packs must keep the index entry's
+  `release` equal to its manifest's (`stage-profiles.mjs` writes it so).
 - **`qed64/edge` routes a toolchain release (plan step B2b, 2026-10-06):**
   additive options, every default unchanged (`QED64_LEGACY` and the hardened
   defaults keep `release: null`). `release` takes a `lean4-wasm64.release/v1`
