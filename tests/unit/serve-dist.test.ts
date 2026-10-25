@@ -435,8 +435,8 @@ describe("ARTIFACTS: lean4-wasm64/<id>/ keys", () => {
     expect((await b.head(RK("profiles/index.json")))?.size).toBe(ARTIFACTS["profiles/index.json"]!.bytes.length);
   });
 
-  test.each(["legacy", "hardened"] as const)("over HTTP (edge=%s; both route the pinned release): the release dir answers, a file only under public/ comes through the fallback, a miss is no-store", async (edge) => {
-    // a pinned manifest present only in public/ (the root): the Worker's one-cycle fallback finds it
+  test.each(["legacy", "hardened"] as const)("over HTTP (edge=%s; both route the pinned release): the release dir answers, a file only under public/ is not served (no root fallback, as live), a miss is no-store", async (edge) => {
+    // a pinned manifest present only in public/ (the root): no fallback to the root key since 2026-10-25, so a 404
     const server = createDistServer({ dist: distDir, publicDir, edge, releaseDir });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     try {
@@ -447,8 +447,8 @@ describe("ARTIFACTS: lean4-wasm64/<id>/ keys", () => {
       expect(manifest.headers["cache-control"]).toBe(REVALIDATE);
       const chunk = await ask(port, "GET", CHUNK);
       expect([chunk.status, chunk.headers["cache-control"], chunk.body.length]).toEqual([200, IMMUTABLE, CHUNK_BYTES.length]);
-      const pinned = await ask(port, "GET", PINNED); // not in the release dir: public/ through the fallback
-      expect([pinned.status, pinned.body.toString()]).toEqual([200, '{"pinned":true}']);
+      const pinned = await ask(port, "GET", PINNED); // not in the release dir, only in public/: not found
+      expect([pinned.status, pinned.headers["cache-control"]]).toEqual([404, "no-store"]);
       const index = await ask(port, "GET", "/profiles/index.json"); // site-owned: public/
       expect([index.status, index.body.toString()]).toEqual([200, '{"profiles":[]}']);
       const miss = await ask(port, "GET", "/runtime/chunks/missing.0123456789abcdef0123.part-000");
@@ -522,13 +522,15 @@ function memBucket() {
       h.set("content-type", a.type);
     },
   });
+  // As the Node layer's binding without a release dir: a release key lean4-wasm64/<id>/<rest> is public/<rest>.
+  const at = (key: string) => ARTIFACTS[key.startsWith(`lean4-wasm64/${RELEASE_ID}/`) ? key.slice(`lean4-wasm64/${RELEASE_ID}/`.length) : key];
   return {
     async head(key: string) {
-      const a = ARTIFACTS[key];
+      const a = at(key);
       return a ? meta(key, a) : null;
     },
     async get(key: string, options?: { range?: Headers }) {
-      const a = ARTIFACTS[key];
+      const a = at(key);
       if (!a) return null;
       let offset = 0;
       let length = a.bytes.length;

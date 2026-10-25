@@ -16,7 +16,7 @@
  * for byte (status, headers, body, and every binding call);
  * tests/unit/edge-worker.test.ts runs a request matrix through both. QED64's
  * own infra/worker.js is QED64_LEGACY plus its toolchain release
- * (`release`, `releaseFallback`), identical to it on site-owned paths and
+ * (`release`; it used `releaseFallback` until 2026-10-25), identical to it on site-owned paths and
  * assets. The hardened defaults (ranges, metadata HEAD, 405,
  * traversal refusal, explicit Content-Length, asset HEAD Content-Length,
  * no-store errors) come from the lean4game and widgets-showcase forks of that
@@ -35,9 +35,10 @@
  * and every other artifact path stay under `r2Prefix`. Always on this one
  * origin: the browser is never pointed at another (the fork's
  * formats/HOSTING.md, rule 3). Errors on release-mapped paths are never
- * cached; `releaseFallback` retries a release-mapped miss once under the
- * site prefix (one deprecation cycle while the bucket root still holds the
- * older runtimes).
+ * cached; `releaseFallback` (off by default) retries a release-mapped miss
+ * once under the site prefix, for a site whose prefix still holds runtimes
+ * from before it moved to the release prefix (QED64 used it for one
+ * deprecation cycle, until 2026-10-25).
  *
  * An exception thrown while answering (a binding that throws or is missing)
  * becomes a 500 "internal error" with the isolation headers and

@@ -42,9 +42,9 @@
 //              such as …/wasm64-lean-kernel-release/lean-v4.34.0-a8817d0,
 //              read-only), else public/<rest>: today's public/ trees
 //              (symlinked, or filled by `npm run fetch:artifacts`) keep
-//              working unchanged, and a file only under public/ is still
-//              found through the Worker's one-cycle fallback to the root key.
-//              Another release id is absent. Nothing is ever written.
+//              working unchanged. With a release directory, a file only under
+//              public/ is not found (the Worker has no fallback to the root
+//              key, as on the live site). Another release id is absent. Nothing is ever written.
 //              Symlinks inside public/ are followed (the worktree layout links
 //              chunks/ and snapshots into the main checkout). head(key) and
 //              get(key, {range}) return null when absent; the objects carry
@@ -70,8 +70,8 @@
 // with curl on 2026-10-06; tests/unit/serve-dist.test.ts pins them.
 //
 // QED64_EDGE=legacy (default) runs infra/worker.js exactly, what the live site
-// runs (createWorker({...QED64_LEGACY, release, releaseFallback: true}));
-// QED64_EDGE=hardened runs createWorker({ release, releaseFallback: true }), the
+// runs (createWorker({...QED64_LEGACY, release}));
+// QED64_EDGE=hardened runs createWorker({ release }), the
 // hardened defaults (ranges, metadata HEAD, 405, no-store errors), which
 // the live site has NOT adopted: preview and test them here. Any other value
 // exits 2 with the usage line, before listening.
@@ -87,7 +87,7 @@
 // directory (above). A QED64_RELEASE_DIR that is not a served-layout release
 // directory of the pinned id exits 2 with the usage line, before listening.
 // The hardened mode is what infra/worker.js would be with the hardened
-// defaults: createWorker({ release, releaseFallback: true }) on the same pinned
+// defaults: createWorker({ release }) on the same pinned
 // record, so it previews exactly what adopting them would ship.
 //
 // Tests import createDistServer (tests/unit/serve-dist.test.ts); it listens
@@ -115,7 +115,7 @@ export const RELEASE_ID = pinnedRelease.id;
 /** The edge modes: the worker each one runs. */
 export const EDGE_MODES = Object.freeze({
   legacy: () => legacyWorker,
-  hardened: () => createWorker({ release: pinnedRelease, releaseFallback: true }),
+  hardened: () => createWorker({ release: pinnedRelease }),
 });
 
 // Workers static assets' content types, as the live site sends them (checked

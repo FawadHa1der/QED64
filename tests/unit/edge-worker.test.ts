@@ -8,9 +8,9 @@
 //     response must agree on status, statusText, headers and body, and every
 //     binding call on its arguments. The shipped infra/worker.js (QED64_LEGACY +
 //     the toolchain release, decision 3) agrees exactly on site-owned paths and
-//     assets; on /runtime/* and /profiles/<not index.json> it reads
-//     lean4-wasm64/<id>/ first, falls back to the root key on a miss, and its
-//     misses there are no-store ("the shipped worker" below).
+//     assets; on /runtime/* and /profiles/<not index.json> it reads only
+//     lean4-wasm64/<id>/ (no fallback to the root key since 2026-10-25), and
+//     its misses there are no-store ("the shipped worker" below).
 // (b) The hardened defaults other projects get: single-range GETs (If-Range,
 //     416), metadata HEAD, 405 + Allow, traversal refusal, r2Prefix
 //     validation, rootRedirect, extraRoutes + kit, decorate, isolation
@@ -235,7 +235,7 @@ describe("equivalence: createWorker(QED64_LEGACY) is the pre-library worker, byt
     expect(compared).toBe(MATRIX.length * 2 - mappedCases);
   });
 
-  test("the shipped worker: release-mapped paths read lean4-wasm64/<id>/ first, fall back to the root key, misses are no-store", async () => {
+  test("the shipped worker: release-mapped paths read only lean4-wasm64/<id>/ (no root fallback since 2026-10-25), misses are no-store", async () => {
     const pinned = JSON.parse(fs.readFileSync(path.join(root, "toolchain/lean4-wasm64-release.json"), "utf8")) as { id: string };
     const rp = `lean4-wasm64/${pinned.id}/`;
     const toRelease = (key: string) => rp + key; // runtime/x → lean4-wasm64/<id>/runtime/x (the mounts are identity: /runtime/ → runtime/)
@@ -254,9 +254,12 @@ describe("equivalence: createWorker(QED64_LEGACY) is the pre-library worker, byt
       // (1) the release prefix populated
       const live = { ASSETS: fakeAssets(FILES), ARTIFACTS: fakeBucket(moved) };
       const liveSnap = await snapshot(await (shipped as EdgeWorker).fetch(req(c.path, init()), live));
-      // (2) only the root populated (today's bucket): every read falls back
+      // (2) only the root populated (the pre-decision-3 bucket): no fallback, so the read answers as the
+      // legacy worker does for an absent object, and the root key is never asked
       const old = makeEnv();
       const oldSnap = await snapshot(await (shipped as EdgeWorker).fetch(req(c.path, init()), old));
+      const absent = { ASSETS: fakeAssets(FILES), ARTIFACTS: fakeBucket({}) };
+      const absentSnap = noStoreErrors(await snapshot(await legacy.fetch(req(c.path, init()), absent)));
       if (unsafe) {
         // refused before R2: the same 404 body, no-store, nothing asked
         for (const [snap, env] of [[liveSnap, live], [oldSnap, old]] as const) {
@@ -269,13 +272,12 @@ describe("equivalence: createWorker(QED64_LEGACY) is the pre-library worker, byt
       // a release key's object carries the release key's etag (the fake R2 names etags by key)
       const etagFix = (snap: typeof liveSnap) => ({ ...snap, headers: snap.headers.map(([k, v]) => [k, k === "etag" ? v.replace(rp, "") : v] as [string, string]) });
       expect(etagFix(liveSnap), `release prefix: ${label}`).toEqual(wantSnap);
-      expect(oldSnap, `root fallback: ${label}`).toEqual(wantSnap);
+      expect(oldSnap, `no root fallback: ${label}`).toEqual(absentSnap);
       const legacyCalls = want.ARTIFACTS.calls;
       expect(legacyCalls.length, label).toBe(1);
       const [call] = legacyCalls;
-      const hit = OBJECTS[call!.key] !== undefined;
-      expect(live.ARTIFACTS.calls, `release prefix calls: ${label}`).toEqual(hit ? [{ ...call, key: toRelease(call!.key) }] : [{ ...call, key: toRelease(call!.key) }, call]);
-      expect(old.ARTIFACTS.calls, `root fallback calls: ${label}`).toEqual([{ ...call, key: toRelease(call!.key) }, call]);
+      expect(live.ARTIFACTS.calls, `release prefix calls: ${label}`).toEqual([{ ...call, key: toRelease(call!.key) }]);
+      expect(old.ARTIFACTS.calls, `no root fallback calls: ${label}`).toEqual([{ ...call, key: toRelease(call!.key) }]);
       compared++;
     }
     expect(compared).toBe(MATRIX.filter((m) => releaseMapped(m.path)).length);
@@ -283,7 +285,7 @@ describe("equivalence: createWorker(QED64_LEGACY) is the pre-library worker, byt
     const env = makeEnv();
     const miss = await (shipped as EdgeWorker).fetch(req("/runtime/chunks/nope.part-001"), env);
     expect([miss.status, miss.headers.get("cache-control")]).toEqual([404, "no-store"]);
-    expect(env.ARTIFACTS.calls.map((c) => c.key)).toEqual([`${rp}runtime/chunks/nope.part-001`, "runtime/chunks/nope.part-001"]);
+    expect(env.ARTIFACTS.calls.map((c) => c.key)).toEqual([`${rp}runtime/chunks/nope.part-001`]);
     const site = makeEnv();
     const index = await (shipped as EdgeWorker).fetch(req("/profiles/index.json"), site);
     expect([index.status, site.ARTIFACTS.calls.map((c) => c.key)]).toEqual([200, ["profiles/index.json"]]);
@@ -1188,7 +1190,7 @@ describe("release: routing", () => {
   });
 });
 
-describe("release: the one-cycle fallback to the site prefix", () => {
+describe("release: the releaseFallback option (off by default; QED64 used it for one cycle)", () => {
   const ROOT_ONLY = (p: string) => ({ [p.slice(1)]: { bytes: BYTES, contentType: "application/octet-stream" } as Obj });
   const run = async (w: EdgeWorker, p: string, objects: Record<string, Obj>, init?: RequestInit) => {
     const env = { ASSETS: fakeAssets(FILES), ARTIFACTS: fakeBucket(objects) };

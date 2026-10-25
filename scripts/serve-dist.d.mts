@@ -25,7 +25,7 @@ export function releaseDirProblem(dir: string, id?: string): string | null;
  * keys read `releaseDir/<rest>` when given, else `publicDir/<rest>`. Read-only. */
 export function createArtifactsBinding(publicDir: string, options?: { releaseDir?: string | null; releaseId?: string }): ArtifactBucket;
 
-/** An http.Server, not listening, that answers through infra/worker.js (legacy) or createWorker({}) (hardened).
+/** An http.Server, not listening, that answers through infra/worker.js (legacy) or createWorker({ release }) (hardened).
  * A `releaseDir` that is not a served-layout release dir of RELEASE_ID throws. */
 export function createDistServer(options?: { dist?: string; publicDir?: string; edge?: EdgeMode; releaseDir?: string | null }): Server;
 

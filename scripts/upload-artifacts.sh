@@ -40,14 +40,15 @@
 # runtime's per-build copies, then snapshots/index.json, then
 # profiles/index.json: no index, copy or mutable, is written before the
 # snapshots it names are in R2, so not even a same-runtime rebake (served at
-# once, no deploy) can name a .snapz that is still uploading. With
-# --legacy-root, the root runtime/ and profiles/ copies follow.
+# once, no deploy) can name a .snapz that is still uploading.
 #
-#   --legacy-root  ALSO upload public/runtime/ and public/profiles/ to the
-#                  bucket root, as before decision 3 (with the per-build
-#                  manifest copy): for one cycle, the rollback path if the
-#                  Worker change is reverted, and what old shells read
-#                  through the Worker's fallback.
+# The root runtime/ and profiles/ copies (all but profiles/index.json) are
+# gone: the Worker reads /runtime/* and /profiles/<not index.json> only from
+# the release prefix (no fallback to the bucket root since 2026-10-25), so
+# --legacy-root, which uploaded them for one deprecation cycle, is retired
+# and refused.
+#
+# Environment:
 #   DRY_RUN=1      print the plan (every rclone write it would run) and write
 #                  nothing; the preflight and the R2 check still run.
 #
@@ -65,12 +66,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 BUCKET=qed64-artifacts
-USAGE="usage: [DRY_RUN=1] scripts/upload-artifacts.sh [--legacy-root]"
+USAGE="usage: [DRY_RUN=1] scripts/upload-artifacts.sh"
 
-LEGACY_ROOT=0
 for arg in "$@"; do
   case "$arg" in
-    --legacy-root) LEGACY_ROOT=1 ;;
+    --legacy-root) echo "upload-artifacts: --legacy-root is retired: the Worker serves /runtime/* and /profiles/<not index.json> only from lean4-wasm64/<release id>/, so bucket-root copies would never be read (docs/DEPLOY.md)" >&2; exit 2 ;;
     *) echo "upload-artifacts: unknown argument $arg" >&2; echo "$USAGE" >&2; exit 2 ;;
   esac
 done
@@ -79,7 +79,7 @@ command -v rclone >/dev/null || { echo "rclone required: brew install rclone" >&
 # Preflight: the files being uploaded must reference files that exist locally
 # (a partial tree would strand the site), and the shell and the snapshots must
 # be paired with the release the Worker routes to.
-RELEASE_ID=$(LEGACY_ROOT=$LEGACY_ROOT node -e '
+RELEASE_ID=$(node -e '
   const fs = require("fs");
   let bad = 0;
   const fail = (m) => { console.error("upload-artifacts: " + m); bad = 1; };
@@ -98,14 +98,8 @@ RELEASE_ID=$(LEGACY_ROOT=$LEGACY_ROOT node -e '
   const pi = JSON.parse(fs.readFileSync("public/profiles/index.json", "utf8"));
   const piRuntime = pi.runtime && pi.runtime.buildId;
   if (piRuntime !== buildId) fail("public/profiles/index.json is for runtime " + (piRuntime || "(none recorded)") + ", the toolchain release " + rec.id + " is " + buildId);
-  let chunkCount = 0;
-  if (process.env.LEGACY_ROOT === "1") {
-    for (const f of Object.values(rt.files ?? {}))
-      for (const c of f.chunks ?? []) { chunkCount++; need("public" + c.url); }
-    if (chunkCount === 0) fail("manifest lists no chunks — refusing");
-  }
   if (bad) process.exit(3);
-  console.error("preflight ok: release " + rec.id + ", runtime " + buildId + ", " + (sn.snapshots ?? []).length + " snapshots" + (process.env.LEGACY_ROOT === "1" ? ", " + chunkCount + " chunks (--legacy-root)" : ""));
+  console.error("preflight ok: release " + rec.id + ", runtime " + buildId + ", " + (sn.snapshots ?? []).length + " snapshots");
   console.log(rec.id);
 ')
 
@@ -217,24 +211,13 @@ run rclone copy public/snapshots "qed64-r2:$BUCKET/snapshots" --exclude /index.j
 # they were): this runtime's per-build copies, from the mutable files' own
 # bytes, before the mutable files change (HARDENING #64), then
 # snapshots/index.json, then profiles/index.json, the commit record, as
-# promote-staging writes it (with --legacy-root the root runtime/ and
-# profiles/ copies below still follow it). --s3-no-check-bucket: an
+# promote-staging writes it. --s3-no-check-bucket: an
 # object-scoped R2 token may not create buckets, and a single-file copyto
 # otherwise tries to (403 AccessDenied on CreateBucket).
 run rclone copyto public/snapshots/index.json "qed64-r2:$BUCKET/snapshots/index.$BUILD_ID.json" --checksum --s3-no-check-bucket
 run rclone copyto public/profiles/index.json "qed64-r2:$BUCKET/snapshots/profiles-index.$BUILD_ID.json" --checksum --s3-no-check-bucket
 run rclone copyto public/snapshots/index.json "qed64-r2:$BUCKET/snapshots/index.json" --checksum --s3-no-check-bucket
 run rclone copyto public/profiles/index.json "qed64-r2:$BUCKET/profiles/index.json" --checksum --s3-no-check-bucket
-
-if [ "$LEGACY_ROOT" = 1 ]; then
-  # Immutable, digest-named copy of the manifest at the root ("atomic
-  # promotes" in docs/DEPLOY.md), as before decision 3; the release carries
-  # its own runtime/runtime-manifest.<buildId>.json. Gitignored.
-  run cp public/runtime/runtime-manifest.json "public/runtime/runtime-manifest.$BUILD_ID.json"
-  for dir in runtime profiles; do
-    run rclone copy "public/$dir" "qed64-r2:$BUCKET/$dir" --checksum --transfers 4 --s3-chunk-size 64M --progress
-  done
-fi
 
 if [ "${DRY_RUN:-}" = 1 ]; then
   echo "dry run: nothing uploaded"

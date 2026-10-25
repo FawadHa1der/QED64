@@ -121,7 +121,6 @@ describe("scripts/upload-artifacts.sh against a stubbed rclone", () => {
     `rclone copyto public/snapshots/index.json ${R2}/snapshots/index.json --checksum --s3-no-check-bucket`,
     `rclone copyto public/profiles/index.json ${R2}/profiles/index.json --checksum --s3-no-check-bucket`,
   ];
-  const ROOT = ["runtime", "profiles"].map((d) => `rclone copy public/${d} ${R2}/${d} --checksum --transfers 4 --s3-chunk-size 64M --progress`);
 
   it("default: checks the release is in R2, then uploads only snapshots/ and profiles/index.json (no per-build manifest copy), each index's per-build copy first", () => {
     layout();
@@ -247,35 +246,23 @@ describe("scripts/upload-artifacts.sh against a stubbed rclone", () => {
     expect(missing.stderr).toContain("MISSING: public/snapshots/init.0123456789abcdef.snapz");
   });
 
-  it("--legacy-root: also the per-build manifest copy and runtime/ + profiles/ at the bucket root", () => {
+  it("--legacy-root is retired: refused with exit 2 before anything runs (the Worker never reads root runtime/ or profiles/)", () => {
     layout();
     const r = run(["--legacy-root"]);
-    expect(r.status, r.stderr).toBe(0);
-    expect(r.argv).toEqual([LSF, ...READS, ...SITE, ...ROOT, `rclone ls ${R2}/snapshots`]);
-    expect(fs.existsSync(path.join(repo, `public/runtime/runtime-manifest.${BUILD}.json`))).toBe(true);
-    expect(r.stderr).toContain("1 chunks (--legacy-root)");
-    // its preflight also needs the chunks
-    layout();
+    expect([r.status, r.argv]).toEqual([2, []]);
+    expect(r.stderr).toContain("upload-artifacts: --legacy-root is retired");
+    expect(fs.existsSync(path.join(repo, `public/runtime/runtime-manifest.${BUILD}.json`))).toBe(false);
+    // the upload uploads no chunks, so its preflight does not need them
     fs.rmSync(path.join(repo, "public/runtime/chunks/c.part-000"));
-    const missing = run(["--legacy-root"]);
-    expect([missing.status, missing.argv]).toEqual([3, []]);
-    expect(run([]).status).toBe(0); // the default mode uploads no chunks, so it does not need them
+    expect(run([]).status).toBe(0);
   });
 
   it("DRY_RUN=1 prints the plan and writes nothing (the R2 check, a read, still runs)", () => {
     layout();
-    for (const args of [[], ["--legacy-root"]]) {
-      const r = run(args, { DRY_RUN: "1" });
-      expect(r.status, r.stderr).toBe(0);
-      expect(r.argv).toEqual([LSF, ...READS]);
-      const plan = r.stdout.trim().split("\n");
-      expect(plan).toEqual([
-        ...[...SITE].map((c) => `would run: ${c}`),
-        ...(args.length ? [`would run: cp public/runtime/runtime-manifest.json public/runtime/runtime-manifest.${BUILD}.json`, ...ROOT.map((c) => `would run: ${c}`)] : []),
-        "dry run: nothing uploaded",
-      ]);
-      expect(fs.existsSync(path.join(repo, `public/runtime/runtime-manifest.${BUILD}.json`))).toBe(false);
-    }
+    const r = run([], { DRY_RUN: "1" });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.argv).toEqual([LSF, ...READS]);
+    expect(r.stdout.trim().split("\n")).toEqual([...[...SITE].map((c) => `would run: ${c}`), "dry run: nothing uploaded"]);
     const refused = run([], { DRY_RUN: "1", STUB_R2_HAS_RELEASE: "0" });
     expect(refused.status).toBe(3);
   });
@@ -370,6 +357,6 @@ describe("scripts/upload-artifacts.sh against a stubbed rclone", () => {
     const r = run(["--legacy"]);
     expect(r.status).toBe(2);
     expect(r.argv).toEqual([]);
-    expect(r.stderr).toContain("usage: [DRY_RUN=1] scripts/upload-artifacts.sh [--legacy-root]");
+    expect(r.stderr).toContain("usage: [DRY_RUN=1] scripts/upload-artifacts.sh");
   });
 });

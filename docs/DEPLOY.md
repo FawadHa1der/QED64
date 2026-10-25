@@ -122,8 +122,9 @@ stand-ins for the two `wrangler.toml` bindings:
   asks for `/runtime/*` and `/profiles/<not index.json>`), read
   `$QED64_RELEASE_DIR/<rest>` when `QED64_RELEASE_DIR` names a served-layout
   release directory of the pinned id (a fork release dir, read-only), else
-  `public/<rest>`, so today's `public/` trees keep working; a file only under
-  `public/` is still found through the Worker's fallback to the root key. A
+  `public/<rest>`, so today's `public/` trees keep working; with a release
+  directory, a file only under `public/` is a 404, as on the live site (no
+  fallback to the root key). A
   `QED64_RELEASE_DIR` that is missing or of another release exits 2 with the
   usage line before listening. Nothing is ever written.
 
@@ -141,8 +142,8 @@ from Cloudflare's own, etag values, and lengths of files the two builds
 differ in).
 
 `QED64_EDGE` picks the worker: `legacy` (the default) is `infra/worker.js`,
-`createWorker({...QED64_LEGACY, release, releaseFallback: true})`, what is deployed; `hardened` is
-`createWorker({ release, releaseFallback: true })`, the defaults of "Legacy vs hardened" below, which the live
+`createWorker({...QED64_LEGACY, release})`, what is deployed; `hardened` is
+`createWorker({ release })`, the defaults of "Legacy vs hardened" below, which the live
 site has **not** adopted. Use it to preview and test that switch locally
 (Range 206/416, metadata HEAD with `Content-Length`, 405, no-store errors)
 before deciding on it (both modes route the same pinned release, so the
@@ -160,10 +161,13 @@ in-memory bindings, which must agree.
 
 ## Consistency rule
 
-Snapshots are binary-paired to the runtime. **Never upload a runtime
-without its snapshots** (or vice versa): sync R2 from a `promote:staging`
-output so `runtime/`, `snapshots/` and `index.json` move together, exactly
-like the local promote. A toolchain release is adopted with
+Snapshots are binary-paired to the runtime. **Never serve a runtime
+without its snapshots** (or vice versa). The runtime and the packs are the
+toolchain release's, uploaded by its owner under `lean4-wasm64/<id>/` first;
+QED64 uploads only its snapshots and the two indexes, from a promote of the
+same staging, with `scripts/upload-artifacts.sh` (`rclone copy`, never
+`sync`), and the commit of the record and the deploy pair them, exactly like
+the local promote. A toolchain release is adopted with
 `pipeline/release/adopt-release.sh` (docs/REBUILD.md §3), which bakes against
 the release's runtime, stages the pairing under `work/staging/<buildId>/`
 and promotes it into an ISOLATED served tree (`--public`; never this
@@ -180,15 +184,16 @@ harmless; the mutable files (`runtime-manifest.json`, `snapshots/index.json`,
 ## Atomic promotes (shell ↔ runtime pairing)
 
 The shell and the runtime deploy through different channels (git push vs
-`upload-artifacts.sh`), so a promote that changes both used to have a
+the release owner's upload and `upload-artifacts.sh`), so a promote that changes both used to have a
 broken window whichever went first. The pinning scheme closes it:
 
 - The pinned manifest `runtime/runtime-manifest.<buildId>.json` sits beside
   the mutable one. Under decision 3 both are the toolchain release's
-  (`lean4-wasm64/<id>/runtime/`, uploaded by its owner); older runtimes'
-  pinned manifests stay at the bucket root, where `upload-artifacts.sh`
-  put them before (and `--legacy-root` still does), and the Worker's
-  fallback finds them.
+  (`lean4-wasm64/<id>/runtime/`, uploaded by its owner), and the Worker
+  reads `/runtime/*` only from the release its record pins (no fallback to
+  the bucket root since 2026-10-25). So the scheme covers the window
+  between the upload and the deploy, not a tab left open across a deploy:
+  see "Old shells" under "The toolchain release prefix".
 - The shell build injects the `buildId` of the manifest committed in
   `public/runtime/runtime-manifest.json` and asks for the PINNED manifest
   first, falling back to the mutable path (dev, pre-scheme shells).
@@ -212,9 +217,12 @@ broken window whichever went first. The pinning scheme closes it:
   indexes, written by `promote-staging.mjs` and `fetch-artifacts` from those
   indexes' bytes, as `runtime-manifest.<buildId>.json` is; the upload sends
   them to R2 straight from the mutable files and never sends a local copy.
-- `rclone copy` (never `sync`) keeps every older runtime's chunks in R2,
-  so previously-deployed shells keep working during and after a promote.
-  Garbage-collect superseded chunk sets deliberately, much later.
+- `rclone copy` (never `sync`): the upload never deletes, so the deployed
+  shell's snapshots and index copies stay in R2 through the promote, and
+  the previous pairing's stay for a rollback. Garbage-collect superseded
+  snapshots deliberately, by exact keys, once no rollback needs them (the
+  2026-10-23 sweep kept the live and the previous pairing:
+  `work/r2-gc-2026-10-23/README.md` in the main checkout, not tracked).
 
 Promote checklist, in order:
 
@@ -300,7 +308,7 @@ served by every site that uses that release (QED64, lean4game, the widgets
 showcase), each under its own origin; the browser is never pointed at R2 or
 at another site (the fork's `formats/HOSTING.md`, rules 3 and 4). QED64's
 Worker routes by the release record (`infra/worker.js`:
-`createWorker({...QED64_LEGACY, release, releaseFallback: true})`):
+`createWorker({...QED64_LEGACY, release})`):
 
 | Request | R2 key | Owner |
 |---|---|---|
@@ -320,13 +328,19 @@ Worker routes by the release record (`infra/worker.js`:
   index); `tests/unit/toolchain-pin.test.ts` refuses a commit where they
   disagree (the record's digest, the runtime `buildId`, every tracked
   release-mapped file byte-identical to `record.files`).
-- **The fallback, for one cycle.** A `/runtime/*` or `/profiles/*` lookup
-  that finds nothing under the release prefix is retried once at the
-  bucket root (`releaseFallback`), where the pre-decision-3 uploads live:
-  shells deployed before the switch ask for their own
-  `runtime-manifest.<buildId>.json` and chunks, which only the root holds.
-  Remove it (`releaseFallback: false`) once no deployed shell predates the
-  switch and the root copies are no longer the rollback.
+- **No fallback to the bucket root.** A `/runtime/*` or `/profiles/*`
+  lookup reads the release prefix only; a miss is a 404. From decision 3
+  until 2026-10-25 a miss was retried once at the bucket root
+  (`releaseFallback: true`, one deprecation cycle), for shells deployed
+  before the switch, whose runtime and packs only the root held. The last
+  root upload was the e1a79c1 landing's (2026-10-08, `--legacy-root`, now
+  retired: runtime `wasm64-f69cca24d0878a58`, the rollback for the Worker
+  change). The live shell never reads the root, and the 2026-10-23 delete
+  removed the root `runtime/` and `profiles/` except `profiles/index.json`,
+  accepting that tabs of the f69cca24 shell open since before 2026-10-16
+  could no longer reboot; with nothing left for it to find, the option is
+  off. The library keeps it for other sites ("Reusing the edge worker": the
+  options table and the `release` paragraph).
 - **Misses are never cached.** Every status ≥ 400 on a release-mapped path
   is `Cache-Control: no-store`, so a 404 during a deploy-before-upload
   window is not cached for a year under a digest-named URL. (QED64_LEGACY
@@ -367,15 +381,31 @@ Worker routes by the release record (`infra/worker.js`:
   `scripts/deploy-app.sh`). The shell and the Worker always ship in the same
   deploy, so the Worker never routes to a release the shell does not pin.
 - **Rollback.** Revert the commit that changed the record and the manifests
-  (or the Worker change itself) and push. For one cycle
-  `scripts/upload-artifacts.sh --legacy-root` keeps the bucket root
-  populated with `runtime/` and `profiles/` as before (plus the per-build
-  manifest copy), so a reverted Worker, which reads the root, finds them.
-- **Old shells.** A shell deployed before the switch asks for
-  `/runtime/runtime-manifest.<its buildId>.json`: absent under the release
-  prefix (another runtime), found at the root through the fallback; its
-  chunks likewise. A shell of the release's own runtime finds everything
-  under the release prefix. Snapshots and `profiles/index.json` never moved.
+  and push: the reverted record routes the Worker to the previous release's
+  prefix (`lean4-wasm64/<previous id>/`, which its owner keeps), and the
+  previous pairing's snapshots and per-build index copies are still at the
+  bucket root as long as nobody deleted them (the `rclone copy` rule above).
+  Re-run `scripts/upload-artifacts.sh` from the reverted checkout so the
+  mutable indexes name that pairing again. Reverting decision 3's Worker
+  change itself would need the root `runtime/` and `profiles/` copies,
+  which are gone.
+- **Old shells.** The Worker routes by the record it was deployed with, so
+  after a deploy nothing of an older release's runtime or packs is
+  reachable. A tab that booted before the deploy keeps the runtime it has
+  in memory; a reload loads the new shell (the HTML is `must-revalidate`).
+  Until then it can trip in two places. A session restart re-fetches its
+  runtime chunks by URL: the HTTP cache usually has them (immutable), and
+  a miss is now a 404. An on-demand pack install fetches
+  `/profiles/<pack>.manifest.json`, a name that is the same in every
+  release, so it gets the NEW release's manifest and packs (oleans of
+  another Lean version under the old runtime; `installProfile` does not yet
+  compare the manifest's `content.release` with the index entry's
+  `release`). An old shell that boots after the deploy (a page restored
+  from a cache) asks for `/runtime/runtime-manifest.<its buildId>.json`: a
+  404 (no-store), then the mutable `/runtime/runtime-manifest.json`, the new
+  runtime, which its pinned snapshot index copy refuses (`unpaired`) or,
+  once that copy is gone, pairs with the new snapshots under the old page.
+  Snapshots and `profiles/index.json` never moved.
 
 ## Security model: who can write what
 
@@ -507,8 +537,8 @@ binding call, pinned by `tests/unit/edge-worker.test.ts` against the original
 source in `tests/fixtures/edge-worker/worker-47f50e8.js`; the one deliberate
 difference is a throw, now a 500 with the isolation headers instead of the
 runtime's error page). QED64 deploys `QED64_LEGACY` plus its toolchain
-release (`release`, `releaseFallback: true`, "The toolchain release prefix"
-above): identical to the pre-library worker on site-owned paths and assets.
+release (`release`, "The toolchain release prefix" above): identical to the
+pre-library worker on site-owned paths and assets.
 
 | Switch | Hardened (default) | `QED64_LEGACY` |
 |---|---|---|
@@ -619,8 +649,8 @@ two workers apart there.
 options") runs this exact configuration against fake bindings, and pins each
 of the five differences.
 
-QED64's own `infra/worker.js` is `createWorker({...QED64_LEGACY, release,
-releaseFallback: true})`. Moving the live site to the hardened defaults is a
+QED64's own `infra/worker.js` is `createWorker({...QED64_LEGACY, release})`.
+Moving the live site to the hardened defaults is a
 separate decision (plan step A4). A site that shares the bucket passes its
 own prefix and the same record shape: the showcase's
 `createWorker({ r2Prefix: "qed64-showcase/", release })` reads `/runtime/*`

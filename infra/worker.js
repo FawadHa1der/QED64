@@ -20,9 +20,12 @@
  * pins the pairing). No wrangler var names the id, so nothing can drift; the
  * record is bundled into the Worker and checked when this module loads.
  *
- * releaseFallback (one deprecation cycle): a release-mapped miss retries the
- * bucket root once, where older shells' per-build manifests and the
- * pre-decision-3 uploads live. Release-mapped errors are never cached.
+ * No fallback to the bucket root (releaseFallback, the library's option, is
+ * off since 2026-10-25; it was on for one deprecation cycle after decision 3):
+ * every /runtime/* and /profiles/<not index.json> file a shell pinned to this
+ * record asks for is in the release prefix, and the bucket root's runtime/
+ * and profiles/ copies (all but profiles/index.json) were deleted the same week. A release-mapped miss is a
+ * 404; release-mapped errors are never cached.
  *
  * The logic lives in ./edge-worker.js (a dependency-free library other
  * projects vendor). Every other switch is QED64_LEGACY's, the pre-library
@@ -35,4 +38,4 @@ import release from "../toolchain/lean4-wasm64-release.json" with { type: "json"
 
 export { isImmutable };
 
-export default createWorker({ ...QED64_LEGACY, release, releaseFallback: true });
+export default createWorker({ ...QED64_LEGACY, release });
