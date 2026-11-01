@@ -129,7 +129,7 @@ describe("ResidentSession: boot inputs (policy + restart options)", () => {
     expect(heavy.maximumBytes).toBe(DEFAULT_MAXIMUM_BYTES);
   });
   it("explicit restart snapshots win over the header AND size the commit: an umbrella boot over an Init-only header commits 2 GiB", () => {
-    // A remembered "Load exact imports" (the relay's restartOpts) or the page's widen restart: what is
+    // A remembered restart that names the umbrella (the relay's restartOpts) or the page's widen restart: what is
     // streamed is the ~1.5 GB umbrella region, and a 256 MiB commit would grow through the repeated-grow
     // path the large initial commit exists to avoid.
     const s = new ResidentSession(editorHost(INIT_ONLY), { snapshots: ["init", "mathlib"] });

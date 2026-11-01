@@ -673,8 +673,8 @@ describe("over the real relay", () => {
     clock.advance(60000);
     expect(finished).toEqual([]);
   });
-  it("a deliberate restart during the first boot (api.restart, \"Load exact imports\") disarms the light session's fallback too", async () => {
-    for (const how of ["api.restart", "offer"] as const) {
+  it("a deliberate restart during the first boot (api.restart, a self-widen) disarms the light session's fallback too", async () => {
+    for (const how of ["api.restart", "self-widen"] as const) {
       const clock = new Clock();
       const finished: string[] = [];
       let card!: ReturnType<typeof bootCardModel>;
@@ -688,7 +688,7 @@ describe("over the real relay", () => {
       expect(card.step(), how).toBe("check");
       clock.advance(5000);
       if (how === "api.restart") expect(h.api.restart({ snapshots: ["init", "mathlib"] }).accepted).toBe(true);
-      else h.relay.restart({ snapshots: ["init", "mathlib"], warmHeader: "import Mathlib\n", packs: ["essential"] }); // main.ts's offer
+      else h.relay.restart({ snapshots: ["init", "mathlib"] }); // self-widen.ts's relay.restart
       expect(clock.timers, how).toHaveLength(0);
       // The card stays up for the replacement's download, and its checklist shows that download, not "Check".
       expect(card.step(), how).toBe("runtime");
@@ -911,12 +911,14 @@ describe("restart", () => {
     const t = setup();
     boot(t);
     expect(t.api.restart()).toEqual({ accepted: true, fromSession: "s1" });
-    t.relay.remembered = { snapshots: ["init", "mathlib"], warmHeader: "import Mathlib.Data.Real.Basic\n", packs: ["essential"] };
+    // The relay's remembered options (a self-widen's snapshots and a commit): their snapshots are reused, their
+    // commit never (only this call's initialBytes, else the page default, sizes the next session).
+    t.relay.remembered = { snapshots: ["init", "widgets"], initialBytes: 2147483648 };
     t.api.restart();
     t.api.restart({ snapshots: ["init", "widgets"] });
     expect(t.relay.restarts).toEqual([
       { snapshots: ["init", "mathlib"] },
-      { snapshots: ["init", "mathlib"], warmHeader: "import Mathlib.Data.Real.Basic\n", packs: ["essential"] },
+      { snapshots: ["init", "widgets"] },
       { snapshots: ["init", "widgets"] },
     ]);
     expect(() => t.api.restart({ snapshots: ["init", "nope"] })).toThrow(/unknown snapshot/);

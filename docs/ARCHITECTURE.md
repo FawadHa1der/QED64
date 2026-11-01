@@ -33,15 +33,12 @@ One persistent Worker owns one Lean process for the whole session:
    initial, maximum probed downward (8 → 6 → 4 → 3 GiB) so constrained
    machines still boot. The module was linked with a 16 GiB declared maximum,
    so any smaller imported maximum is type-compatible.
-4. **Library mounts** — each installed profile gets its own directory
-   (`/lib/packs/<id>`); `LEAN_PATH` is the colon-joined list. Two backends:
-   - **WORKERFS** over an OPFS `File` (byte-range table straight from the
-     profile manifest) — zero-copy until Lean opens a file;
-   - **MEMFS byte segments** — transferred `ArrayBuffer`s written as files —
-     for environments whose Blob storage or OPFS cannot hold the pack
-     (observed: Electron caps both near 2 GiB).
-   WORKERFS mounts shadow the mount directory, which is why profiles must
-   never share one (learned the hard way; see HARDENING.md).
+4. **Library mounts** — none since D1 (2026-11): every environment is a
+   snapshot, and the library boots with an empty `LEAN_PATH`. For one more
+   release the worker still mounts a `boot`'s `packs` (each under its own
+   `/lib/packs/<id>`, WORKERFS over an OPFS `File` or MEMFS byte segments)
+   for tabs of older releases; WORKERFS mounts shadow the mount directory,
+   which is why packs never shared one (see HARDENING.md).
 5. **Init sequence** — `lean_initialize_runtime_module → lean_initialize →
    lean_io_mark_end_initialization → lean_init_task_manager_using(n) →
    lean_enable_initializer_execution → lean_init_search_path` (n =
@@ -50,8 +47,9 @@ One persistent Worker owns one Lean process for the whole session:
    stats the executable directory.
 6. **Batch compiles** — `lean_wasm_compile(sourceStr, nameStr)` against
    the fork's per-import-set environment cache, allowed only *before* the
-   resident loop opens (the page uses it for the exact-imports warm import;
-   the bakes and the compiler battery use it under Node). Output is claimed
+   resident loop opens (the page no longer calls it since D1; the worker
+   drops the request one release later; the bakes and the compiler battery
+   use the export under Node). Output is claimed
    per compile through a swappable sink (Emscripten reads `print` handlers
    exactly once at startup). Diagnostics arrive as JSON lines with exact
    spans; classic `file:line:col:` text is parsed as a fallback. The IO
@@ -184,16 +182,14 @@ with every moment explained; repeat visits skip the download.
 
 ### Mid-session storage and runtime recovery
 
-The storage behind a mounted pack can die while the session lives (HARDENING
-lessons 16–17), and a runtime can be poisoned after hours of idle (lesson 22).
-On the resident page both surface as a worker death and take the relay's one
-recovery path (see "Transport"): in-flight requests are answered, the session
-is disposed, and a replacement boots from scratch. `ResidentSession.start()`
-re-prepares what a dead worker consumed — memory-backed pack segments were
-*transferred* to the worker that booted them, so they are reinstalled (a
-healthy OPFS cache revalidates in milliseconds; a dead one re-downloads) and a
-pack no longer in the index is dropped from `LEAN_PATH` rather than mounted
-empty. Three deaths inside 120 s trip the breaker instead of looping. (The
+The storage behind a mounted pack could die while the session lived (HARDENING
+lessons 16–17; no pack is mounted since D1, 2026-11), and a runtime can be
+poisoned after hours of idle (lesson 22). On the resident page both surface as
+a worker death and take the relay's one recovery path (see "Transport"):
+in-flight requests are answered, the session is disposed, and a replacement
+boots from scratch (until D1 `ResidentSession.start()` also reinstalled the
+memory-backed pack segments a dead worker consumed). Three deaths inside 120 s
+trip the breaker instead of looping. (The
 batch app and its probe-compile gate, `src/app.ts`, were retired with the
 pump transport on 2026-09-04; its `isStaleStorageError` classifier,
 `src/runtime/errors.ts`, was deleted with it, having no other consumer.)
@@ -243,10 +239,10 @@ L3  lib/lsp-relay.ts — LspRelay: 3 states, 0 timers, 0 regexes
   │  RelaySession: start() · arm() · lsp(msg, replay?) · onLsp · onStatus · onDied(code, reason, message) · dispose()
   ▼
 L4' lib/resident-session.ts — ResidentSession (the adapter; ResidentPolicy hooks)
-  │  LeanSession: boot(config) · loadSnapshot · compile (pre-open only) · lsp · arm → 'lsp-arm' · request('telemetry') · dispose
+  │  LeanSession: boot(config) · loadSnapshot · writeFiles · lsp · arm → 'lsp-arm' · request('telemetry') · dispose
   ▼
 L2  lib/client.ts — LeanSession: the only owner of the Worker and the wire protocol
-  │  postMessage: boot, loadSnapshot, compile, lsp {msg, replay?} (fire-and-forget), lsp-arm, telemetry, dispose
+  │  postMessage: boot, loadSnapshot, write-files, lsp {msg, replay?} (fire-and-forget), lsp-arm, telemetry, dispose
   │  events: progress, log, lsp {msg}, status {…}, heartbeat, died / error
   ▼
 L1  public/workers/lean.worker.js + lsp-front-door.js + lsp-frames.js + worker-constants.js
@@ -322,8 +318,8 @@ queued) → open → dead`:
 merges it into one `status` event per change: `ring {bytesQueued, refused}`
 and `pool {unused, running}` (pthread pool; −1 = not measured). Booting →
 Ready is the page's **`lsp-arm`** request, sent as the *last* step of a
-session start — after `boot`, after every pre-open snapshot load and after
-an optional warm compile — never the wasm boot's own success: fed at boot
+session start — after `boot`, after every pre-open snapshot load and the
+host's session files — never the wasm boot's own success: fed at boot
 success, a queued `didOpen` opened the loop under a snapshot load (refused
 `BAD_STATE` → boot failed → reboot → the same race → breaker). Opening the
 loop is `_lean_wasm_shell_mark_preinitialized()` (boot already ran the full
@@ -394,17 +390,17 @@ and a replacement is made after the one wait in the design — a 1.5 s heap
 release settle, *injected* by the page so the module owns no timer.
 **BootFailed** (`start()` or `arm()` rejects) is a death with reason
 `bootFailed`. **restart(opts)** — only while `serving` — is the deliberate
-replacement for "Load exact imports": counted in `userRestarts`, never as a
-death; `opts = {snapshots, warmHeader, packs}` reach the next
+replacement (a self-widen, `api.restart`): counted in `userRestarts`, never
+as a death; `opts = {snapshots, initialBytes}` reach the next
 `makeSession(opts)`. **unload()** (`pagehide`) disposes the session.
 `status()` is the worker's last status with `phase` overridden to `halted`
 in that state, plus `relay` (the state kind) and `session` (id); a
-replacement session's first status carries no collision fact, so the offer
-withdraws by itself. Since 2026-09-04 it also carries `lastDeath {reason,
+replacement session's first status carries no collision fact. Since
+2026-09-04 it also carries `lastDeath {reason,
 message}` (from `onDied` or the boot rejection; cleared when a session
 reaches `ready`), the relay remembers `restartOpts` and reuses them on a
 crash reboot while the header (the leading import lines of `lastText`) is
-unchanged — so an exact-imports session survives a crash — and the breaker
+unchanged — so a widened session survives a crash — and the breaker
 branch posts one whole-document `publishDiagnostics` with a single
 severity-1 QED64 diagnostic on the first import line explaining that the
 checker crashed repeatedly on this content, replacing the dead session's
@@ -413,17 +409,12 @@ stale markers.
 **ResidentSession** (`lib/resident-session.ts`, extracted from
 main.ts on 2026-09-04 so lean4game can vendor it) implements `RelaySession`
 over one `LeanSession` and takes a `ResidentPolicy {snapshotsFor?(headerText),
-initialBytesFor?(headerText), maximumBytes?}`. `start()`: reinstall packs the
-previous worker consumed, build the pack mount list, `boot` with a 2 GiB
-initial commit under a 6 GiB cap (probed downward on constrained machines;
-the policy can lower both), load `opts.snapshots ?? ["init", "mathlib"]` in
-order, and — when `opts.warmHeader` is set — compile the header's *import
-lines only* through `lean.compile` while the loop is still closed, so the
-real olean import pushes the exact environment into the registry. It
-deliberately does **not** arm: the relay arms after its replay. A failed warm
-import is reported, not thrown (a throw would be a `bootFailed` death and a
-breaker candidate); the header is then served covered again and the offer
-comes back.
+initialBytesFor?(headerText), maximumBytes?}`. `start()`: `boot` with no
+pack and an empty `LEAN_PATH` (D1, 2026-11), a 2 GiB initial commit under a
+6 GiB cap (probed downward on constrained machines; the policy can lower
+both), then load `opts.snapshots ?? ["init", "mathlib"]` in order, and write
+the host's session files. It deliberately does **not** arm: the relay arms
+after its replay.
 
 **The kernel resolver** (patch 0032 K1, `FileWorker.setupImports`) runs once
 per header setup, before any filesystem access: the header's modules are
@@ -472,27 +463,17 @@ settle 1.5 s; boot 2 GiB initial / 6 GiB cap; measured on the served 0032
 pairing: covered header switch 322 ms edit → ready, boot 12.5 s warm, kill
 → ready with all edits present in ~15 s (docs/RESIDENT-WORKER-PLAN.md).
 
-## The installer (lib/profiles.ts)
+## Library packs (retired from the browser, D1 2026-11)
 
-`fetch parts → SHA-256 each → gunzip stream → sink`, where the sink is an
-OPFS staging file (committed by atomic `move()` + meta marker) or, after any
-storage failure (quota, stall, missing `move`), an in-memory byte-segment
-build. Failure handling is the hard-won part:
-
-- every ingress await races the sink task, so a dead sink can never leave
-  `write()`/`close()` waiting on a queue nobody drains;
-- a failing sink cancels the gunzip reader — otherwise the transform wedges
-  and even `abort()` never settles;
-- OPFS writes run under a 20 s stall watchdog (some embedders hang rather
-  than reject at their real ceiling), and the observed ceiling is remembered
-  in localStorage so later visits skip the doomed attempt.
+The packs stay in the toolchain release: the Node bakes read them, and the
+stock page's import completion reads the two pack manifests' file tables.
+The browser installer, with its stall and OPFS-ceiling handling, is in git
+history (`lib/profiles.ts` at 521cf3f).
 
 ## Trust model
 
 Nothing executes or mounts that was not named by digest in a same-origin
-manifest: runtime chunks (SHA-256 each + whole), transport parts (SHA-256
-each), pack byte-ranges (validated against blob/buffer size, control-character
-and traversal checks on virtual paths). The raw-pack digest is re-derived
-out-of-band by `npm run verify:release` because WebCrypto cannot stream.
+manifest: runtime chunks, SHA-256 each + whole (library pack parts were
+verified the same way until D1).
 Diagnostics and share-link content are rendered exclusively through
 `textContent`-based escaping.

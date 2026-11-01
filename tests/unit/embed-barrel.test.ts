@@ -20,7 +20,7 @@ const LEAN4GAME = [
 /** Runtime names frontend/src/main.ts (the stock page) imports from the barrel ("../../lib"). */
 const STOCK_PAGE = ["ENGINE_STACK_OVERFLOW", "LspRelay", "ResidentSession", "entryLabel", "failureCauseOf", "installArtifacts", "makeEditorPolicy"];
 const INTERNAL = [
-  "installProfile", "ensureProfile", "fetchProfileIndex", "parseBootParams", "overridesOf", "NO_OVERRIDES",
+  "parseBootParams", "overridesOf", "NO_OVERRIDES",
   "memoryCandidates", "rawRegionName", "httpStatusOf", "failureKindOf", "isImport",
 ];
 
@@ -42,6 +42,10 @@ describe("qed64/embed barrel", () => {
     expect(embed).not.toHaveProperty("storageEstimate");
     expect(embed).not.toHaveProperty("UMBRELLA_ROOTS");
     expect(embed.isUmbrellaModule("Mathlib.Tactic")).toBe(true); // the helper that reads the set stays
+  });
+
+  it("no longer exports the library-pack installer (D1: library packs left the browser)", () => {
+    for (const n of ["installProfile", "ensureProfile", "fetchProfileIndex"]) expect(embed).not.toHaveProperty(n);
   });
 
   it("the @internal block is exactly the names neither consumer uses, and each is still exported", () => {

@@ -231,7 +231,7 @@ const lean4Wasm64Pkg = path.join(root, "node_modules/lean4-wasm64/package.json")
 const lean4Wasm64Index = fs.existsSync(lean4Wasm64Pkg) && JSON.parse(fs.readFileSync(lean4Wasm64Pkg, "utf8")).name === "lean4-wasm64" ? path.join(root, "node_modules/lean4-wasm64/index.mjs") : null;
 
 describe("the worker protocol ledger (docs/EMBEDDING.md §7.7)", () => {
-  const c = closure as unknown as { runtime: { minKernelPatch: string; manifestSchemas: string[] }; workerProtocol: { revision: string; protocol: number; requests: string[]; deprecated: unknown[] } };
+  const c = closure as unknown as { runtime: { minKernelPatch: string; manifestSchemas: string[] }; workerProtocol: { revision: string; protocol: number; requests: string[]; deprecated: { request: string; unusedSince: string }[] } };
   it("the five worker scripts carry the ledger's revision", () => {
     expect(read("public/workers/lean.worker.js")).toContain(`const WORKER_REVISION = "${c.workerProtocol.revision}";`);
     const siblings = ["public/workers/lsp-frames.js", "public/workers/lsp-front-door.js", "public/workers/memory64-probe.js", "public/workers/worker-constants.js"];
@@ -245,6 +245,11 @@ describe("the worker protocol ledger (docs/EMBEDDING.md §7.7)", () => {
     expect(src).toContain(`const WORKER_REQUESTS = Object.freeze(${JSON.stringify(c.workerProtocol.requests).replace(/,/g, ", ")});`);
     expect(read("lib/client.ts")).toContain(`export const PROTOCOL = ${c.workerProtocol.protocol};`);
     expect(Array.isArray(c.workerProtocol.deprecated)).toBe(true);
+    // A deprecated request is still answered (it leaves the worker one release after it went unused, §7.7).
+    for (const d of c.workerProtocol.deprecated) {
+      expect(c.workerProtocol.requests, d.request).toContain(d.request);
+      expect(typeof d.unusedSince).toBe("string");
+    }
   });
   // Architecture review M3 (the format guard): the worker refuses any other schema before it fetches a byte, and
   // a consumer's staging check compares its runtime's schema with closure.json's list. The full list is not

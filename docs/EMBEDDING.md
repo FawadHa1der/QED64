@@ -243,7 +243,7 @@ editing one in place changes neither what the editor receives nor
 | Event | Payload | When |
 |-------|---------|------|
 | `status` | `ApiStatus` | every relay status change (superseded ones excepted) |
-| `boot` | `{stage, phase, subject, label, loaded, total, unit, done, failed, message, error}` | every boot step: the first boot, every reboot, widen and restart, the snapshot prefetch and the exact-import pack download included (§7.1) |
+| `boot` | `{stage, phase, subject, label, loaded, total, unit, done, failed, message, error}` | every boot step: the first boot, every reboot, widen and restart, the snapshot prefetch included (§7.1) |
 | `ready` | `{session, version, refused, header}` | once per (session, version), at a final verdict |
 | `document` | `{uri, version, length, text}` | every didOpen/didChange the relay forwards. This is the persistence hook in embed mode. The checker sees the newest of these; a text replaced inside the session's coalescing window (§7.8) never reaches it, so wait per version with `settled({version})` (which accepts a later one), never for a verdict at that exact version. |
 | `diagnostics` | `{uri, version, diagnostics, origin: "lean" \| "qed64"}` | every `publishDiagnostics` the editor receives. `qed64` = the page's own notes. |
@@ -341,7 +341,7 @@ runtime (one QED64 per page), navigate the frame away first, e.g. to
 | `#code=` | §3.1 | URI-decoded, ≤ 2 MiB |
 | `#codez=` | §3.1 | LZ-string base64 (lean4web's writer; `=` padding optional; the URI-safe alphabet by its `-`/`$`), ≤ 2 MiB decoded; `#code=` outranks it |
 | `snapshots=<dir>` | boot from a snapshot set served at `/<dir>/index.json` on **this origin** | `^(?:snapshots/)?[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`, resolving on this origin |
-| `profiles=<dir>` | an unpromoted profile set | `^(?:profiles/)?…` (same rule) |
+| `profiles=<dir>` | accepted and validated, then ignored (D1: no library pack is read) | `^(?:profiles/)?…` (same rule) |
 | `runtime=<buildId>` | an unpromoted runtime | `^wasm64-[0-9a-f]{16}$` |
 | `memory=<GiB>` | the initial Memory64 commit of **every** session | `^(?:[1-9]\d*\|0)(?:\.\d{1,3})?$`, rounded to 256 MiB and clamped to [1, 6] GiB |
 | `edithold=<n>` | the edit back-pressure's threshold for **every** session (§7.8): full-text changes are held while fewer than `n` preallocated Workers are free; `0` disables the hold | `^(?:0\|[1-9]\d?)$`, at most 24; maps to `ResidentHost.editBackPressure.minFreeWorkers` |
@@ -360,22 +360,21 @@ Page-tier facts (stable, for preflights and deploy tools):
   optionally `roots`, `label` and `initialBytes` (§8). Entry URLs must
   resolve on the page's origin.
 - **Re-rooting.** Under `?snapshots=<dir>`, an entry URL starting with
-  `/snapshots/` is re-rooted to `/<dir>/`. The same applies to `?profiles=` and
-  `/profiles/`.
+  `/snapshots/` is re-rooted to `/<dir>/`.
 - **The runtime manifest.** `/runtime/runtime-manifest.<buildId>.json`
   (immutable, fetched first by a shell built for that buildId) and
   `/runtime/runtime-manifest.json` (mutable).
 - **The per-build index copies** (HARDENING #64).
-  `/snapshots/index.<buildId>.json` and `/snapshots/profiles-index.<buildId>.json`
-  are the snapshot and profile indexes of that runtime's pairing. A shell
-  built for that buildId reads the mutable `/snapshots/index.json` and
-  `/profiles/index.json` first; only when one names another runtime (an
+  `/snapshots/index.<buildId>.json` is the snapshot index of that runtime's
+  pairing. A shell built for that buildId reads the mutable
+  `/snapshots/index.json` first; only when it names another runtime (an
   upload of the next pairing ran ahead of its deploy) does it read its
   runtime's copy, used when it is an index paired with that runtime (a 404,
   HTML, a network error, a malformed body or a copy naming any other runtime
   keeps the mutable one). A paired site (the showcase's origin, lean4game's,
-  a local tree) is never asked for a copy. `?snapshots=<dir>` and
-  `?profiles=<dir>` read only their own `index.json`. A page that reads the
+  a local tree) is never asked for a copy. `?snapshots=<dir>` reads only its
+  own `index.json`. (The profile index's copy, `/snapshots/profiles-index.<buildId>.json`,
+  is still written by promote and upload; no page reads it since D1.) A page that reads the
   snapshot index itself gets the same rule from `loadSnapshotIndex` /
   `fetchSnapshotIndex` with `pairedBuildId` (§7.0): the copy is
   `index.<buildId>.json` in the directory of the index it was given.
@@ -538,11 +537,10 @@ Notes for consumers:
   the buffer) lives only in site modules that are not in the package.
 
 `embedding/closure.json` (schema `qed64.closure/v1`) lists:
-- `embed`: the TS closure of `qed64/embed`, the 12 files of `lib/`:
+- `embed`: the TS closure of `qed64/embed`, the 11 files of `lib/`:
   `index.ts` (the barrel, `entry`), `params.ts`, `failure.ts`,
   `qed64-boot.ts`, `raw-cache.ts`, `urls.ts`, `resident-session.ts`,
-  `edit-coalescer.ts`, `lsp-relay.ts`, `profiles.ts`, `client.ts` and
-  `snapshots.ts`. They import only each other, plus `client.ts`'s
+  `edit-coalescer.ts`, `lsp-relay.ts`, `client.ts` and `snapshots.ts`. They import only each other, plus `client.ts`'s
   side-effect import of `../public/workers/memory64-probe.js`;
 - `workers`: `{path, serveAs}`. `lean.worker.js` `importScripts`
   `lsp-frames.js`, `memory64-probe.js`, `worker-constants.js` and
@@ -663,18 +661,18 @@ code block below, extracted verbatim from the packed `docs/EMBEDDING.md`.
    pin's workers under the new library, which only re-staging prevents.
    `npm run test:consumer` runs this script, from the packed copy of this
    document, over a stale set in a scratch consumer.
-4. **The artifacts at `/runtime/`, `/profiles/` and `/snapshots/`,** on the
-   page's origin (§4 "Page-tier facts"; an off-origin source is refused, §11):
-   the runtime manifest and its chunks, the profile index and packs, the
-   snapshot index and its `.snapz` regions, served without
-   `Content-Encoding` and with `404` for anything missing (§5). The
-   snapshots are binary-paired to the runtime: serve them as one set
-   (docs/DEPLOY.md "Consistency rule"). In development, put them in Vite's
-   `publicDir` (and add them to `server.watch.ignored`; they are gigabytes);
-   in production, docs/DEPLOY.md is the layout QED64 itself serves (R2 behind
-   `qed64/edge`, same origin). A page whose environment is all snapshot (a
-   game) boots with `profiles: "none"`: no pack is installed, and a missing
-   `/profiles/index.json` counts as an empty one (§7.6).
+4. **The artifacts at `/runtime/` and `/snapshots/`,** on the page's origin
+   (§4 "Page-tier facts"; an off-origin source is refused, §11): the runtime
+   manifest and its chunks, the snapshot index and its `.snapz` regions,
+   served without `Content-Encoding` and with `404` for anything missing
+   (§5). No library pack is read since D1; the stock page alone also reads
+   the two pack manifests under `/profiles/` for import completion (a
+   missing one only narrows it). The snapshots are binary-paired to the
+   runtime: serve them as one set (docs/DEPLOY.md "Consistency rule"). In
+   development, put them in Vite's `publicDir` (and add them to
+   `server.watch.ignored`; they are gigabytes); in production,
+   docs/DEPLOY.md is the layout QED64 itself serves (R2 behind
+   `qed64/edge`, same origin).
 
 **(a) Without the editor: drive a session headlessly.** Your code is the
 language client. It boots a `ResidentSession` behind an `LspRelay` and
@@ -693,7 +691,7 @@ const ui: StatusSink = {   // progress as data (§7.1)
   progress: (label, info) => console.log(label, info?.loaded, info?.total),
   idle: (label) => console.log("idle", label),
 };
-const artifacts = await installArtifacts(ui, { overrides: "none" });   // manifest, snapshot index, core pack
+const artifacts = await installArtifacts(ui, { overrides: "none" });   // manifest, snapshot index
 const policy = makeEditorPolicy(artifacts.snapshots);                    // snapshots and memory per header
 let current = "import Mathlib\n\nexample : 2 + 2 = 4 := by norm_num\n";   // what a (re)boot serves
 const relay = new LspRelay(
@@ -812,15 +810,12 @@ library contract a dist was built from without opening the bundle.
   `ENGINE_STACK_OVERFLOW`.
 - **offline:** `runtimeUrls(manifest)` and `WORKER_URLS`.
 - **internal re-exports** (`/** @internal */` in the barrel): `memoryCandidates`,
-  `fetchProfileIndex`, `installProfile`, `ensureProfile`, `overridesOf`,
-  `rawRegionName`, `failureKindOf`, `httpStatusOf`, `parseBootParams`,
-  `NO_OVERRIDES` and `isImport`. They stay exported, so an import of one
+  `overridesOf`, `rawRegionName`, `failureKindOf`, `httpStatusOf`,
+  `parseBootParams`, `NO_OVERRIDES` and `isImport`. They stay exported, so an import of one
   still builds, but they are outside the contract (§9): neither consumer
   imports them, the stock page reaches them only through its own modules,
   and a revision may change or remove them. Use the contract member that
-  wraps each one instead: `installArtifacts` (the profile index and the
-  boot packs: `profiles`, `artifacts.index`, `artifacts.installed`),
-  `ResidentSession` (memory rungs, on-demand packs for exact imports),
+  wraps each one instead: `ResidentSession` (memory rungs),
   `failureCauseOf` (kind and HTTP status),
   `validateBootOverrides` (your own URL parsing, or `installArtifacts`'
   `overrides: "url"`), `prefetchRaw`/`isRawCached`/`removeRawRegion` (the
@@ -830,8 +825,9 @@ library contract a dist was built from without opening the bundle.
 
 `ProgressInfo` has these fields:
 - `stage`: a `BootStage`, one of `manifests | profile | runtime | memory |
-  snapshot | modules | warm | files | done | failed`;
-- `subject`: a profile id, snapshot name or runtime file;
+  snapshot | modules | warm | files | done | failed` (`profile` and `warm`
+  are not emitted since D1);
+- `subject`: a snapshot name or runtime file;
 - `step`: `check | download | inflate | commit | verify | read | load | init
   | write`;
 - `error`: a `FailureCause`;
@@ -861,7 +857,7 @@ interface FailureCause { kind: FailureKind; httpStatus?: number; stage?: BootSta
 | `unpaired` | a snapshot baked by another runtime build | `SNAPSHOT_UNPAIRED` |
 | `oom` | an allocation or reservation failed | `MEMORY_FAILED`, `could not allocate`, `Cannot enlarge memory` |
 | `storage` | OPFS or quota | `QuotaExceededError` |
-| `stale` | the site was deployed under this page: the worker scripts it loaded are of different revisions (§7.7), or a lazily imported chunk of the page's own bundle (`/assets/<name>-<hash>.js`) could not be fetched (the browser's `Failed to fetch dynamically imported module: …/assets/…`; a deploy that replaced the assets under the open page explains it, and a connection cut during that import reads the same; HARDENING #74). Also a library pack manifest of another release than the page's profile index names (`installProfile`, HARDENING #81): it does not heal, the relay's retries fail the same way and halt, and only a reload helps. **Reload the page.** A lost chunk is a boot failure (`stage: "failed"`, `boot.failed`, every `settled()` waiter rejects): nothing serves until the reload. For the worker scripts, retrying in place does not help: the relay heals by itself (its replacement worker loads the new scripts, and the relay replays `initialize` and the document, so the language client never re-initializes), but it then serves under this page's older bundle, which holds only while the worker protocol changes additively | `WORKER_DEP_MISMATCH` (`code` is always `"WORKER_DEP_MISMATCH"`, exported as `WORKER_DEP_MISMATCH`) |
+| `stale` | the site was deployed under this page: the worker scripts it loaded are of different revisions (§7.7), or a lazily imported chunk of the page's own bundle (`/assets/<name>-<hash>.js`) could not be fetched (the browser's `Failed to fetch dynamically imported module: …/assets/…`; a deploy that replaced the assets under the open page explains it, and a connection cut during that import reads the same; HARDENING #74). **Reload the page.** A lost chunk is a boot failure (`stage: "failed"`, `boot.failed`, every `settled()` waiter rejects): nothing serves until the reload. For the worker scripts, retrying in place does not help: the relay heals by itself (its replacement worker loads the new scripts, and the relay replays `initialize` and the document, so the language client never re-initializes), but it then serves under this page's older bundle, which holds only while the worker protocol changes additively | `WORKER_DEP_MISMATCH` (`code` is always `"WORKER_DEP_MISMATCH"`, exported as `WORKER_DEP_MISMATCH`) |
 | `other` | the checker's own failure, with **one exception**: `code: "WORKER_SCRIPT_LOAD_FAILED"` means a worker script never ran, which looks the same offline as on a 404, so probe the link | `abort`, `wedged`, `SNAPSHOT_URL_REFUSED`, `ENGINE_STACK_OVERFLOW` |
 
 An `unpaired` failure is decided by the page wherever it holds both facts,
@@ -945,8 +941,7 @@ classifies, so the same table holds against every worker version.
   relay's `arm()` resolves, so a death during the replay and the arm carries
   `files`, the last stage.
 - Every `bootFailed` death carries a cause: the step's own (runtime,
-  snapshot), or one classified at the step that threw. A library-pack
-  install is `stage: "profile"` with the pack id as `subject`; the host's
+  snapshot), or one classified at the step that threw. The host's
   `files()`, `beforeArm` and an arm the worker refuses are `stage: "files"`.
 
 The cause travels through `LeanSession.onDied(code, reason, message, facts)`,
@@ -984,8 +979,8 @@ interface ResidentHost {
 type SessionFile = { path: string; text: string } | { path: string; bytes: Uint8Array };
 ```
 
-Both run on **every** boot (first and reboots), after the snapshots and the
-exact-import warm, immediately before the relay arms the loop. The front door
+Both run on **every** boot (first and reboots), after the snapshots,
+immediately before the relay arms the loop. The front door
 queues every frame until `lsp-arm`, so Lean never sees the document before the
 files. `LeanSession.writeFiles(files)` is public. Bytes are copied, not
 transferred. A throw from either is a `bootFailed` death whose cause is
@@ -1104,8 +1099,8 @@ internal re-export, §7.0.)
 
 ```ts
 installArtifacts(ui, opts?: {
-  overrides?: "url" | "none" | Partial<BootOverrides>;   // default "url": ?snapshots/profiles/runtime, validated (§4)
-  profiles?: "core" | "none" | string[];                 // default "core"; "none": no pack, a missing profile index is empty
+  overrides?: "url" | "none" | Partial<BootOverrides>;   // default "url": ?snapshots/runtime, validated (§4); ?profiles= validated, then ignored
+  profiles?: "core" | "none" | string[];                 // accepted and ignored since D1: no library pack, no profile index
   runtime?: RuntimeManifest;                              // already resolved: used as is
   snapshots?: SnapshotIndex | null;                       // already resolved: used as is
 });
@@ -1113,26 +1108,27 @@ resolveRuntimeManifest(overrides, { pinnedBuildId? }): Promise<RuntimeManifest>;
 fetchSnapshotIndexFor(overrides): Promise<SnapshotIndex | null>;   // a requested overlay that fails is a named error
 ```
 
-The boot's fetches, in order: the profile index, the runtime manifest, the
-core pack (`profiles: "core"`), the snapshot index. The runtime manifest is
+The boot's fetches, in order: the runtime manifest, the snapshot index. The runtime manifest is
 the pinned buildId's `/runtime/runtime-manifest.<buildId>.json` first; a
 404, a non-JSON answer or a fetch that rejects (a dead link while
 `navigator.onLine` is still true, a refusing proxy) is a miss, and the
 mutable `/runtime/runtime-manifest.json` decides, its own failure being the
 boot's (HARDENING #65). `?runtime=` overrides both. With a pinned buildId
-(`__QED64_BUILD_ID__` defined by the bundler, §6.1), an index whose mutable
-path names another runtime is followed by its per-build copy
-(`/snapshots/profiles-index.<buildId>.json`, `/snapshots/index.<buildId>.json`,
-§4), used when it is an index paired with that buildId (the snapshot index
-through `loadSnapshotIndex`'s `pairedBuildId`, §7.0, the one rule both
-indexes share); a paired index, and every index without a pinned buildId,
-is read from its mutable path only, as before. A `runtime` or `snapshots`
+(`__QED64_BUILD_ID__` defined by the bundler, §6.1), a snapshot index whose
+mutable path names another runtime is followed by its per-build copy
+(`/snapshots/index.<buildId>.json`, §4), used when it is an index paired
+with that buildId (through `loadSnapshotIndex`'s `pairedBuildId`, §7.0); a
+paired index, and every index without a pinned buildId, is read from its
+mutable path only, as before. A `runtime` or `snapshots`
 passed in is not fetched. A page that fetches the snapshot index itself
 (not through `fetchSnapshotIndexFor` or `installArtifacts`) passes
 `pairedBuildId` to get the same order, and its site publishes the copy
-derived from the index it serves (§4).
+derived from the index it serves (§4). installArtifacts also removes, once
+and off the boot's path, the OPFS pack store (`qed64-packs/`) and
+`localStorage["qed64.opfs.byteCeiling"]` that releases before D1 wrote
+(best effort; it never fails the boot).
 
-A game page wants `{overrides: "none", profiles: "none"}`, or its own
+A game page wants `{overrides: "none"}` (`profiles: "none"` is still accepted), or its own
 overrides routed through `validateBootOverrides` (lean4game parses its URL
 itself; `parseBootParams` is an internal re-export, §7.0).
 
@@ -1194,6 +1190,10 @@ itself; `parseBootParams` is an internal re-export, §7.0).
   `closure.json` → `workerProtocol.deprecated` with the release it went
   unused in, and leaves the worker one release later. Long-lived tabs are
   covered by the recoverable refusal above and by the revision check.
+  Listed today: `compile` (D1, 2026-11). The library no longer sends it,
+  and the worker still answers it, and still mounts a `boot`'s `packs`, for
+  one more release: a tab of an older release reboots onto the new worker
+  and still sends both.
 - **Runtime manifest formats.** The worker reads the schemas `closure.json`
   lists under `runtime.manifestSchemas` and refuses any other, or a file
   `encoding` the schema does not allow it, before any fetch
@@ -1580,7 +1580,8 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   including when the off-origin source is reached through a redirect:
   - every boot parameter;
   - the snapshot index loader;
-  - the profile loaders (index, manifests, parts);
+  - the profile loaders (index, manifests, parts; removed with the library
+    packs by D1, 2026-11);
   - `prefetchRaw` and both workers.
 
   A boot document in the URL (`#code=` / `#codez=`) is honoured only inside
@@ -2247,3 +2248,31 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   this change. The page API's `api.version` (1) and `API_REVISION` (`1.0.0`)
   are unchanged: a false capability is v1's way to say absent (§1, item 2);
   `EMBED_API_REVISION` is unchanged.
+- **Library packs leave the browser; "Load exact imports" retired (D1 with
+  R15, 2026-11):**
+  - What went (allowed under "-pre", §7): `LeanSession.compile`,
+    `CompileResult` and `Diagnostic` (only `CompileResult` used it);
+    `RestartOptions.warmHeader` and `packs` (`RestartOptions` is
+    `{snapshots?, initialBytes?}`); `Qed64Artifacts.index` and `installed`
+    (`Qed64Artifacts` is `{runtime, snapshots}`); the five profile types
+    (`InstallProgress`, `InstalledProfile`, `ProfileIndex`,
+    `ProfileIndexEntry`, `ProfileManifest`); the @internal
+    `installProfile`, `ensureProfile` and `fetchProfileIndex`; and
+    `lib/profiles.ts` (the closure's `embed` has 11 files).
+  - What is ignored: `InstallOptions.profiles` (every value, `"none"`
+    included, is accepted) and `?profiles=` (still validated: a refused
+    value is still a `BootParamError`). `installArtifacts` fetches the
+    runtime manifest, then the snapshot index, and no profile index; a
+    `ResidentSession` boots with no pack and an empty `LEAN_PATH` and runs
+    no warm compile. `BootStage` keeps `profile` and `warm`, which are no
+    longer emitted.
+  - The clean-up: `installArtifacts` removes, best effort and unawaited,
+    the OPFS pack store `qed64-packs/` and
+    `localStorage["qed64.opfs.byteCeiling"]` that earlier releases wrote
+    (§7.6).
+  - The worker still answers `compile` and still mounts a `boot`'s `packs`
+    for one more release (closure.json `workerProtocol.deprecated`, §7.7);
+    `BootConfig.packs` and `LibraryPack` are unchanged until then.
+  - Who is affected: a consumer booting with `profiles: "none"` changes
+    nothing; a fixture building `Qed64Artifacts` drops `index`/`installed`.
+  - `EMBED_API_REVISION` → `1.0.0-pre.10`.

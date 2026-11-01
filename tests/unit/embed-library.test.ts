@@ -221,7 +221,7 @@ class FakeLeanWorker {
 }
 const runtime = { buildId: "wasm64-3ab1c6a9da03bc29", leanVersion: "4.34.0", files: { "lean.js": { bytes: 0, sha256: "", chunks: [] }, "lean.wasm": { bytes: 0, sha256: "", chunks: [] } } } as RuntimeManifest;
 const snap = (name: string) => ({ name, url: `/snapshots/${name}.x.snapz`, bytes: 100, transfer: 50, digest: `sha256:${"cd".repeat(32)}`, imports: [], runtime: runtime.buildId });
-const artifacts = (): Qed64Artifacts => ({ runtime, index: { schema: "qed64.profile-index/v1", profiles: [] } as unknown as Qed64Artifacts["index"], installed: new Map(), snapshots: { schema: "qed64.snapshot-index/v1", snapshots: [snap("init"), snap("mathlib")] } as unknown as Qed64Artifacts["snapshots"] });
+const artifacts = (): Qed64Artifacts => ({ runtime, snapshots: { schema: "qed64.snapshot-index/v1", snapshots: [snap("init"), snap("mathlib")] } as unknown as Qed64Artifacts["snapshots"] });
 
 describe("ResidentSession.start(): stages, files, beforeArm, causes", () => {
   let calls: Array<{ kind: "busy" | "progress"; label: string; info?: ProgressInfo }>;
@@ -280,6 +280,12 @@ describe("ResidentSession.start(): stages, files, beforeArm, causes", () => {
       for (let v = 2; v <= 5; v += 1) raw.lsp(ch(v));
       expect(versions(rawLsp)).toEqual([2, 3, 4, 5]);
     } finally { vi.useRealTimers(); }
+  });
+
+  it("boots with no library pack and an empty LEAN_PATH (D1)", async () => {
+    const { s } = session();
+    await s.start();
+    expect(s.lean.boot).toHaveBeenCalledWith(expect.objectContaining({ leanPath: "", packs: [] }));
   });
 
   it("every busy/progress call carries a stage; snapshot and module progress name the snapshot", async () => {
@@ -415,18 +421,11 @@ describe("ResidentSession.start(): stages, files, beforeArm, causes", () => {
 
   // Review g4 #18/#30: only lean.boot, the snapshots and writeFiles carried a cause, so a host's files() fetch
   // failing (lean4game's shape) reached Death and the page API as `cause: null` — "no evidence".
-  it("every boot failure carries a cause: the host's files() and beforeArm, a pack download, an arm the worker refuses", async () => {
+  it("every boot failure carries a cause: the host's files() and beforeArm, an arm the worker refuses", async () => {
     const a = session({ files: async () => { throw new TypeError("Failed to fetch"); } });
     await expect(a.s.start()).rejects.toMatchObject({ message: "Failed to fetch", cause: { kind: "network", stage: "files", message: "Failed to fetch" } });
     const b = session({ beforeArm: async () => { throw new Error("level.json: HTTP 404"); } });
     await expect(b.s.start()).rejects.toMatchObject({ message: "level.json: HTTP 404", cause: { kind: "missing", httpStatus: 404, stage: "files" } });
-    // "Load exact imports": the essential pack is installed before the boot, and its manifest is gone.
-    vi.stubGlobal("fetch", async () => new Response("Not Found", { status: 404 }));
-    const withPack = artifacts();
-    withPack.index.profiles.push({ id: "essential", manifest: "/profiles/essential.json", release: "r", modules: 1 });
-    const c = session({ artifacts: withPack }, { snapshots: ["init"], packs: ["essential"] });
-    await expect(c.s.start()).rejects.toMatchObject({ message: "Manifest /profiles/essential.json: HTTP 404", cause: { kind: "missing", httpStatus: 404, stage: "profile", subject: "essential" } });
-    expect(c.order).toEqual([]); // nothing booted
     // The relay's last boot step: an arm the worker refuses.
     const d = session();
     await d.s.start();

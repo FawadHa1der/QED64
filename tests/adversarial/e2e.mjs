@@ -695,8 +695,8 @@ if (runs("final-memory")) {
 }
 
 // ---------- R15: library files the lean.worker read (--fs-reads) ------------
-// A session whose LEAN_PATH includes /lib/packs/essential is "Load exact imports": its reads are by design,
-// reported and never failed. A worker that was never instrumented, an install that failed, or a stock record that
+// A session whose LEAN_PATH includes /lib/packs/essential was "Load exact imports" (retired by D1, 2026-11; a
+// session's LEAN_PATH is empty since then): its reads are by design, reported and never failed. A worker that was never instrumented, an install that failed, or a stock record that
 // overflowed its 2,000 keys is a blind spot, so the row is infra, never a pass.
 if (fsReads) {
   const s = await fsReads.finish();

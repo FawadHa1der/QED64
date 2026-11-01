@@ -423,8 +423,8 @@ export function createPageApi(
       // Sticky until the next explicit restart: crash reboots and header changes keep it.
       binding.setSessionMemory?.(initialBytes ?? null);
       // No snapshots given: this session's boot inputs, under the relay's own
-      // rule (the remembered exact-imports options while the header still
-      // matches, else the snapshot list it loaded) — never their commit: the
+      // rule (the remembered restart options while the header still matches,
+      // else the snapshot list it loaded) — never their commit: the
       // relay remembers the last restart's initialBytes too, and only this
       // call's (else the page default) may size the next session.
       const { initialBytes: _remembered, ...base }: RestartOptions = opts.snapshots ? { snapshots: [...opts.snapshots] } : binding.relay.reusableOpts() ?? (snapshotsNow() ? { snapshots: snapshotsNow()! } : {});

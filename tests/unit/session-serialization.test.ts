@@ -1,14 +1,15 @@
 // Runtime-RPC serialization in LeanSession, pinning a live-observed race
-// (2026-08-25): the worker rejects any compile that arrives while it still
-// owns the runtime ("Worker is 'compiling', not ready", BAD_STATE), and
-// snapshot loads are async on the worker — so a check racing the boot
-// snapshot load right after boot surfaced that rejection as a user-visible
-// "Compile failed". The client therefore runs compile/loadSnapshot strictly
-// one at a time; these tests exercise the real LeanSession over a scripted
-// fake Worker.
+// (2026-08-25): the worker rejects any runtime-owning request that arrives
+// while another still owns the runtime ("Worker is 'compiling', not ready",
+// BAD_STATE), and snapshot loads are async on the worker — so a compile racing
+// the boot snapshot load right after boot surfaced that rejection as a
+// user-visible "Compile failed". The compile left the library with the
+// browser's library packs (D1, 2026-11); the same chain still runs
+// loadSnapshot, write-files and lsp-arm strictly one at a time. These tests
+// exercise the real LeanSession over a scripted fake Worker.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { LeanSession, PROTOCOL, type CompileResult } from "../../lib/client";
+import { LeanSession, PROTOCOL } from "../../lib/client";
 
 interface Posted {
   protocol: number;
@@ -46,14 +47,9 @@ class FakeWorker {
   }
 }
 
-const COMPILE_RESULT: CompileResult = {
-  operation: "compile",
-  success: true,
-  exitCode: 0,
-  elapsedMs: 5,
-  diagnostics: [],
-  raw: [],
-};
+const WRITE_RESULT = { operation: "write-files", written: 1 };
+const files = (t: string) => [{ path: `/workspace/${t}.txt`, text: t }];
+const textOf = (m: Posted) => (m.input as { files: { text: string }[] }).files[0]!.text;
 
 /** Drain microtasks AND the macrotask queue (the turn chain hops through
  * `.then`, so a plain `await Promise.resolve()` is not always enough). */
@@ -74,15 +70,15 @@ afterEach(() => {
 });
 
 describe("LeanSession runtime-RPC serialization", () => {
-  it("holds a compile until an in-flight snapshot load settles (the boot race)", async () => {
+  it("holds a write-files until an in-flight snapshot load settles (the boot race)", async () => {
     const snapPromise = session.loadSnapshot("https://cdn/x.snapz", "x.snap", 10, "k1");
     await settle();
     expect(worker.ofType("loadSnapshot")).toHaveLength(1);
 
-    // The racing check's compile must NOT reach the busy worker…
-    const compilePromise = session.compile("example : True := trivial\n", "/workspace/input.lean");
+    // The racing turn must NOT reach the busy worker…
+    const writePromise = session.writeFiles(files("input"));
     await settle();
-    expect(worker.ofType("compile")).toHaveLength(0);
+    expect(worker.ofType("write-files")).toHaveLength(0);
 
     // …but must run (and succeed) as soon as the snapshot load settles.
     worker.reply(worker.ofType("loadSnapshot")[0]!.requestId, {
@@ -91,61 +87,61 @@ describe("LeanSession runtime-RPC serialization", () => {
     });
     await expect(snapPromise).resolves.toEqual({ success: true, elapsedMs: 3 });
     await settle();
-    const compileMsg = worker.ofType("compile");
-    expect(compileMsg).toHaveLength(1);
-    worker.reply(compileMsg[0]!.requestId, { type: "result", result: COMPILE_RESULT });
-    await expect(compilePromise).resolves.toEqual(COMPILE_RESULT);
+    const writeMsg = worker.ofType("write-files");
+    expect(writeMsg).toHaveLength(1);
+    worker.reply(writeMsg[0]!.requestId, { type: "result", result: WRITE_RESULT });
+    await expect(writePromise).resolves.toEqual({ written: 1 });
   });
 
-  it("runs concurrent compiles one at a time, in order", async () => {
-    const first = session.compile("A");
-    const second = session.compile("B");
+  it("runs concurrent turns one at a time, in order", async () => {
+    const first = session.writeFiles(files("A"));
+    const second = session.writeFiles(files("B"));
     await settle();
-    expect(worker.ofType("compile")).toHaveLength(1);
-    expect((worker.ofType("compile")[0]!.input as { source: string }).source).toBe("A");
+    expect(worker.ofType("write-files")).toHaveLength(1);
+    expect(textOf(worker.ofType("write-files")[0]!)).toBe("A");
 
-    worker.reply(worker.ofType("compile")[0]!.requestId, { type: "result", result: COMPILE_RESULT });
-    await expect(first).resolves.toEqual(COMPILE_RESULT);
+    worker.reply(worker.ofType("write-files")[0]!.requestId, { type: "result", result: WRITE_RESULT });
+    await expect(first).resolves.toEqual({ written: 1 });
     await settle();
-    expect(worker.ofType("compile")).toHaveLength(2);
-    expect((worker.ofType("compile")[1]!.input as { source: string }).source).toBe("B");
-    worker.reply(worker.ofType("compile")[1]!.requestId, { type: "result", result: COMPILE_RESULT });
-    await expect(second).resolves.toEqual(COMPILE_RESULT);
+    expect(worker.ofType("write-files")).toHaveLength(2);
+    expect(textOf(worker.ofType("write-files")[1]!)).toBe("B");
+    worker.reply(worker.ofType("write-files")[1]!.requestId, { type: "result", result: WRITE_RESULT });
+    await expect(second).resolves.toEqual({ written: 1 });
   });
 
   it("a rejected turn frees the chain for the next one", async () => {
-    const first = session.compile("A");
-    const second = session.compile("B");
+    const first = session.writeFiles(files("A"));
+    const second = session.writeFiles(files("B"));
     await settle();
-    worker.reply(worker.ofType("compile")[0]!.requestId, {
+    worker.reply(worker.ofType("write-files")[0]!.requestId, {
       type: "error",
       error: { code: "BAD_STATE", message: "Worker is 'compiling', not ready.", recoverable: true },
     });
     await expect(first).rejects.toMatchObject({ code: "BAD_STATE" });
     await settle();
-    expect(worker.ofType("compile")).toHaveLength(2);
-    worker.reply(worker.ofType("compile")[1]!.requestId, { type: "result", result: COMPILE_RESULT });
-    await expect(second).resolves.toEqual(COMPILE_RESULT);
+    expect(worker.ofType("write-files")).toHaveLength(2);
+    worker.reply(worker.ofType("write-files")[1]!.requestId, { type: "result", result: WRITE_RESULT });
+    await expect(second).resolves.toEqual({ written: 1 });
   });
 
   it("rejects queued turns once the session is dead instead of hanging", async () => {
-    const first = session.compile("A");
-    const second = session.compile("B");
+    const first = session.writeFiles(files("A"));
+    const second = session.writeFiles(files("B"));
     await settle();
-    expect(worker.ofType("compile")).toHaveLength(1);
+    expect(worker.ofType("write-files")).toHaveLength(1);
 
-    session.dispose(); // rejects the in-flight compile; B is still queued
+    session.dispose(); // rejects the in-flight turn; B is still queued
     await expect(first).rejects.toMatchObject({ code: "DISPOSED" });
     await expect(second).rejects.toMatchObject({ code: "DEAD" });
-    // The queued compile must never have been posted to the (dead) worker.
-    expect(worker.ofType("compile")).toHaveLength(1);
+    // The queued turn must never have been posted to the (dead) worker.
+    expect(worker.ofType("write-files")).toHaveLength(1);
   });
 
   it("a worker `died` event closes the runtime to later turns (not only a crash or an unrecoverable reply)", async () => {
-    const first = session.compile("A");
+    const first = session.writeFiles(files("A"));
     await settle();
-    worker.reply(worker.ofType("compile")[0]!.requestId, { type: "result", result: COMPILE_RESULT });
-    await expect(first).resolves.toEqual(COMPILE_RESULT);
+    worker.reply(worker.ofType("write-files")[0]!.requestId, { type: "result", result: WRITE_RESULT });
+    await expect(first).resolves.toEqual({ written: 1 });
 
     const deaths: unknown[] = [];
     session.onDied = (code, reason, message) => deaths.push([code, reason, message]);
@@ -154,16 +150,16 @@ describe("LeanSession runtime-RPC serialization", () => {
 
     // Between the death fact and the relay's dispose() a queued turn must
     // reject instead of posting to a worker that no longer answers.
-    await expect(session.compile("B")).rejects.toMatchObject({ code: "DEAD" });
-    expect(worker.ofType("compile")).toHaveLength(1);
+    await expect(session.writeFiles(files("B"))).rejects.toMatchObject({ code: "DEAD" });
+    expect(worker.ofType("write-files")).toHaveLength(1);
   });
 });
 
 // The `status` event is rebuilt from declared fields on purpose (the event
 // envelope must not leak into a datum the harness JSON-diffs, §2.2(e)) —
 // which is exactly how the front door's `collision` fact was dropped once
-// and the resident "Load exact imports" offer became dead code (§3 row 8).
-// Pin the whole shape so a new WorkerStatus field cannot be forgotten again.
+// (§3 row 8). Pin the whole shape so a new WorkerStatus field cannot be
+// forgotten again.
 describe("LeanSession status events", () => {
   const RING = { bytesQueued: 0, refused: 0 };
   const POOL = { unused: 3, running: 2 };

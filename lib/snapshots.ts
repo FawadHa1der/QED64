@@ -80,9 +80,9 @@ export function pairedIndexCopyUrl(url: string, buildId: string): string {
   return `${path.slice(0, path.lastIndexOf("/") + 1)}index.${buildId}.json`;
 }
 
-/** @internal HARDENING #64's rule, the one implementation for both
- * site-owned indexes (the snapshot index here through `pairedBuildId`, the
- * profile index in qed64-boot.ts). A mutable index names whatever pairing
+/** @internal HARDENING #64's rule for the site-owned snapshot index, through
+ * `pairedBuildId` (the profile index used it too until D1, 2026-11: the
+ * browser reads no profile index any more). A mutable index names whatever pairing
  * was uploaded LAST: when `served` names (`runtimesOf`) a runtime other
  * than `pairedBuildId`, the copy at `copyUrl(pairedBuildId)` is read with
  * `load` (the mutable path's own reader and checks) and returned when it

@@ -17,14 +17,13 @@
 //   * Crash reboots do not rewind: the check fallback stays armed through
 //     them, and the card is gone 30 s after the first serve.
 
-export const STAGES = ["manifests", "core", "runtime", "env", "load", "check"] as const;
+export const STAGES = ["manifests", "runtime", "env", "load", "check"] as const;
 export type Stage = (typeof STAGES)[number];
 
 /** The checklist step a progress report belongs to, or null (a report that moves nothing). */
 export function stageOf(label: string, info?: { phase?: string }): Stage | null {
   const phase = info?.phase ?? "";
   if (/^fetching manifests/.test(label)) return "manifests";
-  if (phase.startsWith("core-") || /core library/.test(label)) return "core";
   if (/^(runtime|filesystem|initialize|memory|import)$/.test(phase) || /^(Starting|Mounting|Initializing)/.test(label)) return "runtime";
   if (phase === "snapshot" || phase === "snapshot-cache" || /environment \(|environment snapshot/i.test(label)) return "env";
   if (phase === "snapshot-load" || phase === "snapshot-init" || /into Lean/.test(label)) return "load";

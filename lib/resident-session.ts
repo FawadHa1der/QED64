@@ -13,10 +13,10 @@
 // environment passes its own snapshot map and a tighter memory cap). The
 // header text the policy reads is the document this session will serve:
 // the initial text at first boot, the relay's last full text on a reboot.
-import { downloadBeforeBoot, ensureProfile, loadSnapshotForBoot, noteBootNetworkFailure, refuseUnpairedSnapshot, reinstallProfile, type Qed64Artifacts, type Qed64Session, type StatusSink } from "./qed64-boot";
+import { downloadBeforeBoot, loadSnapshotForBoot, noteBootNetworkFailure, refuseUnpairedSnapshot, type Qed64Artifacts, type Qed64Session, type StatusSink } from "./qed64-boot";
 import type { RelaySession, RestartOptions } from "./lsp-relay";
-import { LeanSession, memoryCandidates, type JsonRpcMessage, type LibraryPack, type WorkerStatus } from "./client";
-import { deathCause, failureCauseOf, stageOfWorkerPhase, stepOfInstallPhase, ENGINE_STACK_OVERFLOW, WORKER_DEP_MISMATCH, type BootStage, type FailureCause } from "./failure";
+import { LeanSession, memoryCandidates, type JsonRpcMessage, type WorkerStatus } from "./client";
+import { deathCause, failureCauseOf, stageOfWorkerPhase, ENGINE_STACK_OVERFLOW, WORKER_DEP_MISMATCH, type BootStage, type FailureCause } from "./failure";
 import { LEGACY_UMBRELLA_ROOTS, chooseSnapshots, coversModule, initialBytesForEntries, type SnapshotIndex } from "./snapshots";
 import { CANCELLED, createEditCoalescer, DEFAULT_EDIT_COALESCE_MS, type BackPressureEvent, type BackPressureOptions, type EditCoalescer } from "./edit-coalescer";
 
@@ -35,8 +35,9 @@ export interface ResidentPolicy {
    * this session WILL load — explicit restart options win over
    * `snapshotsFor` — so a policy sizes the commit for what is streamed, not
    * for what the header alone suggests (an umbrella boot on an Init-only
-   * header, e.g. a remembered "Load exact imports", must not commit small
-   * and then grow by gigabytes through the repeated-grow path). */
+   * header, e.g. an `api.restart({snapshots})` that names the umbrella, must
+   * not commit small and then grow by gigabytes through the repeated-grow
+   * path). */
   initialBytesFor?(headerText: string, snapshots: readonly string[]): number;
   /** Ceiling for the reservation ladder (bytes): the address space a dead-
    * but-not-yet-reclaimed page keeps holding across reloads. */
@@ -52,7 +53,7 @@ export interface ResidentHost {
   headerText: string;
   /** Files written into the worker's filesystem on EVERY boot of this session
    * (first and reboots alike: each reboot is a new session built from the same
-   * host), after the snapshots and the exact-import warm, immediately before
+   * host), after the snapshots, immediately before
    * the relay arms the loop (docs/EMBEDDING.md §7.3). Absolute paths. */
   files?: SessionFile[] | (() => SessionFile[] | Promise<SessionFile[]>);
   /** The last step of every boot, after `files`; a throw is a bootFailed death. */
@@ -93,9 +94,8 @@ export interface ResidentHost {
 /** One file for the worker's filesystem (`LeanSession.writeFiles`). */
 export type SessionFile = { path: string; text: string } | { path: string; bytes: Uint8Array };
 
-/** Only the import lines of a header — the warm compile is built the same way
- * (the body must not be elaborated on the main thread; the FileWorker does
- * that once the loop opens). */
+/** Only the import lines of a header (what a policy reads; the FileWorker
+ * elaborates the body once the loop opens). */
 const IMPORT_LINE = /^\s*(?:public\s+|private\s+)?(?:meta\s+)?import\s+/;
 export const importLinesOf = (text: string): string[] => text.split("\n").filter((l) => IMPORT_LINE.test(l));
 
@@ -133,8 +133,8 @@ export const snapshotsForHeader = (headerText: string): string[] => (needsMathli
  * gigabytes in many steps while streaming the snapshot is where
  * nondeterministic renderer crashes were observed; one large initial commit
  * sidesteps the repeated-grow path. Keyed on the snapshot list, not the
- * header: an explicit umbrella boot over an Init-only header (a remembered
- * exact-imports restart) streams the same ~1.5 GB region. */
+ * header: an explicit umbrella boot over an Init-only header (a restart that
+ * names the umbrella) streams the same ~1.5 GB region. */
 export const initialBytesForSnapshots = (snapshots: readonly string[]): number => (snapshots.includes("mathlib") ? 2048 * MiB : 256 * MiB);
 /** The header form: what the editor's policy commits for a document it boots by its own snapshot choice. */
 export const initialBytesForHeader = (headerText: string): number => initialBytesForSnapshots(snapshotsForHeader(headerText));
@@ -288,8 +288,6 @@ export class ResidentSession implements RelaySession {
 
   /** The snapshot a worker progress event belongs to (set while one loads). */
   #loading: string | null = null;
-  /** The library pack being installed (set while one installs). */
-  #installing: string | null = null;
   #workerStage(phase: string, label?: string) {
     const st = stageOfWorkerPhase(phase);
     const verifying = /^Verifying (\S+)/.exec(label ?? "")?.[1];
@@ -298,15 +296,15 @@ export class ResidentSession implements RelaySession {
   }
 
   /** Every boot failure carries its cause (docs/EMBEDDING.md §7.2), not only
-   * the runtime's and the snapshots': a pack download, the host's `files()`
-   * fetch, `beforeArm` — classified at the step it failed in (a cause the
-   * step attached itself wins). The message is unchanged. */
+   * the runtime's and the snapshots': the host's `files()` fetch,
+   * `beforeArm` — classified at the step it failed in (a cause the step
+   * attached itself wins). The message is unchanged. */
   async start(): Promise<void> {
     try {
       await this.#boot();
     } catch (err) {
-      const subject = this.#installing ?? this.#loading;
-      const failed = failedAt(err, { stage: this.#installing ? "profile" : this.#bootStage ?? "files", ...(subject ? { subject } : {}) });
+      const subject = this.#loading;
+      const failed = failedAt(err, { stage: this.#bootStage ?? "files", ...(subject ? { subject } : {}) });
       // HARDENING #63: the relay's reboot of this page downloads these first.
       if ((failed.cause as FailureCause).kind === "network") noteBootNetworkFailure(this.artifacts, this.snapshots);
       throw failed;
@@ -317,8 +315,8 @@ export class ResidentSession implements RelaySession {
     const a = this.artifacts;
     const ui = this.ui;
     // A pre-open snapshot of another runtime fails the boot HERE (HARDENING
-    // #62), with the cause the worker's refusal gives: before a pack install,
-    // the runtime's 2 GiB commit and a byte of any snapshot. The worker refused
+    // #62), with the cause the worker's refusal gives: before the runtime's
+    // 2 GiB commit and a byte of any snapshot. The worker refused
     // it only after both, and the relay's three retries paid them three times.
     for (const name of this.snapshots) {
       const cause = refuseUnpairedSnapshot(a, name, ui);
@@ -343,36 +341,6 @@ export class ResidentSession implements RelaySession {
       else if (r) throw Object.assign(new Error(`snapshot '${name}' failed to load`), { cause: r });
     }
     this.#bootStage = "runtime";
-    // "Load exact imports" (§3 row 8; HARDENING #43): the header is imported
-    // from oleans below, so the ~1 GB olean pack must be installed BEFORE
-    // boot — LEAN_PATH and the mounts are boot inputs, and a running worker
-    // cannot retro-mount a pack; nothing has booted yet, so the one user
-    // restart is the only restart. A pack missing from the index is not a
-    // death: the warm compile then fails its imports and the session serves
-    // the header covered, with the offer back.
-    if (this.opts.packs?.includes("essential")) {
-      this.#installing = "essential";
-      if (!(await ensureProfile(a, "essential", ui))) ui.progress("the Mathlib library pack is unavailable — exact imports may fail", { stage: "profile", subject: "essential" });
-      this.#installing = null;
-    }
-    // Memory-backed segments were TRANSFERRED to the worker that booted them
-    // and are detached page-side; a reboot reinstalls them (an OPFS install
-    // revalidates in ms; memory mode re-downloads). Skipping them silently
-    // booted a worker with the pack's mount on LEAN_PATH but none of its
-    // bytes; one not in the index any more is dropped from LEAN_PATH and said
-    // so, never mounted empty.
-    for (const [id, profile] of [...a.installed]) {
-      if (!profile.segments.some((seg) => seg.bytes && seg.bytes.buffer.byteLength === 0)) continue;
-      const entry = a.index.profiles.find((p) => p.id === id);
-      if (!entry) { a.installed.delete(id); console.warn(`[qed64] pack ${id} was consumed by the previous worker and is not in the index; dropped from LEAN_PATH`); continue; }
-      ui.busy(`re-preparing the ${id} library for the new session`, { stage: "profile", subject: id });
-      this.#installing = id;
-      a.installed.set(id, await reinstallProfile(entry, (p) => ui.progress(`${p.phase} ${id}`, { phase: `pack-${p.phase}`, loaded: p.loaded, total: p.total ?? 0, unit: "bytes", stage: "profile", subject: id, step: stepOfInstallPhase(p.phase) })));
-      this.#installing = null;
-    }
-    const packs: LibraryPack[] = [...a.installed.values()].flatMap((p) =>
-      p.segments.map((segment, i) => ({ id: `${p.id}#${i}`, ...(segment.blob ? { blob: segment.blob } : {}), ...(segment.bytes ? { bytes: segment.bytes } : {}), metadata: segment.metadata, mountPoint: `/lib/packs/${p.id}` })),
-    );
     // The device-derived reservation ladder under the cap; a cap below every
     // rung becomes the sole candidate, so a small cap never yields an empty
     // ladder (which would make boot fail instead of reserving less).
@@ -381,8 +349,10 @@ export class ResidentSession implements RelaySession {
     const ready = await this.lean.boot({
       runtime: a.runtime,
       memory: { initialBytes: this.#initialBytes, maximumCandidates: under.length ? under : [this.maximumBytes] },
-      leanPath: [...a.installed.keys()].map((id) => `/lib/packs/${id}`).join(":"),
-      packs,
+      // D1: no library pack, empty LEAN_PATH: every environment is a snapshot, and a resident FileWorker never
+      // imports an olean (the kernel refuses a header nothing loaded covers).
+      leanPath: "",
+      packs: [],
       ...(this.#leanOptions !== undefined ? { leanOptions: this.#leanOptions } : {}),
     });
     // R3's guard: a worker script older than leanOptions ignores them and runs Lean without them. It echoes no
@@ -407,8 +377,6 @@ export class ResidentSession implements RelaySession {
         });
       }
     }
-    this.#bootStage = "warm";
-    if (this.opts.warmHeader) await this.warm(this.opts.warmHeader);
     this.#bootStage = "files";
     const files = typeof this.#files === "function" ? await this.#files() : this.#files;
     if (files && files.length > 0) {
@@ -417,32 +385,5 @@ export class ResidentSession implements RelaySession {
     }
     if (this.#beforeArm) await this.#beforeArm(this.lean);
     // Deliberately no arm() here: the relay arms after its replay (§2.3 BootOk).
-  }
-
-  /** Exact imports (§2.2 L1(a) "optional warmHeader → _lean_wasm_compile";
-   * §6 second pass 14): compile ONLY the header's import lines while the loop
-   * is still CLOSED — the worker allows `compile` pre-open only (K-i) — so the
-   * real olean import pushes the exact environment into the main-thread
-   * cache. K1's lookup is exact-first, so the FileWorker then serves this
-   * header from that env (headerStatus mode "exact": no umbrella names, no
-   * collision) while every other header stays covered. A failed import is
-   * reported, not thrown: a throw here would be a BootFailed death and a
-   * crash-loop candidate, whereas serving the header covered again is
-   * honest — the collision note and the offer simply come back. */
-  private async warm(header: string): Promise<void> {
-    const imports = importLinesOf(header);
-    if (imports.length === 0) return;
-    const ui = this.ui;
-    ui.busy("importing exactly your header from the Mathlib library (about a minute; the checker starts afterwards)", { stage: "warm" });
-    try {
-      const r = await this.lean.compile(`${imports.join("\n")}\n`, "/workspace/__warm.lean");
-      if (r.success) return;
-      const why = r.diagnostics.find((d) => d.severity === "error")?.message ?? `exit ${r.exitCode}`;
-      console.warn(`[qed64] exact import failed (${why}); serving the header from the preloaded library`);
-      ui.progress(`exact import failed: ${why.slice(0, 120)} — using the preloaded library`, { stage: "warm" });
-    } catch (err) {
-      console.warn(`[qed64] exact import failed: ${(err as Error).message}; serving the header from the preloaded library`);
-      ui.progress("exact import failed — using the preloaded library", { stage: "warm" });
-    }
   }
 }

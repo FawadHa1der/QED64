@@ -12,7 +12,6 @@
     "lib/resident-session.ts",
     "lib/edit-coalescer.ts",
     "lib/lsp-relay.ts",
-    "lib/profiles.ts",
     "lib/client.ts",
     "lib/snapshots.ts"
   ],
@@ -101,7 +100,13 @@
       "dispose",
       "lsp"
     ],
-    "deprecated": [],
+    "deprecated": [
+      {
+        "request": "compile",
+        "unusedSince": "the first deployed release with D1 (2026-11; docs/EMBEDDING.md §12)",
+        "removal": "the release after it (D1 phase 2)"
+      }
+    ],
     "note": "docs/EMBEDDING.md §7.7: the five worker scripts (lean.worker.js, lsp-frames.js, lsp-front-door.js, memory64-probe.js, worker-constants.js) carry `revision` and refuse a sibling of another one (WORKER_DEP_MISMATCH); `requests` is what capabilities().requests reports; a removal is listed under deprecated with the release it went unused in, and leaves the worker one release later"
   }
 }

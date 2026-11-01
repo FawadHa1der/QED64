@@ -23,7 +23,7 @@ export interface RelaySession {
    * 250 ms later behind a timer a closing document never runs (reload storms stacked dead multi-GiB heaps). */
   terminate(): void;
 }
-export interface RestartOptions { snapshots?: string[]; warmHeader?: string; packs?: string[]; initialBytes?: number } // boot inputs for a replacement session (S4 "Load exact imports")
+export interface RestartOptions { snapshots?: string[]; initialBytes?: number } // boot inputs for a replacement session (a self-widen's snapshots, api.restart's commit)
 type Reason = "boot" | "crash" | "heartbeat" | "wedged" | "user" | "bootFailed";
 export type RelayState = { kind: "serving" } | { kind: "rebooting"; reason: Reason } | { kind: "halted" };
 /** The last death (gap 2; EMBEDDING §7.2): LeanSession's (reason, message, exit code) or "bootFailed" + the boot rejection's message; the FailureCause the session attached; `seq` (this relay's death count) and `session` identify it. */
@@ -51,7 +51,7 @@ export function isImport(line: string): boolean {
   return afterWord(s, "import") !== null;
 }
 const linesOf = (text: string): string[] => text.split("\n");
-/** The header a restart was chosen for: the import lines, exactly what ResidentSession warm-compiles from `warmHeader`. */
+/** The header a restart was chosen for: its import lines. */
 const headerOf = (text: string): string => linesOf(text).filter(isImport).join("\n");
 
 export class LspRelay {
@@ -68,9 +68,9 @@ export class LspRelay {
   lastStatus: WorkerStatus | null = null;
   /** Set by every counted death, cleared when a session reports phase "ready"; halted-before-ready is the page's boot-failure card (a stack pause's is not, #72). */
   lastDeath: Death | null = null;
-  /** The last restart(opts), reused by a death-reboot while the header it was chosen for stands — "Load exact imports"
-   * survives a crash instead of coming back covered with the collision note. A header change forgets it, and so
-   * does the breaker: a header whose exact import itself kills the worker must not re-arm into the same mode. */
+  /** The last restart(opts), reused by a death-reboot while the header it was chosen for stands — a widened or resized
+   * session survives a crash instead of coming back on the policy's default. A header change forgets it, and so
+   * does the breaker: options that themselves kill the worker must not re-arm. */
   restartOpts: RestartOptions | null = null;
   private restartHeader = "";
   readonly stats = { reboots: 0, userRestarts: 0, workerDeaths: 0, breakerTrips: 0, stackPauses: 0, failedInFlight: 0, staleDeaths: 0, rangedChanges: 0 }; // rangedChanges: didChanges that ignored change = 1
@@ -176,7 +176,7 @@ export class LspRelay {
     this.deaths = [...this.deaths.filter((d) => t - d < BREAKER_WINDOW_MS), t];
     if (this.deaths.length < BREAKER_DEATHS) return this.reboot(next, true);
     // Crash-loop breaker: the content kills the checker on every replay; keep the editor alive, an edit re-arms — on
-    // the default (umbrella) session: the remembered exact mode may be the very thing that dies (it serves the header, with the offer back).
+    // the default session: the remembered restart (a larger environment or commit) may be the very thing that dies.
     this.stats.breakerTrips += 1;
     this.restartOpts = null;
     this.halt();

@@ -141,7 +141,8 @@ try {
     }
     const boots = await events(page, "boot");
     const stages = [...new Set(boots.map((b) => b.stage))];
-    const bootOk = ["manifests", "profile", "runtime", "snapshot"].every((st) => stages.includes(st)) && boots.at(-1)?.done === true;
+    // No "profile" stage since D1 (2026-11): the boot installs no library pack (an Init-only document: the init snapshot, no pack).
+    const bootOk = ["manifests", "runtime", "snapshot"].every((st) => stages.includes(st)) && !stages.includes("profile") && boots.at(-1)?.done === true;
     if (runs("events")) {
       const r = await page.evaluate((t) => globalThis.qed64.api.setDocument(t), BROKEN);
       const s1 = await settle(page, { version: r.version });

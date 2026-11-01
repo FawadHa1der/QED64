@@ -1,20 +1,18 @@
 // QED64 runtime boot for the lean4web-style front end, split for restarts:
 // artifacts install once per page (OPFS-cached across visits), sessions are
 // created repeatedly — the relay replaces a crashed worker, and a user
-// restart ("Load exact imports", widening a light session) boots a fresh
-// one — so the pieces a session boot needs (pack install on demand, snapshot
-// prefetch + load) live here, and the boot itself in resident-session.ts.
+// restart (widening a light session, api.restart) boots a fresh one — so the
+// pieces a session boot needs (the snapshot prefetch + load) live here, and
+// the boot itself in resident-session.ts. No library pack is installed in the
+// browser since D1 (2026-11): every environment is a snapshot.
 import { runtimeManifestIdFault, type LeanSession, type RuntimeManifest } from "./client";
-import { fetchProfileIndex, installProfile, type InstalledProfile, type InstallProgress, type ProfileIndex, type ProfileIndexEntry } from "./profiles";
-import { entryLabel, fetchSnapshotIndex, loadSnapshotIndex, pairedCopyOr, pairedIndexCopyUrl, snapshotCacheKey, type SnapshotEntry, type SnapshotIndex } from "./snapshots";
+import { entryLabel, fetchSnapshotIndex, loadSnapshotIndex, snapshotCacheKey, type SnapshotEntry, type SnapshotIndex } from "./snapshots";
 import { NO_OVERRIDES, parseBootParams, validateBootOverrides, type BootOverrides } from "./params";
-import { failureCauseOf, stepOfInstallPhase, type BootStage, type BootStep, type FailureCause } from "./failure";
+import { failureCauseOf, type BootStage, type BootStep, type FailureCause } from "./failure";
 import { clearNetworkFailure, isRawCached, networkFailedRecently, noteNetworkFailure, PREFETCH_SILENCE_MS, prefetchRaw, type PrefetchRawResult } from "./raw-cache";
 
 export interface Qed64Artifacts {
   runtime: RuntimeManifest;
-  index: ProfileIndex;
-  installed: Map<string, InstalledProfile>;
   snapshots: SnapshotIndex | null;
 }
 
@@ -30,13 +28,13 @@ export interface Qed64Session {
  * call QED64 makes carries `stage`, and `subject` where there is one; labels
  * are for humans and are not API. */
 export interface ProgressInfo {
-  /** Legacy fine-grained phase ("core-download", "snapshot-init", …). */
+  /** Legacy fine-grained phase ("snapshot-load", "snapshot-init", …). */
   phase?: string;
   loaded?: number;
   total?: number;
   unit?: string;
   stage?: BootStage;
-  /** Profile id, snapshot name or runtime file ("core", "mathlib", "lean.wasm"). */
+  /** Snapshot name or runtime file ("mathlib", "lean.wasm"). */
   subject?: string;
   step?: BootStep;
   /** Set on the call that reports a failure. */
@@ -52,9 +50,9 @@ export interface StatusSink {
   progress(label: string, info?: ProgressInfo): void;
   /** The page is quiescent. */
   idle(label: string): void;
-  /** Offer ONE explicit, user-initiated action beside the pill (e.g. "Load
-   * exact imports"); optional so embedders' sinks keep compiling. The action
-   * stays until `clearAction` or the next offer replaces it. */
+  /** Offer ONE explicit, user-initiated action beside the pill. QED64 offers
+   * no action since D1; kept optional so an embedder's sink compiles. The
+   * action stays until `clearAction` or the next offer replaces it. */
   action?(label: string, run: () => void): void;
   clearAction?(): void;
 }
@@ -69,42 +67,27 @@ function shellBuildId(): string | null {
   return typeof __QED64_BUILD_ID__ === "string" ? __QED64_BUILD_ID__ : null;
 }
 
-/** @internal The per-build copies of the two site-owned indexes (HARDENING
- * #64), written beside the mutable ones by every promote and upload and named
- * by the runtime they are paired with, as `/runtime/runtime-manifest.<buildId>.json`
- * is. Both live under `/snapshots/`, the prefix every QED64 Worker and record
- * leaves to the site (hosting.siteOwned): `/profiles/index.<buildId>.json`
- * would be routed to the toolchain release, which does not carry it. Served
- * must-revalidate (infra/edge-worker.js isImmutable): a same-runtime rebake
- * rewrites them under the same name. */
-export function pinnedIndexUrls(buildId: string): { snapshots: string; profiles: string } {
-  return { snapshots: pairedIndexCopyUrl("/snapshots/index.json", buildId), profiles: `/snapshots/profiles-index.${buildId}.json` };
-}
-
 /** HARDENING #64: a mutable index names whatever pairing was uploaded LAST,
  * which during an upload-then-deploy window is the next runtime's, not this
- * shell's. Both indexes go through the one rule, `pairedCopyOr`
- * (lib/snapshots.ts): the snapshot index through loadSnapshotIndex's
- * `pairedBuildId` (the option a direct caller such as lean4game's game boot
- * passes too), the profile index here with its own copy path. The shell's
+ * shell's. The snapshot index goes through the one rule, `pairedCopyOr`
+ * (lib/snapshots.ts), by loadSnapshotIndex's `pairedBuildId` (the option a
+ * direct caller such as lean4game's game boot passes too). The shell's
  * buildId is passed as is: a missing or malformed one reads no copy. So a
  * paired site costs no request, and one that does not publish the copies
  * (an embedder's own origin) never sees one unless its mutable index is
  * mispaired. */
 const pairedBuildId = (): string | undefined => shellBuildId() ?? undefined;
 
-/** Set once by installArtifacts from `?profiles=`; identity in production. */
-let profileReroot: (url: string) => string = (url) => url;
-
 export interface InstallOptions {
   /** Where the dev/embedding overrides come from (docs/EMBEDDING.md §4, §7.6):
    * "url" (default) parses `?snapshots=` / `?profiles=` / `?runtime=` from the
    * page URL, "none" ignores the URL, an object supplies them. Every source is
-   * validated — a refused value throws a BootParamError naming the parameter. */
+   * validated — a refused value throws a BootParamError naming the parameter;
+   * `?profiles=` is validated, then ignored (D1). */
   overrides?: "url" | "none" | Partial<Record<keyof BootOverrides, string | null>>;
-  /** Library packs installed at boot: "core" (default, the editor), "none"
-   * (a page whose environment is all snapshot — a game: no 120 MB download, and
-   * a missing profile index is an empty one), or a list of profile ids. */
+  /** Accepted and ignored since D1 (2026-11): no library pack is installed in
+   * the browser and no profile index is read, whatever the value. Kept so v1
+   * callers compile. */
   profiles?: "core" | "none" | string[];
   /** Already resolved (e.g. by a pairing check before boot): used as is. */
   runtime?: RuntimeManifest;
@@ -181,79 +164,29 @@ export async function fetchSnapshotIndexFor(overrides: BootOverrides): Promise<S
   });
 }
 
+/** @internal D1 (2026-11): releases before it installed library packs into OPFS `qed64-packs/` (the Lean core, ~385 MB,
+ * on every visit; the Mathlib pack, 3.6 GB, after a "Load exact imports") and remembered an OPFS write ceiling in
+ * localStorage. Nothing reads them now: both are removed, best effort, on every boot until gone (an absent directory
+ * costs one NotFoundError). Never throws; never awaited by the boot. A tab of an older release may still have a pack
+ * mounted; its reads then fail, as they could under the old installer's own clean-up of superseded packs
+ * (docs/DEPLOY.md "Old shells"). Resolves whether the directory was removed. */
+export async function removeRetiredPackStore(): Promise<boolean> {
+  try { localStorage.removeItem("qed64.opfs.byteCeiling"); } catch { /* storage-less */ }
+  try {
+    const root = await navigator.storage.getDirectory();
+    await root.removeEntry("qed64-packs", { recursive: true });
+    return true;
+  } catch { return false; }
+}
+
 export async function installArtifacts(ui: StatusSink, opts: InstallOptions = {}): Promise<Qed64Artifacts> {
   ui.busy("fetching manifests", { stage: "manifests" });
-  // Validated BEFORE any fetch: an override is spliced into artifact URLs.
+  // Validated BEFORE any fetch: an override is spliced into artifact URLs (`?profiles=` too, then ignored: D1).
   const overrides = overridesOf(opts);
-  // Dev-only override (?profiles=<dir>): an unpromoted profile set served
-  // from public/<dir> (a symlink to work/staging/<buildId>/profiles). A staged
-  // runtime of another Lean version must never mount the SERVED packs — the
-  // olean githash gate is compiled off, so foreign oleans would be misread,
-  // not refused. Index, manifests and parts are all re-rooted by basename.
-  const devProfiles = overrides.profiles;
-  profileReroot = devProfiles ? (url: string) => url.replace(/^\/profiles\//, `/${devProfiles}/`) : (url: string) => url;
-  const wanted = opts.profiles ?? "core";
-  const indexUrl = profileReroot("/profiles/index.json");
-  const served: ProfileIndex = wanted === "none"
-    ? await fetchProfileIndex(indexUrl).catch(() => ({ schema: "qed64.profile-index/v1", profiles: [] }) as unknown as ProfileIndex)
-    : await fetchProfileIndex(indexUrl);
-  // The served index names the pairing uploaded last (HARDENING #64): when it
-  // is another runtime's, the pinned runtime's copy; a `?profiles=` set keeps
-  // its own index.
-  const index: ProfileIndex = devProfiles || !served ? served
-    : await pairedCopyOr(served, pairedBuildId(), (i) => [i.runtime?.buildId], (id) => pinnedIndexUrls(id).profiles, (url) => fetchProfileIndex(url));
-  if (!index) throw new Error(`profile index missing (${indexUrl})`);
+  void removeRetiredPackStore(); // D1: the pack store of older releases, off the boot's path
   const runtime = opts.runtime ?? (await resolveRuntimeManifest(overrides));
-
-  const installed = new Map<string, InstalledProfile>();
-  // Only the core library installs at boot. Mathlib elaboration is served by
-  // the umbrella SNAPSHOT (a resident environment needs no pack mounts), so
-  // the 1 GB pack download + 3.3 GiB unpack is skipped entirely — it kept a
-  // real-Chrome first visit under enough memory pressure to crash the tab.
-  // The pack only installs on demand if a header must import from oleans.
-  for (const id of wanted === "none" ? [] : wanted === "core" ? ["core"] : wanted) {
-    const entry = index.profiles.find((p) => p.id === id);
-    if (!entry) throw new Error(`${id} profile not published`);
-    const what = id === "core" ? "the Lean core library" : `the ${id} library`;
-    ui.busy(`installing ${what}`, { stage: "profile", subject: id });
-    installed.set(
-      id,
-      await installProfile(entry, (p) => {
-        const verb = p.phase === "cached" ? "checking cached" : p.phase === "download" ? "downloading" : p.phase === "inflate" ? "unpacking" : "committing";
-        ui.progress(`${verb} ${what}`, { phase: `${id === "core" ? "core" : "pack"}-${p.phase}`, loaded: p.loaded, total: p.total ?? 0, unit: "bytes", stage: "profile", subject: id, step: stepOfInstallPhase(p.phase) });
-      }, profileReroot),
-    );
-  }
   const snapshots = opts.snapshots !== undefined ? opts.snapshots : await fetchSnapshotIndexFor(overrides);
-  return { runtime, index, installed, snapshots };
-}
-
-/** Install a profile on demand (for headers that must import from oleans). */
-export async function ensureProfile(
-  artifacts: Qed64Artifacts,
-  id: string,
-  ui: StatusSink,
-): Promise<boolean> {
-  if (artifacts.installed.has(id)) return true;
-  const entry = artifacts.index.profiles.find((p) => p.id === id);
-  if (!entry) return false;
-  ui.busy(`installing the ${id} library (needed to import this header)`, { stage: "profile", subject: id });
-  artifacts.installed.set(
-    id,
-    await installProfile(entry, (p) => {
-      ui.progress(`${p.phase} ${id} — ${(p.loaded / 1048576) | 0} / ${((p.total ?? 0) / 1048576) | 0} MiB`,
-        { phase: `pack-${p.phase}`, loaded: p.loaded, total: p.total ?? 0, unit: "bytes", stage: "profile", subject: id, step: stepOfInstallPhase(p.phase) });
-    }, profileReroot),
-  );
-  return true;
-}
-
-/** Install `entry` again from the set this boot installed from (`?profiles=<dir>`
- * included): a memory pack re-prepared for a new session (lib/resident-session.ts)
- * must come from where the boot's came from, or its manifest is the served set's,
- * which `installProfile` refuses as another release (HARDENING #81). */
-export function reinstallProfile(entry: ProfileIndexEntry, onProgress?: (p: InstallProgress) => void): Promise<InstalledProfile> {
-  return installProfile(entry, onProgress, profileReroot);
+  return { runtime, snapshots };
 }
 
 // The raw prefetch lives in raw-cache.ts (single-flight, cross-tab

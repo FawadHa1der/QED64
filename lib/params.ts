@@ -1,8 +1,10 @@
 // The boot parameters an embedder or a developer may set (docs/EMBEDDING.md §4,
 // §7.6), parsed and VALIDATED in one place.
 //
-// `?snapshots=<dir>` / `?profiles=<dir>` re-root artifact fetches under
-// `/<dir>/` and `?runtime=<buildId>` picks an unpromoted runtime manifest.
+// `?snapshots=<dir>` re-roots snapshot fetches under `/<dir>/` and
+// `?runtime=<buildId>` picks an unpromoted runtime manifest; `?profiles=<dir>`
+// is validated the same way and then ignored (D1, 2026-11: the browser reads
+// no library pack).
 // Spliced into a URL unchecked, `?snapshots=/attacker.example/x` is
 // protocol-relative (`//attacker.example/x/index.json`): the page would boot an
 // environment from another origin, and Lean widget modules in it run in the

@@ -28,8 +28,6 @@ const runtime = { buildId: BOOTED, leanVersion: "4.34.0", files: { "lean.js": { 
 const snap = (name: string, baked: string | undefined) => ({ name, url: `/snapshots/${name}.x.snapz`, bytes: 100, transfer: 50, digest: `sha256:${"cd".repeat(32)}`, imports: [], ...(baked === undefined ? {} : { runtime: baked }) });
 const artifacts = (init: string | undefined, mathlib: string | undefined): Qed64Artifacts => ({
   runtime,
-  index: { schema: "qed64.profile-index/v1", profiles: [] } as unknown as Qed64Artifacts["index"],
-  installed: new Map(),
   snapshots: { schema: "qed64.snapshot-index/v1", snapshots: [snap("init", init), snap("mathlib", mathlib)] } as unknown as Qed64Artifacts["snapshots"],
 });
 const UNPAIRED_MATHLIB = { kind: "unpaired", stage: "snapshot", subject: "mathlib", code: "SNAPSHOT_UNPAIRED", message: `snapshot 'mathlib' was baked for runtime ${OTHER}; this page runs runtime ${BOOTED}` };
@@ -113,20 +111,13 @@ describe("ResidentSession.start(): an unpaired pre-open snapshot rejects before 
     return { s, boot, loadSnapshot };
   }
 
-  it("rejects with the unpaired cause: no runtime boot, no snapshot load, no prefetch, no pack install", async () => {
+  it("rejects with the unpaired cause: no runtime boot, no snapshot load, no prefetch", async () => {
     const { s, boot, loadSnapshot } = session(artifacts(BOOTED, OTHER));
     await expect(s.start()).rejects.toMatchObject({ message: "snapshot 'mathlib' failed to load", cause: UNPAIRED_MATHLIB });
     expect(boot).not.toHaveBeenCalled();
     expect(loadSnapshot).not.toHaveBeenCalled(); // not even the paired init: nothing is loaded for a boot that cannot open
     expect(prefetchRaw).not.toHaveBeenCalled();
     expect(FakeLeanWorker.posted.filter((m) => m.type === "boot")).toEqual([]);
-    // "Load exact imports" installs the essential pack before the boot: refused before that too.
-    const withPack = artifacts(BOOTED, OTHER);
-    withPack.index.profiles.push({ id: "essential", manifest: "/profiles/essential.json", release: "r", modules: 1 } as never);
-    const p = session(withPack, { snapshots: ["init", "mathlib"], packs: ["essential"] });
-    await expect(p.s.start()).rejects.toMatchObject({ cause: { kind: "unpaired", subject: "mathlib" } });
-    expect(fetchSpy).not.toHaveBeenCalled();
-    expect(p.boot).not.toHaveBeenCalled();
   });
 
   it("a paired index, and one without `runtime`, boot and load as before", async () => {

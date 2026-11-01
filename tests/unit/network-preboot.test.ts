@@ -33,8 +33,6 @@ const INIT = snap("init", "ab");
 const MATHLIB = snap("mathlib", "cd");
 const artifacts = (): Qed64Artifacts => ({
   runtime,
-  index: { schema: "qed64.profile-index/v1", profiles: [] } as unknown as Qed64Artifacts["index"],
-  installed: new Map(),
   snapshots: { schema: "qed64.snapshot-index/v1", snapshots: [INIT, MATHLIB] } as unknown as Qed64Artifacts["snapshots"],
 });
 /** What the prefetch worker's failure becomes for a cut stream (raw-cache.ts runWorker: failureCauseOf of its message). */

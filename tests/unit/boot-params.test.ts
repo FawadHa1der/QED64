@@ -94,15 +94,15 @@ describe("installArtifacts refuses before fetching", () => {
     const urls: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (u: string) => { urls.push(String(u)); return new Response("not found", { status: 404 }); }));
     vi.stubGlobal("location", { search: "?snapshots=/attacker.example/x&profiles=//evil", origin: ORIGIN });
-    await expect(installArtifacts(sink(), { overrides: "none" })).rejects.toThrow(); // the 404 profile index, not the parameters
-    expect(urls[0]).toBe("/profiles/index.json");
+    await expect(installArtifacts(sink(), { overrides: "none" })).rejects.toThrow(/runtime manifest: HTTP 404/); // the 404 manifest, not the parameters
+    expect(urls).toEqual(["/runtime/runtime-manifest.json"]);
   });
 
-  it("a programmatic override re-roots the profile index on this origin", async () => {
+  it("a programmatic ?profiles= override is validated, then ignored: no profile index is read (D1)", async () => {
     const urls: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (u: string) => { urls.push(String(u)); return new Response("not found", { status: 404 }); }));
     vi.stubGlobal("location", { search: "", origin: ORIGIN });
-    await expect(installArtifacts(sink(), { overrides: { profiles: "profiles-staged" } })).rejects.toThrow();
-    expect(urls[0]).toBe("/profiles-staged/index.json");
+    await expect(installArtifacts(sink(), { overrides: { profiles: "profiles-staged" } })).rejects.toThrow(/runtime manifest: HTTP 404/);
+    expect(urls).toEqual(["/runtime/runtime-manifest.json"]);
   });
 });

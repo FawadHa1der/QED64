@@ -78,7 +78,7 @@ const examplesEl = document.getElementById("examples")! as HTMLSelectElement;
 if (EMBED) examplesEl.style.display = "none";
 
 // ---- Boot overlay: staged first-visit progress with speed and ETA ---------
-// The heavy startup (a ~600 MB first-visit download, then the environment
+// The heavy startup (a ~460 MB first-visit download, then the environment
 // load) gets a full card over the workspace: a progress bar with real byte
 // counts, download speed, a time-left estimate, and a stage checklist — the
 // status pill alone reads as "stuck" at this scale. The card stays for the
@@ -606,7 +606,7 @@ function startMemoryMeter(getSession: () => Tel | null) {
       session.request("telemetry", {}),
       new Promise((r) => window.setTimeout(() => r(null), 800)),
     ]).then((t) => {
-      const mem = (t as { memory?: { currentBytes?: number; maximumBytes?: number; regionBytes?: number; memfsPackBytes?: number } } | null)?.memory;
+      const mem = (t as { memory?: { currentBytes?: number; maximumBytes?: number; regionBytes?: number } } | null)?.memory;
       if (!mem?.currentBytes || !mem.maximumBytes) return;
       pageApi.memory(mem.currentBytes, mem.maximumBytes);
       const frac = mem.currentBytes / mem.maximumBytes;
@@ -615,7 +615,6 @@ function startMemoryMeter(getSession: () => Tel | null) {
       el.title = [
         `Lean wasm heap: ${gib(mem.currentBytes)} of ${gib(mem.maximumBytes)} GiB cap`,
         `· environment snapshot regions inside the heap: ${gib(mem.regionBytes ?? 0)} GiB`,
-        (mem.memfsPackBytes ?? 0) > 0 ? `· library packs copied into worker memory: ${gib(mem.memfsPackBytes ?? 0)} GiB (OPFS unavailable — storage-backed on healthy browsers)` : `· library packs: storage-backed (not in memory)`,
         `The browser adds compiled-code and UI overhead on top of this heap;`,
         `near the cap, heavy edits can abort the checker (it restarts itself).`,
       ].join("\n");

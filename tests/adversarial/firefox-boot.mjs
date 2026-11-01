@@ -5,7 +5,9 @@
 // that promise never settled (45 s measured; Firefox prompts for persistent
 // storage, and that the promise waits on the prompt is the inference), so the
 // install sat at "installing the Lean core library". Chrome answers without
-// a prompt, so no Chromium lane could see it. This lane boots a served build in Firefox and checks two
+// a prompt, so no Chromium lane could see it. Since D1 (2026-11) the browser
+// installs no library pack; the same unawaited ask runs before a fresh raw
+// region write (lib/raw-cache.ts). This lane boots a served build in Firefox and checks two
 // proofs, so a Firefox-only stall or a Firefox-only runtime failure (wasm64
 // with threads, legacy exception handling, no Atomics.waitAsync) is a FAIL
 // line in the regular gate, not a report from a user.
@@ -17,7 +19,7 @@
 // javascript.options.wasm_memory64 pref, so no prefs are passed.
 //
 // Asserts: ready within --wait-ms (default 180 s: a first visit downloads the
-// core pack), 0 worker deaths, a correct proof settles with 0 errors, a wrong
+// runtime and the environment snapshots), 0 worker deaths, a correct proof settles with 0 errors, a wrong
 // proof settles with exactly 1 error, no renderer crash, no failed request.
 // Records: Firefox's version, the time to ready and to each check, the number
 // of Workers, the legacy-EH deprecation warnings (Firefox prints one per

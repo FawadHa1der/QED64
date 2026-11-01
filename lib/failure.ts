@@ -7,7 +7,8 @@
 //
 // Pure: unit-tested under node.
 
-/** The step of a session boot, from a closed set. */
+/** The step of a session boot, from a closed set. `profile` and `warm` are not emitted since D1 (no library pack,
+ * no exact-import warm); kept so an exhaustive switch compiles. */
 export type BootStage = "manifests" | "profile" | "runtime" | "memory" | "snapshot" | "modules" | "warm" | "files" | "done" | "failed";
 export type BootStep = "check" | "download" | "inflate" | "commit" | "verify" | "read" | "load" | "init" | "write";
 
@@ -31,7 +32,7 @@ export interface FailureCause {
   httpStatus?: number;
   /** The boot stage that failed; absent for a death while serving. */
   stage?: BootStage;
-  /** Profile id, snapshot name or runtime file. */
+  /** Snapshot name or runtime file. */
   subject?: string;
   /** The worker's error code (`SNAPSHOT_FAILED`, …) when there was one. */
   code?: string;
@@ -167,7 +168,3 @@ export function stageOfWorkerPhase(phase: string): { stage: BootStage; step?: Bo
     default: return { stage: "runtime" };
   }
 }
-
-/** profiles.ts install phases as steps. */
-export const stepOfInstallPhase = (phase: string): BootStep =>
-  phase === "cached" ? "check" : phase === "download" ? "download" : phase === "inflate" ? "inflate" : "commit";

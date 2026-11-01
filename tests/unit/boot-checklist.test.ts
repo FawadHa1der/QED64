@@ -11,7 +11,7 @@ const userReboot = (session: string) => ({ relay: "rebooting", rebootReason: "us
 describe("stageOf", () => {
   it("maps the boot's progress reports to their steps", () => {
     expect(stageOf("fetching manifests…")).toBe("manifests");
-    expect(stageOf("x", { phase: "core-pack" })).toBe("core");
+    expect(stageOf("installing the Lean core library", { phase: "core-download" })).toBeNull(); // no pack step since D1
     expect(stageOf("Starting the Lean runtime")).toBe("runtime");
     expect(stageOf("x", { phase: "memory" })).toBe("runtime");
     expect(stageOf("downloading the Mathlib environment (1.0 GB)", { phase: "snapshot" })).toBe("env");

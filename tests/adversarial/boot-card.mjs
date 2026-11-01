@@ -18,8 +18,8 @@
 //                   --fallback-ms after the relay starts serving, while the
 //                   phase is still `elaborating`, and the page reaches `ready`.
 //   restart-during-boot  the same buffer; while the card shows "Check", the
-//                   page API restarts with Mathlib (what an embedder or "Load
-//                   exact imports" does). Verdict: the card stays up for the
+//                   page API restarts with Mathlib (what an embedder or the
+//                   self-widen does). Verdict: the card stays up for the
 //                   whole replacement boot and its checklist shows that boot
 //                   (never "Check" before the replacement elaborates), then
 //                   the card goes about --fallback-ms after the replacement

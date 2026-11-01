@@ -60,7 +60,7 @@ describe("one library root: lib/ and nothing at the old paths (plan A7, R9a)", (
     expect(pkg.files.filter(isOld)).toEqual([]);
   });
 
-  it("lib/ holds exactly the 12 closure files, and they import only each other (and the probe)", () => {
+  it("lib/ holds exactly the 11 closure files, and they import only each other (and the probe)", () => {
     expect(lib.sort()).toEqual([...closure.embed].sort());
     for (const f of lib) {
       for (const s of specifiers(read(f))) {

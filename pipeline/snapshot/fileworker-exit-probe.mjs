@@ -24,8 +24,6 @@
 //                  FileWorker's main loop has no case for a param-less request
 //                  ("Got invalid JSON-RPC message"), so it dies of the
 //                  shutdown with forceExit 1 → `_proc_exit`, code 1.
-//   batch-eval-exit  a batch `compile` of the #eval before any arm: what the
-//                  non-resident path does with an exit (informational).
 //
 //   --no-hook      restore the glue's original table entries after the
 //                  worker's preRun (the behaviour before the exit hook): the control that
@@ -55,7 +53,6 @@ const SCENARIOS = {
   "eval-exit": { code: 3, via: "exitOnMainThread" },
   exit: { code: 0, via: "_proc_exit" },
   "shutdown-exit": { code: 1, via: "_proc_exit" },
-  "batch-eval-exit": { code: 3, via: null },
 };
 const SCENARIO = arg("scenario", "exit");
 if (!SCENARIOS[SCENARIO]) { console.error(`unknown --scenario ${SCENARIO} (${Object.keys(SCENARIOS).join(", ")})`); process.exit(2); }
@@ -299,15 +296,6 @@ log(`booted; exit hook installed by the worker: ${harness.hookInstalled}; glue $
 const snap = await request("loadSnapshot", { input: { url: SNAP_URL, name: "init.snap", expectedBytes: sizeOf(snapPath) } });
 if (snap.type !== "result" || !snap.result?.success) finish(2, `snapshot load failed: ${JSON.stringify(snap.error ?? snap.result)}`);
 log(`init snapshot loaded in ${Math.round(snap.result.elapsedMs)} ms`);
-
-if (SCENARIO === "batch-eval-exit") {
-  // No arm, no loop: the batch path (header warm-compiles use it in the app).
-  st.triggeredAt = Date.now();
-  const res = await request("compile", { input: { source: EVAL_EXIT } }, 60_000);
-  await sleep(2000);
-  verdict = { compile: res.type === "result" ? { success: res.result.success, exitCode: res.result.exitCode, diagnostics: res.result.diagnostics?.map((d) => d.message?.slice(0, 120)) } : { type: res.type, error: res.error }, glue: glue(), worker: worker() };
-  finish(0, "batch path observed (informational)");
-}
 
 const armed = await request("lsp-arm");
 if (armed.type !== "result") finish(2, `arm failed: ${JSON.stringify(armed.error ?? armed)}`);

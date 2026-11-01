@@ -16,14 +16,14 @@
 
 /** Semver of the library contract (docs/EMBEDDING.md §7): minor = additive.
  * "-pre" until the contract's review is settled. */
-export const EMBED_API_REVISION = "1.0.0-pre.9";
+export const EMBED_API_REVISION = "1.0.0-pre.10";
 
 // runtime
 export { LeanSession, PROTOCOL, MEMORY64_PROBE, probeMemory64 } from "./client";
 /** @internal */
 export { memoryCandidates } from "./client";
 export type {
-  BootConfig, Capabilities, CompileResult, DeathFacts, Diagnostic, HeaderStatus, JsonRpcMessage, LibraryPack, MemoryTelemetry,
+  BootConfig, Capabilities, DeathFacts, HeaderStatus, JsonRpcMessage, LibraryPack, MemoryTelemetry,
   ProgressEvent, ReadyInfo, RuntimeManifest, WorkerError, WorkerPhase, WorkerStatus,
 } from "./client";
 
@@ -34,15 +34,10 @@ export {
 } from "./snapshots";
 export type { IndexOptions, SnapshotEntry, SnapshotIndex } from "./snapshots";
 
-// profiles (library packs)
-/** @internal */
-export { fetchProfileIndex, installProfile } from "./profiles";
-export type { InstallProgress, InstalledProfile, ProfileIndex, ProfileIndexEntry, ProfileManifest } from "./profiles";
-
 // boot
 export { installArtifacts, loadSnapshotByName, resolveRuntimeManifest, fetchSnapshotIndexFor } from "./qed64-boot";
 /** @internal */
-export { ensureProfile, overridesOf } from "./qed64-boot";
+export { overridesOf } from "./qed64-boot";
 export type { InstallOptions, LoadSnapshotOptions, ProgressInfo, Qed64Artifacts, Qed64Session, StatusSink } from "./qed64-boot";
 
 // the raw snapshot region cache (docs/EMBEDDING.md §7.4)

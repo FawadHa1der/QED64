@@ -1,19 +1,19 @@
-// HARDENING #64: the site-owned indexes, pinned. The mutable
-// `/snapshots/index.json` and `/profiles/index.json` name the pairing uploaded
-// LAST: on 2026-10-08 the upload of a new pairing replaced them while the
-// deployed shell still booted the old runtime, and every new visit failed
-// SNAPSHOT_UNPAIRED until the deploy. A shell built for runtime X
-// (`__QED64_BUILD_ID__`) now reads the mutable index and, when it names
-// another runtime, X's per-build copy (`/snapshots/index.<X>.json`,
-// `/snapshots/profiles-index.<X>.json`), used when it is an index; a paired
-// mutable index costs no extra request, so a site without the copies (an
-// embedder's origin, a local tree) sees no 404. The follow-up: the snapshot
-// index's rule lives in loadSnapshotIndex / fetchSnapshotIndex behind
-// `pairedBuildId`, for a page that reads the index itself (lean4game's game
-// boot), and the shell goes through it; a copy is used only when it is
-// paired with the pinned runtime.
+// HARDENING #64: the site-owned snapshot index, pinned. The mutable
+// `/snapshots/index.json` names the pairing uploaded LAST: on 2026-10-08 the
+// upload of a new pairing replaced it while the deployed shell still booted
+// the old runtime, and every new visit failed SNAPSHOT_UNPAIRED until the
+// deploy. A shell built for runtime X (`__QED64_BUILD_ID__`) now reads the
+// mutable index and, when it names another runtime, X's per-build copy
+// (`/snapshots/index.<X>.json`), used when it is an index; a paired mutable
+// index costs no extra request, so a site without the copies (an embedder's
+// origin, a local tree) sees no 404. The follow-up: the rule lives in
+// loadSnapshotIndex / fetchSnapshotIndex behind `pairedBuildId`, for a page
+// that reads the index itself (lean4game's game boot), and the shell goes
+// through it; a copy is used only when it is paired with the pinned runtime.
+// The profile index had the same copy until D1 (2026-11): the browser reads
+// no profile index any more.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchSnapshotIndexFor, installArtifacts, pinnedIndexUrls, reinstallProfile, snapshotPairingFault, type StatusSink } from "../../lib/qed64-boot";
+import { fetchSnapshotIndexFor, installArtifacts, snapshotPairingFault, type StatusSink } from "../../lib/qed64-boot";
 import { fetchSnapshotIndex, loadSnapshotIndex, pairedIndexCopyUrl } from "../../lib/snapshots";
 import { NO_OVERRIDES } from "../../lib/params";
 import type { RuntimeManifest } from "../../lib/client";
@@ -26,7 +26,6 @@ const snapshotIndex = (runtime: string | null) => ({
   schema: "qed64.snapshot-index/v1",
   snapshots: [{ name: "init", url: `/snapshots/init.${"0".repeat(16)}.snapz`, digest: `sha256:${"0".repeat(64)}`, bytes: 10, transfer: 5, imports: [], ...(runtime === null ? {} : { runtime }) }],
 });
-const profileIndex = (runtime: string) => ({ schema: "qed64.profile-index/v1", runtime: { buildId: runtime, leanVersion: "4.34.0" }, profiles: [] });
 const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
 const html = () => new Response("<!doctype html><title>QED64</title>", { status: 200, headers: { "content-type": "text/html" } });
 const notFound = () => new Response("not found", { status: 404 });
@@ -44,31 +43,21 @@ function site(answers: Record<string, () => Response>) {
   return asked;
 }
 const SNAP_COPY = `/snapshots/index.${OLD}.json`;
-const PROF_COPY = `/snapshots/profiles-index.${OLD}.json`;
 /** The window of 2026-10-08: the mutable files already name NEW. */
 const WINDOW = {
   "/snapshots/index.json": () => json(snapshotIndex(NEW)),
-  "/profiles/index.json": () => json(profileIndex(NEW)),
 };
 /** Steady state: the mutable files name the shell's own runtime. */
 const PAIRED = {
   "/snapshots/index.json": () => json(snapshotIndex(OLD)),
-  "/profiles/index.json": () => json(profileIndex(OLD)),
 };
 const COPIES = {
   [SNAP_COPY]: () => json(snapshotIndex(OLD)),
-  [PROF_COPY]: () => json(profileIndex(OLD)),
 };
 const sink = (): StatusSink => ({ busy: vi.fn(), progress: vi.fn(), idle: vi.fn() });
 const runtime = { buildId: OLD } as RuntimeManifest;
 
 afterEach(() => vi.unstubAllGlobals());
-
-describe("the per-build index paths", () => {
-  it("live under /snapshots/ (site-owned under every record), named like runtime-manifest.<buildId>.json", () => {
-    expect(pinnedIndexUrls(OLD)).toEqual({ snapshots: `/snapshots/index.${OLD}.json`, profiles: `/snapshots/profiles-index.${OLD}.json` });
-  });
-});
 
 describe("fetchSnapshotIndexFor", () => {
   it("in the window: the mutable index names NEW, so a shell pinned to OLD reads and uses OLD's copy", async () => {
@@ -150,7 +139,6 @@ describe("loadSnapshotIndex / fetchSnapshotIndex: pairedBuildId (a direct caller
     expect(pairedIndexCopyUrl("/games/robo/index.json?from=/a/b#/c", OLD)).toBe(`/games/robo/index.${OLD}.json`);
     expect(pairedIndexCopyUrl(`${ORIGIN}/snapshots/index.json`, OLD)).toBe(`${ORIGIN}${SNAP_COPY}`);
     expect(pairedIndexCopyUrl("index.json", OLD)).toBe(`index.${OLD}.json`);
-    expect(pinnedIndexUrls(OLD).snapshots).toBe(pairedIndexCopyUrl("/snapshots/index.json", OLD));
   });
 
   it("without the option: exactly today's requests, even in the window", async () => {
@@ -240,59 +228,16 @@ describe("loadSnapshotIndex / fetchSnapshotIndex: pairedBuildId (a direct caller
   });
 });
 
-describe("installArtifacts: both indexes", () => {
-  it("in the window, a shell pinned to OLD boots OLD's profile index and snapshot index", async () => {
+describe("installArtifacts: the snapshot index only (D1)", () => {
+  it("in the window a shell pinned to OLD reads OLD's snapshot copy and no profile index, whatever `profiles` says", async () => {
     vi.stubGlobal("__QED64_BUILD_ID__", OLD);
-    const asked = site({ ...WINDOW, ...COPIES });
-    const a = await installArtifacts(sink(), { overrides: "none", profiles: [], runtime });
-    expect(a.index.runtime.buildId).toBe(OLD);
-    expect(a.snapshots?.snapshots[0]?.runtime).toBe(OLD);
-    expect(asked).toEqual(["/profiles/index.json", PROF_COPY, "/snapshots/index.json", SNAP_COPY]);
-  });
-
-  it("paired: one request per index, as before", async () => {
-    vi.stubGlobal("__QED64_BUILD_ID__", OLD);
-    const asked = site({ ...PAIRED, ...COPIES });
-    const a = await installArtifacts(sink(), { overrides: "none", profiles: [], runtime });
-    expect([a.index.runtime.buildId, a.snapshots?.snapshots[0]?.runtime]).toEqual([OLD, OLD]);
-    expect(asked).toEqual(["/profiles/index.json", "/snapshots/index.json"]);
-  });
-
-  it("a missing, HTML or mispaired profile-index copy keeps the mutable index; profiles: \"none\" keeps its lenient empty index without asking for a copy", async () => {
-    vi.stubGlobal("__QED64_BUILD_ID__", OLD);
-    for (const answer of [notFound, html]) {
-      const asked = site({ ...WINDOW, [PROF_COPY]: answer });
-      const a = await installArtifacts(sink(), { overrides: "none", profiles: [], runtime, snapshots: null });
-      expect(a.index.runtime.buildId).toBe(NEW);
-      expect(asked).toEqual(["/profiles/index.json", PROF_COPY]);
+    const cases: Array<"core" | "none" | string[]> = ["core", "none", [], ["essential"]];
+    for (const profiles of cases) {
+      const asked = site({ ...WINDOW, ...COPIES });
+      const a = await installArtifacts(sink(), { overrides: "none", profiles, runtime });
+      expect(a.snapshots?.snapshots[0]?.runtime, JSON.stringify(profiles)).toBe(OLD);
+      expect(asked, JSON.stringify(profiles)).toEqual(["/snapshots/index.json", SNAP_COPY]);
+      expect(Object.keys(a).sort(), JSON.stringify(profiles)).toEqual(["runtime", "snapshots"]);
     }
-    for (const answer of [() => json(profileIndex(NEW)), () => json({ schema: "qed64.profile-index/v1", profiles: [] })]) {
-      const asked = site({ ...WINDOW, [PROF_COPY]: answer }); // a copy of another runtime's pairing, or of none
-      const a = await installArtifacts(sink(), { overrides: "none", profiles: [], runtime, snapshots: null });
-      expect(a.index.runtime?.buildId).toBe(NEW);
-      expect(asked).toEqual(["/profiles/index.json", PROF_COPY]);
-    }
-    const asked = site({ ...COPIES });
-    const none = await installArtifacts(sink(), { overrides: "none", profiles: "none", runtime, snapshots: null });
-    expect(none.index.profiles).toEqual([]);
-    expect(asked).toEqual(["/profiles/index.json"]);
-  });
-
-  it("?profiles=<dir> keeps its own index; no pin keeps the mutable one", async () => {
-    vi.stubGlobal("__QED64_BUILD_ID__", OLD);
-    let asked = site({ ...COPIES, "/profiles-staged/index.json": () => json(profileIndex(NEW)) });
-    const staged = await installArtifacts(sink(), { overrides: { profiles: "profiles-staged" }, profiles: [], runtime, snapshots: null });
-    expect(staged.index.runtime.buildId).toBe(NEW);
-    expect(asked).toEqual(["/profiles-staged/index.json"]);
-    // A memory pack re-prepared for a new session comes from the same staged set (HARDENING #81: the served
-    // set's manifest would be refused as another release), not from /profiles/.
-    const reinstall = await reinstallProfile({ id: "core", manifest: "/profiles/lean-core.manifest.json", release: "staged", modules: 1 }).then(() => null, (e: unknown) => e);
-    expect(reinstall).toBeInstanceOf(Error); // the stub site has no manifest there; only the URL asked matters
-    expect(asked.at(-1)).toBe("/profiles-staged/lean-core.manifest.json");
-    vi.unstubAllGlobals();
-    asked = site({ ...WINDOW, ...COPIES });
-    const unpinned = await installArtifacts(sink(), { overrides: "none", profiles: [], runtime, snapshots: null });
-    expect(unpinned.index.runtime.buildId).toBe(NEW);
-    expect(asked).toEqual(["/profiles/index.json"]);
   });
 });

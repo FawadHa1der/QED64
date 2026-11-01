@@ -130,7 +130,7 @@ describe("relay: line and timer budget (§8 item 9)", () => {
   });
   it("finds import lines exactly as the front door's and main.ts's IMPORT_LINE regex does (tabs, modifiers, order)", () => {
     // The regex both public/workers/lsp-front-door.js and frontend/src/main.ts spell; the relay must agree line for
-    // line, or the halted note and the warm-compiled header it remembers a restart for would drift from them.
+    // line, or the halted note and the header it remembers a restart for (a larger environment or commit) would drift from them.
     const IMPORT_LINE = /^\s*(?:public\s+|private\s+)?(?:meta\s+)?import\s+/;
     const lines = [
       "import Mathlib.Tactic", "  import Foo", "\timport\tFoo", "import  Foo", "public import X", "private import X",
@@ -323,14 +323,13 @@ describe("relay: RestartRequested (§2.3; §3 row 8)", () => {
     await bootCurrent();
     relay.fromClient(request(3, "$/lean/rpc/connect"));
     const old = current();
-    // The page's "Load exact imports" (§3 row 8): boot-only snapshots, the relay's own last text as the
-    // header to warm, and the olean pack the exact import needs — all handed to the replacement session as is.
-    relay.restart({ snapshots: ["init", "mathlib"], warmHeader: relay.lastText, packs: ["essential"] });
+    // A deliberate replacement (a self-widen, api.restart): its options reach the replacement session as is.
+    relay.restart({ snapshots: ["init", "mathlib"], initialBytes: 2147483648 });
     await settle();
     expect(old.disposed).toBe(true);
     expect(errorsToClient()).toEqual([{ jsonrpc: "2.0", id: 3, error: { code: -32900, message: expect.stringContaining("exact imports"), data: { qed64: { kind: "restart", reason: "restarting with exact imports" } } } }]);
     expect(relay.state).toEqual({ kind: "rebooting", reason: "user" });
-    expect(current().opts).toEqual({ snapshots: ["init", "mathlib"], warmHeader: "import Mathlib.Data.Real.Basic\nx", packs: ["essential"] });
+    expect(current().opts).toEqual({ snapshots: ["init", "mathlib"], initialBytes: 2147483648 });
     expect(relay.stats).toMatchObject({ userRestarts: 1, workerDeaths: 0, reboots: 0 });
     await bootCurrent();
     expect(current().methods()).toEqual(["initialize(replay)", "textDocument/didOpen"]);
@@ -634,19 +633,19 @@ describe("relay contract: an engine-stack death pauses at once (HARDENING #72)",
     relay.fromClient(didChange(3, "x"));
     await bootCurrent();
   });
-  it("keeps the restart options (a body edit resumes into the same exact mode); without a line the note sits on the first import line", async () => {
-    const exact: RestartOptions = { snapshots: ["init", "mathlib"], warmHeader: `${HEADER}\nx`, packs: ["essential"] };
+  it("keeps the restart options (a body edit resumes on the remembered restart: a larger environment or commit); without a line the note sits on the first import line", async () => {
+    const widened: RestartOptions = { snapshots: ["init", "mathlib"], initialBytes: 2147483648 };
     relay.fromClient(didOpen(1, `-- c\n${HEADER}\nx`));
     await bootCurrent();
-    relay.restart(exact);
+    relay.restart(widened);
     await bootCurrent();
     current().onDied(null, "crash", STACK, stackCause());
     await settle();
     expect(relay.state).toEqual({ kind: "halted" });
-    expect(relay.restartOpts).toEqual(exact);
+    expect(relay.restartOpts).toEqual(widened);
     expect(publishes()[0]!.params).toMatchObject({ diagnostics: [{ range: { start: { line: 1, character: 0 } }, code: "ENGINE_STACK_OVERFLOW" }] });
     relay.fromClient(didChange(2, `-- c\n${HEADER}\nxy`));
-    expect(current().opts).toEqual(exact);
+    expect(current().opts).toEqual(widened);
     await bootCurrent();
   });
   it("publishes no note once a status listener re-armed in the halt's own status (no stale note on the new session)", async () => {
@@ -664,25 +663,25 @@ describe("relay contract: an engine-stack death pauses at once (HARDENING #72)",
 });
 
 describe("relay contract: restart options outlive a crash while the header stands", () => {
-  const exact: RestartOptions = { snapshots: ["init", "mathlib"], warmHeader: `${HEADER}\nx`, packs: ["essential"] };
+  const widened: RestartOptions = { snapshots: ["init", "mathlib"], initialBytes: 2147483648 };
   it("a death-reboot reuses the last restart(opts) when the import lines are unchanged (body edits do not count)", async () => {
     relay.fromClient(didOpen(1, `${HEADER}\nx`));
     await bootCurrent();
-    relay.restart(exact);
-    expect(relay.restartOpts).toEqual(exact);
+    relay.restart(widened);
+    expect(relay.restartOpts).toEqual(widened);
     await bootCurrent();
     relay.fromClient(didChange(2, `${HEADER}\n\ntheorem t : 1 + 1 = 2 := by norm_num\n`));
     current().onDied(null, "abort", "x");
     await settle();
-    expect(current().opts).toEqual(exact);
-    expect(relay.restartOpts).toEqual(exact);
+    expect(current().opts).toEqual(widened);
+    expect(relay.restartOpts).toEqual(widened);
     expect(relay.state).toEqual({ kind: "rebooting", reason: "crash" });
     await bootCurrent();
   });
   it("a header change forgets them: the reboot after it boots the default (umbrella) session", async () => {
     relay.fromClient(didOpen(1, `${HEADER}\nx`));
     await bootCurrent();
-    relay.restart(exact);
+    relay.restart(widened);
     await bootCurrent();
     relay.fromClient(didChange(2, "import Mathlib.Data.Nat.Basic\nx"));
     current().onDied(null, "abort", "x");
@@ -698,14 +697,14 @@ describe("relay contract: restart options outlive a crash while the header stand
     await bootCurrent();
   });
   it("the breaker forgets them: the halted re-arm boots the default (umbrella) session even with the header unchanged, and only a later restart() sets them again", async () => {
-    // The exact import itself may be what kills the worker (an OOM warm compile); re-arming into the same mode
-    // would halt again on every body edit until the HEADER changed. The umbrella at least serves the header.
+    // The remembered restart (a larger environment or commit) may itself be what kills the worker; re-arming into it
+    // would halt again on every body edit until the HEADER changed. The default session at least serves the header.
     relay.fromClient(didOpen(1, `${HEADER}\nx`));
     await bootCurrent();
-    relay.restart(exact);
+    relay.restart(widened);
     await bootCurrent();
     current().onDied(null, "abort", "x"); await settle(); clock += 1000; await settle();
-    expect(current().opts).toEqual(exact); // the first two reboots still reuse them
+    expect(current().opts).toEqual(widened); // the first two reboots still reuse them
     for (let i = 0; i < 2; i += 1) { current().onDied(null, "abort", "x"); await settle(); clock += 1000; await settle(); }
     expect(relay.state).toEqual({ kind: "halted" });
     expect(relay.restartOpts).toBeNull();
@@ -713,7 +712,7 @@ describe("relay contract: restart options outlive a crash while the header stand
     expect(relay.state).toEqual({ kind: "rebooting", reason: "user" });
     expect(current().opts).toBeUndefined();
     await bootCurrent();
-    const other: RestartOptions = { snapshots: ["init"], warmHeader: "", packs: [] };
+    const other: RestartOptions = { snapshots: ["init"] };
     relay.restart(other);
     expect(relay.restartOpts).toEqual(other);
     await bootCurrent();

@@ -9,7 +9,7 @@
 //
 // QED64_SLOW=1 adds the long controls (an idle session's stall is caught only
 // after the next edit, as "wedged"; an exit from an elaboration task is never
-// caught) and the batch-path probe.
+// caught).
 // The inputs are QED64_LEAN_ARTIFACT (the stage1 tree) and QED64_INIT_SNAP (its
 // init.snap), else (deprecated, with a WARNING) this checkout's
 // pipeline/toolchain/work/build/stage1 and work/snapshot/init.snap; without
@@ -143,17 +143,5 @@ describeIf("resident FileWorker exit → died 'exit' (real glue, real worker, un
     expect(v.idle!.worker.frontDoor.phase).toBe("elaborating");
     expect(v.idle!.worker.frontDoor.liveness!.answered).toBeGreaterThan(0);
     expect(v.ok, v.why).toBe(true);
-  });
-
-  test.runIf(slow)("batch path (no loop open): the exit runs on the main thread and fails the compile", { timeout: TIMEOUT }, () => {
-    // Batch compiles elaborate on the runtime thread itself: exitJS calls
-    // _proc_exit directly (no proxied call, nothing for the hook to see) and
-    // the ExitStatus unwinds out of lean_wasm_compile into the error reply.
-    // The app's only batch compile is the import-only warm header.
-    const v = run("--scenario", "batch-eval-exit");
-    expect(v.ok, v.why).toBe(true);
-    expect(v.proxiedExits).toHaveLength(0);
-    expect(v.died).toHaveLength(0);
-    expect(v.compile).toMatchObject({ type: "error", error: { code: "COMPILE_CRASHED", message: "Program terminated with exit(3)" } });
   });
 });

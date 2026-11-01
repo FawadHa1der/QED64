@@ -5,7 +5,7 @@ QED64 is a Lean 4 editor in the spirit of
 server checks your proofs**. The real Lean 4 compiler and language server run
 in a Web Worker as **WebAssembly Memory64** (64-bit pointers, shared memory,
 pthreads). Lean's core library and a 4,438-module **Mathlib** environment are
-mounted from verified, content-addressed artifacts. The page is lean4monaco
+loaded from verified, content-addressed environment snapshots. The page is lean4monaco
 (Monaco plus the vscode-lean4 InfoView) over that in-browser LSP. It serves
 Lean 4.35.0 and Mathlib v4.35.0 ([docs/PROVENANCE.md](docs/PROVENANCE.md)).
 
@@ -24,8 +24,8 @@ Live: **https://qed64.fawadworkaddress.workers.dev/**
 - **Memory.** A tab takes about 8 to 9 GB once the Mathlib environment is
   loaded ([docs/HARDENING.md](docs/HARDENING.md) #44). Only one QED64 runs per
   top-level page. On a 16 GB machine, close other heavy tabs first.
-- **Browser storage.** About 5 GB free in the browser profile for the Mathlib
-  tier (OPFS).
+- **Browser storage.** About 1.5 GB free in the browser profile (OPFS) for
+  the Mathlib environment's cached region.
 
 **To build or test it:**
 - macOS or Linux, **Node 24+** (Memory64 on by default) and npm.
@@ -128,7 +128,7 @@ const ui: StatusSink = {   // progress as data (§7.1)
   progress: (label, info) => console.log(label, info?.loaded, info?.total),
   idle: (label) => console.log("idle", label),
 };
-const artifacts = await installArtifacts(ui, { overrides: "none" });   // manifest, snapshot index, core pack
+const artifacts = await installArtifacts(ui, { overrides: "none" });   // manifest, snapshot index
 const policy = makeEditorPolicy(artifacts.snapshots);                    // snapshots and memory per header
 let current = "import Mathlib\n\nexample : 2 + 2 = 4 := by norm_num\n";   // what a (re)boot serves
 const relay = new LspRelay(
@@ -285,7 +285,7 @@ its prerequisites and its pass line):
 
 | Path | What lives there |
 |---|---|
-| `lib/` | the library, `qed64/embed` (`index.ts` is the barrel): worker client, OPFS installer, snapshot index, boot, session adapter, LSP relay, edit coalescer, causes, parameters |
+| `lib/` | the library, `qed64/embed` (`index.ts` is the barrel): worker client, snapshot index, boot, session adapter, LSP relay, edit coalescer, causes, parameters |
 | `frontend/` | the page (its own `package.json`): lean4monaco over the in-browser LSP, the page API, import completion |
 | `public/workers/` | the six worker scripts (`lean.worker.js` runs the runtime; the LSP front door, framer, Memory64 probe, worker constants, snapshot prefetch) |
 | `public/{runtime,profiles,snapshots}/` | the served artifacts: manifests tracked, bytes fetched (`npm run fetch:artifacts`), never committed |

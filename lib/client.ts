@@ -15,26 +15,6 @@ import "../public/workers/memory64-probe.js";
 
 export const PROTOCOL = 1;
 
-export interface Diagnostic {
-  fileName: string;
-  line: number;
-  column: number;
-  endLine?: number;
-  endColumn?: number;
-  severity: "error" | "warning" | "information";
-  message: string;
-}
-
-export interface CompileResult {
-  operation: "compile";
-  success: boolean;
-  exitCode: number;
-  elapsedMs: number;
-  diagnostics: Diagnostic[];
-  raw: { stream: string; text: string }[];
-  memory?: MemoryTelemetry;
-}
-
 export interface MemoryTelemetry {
   currentBytes: number;
   /** The initial commit the worker made (its per-rung clamp can make it less than the request). */
@@ -241,14 +221,15 @@ export class LeanSession {
   private detached = false;
   private diedReported = false;
   private heartbeatTimer: ReturnType<typeof setTimeout> | undefined;
-  /** Runtime-owning RPCs (compile, loadSnapshot) execute strictly one at a
-   * time. The worker rejects any such request that arrives while another
-   * owns the runtime (BAD_STATE) — and snapshot loads are async on the
-   * worker, so a compile posted mid-load DOES arrive early enough to bounce:
-   * observed live as a user-facing "Compile failed: Worker is 'compiling',
-   * not ready." when a check raced the boot snapshot load right after boot.
-   * Serializing here makes that guard unreachable from a single session
-   * regardless of caller timing. */
+  /** Runtime-owning RPCs (loadSnapshot, write-files, lsp-arm) execute
+   * strictly one at a time. The worker rejects any such request that arrives
+   * while another owns the runtime (BAD_STATE) — and snapshot loads are async
+   * on the worker, so a request posted mid-load DOES arrive early enough to
+   * bounce: observed live (2026-08-25, when the page still compiled) as a
+   * user-facing "Compile failed: Worker is 'compiling', not ready." when a
+   * check raced the boot snapshot load right after boot. Serializing here
+   * makes that guard unreachable from a single session regardless of caller
+   * timing. */
   private turn: Promise<unknown> = Promise.resolve();
   /** The runtime is gone (worker crash, unrecoverable error reply, dispose):
    * `exclusive()` rejects queued turns instead of posting to a terminated
@@ -336,9 +317,9 @@ export class LeanSession {
         else if (msg.kind === "lsp") this.onLsp(msg.msg as JsonRpcMessage);
         // The declared fields only — the event envelope (type/kind/requestId)
         // must not leak into a datum the harness JSON-diffs (§2.2(e)).
-        // `collision` rides along because the page's "Load exact imports"
-        // offer keys on it (§3 row 8) — rebuilding from declared fields
-        // silently dropped it once; keep the list and WorkerStatus in step.
+        // `collision` rides along because status().collision reads it (§3
+        // row 8) — rebuilding from declared fields silently dropped it once;
+        // keep the list and WorkerStatus in step.
         else if (msg.kind === "status") this.onStatus({ phase: msg.phase, version: msg.version ?? null, header: msg.header ?? null, ring: msg.ring, pool: msg.pool, dropped: msg.dropped ?? 0, collision: msg.collision ?? null, ...(msg.liveness ? { liveness: msg.liveness } : {}) });
         else if (msg.kind === "heartbeat") this.armHeartbeat();
         // The worker's one death fact (W2): code, reason and the message the
@@ -379,7 +360,7 @@ export class LeanSession {
     }
   }
 
-  /** Take the next runtime turn: wait for every earlier compile/loadSnapshot
+  /** Take the next runtime turn: wait for every earlier runtime turn
    * to settle (success or failure alike), then run `op` — unless the session
    * died while queued, in which case reject instead of posting to a
    * terminated worker and hanging forever. */
@@ -431,10 +412,6 @@ export class LeanSession {
     return this.request<ReadyInfo>("boot", { config, instance: { id: this.runtimeId, waitMs: PREDECESSOR_WAIT_MS, predecessors } }, transfer);
   }
 
-  compile(source: string, fileName?: string): Promise<CompileResult> {
-    return this.exclusive(() => this.request<CompileResult>("compile", { input: { source, fileName } }));
-  }
-
   loadSnapshot(
     url: string,
     name?: string,
@@ -472,7 +449,7 @@ export class LeanSession {
       // The watchdog runs from the arm, not from the first beat (HARDENING #78): the loop opens at the arm (a
       // queued didOpen) or on the first didOpen after it and beats 2 s later, and a Worker that died in between
       // was never declared dead. Not earlier: a booting worker does not beat and can be busy for minutes. The arm
-      // is the session start's LAST runtime step (no compile or loadSnapshot after it), so the worker's JS thread
+      // is the session start's LAST runtime step (no loadSnapshot or write-files after it), so the worker's JS thread
       // is then free and the telemetry probe answers for a live worker whose loop has not opened yet.
       if (!this.detached && !this.diedReported) this.armHeartbeat();
     });

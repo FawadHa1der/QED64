@@ -16,7 +16,7 @@ export async function checkHeadless(text: string, onDiagnostics: (diagnostics: u
     progress: (label, info) => console.log("[qed64]", label, info?.loaded ?? "", info?.total ?? ""),
     idle: (label) => console.log("[qed64] idle", label),
   };
-  // The runtime manifest, the snapshot index and the core library pack, from /runtime, /snapshots, /profiles.
+  // The runtime manifest and the snapshot index, from /runtime and /snapshots (no library pack since D1).
   const artifacts = await installArtifacts(ui, { overrides: "none" });
   const policy = makeEditorPolicy(artifacts.snapshots); // which snapshots a header needs, and the memory to commit
   let current = text; // the document a (re)boot serves: keep it current as you send didChanges
