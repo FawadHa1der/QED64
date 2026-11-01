@@ -9,10 +9,8 @@
 // toolchain, no new artifacts; Monaco merges these with the LSP's identifier
 // completions.
 import * as monaco from "monaco-editor";
+import { UMBRELLA_ALIASES } from "../../lib/snapshots";
 
-/** The umbrella aliases the kernel's resolver serves from `QED64.Essential`
- * (patch 0032 K1: `lookupPrebuiltEnv`'s `aliasOk`). */
-const ALIASES = ["Mathlib", "Mathlib.Tactic", "Batteries", "MIL.Common"];
 const MANIFESTS = ["/profiles/lean-core.manifest.json", "/profiles/mathlib-essential.manifest.json"];
 
 let namesPromise: Promise<string[]> | null = null;
@@ -43,7 +41,7 @@ function collectModuleNames(manifest: unknown, into: Set<string>): void {
 /** Lazy, fetched once per page: ~5k names from manifests the browser caches. */
 function moduleNames(): Promise<string[]> {
   namesPromise ??= (async () => {
-    const names = new Set<string>(ALIASES);
+    const names = new Set<string>(UMBRELLA_ALIASES); // the kernel's aliases complete like modules (lib/snapshots.ts)
     for (const url of MANIFESTS) {
       try {
         collectModuleNames(await (await fetch(url)).json(), names);

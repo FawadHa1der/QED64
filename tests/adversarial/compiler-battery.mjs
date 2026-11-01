@@ -106,6 +106,8 @@ export function classify(item, { out, code, wallMs, budget, spawnError = null })
 // the batch compile path (`lean_wasm_compile`), whose environment cache keys
 // EXACTLY, so the alias is rewritten to the umbrella's own key here: the
 // battery then elaborates the same environment the resident page serves.
+// The list is lib/snapshots.ts's UMBRELLA_ALIASES (a Node script cannot import
+// TypeScript); tests/unit/umbrella-lists.test.ts holds this regex to it.
 export function rewriteAliases(src) {
   let first = true;
   return src.split("\n").map((l) => {

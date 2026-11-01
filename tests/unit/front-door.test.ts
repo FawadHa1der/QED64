@@ -10,6 +10,7 @@ import path from "node:path";
 import vm from "node:vm";
 import "../../public/workers/lsp-front-door.js";
 import { deathCause } from "../../lib/failure";
+import { UMBRELLA_ALIASES } from "../../lib/snapshots";
 
 type Msg = { jsonrpc: "2.0"; id?: number | string; method?: string; params?: unknown; result?: unknown; error?: unknown };
 type Frame = { kind: "client"; msg: Msg; replay?: boolean } | { kind: "server"; msg: Msg } | { kind: "booted" } | { kind: "ring"; busy: boolean } | { kind: "died" };
@@ -336,7 +337,7 @@ describe("front door: umbrella collisions (§3 row 8; HARDENING #42/#43)", () =>
   const ALIAS_TEXT = "import Mathlib\n\ninductive Tree (α : Type) where\n  | leaf : Tree α\n";
   const withKey = (key: string[], text = ALIAS_TEXT) => run([{ kind: "booted" }, { kind: "client", msg: initialize(1) }, { kind: "client", msg: didOpen(1, text) }, { kind: "server", msg: headerStatus(1, "covered", key) }]);
   it("an alias-only header (Init + any of the four umbrella aliases) sets NO collision fact and rides NO note: the duplicate is the user's own", () => {
-    expect([...FD.UMBRELLA_ALIASES].sort()).toEqual(["Batteries", "MIL.Common", "Mathlib", "Mathlib.Tactic"]);
+    expect([...FD.UMBRELLA_ALIASES].sort()).toEqual([...UMBRELLA_ALIASES].sort()); // the front door's copy of lib's one list (a classic script cannot import it)
     const keys = [["Init", "Mathlib"], ["Init", "Mathlib.Tactic"], ["Init", "Batteries"], ["Init", "MIL.Common"], ["Init", "Mathlib", "Mathlib.Tactic", "Batteries", "MIL.Common"], ["Mathlib"]];
     for (const key of keys) {
       const burst = publish(1, [declared("Tree", 2), declared("Tree.leaf", 3)]);
