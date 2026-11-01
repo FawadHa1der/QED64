@@ -684,7 +684,7 @@ Chrome measurements (QED64's page, Init only, `theorem deepLegal : ∀ n : Fin K
 With 8192 the over-deep side stays safe: K=28 and the lane's Fin 40 cases (seeded and typed, with Mathlib) end in Lean's error, the checker alive, no RangeError; e2e 23/23, page-api 6/6.
 
 - Interim (this change): `public/workers/lean.worker.js` sets `Module.ENV.LEAN_WASM_STACK_PROBE_SLOTS = "8192"` in its `mountEverything` preRun (the only place getenv sees, #66). The kernel measured 8192 as the smallest value its two deep-recursion probes survive at Chrome's stack budget (4096 overflows), with an unknown margin between them: a thinner margin than 0036's default, not a guarantee. It recovers about half of the wrongly rejected band (K ≤ 22 here), not all of it (K = 24 still fails). The runtime reads the variable once per process with atoi: the value must stay a literal of digits (a typo is 0 and turns the guard OFF); `tests/unit/stack-probe-slots.test.ts` pins that and the preRun placement (mutation: a non-numeric value, 4096, and a missing assignment each fail 1).
-- Fix (the kernel's): patch 0038, a new runtime that probes 4× as often with a quarter of the headroom (every 4 levels / 4th `checkSystem`, 4096 slots = 32 KiB). 0038 still reads `LEAN_WASM_STACK_PROBE_SLOTS` as an override, so **adopting 0038 must delete this worker setting** (8192 would override its tuned 4096). Its acceptance: the `legal` scenario at K = 24 passes, K = 28 and Fin 40 stay Lean's error.
+- Fix (the kernel's): patch 0038, a new runtime that probes 4× as often with a quarter of the headroom (every 4 levels / 4th `checkSystem`, 4096 slots = 32 KiB). 0038 still reads `LEAN_WASM_STACK_PROBE_SLOTS` as an override, so **adopting 0038 must delete this worker setting** (8192 would override its tuned 4096). Its acceptance: the `legal` scenario at K = 24 passes, K = 28 and Fin 40 stay Lean's error. (2026-11-01: not pursued; the user kept 0036 as shipped on 2026-10-12, and the worker no longer sets the variable, #71.)
 - lean4game's `bound` report is a different case: it needs more than 500 KiB and fails without 0036 too; 0036 only made its error clean.
 
 ### 68. A same-document replacement allocated beside its own predecessor's Workers (#55's tolerance, narrowed)
@@ -775,7 +775,7 @@ Measured with `theorem deepLegal : ∀ n : Fin K, ∀ m : Fin K, n * m = m * n`,
 
 The over-deep side stays safe: K 28 is Lean's error, 0 deaths, and no RangeError.
 
-The shift is elaborator-side and below one K step. The kernel estimates it at low tens of KiB, against the 64 KiB reserve. Kernel patch 0038 (32 KiB reserve, a probe every 4 levels) wins back more than that; it is to be calibrated with `Elab.async=false` as the configuration.
+The shift is elaborator-side and below one K step. The kernel estimates it at low tens of KiB, against the 64 KiB reserve. Kernel patch 0038 (32 KiB reserve, a probe every 4 levels) wins back more than that; it is to be calibrated with `Elab.async=false` as the configuration. (2026-11-01: not pursued; the user kept 0036 as shipped on 2026-10-12, #71, and Lean's error one band earlier is an accepted limit.)
 
 The kernel's verdict on the alternatives: capping `wait_for`'s growth would remove Lean's deadlock avoidance, and running sync elaboration on a fresh stack per command is async again. So the trade is a tab crash on ordinary long files against Lean's error one band earlier on deep, mostly contrived recursion.
 
