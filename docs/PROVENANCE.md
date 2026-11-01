@@ -28,7 +28,9 @@ own bakes against that runtime. Four tracked files hold the whole identity:
   that baked it.
 - `embedding/base-tree.json` (`qed64.base-tree/v1`): the olean trees the
   snapshots were baked from (per-tree pack ids, raw digests, the umbrella
-  module's bytes and the tree digests).
+  module's bytes and the tree digests); the umbrella's bytes are committed
+  beside it, `embedding/umbrella/QED64/Essential.olean` (`a2d0b38a…`,
+  403,224 B for this landing).
 
 | Served from this landing on (lean-v4.35.0-b081e7c, adopted 2026-10-23) | Identity | Source |
 |---|---|---|

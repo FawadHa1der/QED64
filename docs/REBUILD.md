@@ -30,7 +30,7 @@ every downstream artifact is a function of those, with two caveats:
 |---|---|---|
 | The toolchain release QED64 serves and tests against | `toolchain/lean4-wasm64-release.json` (a byte copy of that release's `release.json`, schema `lean4-wasm64.release/v1`) | yes |
 | The kernel commit to build | the record's `kernel.commit` (40 hex) and `kernel.patch`; `qed64.release/v1` `toolchain.kernel.commit` (docs/RELEASE-BUNDLE.md). `pipeline/toolchain/KERNEL-PIN` was retired in 2026-10 (plan B2c; it is in git history) | yes |
-| The base trees the snapshots were baked from | `embedding/base-tree.json` (`qed64.base-tree/v1`, §3 step 6; the umbrella bytes ship in the release bundle, docs/RELEASE-BUNDLE.md) | yes |
+| The base trees the snapshots were baked from | `embedding/base-tree.json` (`qed64.base-tree/v1`, §3 step 6), and the umbrella's bytes beside it, `embedding/umbrella/QED64/Essential.olean` (the files base-tree.json names; checked against it by `tests/unit/adopt-release.test.ts` and by every runtime-only adoption) | yes |
 | Patch series | the fork: `wasm64-build/PATCHES.md` on branch `qed64-wasm64` (a release names its level in `release.json` `kernel.patch`). QED64's old copy (`pipeline/toolchain/patches/`) was deleted in plan B1 (it is in git history); `pipeline/toolchain/PATCHES.md` is now a pointer to the fork | in the fork |
 | Build environment (emsdk 6.0.5, cmake, ccache) | `docker-wasm64/` in the kernel tree | yes (in the kernel repo) |
 | Source checkout | your clone of the fork at `release.json` `kernel.commit` | no |
@@ -109,9 +109,12 @@ only as a process (`node <tools>/cli.mjs …`; `<tools>` is `--tools`, else
 npm run -s fetch:artifacts -- --out <tree> --with-manifests --release <the SERVED release dir|url>
 pipeline/release/adopt-release.sh --id <lean-vX.Y.Z-hash> --digest sha256:<hex> \
   (--from https://github.com/FawadHa1der/lean4/releases/download/<id>/ | --from-dir <release dir>) \
-  --public <tree> [--tools <package dir>] (--umbrella <dir with QED64/Essential.olean> | --rebuild-umbrella) \
+  --public <tree> [--tools <package dir>] [--umbrella <dir with QED64/Essential.olean> | --rebuild-umbrella] \
   [--fat-tree] [--gate] [--init-lib lean-lib|lean-core] [--allow-served] [--dry-run] [--keep]
 ```
+
+Without either flag a runtime-only release reuses `embedding/umbrella`, the
+committed copy of the served umbrella.
 
 In order (`--dry-run` validates the inputs and prints exactly this plan,
 fetching and writing nothing):
@@ -152,7 +155,8 @@ fetching and writing nothing):
    and, with `--fat-tree`, `$W/lib-tree` (the same without `--slim`; the
    showcase's heavy path uses a fat tree).
 5. **umbrella**: a runtime-only release (every served pack's raw digest is
-   one of `release.packs`) REUSES the served umbrella (`--umbrella`): its header
+   one of `release.packs`) REUSES the served umbrella (`--umbrella`, by default
+   the committed `embedding/umbrella`; step 2 checks its bytes): its header
    carries the packs' compiler githash, and a recompile would change the base
    tree's bytes. Otherwise `--rebuild-umbrella` regenerates and compiles it
    against the fat tree (`gen-umbrella.mjs`, `supervised-run.mjs`), runs the
@@ -196,7 +200,11 @@ fetching and writing nothing):
     packs change it starts with step 0, the SLIM-BAKE AUDIT (required at
     every Mathlib pin: §3b step 3). Then: copy
     `$W/release/release.json` to `toolchain/lean4-wasm64-release.json`,
-    `$W/base-tree.json` to `embedding/base-tree.json`, and the three tracked
+    `$W/base-tree.json` to `embedding/base-tree.json` (for a packs change
+    also the new umbrella's files into `embedding/umbrella/QED64/`: `rm -f
+    embedding/umbrella/QED64/Essential.olean*; cp $W/umbrella/Essential.olean*
+    embedding/umbrella/QED64/`, committed with `embedding/base-tree.json`; once
+    pushed it is the umbrella's only off-host copy), and the three tracked
     manifests from the isolated tree into `public/` (then
     `release-manifest.mjs --worktree` checks that the record names the
     served runtime and kernel, that it lists every runtime/profile file the

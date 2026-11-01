@@ -292,5 +292,6 @@ describe("npm pack", () => {
     for (const f of [...closureFiles(), "embedding/closure.json"]) {
       expect(packed.has(f), `${f} is in the closure but not packed`).toBe(true);
     }
+    expect([...packed].filter((f) => f.startsWith("embedding/") && f !== "embedding/closure.json"), "only closure.json ships from embedding/ (base-tree.json and the umbrella olean stay in the repo)").toEqual([]);
   });
 });

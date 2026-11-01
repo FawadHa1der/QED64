@@ -5,7 +5,8 @@
 // (QED64_PUBLIC_DIR), a fake served base tree (QED64_BASE_TREE) and an
 // isolated --public. Nothing here fetches, unpacks,
 // bakes or boots a runtime; a dry run calls the package for --version only.
-// Plus adopt-helper.mjs's tree digest and base-tree.json.
+// Plus adopt-helper.mjs's tree digest and base-tree.json, and the committed
+// umbrella (embedding/umbrella, review D9).
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -252,10 +253,16 @@ describe("adopt-release.sh --dry-run", () => {
     expect(adopt(valid(rel).map((a) => (a === pub ? inner : a))).status).toBe(0);
   });
 
-  test("the umbrella mode follows the record: runtime-only reuses (--umbrella), changed packs rebuild and stage the packs", () => {
+  test("the umbrella mode follows the record: runtime-only reuses (--umbrella, by default embedding/umbrella), changed packs rebuild and stage the packs", () => {
     const rel = fakeRelease("rel-umbrella");
     const noUmbrella = valid(rel).filter((a) => a !== "--umbrella" && a !== umbrella);
-    refused(adopt(noUmbrella), /a runtime-only release reuses the served umbrella: pass --umbrella/);
+    // No --umbrella: the committed copy of the served umbrella (D9), checked against the real embedding/base-tree.json
+    // (an empty QED64_BASE_TREE is the default). It is one legacy .olean, so nothing is paired with it.
+    const dflt = adopt(noUmbrella, { QED64_BASE_TREE: "" });
+    expect(dflt.status, dflt.stderr).toBe(0);
+    expect(dflt.stdout).toContain(`reuse cp ${root}/embedding/umbrella/QED64/Essential.olean → ${path.join(root, "work/adopt", ID)}/lib-tree-slim/QED64/`);
+    // Against the fake split base tree the default is checked like any other --umbrella.
+    refused(adopt(noUmbrella), /--umbrella .*\/embedding\/umbrella holds QED64\/Essential\.olean, .* names QED64\/Essential\.olean \+ QED64\/Essential\.olean\.server/);
     refused(adopt([...noUmbrella, "--rebuild-umbrella"]), /pass --umbrella <dir>, not --rebuild-umbrella/);
     refused(adopt([...noUmbrella, "--umbrella", path.join(tmp, "tools")]), /--umbrella .* has no QED64\/Essential\.olean/);
     // A legacy umbrella is the one .olean (HARDENING #79): reused as it is, nothing to pair it with.
@@ -439,6 +446,15 @@ describe("adopt-release.sh: its own work dirs, the URL record and the patch orde
     expect(fs.existsSync(repo.W)).toBe(false);
   });
 
+  test("without --umbrella a checkout that lacks embedding/umbrella refuses, naming the default (D9)", () => {
+    const repo = fakeRepo("repo-no-default");
+    const rel = fakeRelease("rel-no-default");
+    const args = valid(rel).filter((a) => a !== "--umbrella" && a !== umbrella);
+    const r = repo.run(args);
+    refusedLine(r, /\/embedding\/umbrella \(the default --umbrella: the committed copy of the served umbrella\) has no QED64\/Essential\.olean — restore it \(git checkout -- embedding\/umbrella\) or pass --umbrella <dir>/);
+    expect(r.stdout).toBe("");
+  });
+
   test("copy_umbrella puts Essential.olean and the facets its source has into the lib trees (HARDENING #79)", () => {
     const fn = spawnSync("sed", ["-n", "/^copy_umbrella()/,/^}$/p", script], { encoding: "utf8" }).stdout;
     expect(fn).toMatch(/^copy_umbrella\(\)/);
@@ -495,6 +511,27 @@ describe("adopt-helper.mjs: every failure is one refusal line", () => {
       expect(lines[0]).toMatch(/^adopt-release: confine: EACCES: permission denied, scandir .*locked/);
       expect(r.status).toBe(2);
     } finally { fs.chmodSync(path.join(p, "locked"), 0o755); }
+  });
+});
+
+describe("the committed umbrella (D9)", () => {
+  // The served umbrella's bytes, tracked beside embedding/base-tree.json: its off-host copy once pushed, and the
+  // default --umbrella. A packs-change landing that changes base-tree.json without refreshing this copy fails here.
+  test("embedding/umbrella/QED64/ holds exactly the umbrella files embedding/base-tree.json names, with those bytes", () => {
+    type U = { path: string; sha256: string; bytes: number };
+    const bt = JSON.parse(fs.readFileSync(path.join(root, "embedding/base-tree.json"), "utf8")) as { umbrella: U[]; trees: Record<string, { umbrella: U[] }> };
+    // The union by path over the top-level umbrella and every tree's: release-manifest.mjs's umbrellaFiles.
+    const union = new Map<string, U>();
+    for (const u of [...bt.umbrella, ...Object.values(bt.trees).flatMap((t) => t.umbrella)]) union.set(u.path, u);
+    expect([...union.keys()].every((p) => p.startsWith("QED64/"))).toBe(true);
+    const dir = path.join(root, "embedding/umbrella/QED64");
+    expect(fs.readdirSync(dir).sort()).toEqual([...union.keys()].map((p) => path.basename(p)).sort());
+    for (const u of union.values()) {
+      const bytes = fs.readFileSync(path.join(root, "embedding/umbrella", u.path));
+      expect({ path: u.path, sha256: sha(bytes), bytes: bytes.length }).toEqual({ path: u.path, sha256: u.sha256, bytes: u.bytes });
+    }
+    const r = spawnSync("node", [helper, "umbrella", "--umbrella", path.join(root, "embedding/umbrella"), "--base-tree", path.join(root, "embedding/base-tree.json")], { encoding: "utf8" });
+    expect([r.status, r.stdout + r.stderr]).toEqual([0, ""]);
   });
 });
 
@@ -555,6 +592,7 @@ describe("adopt-helper.mjs: the tree digest and base-tree.json", () => {
     const landing = text.slice(text.indexOf("Landing, by the operator"));
     expect(landing).toContain(" 1. cp $W/release/release.json toolchain/lean4-wasm64-release.json\n");
     expect(landing).toContain(" 2. cp $W/base-tree.json embedding/base-tree.json");
+    expect(landing).toContain("cp $USRC/Essential.olean* embedding/umbrella/QED64/"); // a rebuilt umbrella refreshes its committed copy (D9)
     expect(landing).toContain("node pipeline/release/release-manifest.mjs --worktree");
     expect(landing).toContain("node pipeline/release/write-bundle.mjs --commit <landing commit> --dist dist --umbrella $W/");
     expect(text).not.toMatch(/KERNEL-PIN|kernel-pin/);

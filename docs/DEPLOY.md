@@ -232,6 +232,8 @@ Promote checklist, in order:
    (release-manifest checks its `kernel.commit` against the runtime's
    `sourceRevision`, and its `runtime.buildId` and files against the served
    manifests), `embedding/base-tree.json` ← `work/adopt/<id>/base-tree.json`,
+   and, when the umbrella was rebuilt, `embedding/umbrella/QED64/` ←
+   `work/adopt/<id>/umbrella/Essential.olean*`,
    the three tracked manifests from the isolated tree,
    and the devDependency re-pinned to the release's tgz once published.
 1. Commit the new `public/runtime/runtime-manifest.json` (paired with the

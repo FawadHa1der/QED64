@@ -8,14 +8,15 @@
 #   pipeline/release/adopt-release.sh --id <lean-vX.Y.Z-hash> --digest sha256:<hex>
 #     (--from <https://github.com/FawadHa1der/lean4/releases/download/<id>/> | --from-dir <release dir>)
 #     --public <isolated served tree> [--tools <lean4-wasm64 dir>]
-#     [--umbrella <dir with QED64/Essential.olean> | --rebuild-umbrella] [--fat-tree]
+#     [--umbrella <dir with QED64/Essential.olean> (default embedding/umbrella) | --rebuild-umbrella] [--fat-tree]
 #     [--gate] [--init-lib lean-lib|lean-core] [--allow-served] [--dry-run] [--keep]
 #
 # lean4-wasm64 runs only as a process: node <tools>/cli.mjs … (<tools>: --tools, else
 # $LEAN4_WASM64_DIR, else node_modules/lean4-wasm64). Writes go to work/adopt/<id>/ ($W),
 # work/staging/<buildId>/ and --public, never under the release dir, this checkout's or main's public/.
 # A runtime-only release (every served pack's raw digest is in release.packs) reuses the umbrella
-# (--umbrella); otherwise --rebuild-umbrella recompiles it and the packs are staged too. The umbrella
+# (--umbrella; default embedding/umbrella, the committed copy of the served one, review D9); otherwise
+# --rebuild-umbrella recompiles it and the packs are staged too. The umbrella
 # is QED64/Essential.olean plus the facets Lean wrote beside it: .olean.server (and .olean.private,
 # fat tree only) exist only when it was compiled as a split `module`, which the 4.34 umbrella was
 # (HARDENING #51); a legacy compile, as from 4.35 on, writes the one .olean (HARDENING #79).
@@ -54,6 +55,7 @@ echo "$DIG" | grep -Eq '^sha256:[0-9a-f]{64}$' || refuse "--digest $DIG is not s
 [ -n "$PUB" ] || refuse "--public <isolated served tree> is required"
 case "$INITLIB" in lean-lib|lean-core) ;; *) refuse "--init-lib is lean-lib or lean-core, not $INITLIB";; esac
 [ -z "$UMBD" ] || [ $REBUILD = 0 ] || refuse "--umbrella and --rebuild-umbrella are exclusive"
+UMB_DEFAULT=0; [ -n "$UMBD" ] || [ $REBUILD = 1 ] || { UMBD="$Q/embedding/umbrella"; UMB_DEFAULT=1; } # D9: the committed copy of the served umbrella
 T=${T:-${LEAN4_WASM64_DIR:-$Q/node_modules/lean4-wasm64}}
 node -e 'process.exit(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).name === "lean4-wasm64" ? 0 : 1)' "$T/package.json" 2>/dev/null && [ -f "$T/cli.mjs" ] \
   || refuse "lean4-wasm64 not found at $T — pass --tools <package dir>, set LEAN4_WASM64_DIR, or install it: npm i -D <release tgz URL> (toolchain/lean4-wasm64-release.json names it)"
@@ -81,7 +83,6 @@ checkrecord() { # <release.json>: the pin, the floor, the served check and the u
   patch_ge "$PATCH" "$FLOOR" || refuse "the release's kernel.patch $PATCH is below embedding/closure.json runtime.minKernelPatch $FLOOR"
   if [ "$MODE" = runtime-only ]; then
     [ $REBUILD = 0 ] || refuse "a runtime-only release reuses the served umbrella: pass --umbrella <dir>, not --rebuild-umbrella (a recompile changes the base tree's bytes)"
-    [ -n "$UMBD" ] || refuse "a runtime-only release reuses the served umbrella: pass --umbrella <dir holding QED64/Essential.olean, with its .olean.server and .olean.private when it has them>"
   else
     [ $REBUILD = 1 ] || refuse "the release's packs are not the served ones: pass --rebuild-umbrella (the umbrella is compiled from the new packs)"
     FAT=1
@@ -102,7 +103,7 @@ copy_umbrella() { # <src> <W> <fat 0|1> <notes>: the umbrella into each lib tree
 }
 BID="?"; PATCH="?"; KCOMMIT="?"; LEANVER="?"; MODE="?"
 if [ $FROMDIR = 1 ]; then checkrecord "$SRC/release.json"; fi
-if [ -n "$UMBD" ]; then [ -s "$UMBD/QED64/Essential.olean" ] || refuse "--umbrella $UMBD has no QED64/Essential.olean"; UMBD=$(cd "$UMBD" && pwd -P)
+if [ -n "$UMBD" ]; then [ -s "$UMBD/QED64/Essential.olean" ] || refuse "$([ $UMB_DEFAULT = 1 ] && echo "$UMBD (the default --umbrella: the committed copy of the served umbrella) has no QED64/Essential.olean — restore it (git checkout -- embedding/umbrella) or pass --umbrella <dir>" || echo "--umbrella $UMBD has no QED64/Essential.olean")"; UMBD=$(cd "$UMBD" && pwd -P)
   case "$UMBD/" in "$Q/work/adopt/"*|"$Q/work/staging/"*) refuse "--umbrella $UMBD lies inside $Q/work/adopt or work/staging, which an adoption deletes and rewrites: copy the umbrella out first";; esac
   "${H[@]}" umbrella --umbrella "$UMBD" --base-tree "$BT" || exit 2; fi # R6a: the served umbrella's bytes, before hours of bakes
 derive() { # what follows from the record: re-run once a URL release's record is fetched
@@ -176,7 +177,7 @@ if [ $REBUILD = 1 ]; then
 fi
 copy_umbrella "$USRC" "$W" "$FAT" "$L/notes.log" || fail "umbrella copy"
 [ $REBUILD = 0 ] || { step audit pkg olean-imports --audit "$W/lib-tree"; grep -E '^import-all audit|outside Init' "$L/audit.log"; }
-say base-tree; step base-tree "${H[@]}" base-tree --work "$W" --release "$W/release/release.json" --init-lib "$INITLIB" --umbrella-source "$([ $REBUILD = 1 ] && echo "rebuilt with $BID" || echo "reused from $UMBD")" $([ $FAT = 1 ] && echo --fat); cat "$L/base-tree.log"
+say base-tree; step base-tree "${H[@]}" base-tree --work "$W" --release "$W/release/release.json" --init-lib "$INITLIB" --umbrella-source "$([ $REBUILD = 1 ] && echo "rebuilt with $BID" || echo "reused from ${UMBD#"$Q"/}")" $([ $FAT = 1 ] && echo --fat); cat "$L/base-tree.log"
 [ $GATE = 0 ] || { say gate; pkg gate --artifact "$W/artifact" > "$L/gate.log" 2>&1; grep -E '^(FAIL| ok )' "$L/gate.log"; grep -q '^ ok ' "$L/gate.log" && grep -q '^GATE PASSED' "$L/gate.log" || fail "gate ($L/gate.log)"; }
 rm -rf "$STAGING"; mkdir -p "$STAGING/runtime" || fail "cannot create $STAGING"
 say bake-init; step bake-init "${BAKE[@]}" --name init --lib "$W/core-lib-slim" --reserve 1073741824
@@ -229,6 +230,7 @@ else UPLOAD="first promote the same staging into the uploading checkout's own re
 cat <<EOF
  1. cp $W/release/release.json toolchain/lean4-wasm64-release.json
  2. cp $W/base-tree.json embedding/base-tree.json   (release-manifest.mjs reads both; the record's kernel.commit is the kernel pin)
+$([ $REBUILD = 1 ] && echo "    and the umbrella's committed copy, its only off-host one once pushed (D9): rm -f embedding/umbrella/QED64/Essential.olean*; cp $USRC/Essential.olean* embedding/umbrella/QED64/" || echo "    (embedding/umbrella/QED64/ stays: the reused umbrella was checked against embedding/base-tree.json)")
  3. cp $PUB/runtime/runtime-manifest.json public/runtime/; cp $PUB/snapshots/index.json public/snapshots/; cp $PUB/profiles/index.json public/profiles/$([ "$MODE" = runtime-only ] || echo " (+ the two pack manifests)")
  4. once published: npm install --package-lock-only -D https://github.com/FawadHa1der/lean4/releases/download/$ID/lean4-wasm64-$TV.tgz
  5. nothing more for the Worker: infra/worker.js imports the record of step 1 (plan B2b); check: npx vitest run tests/unit/toolchain-pin.test.ts

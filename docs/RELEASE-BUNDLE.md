@@ -213,7 +213,7 @@ renamed into place:
 | `release.json` | the manifest of `--commit` with the shell section of `--dist` |
 | `qed64-shell.tar.gz` | every file of `dist/`, `qed64-build.json` included (5.8 MB today) |
 | `qed64-manifests.tar.gz` | the tracked digest roots from the commit's git objects: `toolchain/lean4-wasm64-release.json`, `embedding/base-tree.json`, `public/runtime/runtime-manifest.json`, `public/snapshots/index.json`, `public/profiles/*.json` (1.7 MB) |
-| `umbrella/QED64/Essential.olean`, and `.olean.server` and `.olean.private` when the umbrella has them | `baseTree.umbrellaFiles`, each checked against its sha256 and size. Lean writes the two facets only for a split `module`: the 4.34 umbrella had all three (396,664 + 96 + 96 bytes; `.olean.private` because the fat tree carries it), the 4.35 one is a single legacy `.olean` (HARDENING #79). These bytes are not in git. A downstream that rebuilds a base tree copies only that tree's `baseTree.trees.<name>.umbrella` files from here (see "Rebuilding a base tree") |
+| `umbrella/QED64/Essential.olean`, and `.olean.server` and `.olean.private` when the umbrella has them | `baseTree.umbrellaFiles`, each checked against its sha256 and size. Lean writes the two facets only for a split `module`: the 4.34 umbrella had all three (396,664 + 96 + 96 bytes; `.olean.private` because the fat tree carries it), the 4.35 one is a single legacy `.olean` (HARDENING #79). These bytes are also committed, at `embedding/umbrella/QED64/` (review D9). A downstream that rebuilds a base tree copies only that tree's `baseTree.trees.<name>.umbrella` files from here (see "Rebuilding a base tree") |
 | `SHA256SUMS` | `<sha256>  <path>` of every other file, byte-ordered (`shasum -a 256 -c SHA256SUMS` checks it) |
 
 It refuses (exit 1, one line) whatever `release-manifest.mjs` refuses, a
@@ -333,7 +333,7 @@ in order. Each one trusts only the previous one.
 ### Rebuilding a base tree
 
 Each tree is rebuilt on its own, from its own entry in `baseTree.trees`;
-the umbrella files are per tree, not the bundle's whole `umbrella/` set:
+the umbrella files are per tree, not the whole `embedding/umbrella/` set:
 
 1. For `<name>` in `baseTree.trees` (`core-lib-slim`, `lib-tree-slim`, and
    `lib-tree` only when the release was adopted with the fat tree), start
@@ -344,8 +344,11 @@ the umbrella files are per tree, not the bundle's whole `umbrella/` set:
    the toolchain release's `profiles/<id>.manifest.json` (the record's
    `packs[].manifest` for that `id`); its raw digest must be the entry's
    `rawSha256`.
-3. Copy exactly the files `trees.<name>.umbrella` lists, each from the
-   bundle's `umbrella/<path>` to `<dir>/<path>`, and nothing else.
+3. Copy exactly the files `trees.<name>.umbrella` lists, each from
+   `embedding/umbrella/<path>` at the release's `qed64.commit` (`git show
+   <commit>:embedding/umbrella/<path> > <dir>/<path>`; committed since
+   2026-11-01, review D9; for an older commit, the adopting checkout's
+   `work/adopt/<id>/umbrella/`) to `<dir>/<path>`, and nothing else.
    `core-lib-slim` lists none; `lib-tree-slim` lists the top-level
    `umbrella` (`QED64/Essential.olean`, and `.olean.server` for a split
    umbrella); `lib-tree` lists the same, plus `QED64/Essential.olean.private`
