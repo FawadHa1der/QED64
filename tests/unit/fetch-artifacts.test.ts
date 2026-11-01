@@ -63,15 +63,12 @@ const binaries = new Map<string, Buffer>([
   [snapUrl.slice(1), snapz],
 ]);
 const groupOf = (rel: string) => rel.split("/")[0]!;
-/** The files written from tracked bytes, never fetched (plan.copies, in group order): the digest-named runtime
- * manifest, and the per-build copies of the profile and snapshot indexes a pinned shell falls back on (HARDENING #64). */
+/** The files written from tracked bytes, never fetched (plan.copies): the digest-named runtime manifest only.
+ * No per-build index copies since 2026-11 (architecture review D2: QED64's indexes ship in each deploy). */
 const COPIES = new Map<string, string>([
   [`runtime/runtime-manifest.${buildId}.json`, JSON.stringify(runtimeManifest, null, 2)],
-  [`snapshots/profiles-index.${buildId}.json`, JSON.stringify(profileIndex, null, 2)],
-  [`snapshots/index.${buildId}.json`, JSON.stringify(snapshotIndex, null, 2)],
 ]);
 const copyBytes = [...COPIES.values()].reduce((n, t) => n + Buffer.byteLength(t), 0);
-const SNAPSHOT_COPY = `snapshots/index.${buildId}.json`;
 
 function writeTree(dir: string, files: Iterable<readonly [string, Buffer | string]>) {
   for (const [rel, data] of files) {
@@ -175,14 +172,10 @@ describe("planFromManifests", () => {
     expect(plan.wholes.map((w) => [w.label, w.rels.length])).toEqual([["runtime lean.js", 2], ["runtime lean.wasm", 1], ["core transport", 2]]);
     expect(plan.copies.map((c) => c.rel)).toEqual([...COPIES.keys()]);
     for (const c of plan.copies) expect(Buffer.from(c.data).toString("utf8"), c.rel).toBe(COPIES.get(c.rel));
-    expect(plan.copies.map((c) => [c.group, c.from])).toEqual([["runtime", "runtime/runtime-manifest.json"], ["profiles", "profiles/index.json"], ["snapshots", "snapshots/index.json"]]);
+    expect(plan.copies.map((c) => [c.group, c.from])).toEqual([["runtime", "runtime/runtime-manifest.json"]]);
     expect(plan.buildId).toBe(buildId);
-    // an index whose entries name no runtime, or several, gets no copy (the shell reads the mutable path)
-    type Entry = { name: string; runtime?: string };
-    for (const edit of [(e: Entry[]) => { delete e[0]!.runtime; }, (e: Entry[]) => { e.push({ ...e[0]!, name: "x", runtime: "wasm64-0000000000000000" }); }]) {
-      const m = manifestsDir(({ snapshots }) => edit(snapshots.snapshots as Entry[]));
-      expect((await planFromManifests(m, ["snapshots"])).copies).toEqual([]);
-    }
+    // the snapshots and profiles groups write no copy (D2: no per-build index copies)
+    expect((await planFromManifests(manifestsDir(), ["profiles", "snapshots"])).copies).toEqual([]);
     expect((await planFromManifests(manifestsDir(), ["snapshots"])).items.map((i) => i.rel)).toEqual([snapUrl.slice(1)]);
   });
 
@@ -203,7 +196,7 @@ describe("fetchArtifacts", () => {
     expect(list(out)).toEqual([...binaries.keys(), ...COPIES.keys()].sort());
     for (const [rel, b] of binaries) expect(fs.readFileSync(path.join(out, rel)).equals(b), rel).toBe(true);
     for (const [rel, text] of COPIES) expect(fs.readFileSync(path.join(out, rel), "utf8"), rel).toBe(text);
-    expect(r.lines).toContain(`fetch-artifacts: wrote snapshots/profiles-index.${buildId}.json (${Buffer.byteLength(COPIES.get(`snapshots/profiles-index.${buildId}.json`)!)} bytes, the tracked profiles/index.json)`);
+    expect(r.lines).toContain(`fetch-artifacts: wrote runtime/runtime-manifest.${buildId}.json (${Buffer.byteLength(COPIES.get(`runtime/runtime-manifest.${buildId}.json`)!)} bytes, the tracked runtime/runtime-manifest.json)`);
     expect(hits.every((h) => h.startsWith("/site/"))).toBe(true);
     expect(r.lines).toContain(`fetch-artifacts: runtime: 3 files, 168 bytes from ${origin()}`);
     expect(r.lines.filter((l) => l.startsWith("fetch-artifacts: verified "))).toHaveLength(3);
@@ -325,7 +318,7 @@ describe("fetchArtifacts", () => {
     expect(r.message).toBe("");
     expect(r.lines).toContain(`fetch-artifacts: removed snapshots/${dead}, a temp file left by process 99999999`);
     expect(r.lines.filter((l) => l.includes(" removed "))).toHaveLength(1);
-    expect(list(out)).toEqual([`snapshots/${live}`, `snapshots/${other}`, snapUrl.slice(1), SNAPSHOT_COPY].sort());
+    expect(list(out)).toEqual([`snapshots/${live}`, `snapshots/${other}`, snapUrl.slice(1)].sort());
     const markers = SPECS["fetch-artifacts"]!.markers.filter((m) => m.stream === "stderr");
     for (const line of r.lines) expect(markers.some((m) => m.regex.test(line)), line).toBe(true);
   });
@@ -349,11 +342,11 @@ describe("the CLI", () => {
     const sink = { out: (s: string) => io.out.push(s), err: (s: string) => io.err.push(s) };
     const out = outDir();
     expect(await main(["--out", out, "--manifests", manifestsDir(), "--origin", origin(), "--only", "snapshots"], sink)).toBe(0);
-    expect(io.out).toEqual([`FETCH OK 2 files, ${snapz.length + Buffer.byteLength(COPIES.get(SNAPSHOT_COPY)!)} bytes (2 fetched, 0 already present)`]);
+    expect(io.out).toEqual([`FETCH OK 1 files, ${snapz.length} bytes (1 fetched, 0 already present)`]);
     io.out.length = 0;
     expect(await main(["--out", out, "--only", "runtime,bogus"], sink)).toBe(2);
     expect(io.out).toEqual(["FETCH FAILED --only runtime,bogus: not a comma list of runtime, profiles, snapshots"]);
-    expect(list(out)).toEqual([snapUrl.slice(1), SNAPSHOT_COPY].sort());
+    expect(list(out)).toEqual([snapUrl.slice(1)]);
   });
 
   test("the default --out inside node_modules (an installed package) refuses (2) before anything is read, fetched or written", async () => {
@@ -372,7 +365,7 @@ describe("the CLI", () => {
     io.out.length = 0;
     const out = outDir();
     expect(await main(["--out", out, "--manifests", manifests, "--origin", origin(), "--only", "snapshots"], sink, { repoRoot: installed })).toBe(0);
-    expect(list(out)).toEqual([snapUrl.slice(1), SNAPSHOT_COPY].sort());
+    expect(list(out)).toEqual([snapUrl.slice(1)]);
   });
 
   test("FETCH FAILED is one stdout line even when the reason quotes a newline (a release.json that is an HTML page)", async () => {
@@ -432,7 +425,7 @@ describe("the CLI", () => {
     expect(a.stdout).toBe(`FETCH FAILED ${snapUrl.slice(1)}: HTTP 404 from ${origin()}${snapUrl.slice(1)}\n`);
     const b = await exec(["--out", out, "--manifests", manifestsDir(), "--release", releaseDir(), "--only=runtime,profiles"]);
     expect(b.code).toBe(0);
-    expect(b.stdout).toMatch(/^FETCH OK 7 files, \d+ bytes \(\d+ fetched, \d+ already present\)\n$/);
+    expect(b.stdout).toMatch(/^FETCH OK 6 files, \d+ bytes \(\d+ fetched, \d+ already present\)\n$/);
     expect(b.stderr).not.toMatch(/WARNING/);
   });
 });

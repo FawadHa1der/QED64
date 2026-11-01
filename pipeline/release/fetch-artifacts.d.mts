@@ -20,6 +20,8 @@ export interface PlannedFile { group: ArtifactGroup; rel: string; bytes: number;
 export interface ArtifactPlan {
   items: PlannedFile[];
   wholes: { label: string; rels: string[]; bytes: number; sha256: string }[];
+  /** Files written from tracked bytes, never fetched: the digest-named runtime manifest
+   * (group "runtime"; no per-build index copies since 2026-11, architecture review D2). */
   copies: { group: ArtifactGroup; rel: string; data: Uint8Array; from: string }[];
   manifests: { group: ArtifactGroup; rel: string; data: Uint8Array }[];
   buildId: string | null;

@@ -656,6 +656,7 @@ Rule: every file a deployed shell reads must be either immutable for its pairing
 - `scripts/deploy-guard.mjs` (R19a) refuses a deploy whose `.snapz` are not live yet, so the order is still upload, then push.
 - The reader rule (`pairedCopyOr`, `pairedBuildId`, `pinnedBuildId`) and `isImmutable`'s revalidate rule stay: lean4game passes the options, and its site and the showcase's still publish copies.
 - QED64's earlier copies, and R2's `snapshots/index.json` and `profiles/index.json`, stay frozen at its bucket root while a pre-change Worker version is a rollback target (until the next runtime adoption after D2 is live and stable).
+- 2026-11-01, the first clean-up: `fetch-artifacts` writes no per-build index copies any more (the digest-named `runtime-manifest.<buildId>.json` stays; docs/CLI-CONTRACT.md changelog), so a served tree it fills has none. `unpaired-snapshot.mjs --scenario rescued` answers a copy the server lacks with the served `index.json`'s own bytes, unrewritten (the pairing the shell pins, which a site's copy would hold), so the lanes no longer need local copies (the "a served tree for the lanes needs them" of the lanes note above no longer holds).
 
 ### 65. A rejected pinned runtime-manifest fetch failed the boot (fixed)
 

@@ -16,8 +16,12 @@
 // gets the rewritten index.json's bytes for it (no 404 line in the console),
 // as a site whose copy names the other runtime too. `--scenario rescued`
 // replays the #64 incident instead (an old shell meeting a new mutable index):
-// only index.json is rewritten, the copy is served as it is, and the page must
-// boot from the copy: ready, 0 deaths, one runtime start, the .snapz fetched.
+// only index.json is rewritten, the copy is served as the server has it, and
+// the page must boot from the copy: ready, 0 deaths, one runtime start, the
+// .snapz fetched. A server without a copy (QED64 publishes none since its
+// indexes ship in each deploy, architecture review D2; a local served tree
+// has none either) gets the served index.json's own bytes for it, unrewritten:
+// the pairing this shell pins, which a site's copy would hold.
 // A boot that reaches elaborating logs one EMPTY console.error (Lean's own
 // empty RequestCancelled reply through monaco-vscode-api's notification
 // service): known only when paired one-to-one with its own -32800 reply, from
@@ -107,9 +111,11 @@ try {
   };
   await context.route((u) => (/\/index\.json$/.test(u.pathname) || COPY.test(u.pathname)) && !u.pathname.startsWith("/profiles/"), async (route) => {
     const copy = COPY.test(new URL(route.request().url()).pathname);
-    if (copy && RESCUED) { // the copy as the server has it
-      const res = await route.fetch();
-      intercepted.push({ t: at(), url: route.request().url(), copy, status: res.status(), rewritten: 0 });
+    if (copy && RESCUED) { // the copy as the server has it; a server without one (QED64 publishes none since its indexes ship in each deploy) gets the served index.json's own bytes, unrewritten: the pairing this shell pins, which a site's copy would hold
+      let res = await route.fetch();
+      let synthesized = false;
+      if (res.status() !== 200) { res = await route.fetch({ url: route.request().url().replace(COPY, "/index.json") }); synthesized = true; }
+      intercepted.push({ t: at(), url: route.request().url(), copy, status: res.status(), rewritten: 0, ...(synthesized ? { synthesized } : {}) });
       await route.fulfill({ response: res });
       return;
     }
@@ -198,7 +204,7 @@ const mutable = row.intercepted.filter((i) => !i.copy);
 const copies = row.intercepted.filter((i) => i.copy);
 const checks = RESCUED ? [
   ["the served index.json was intercepted and rewritten", mutable.some((i) => i.rewritten > 0)],
-  ["the per-build copy was read, as the server has it (200)", copies.length > 0 && copies.every((i) => i.status === 200)],
+  ["the per-build copy was read (200: the server's, or the paired index's bytes when it has none)", copies.length > 0 && copies.every((i) => i.status === 200)],
   ["no renderer crash", row.crashedAt === null],
   ["the page reached ready", row.readyAt !== null],
   ["0 deaths", (L.deaths ?? 0) === 0 && L.lastDeath == null],
