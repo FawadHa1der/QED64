@@ -61,6 +61,19 @@ at the origin root.
   the deploy refuse when a push names snapshots the live origin does not
   serve yet, and nothing deploys. Upload them, then start the workflow again
   ('Run workflow' on `main`).
+  The workflow deploys one commit at a time, in push order, and only main's
+  head. Its runs share one concurrency group (`qed64-deploy`,
+  `cancel-in-progress: false`): a run waits for the deploy before it, a
+  newer push replaces a run still waiting, and a running deploy is never
+  cancelled midway. A manual 'Run workflow' deploys only on `main`: the
+  job's `if: github.ref == 'refs/heads/main'` skips it on any other branch.
+  Just before `scripts/deploy-app.sh`, a one-line `git ls-remote` check
+  refuses (exit 1, `deploy refused, <sha> is no longer the head of main`)
+  unless the run's commit is still the head of `main`. So a 'Re-run jobs' of
+  an older run, or a run that waited behind a newer push, never deploys over
+  a newer commit; the newer head deploys in its own run. After a guard
+  refusal, upload, then use 'Run workflow' on `main` rather than re-running
+  the refused run, which deploys only while its commit is still the head.
 
 ### The deploy script
 
@@ -136,10 +149,12 @@ the exit code of the step that failed. 1 also comes from a failing step
 script's header.
 `tests/unit/deploy-script.test.ts` pins `deploy.yml`'s step order (every
 `run:` line, named or block, must be a one-line `- run:` step, and no line
-but the script's step names `build:site` or `typecheck:site`), that no
-other tracked file outside docs and tests runs the prune or `wrangler
-deploy`, and the script itself, run with stub `npm`/`npx`/`node` commands
-(the guard in its place, and a guard refusal that stops the deploy).
+but the script's step names `build:site` or `typecheck:site`), its
+concurrency group, the main-only `if:` and the head check just before the
+script's step, that no other tracked file outside docs and tests runs the
+prune or `wrangler deploy`, and the script itself, run with stub
+`npm`/`npx`/`node` commands (the guard in its place, and a guard refusal
+that stops the deploy).
 `tests/unit/deploy-guard.test.ts` runs the guard against a local http
 server: live, no length, a 404, a wrong length, a retried 503, a closed
 port, refused entry URLs and indexes, the skip, and HEAD only.

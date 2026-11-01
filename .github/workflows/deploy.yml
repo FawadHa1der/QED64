@@ -3,14 +3,21 @@
 # Artifacts (multi-GB in R2) are uploaded manually via
 # scripts/upload-artifacts.sh when a runtime or snapshot actually changes —
 # GitHub runners neither need nor want the multi-GB payload.
-# Required repo secret: CLOUDFLARE_API_TOKEN (Workers+R2 edit permissions).
+# Required repo secrets: CLOUDFLARE_API_TOKEN (Workers Scripts: Edit only, no R2 permission: docs/DEPLOY.md "Security model") and CLOUDFLARE_ACCOUNT_ID.
 name: deploy
 on:
   push:
     branches: [main]
   workflow_dispatch:
+# One deploy at a time: a run waits for the deploy before it, and a newer run replaces one still
+# waiting, so deploys land in push order. A running deploy is never cancelled midway.
+concurrency:
+  group: qed64-deploy
+  cancel-in-progress: false
 jobs:
   deploy:
+    # workflow_dispatch runs on whatever branch it is given: only main deploys.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     needs: []
     steps:
@@ -29,6 +36,9 @@ jobs:
       # with the step order below by tests/unit/deploy-script.test.ts.
       - run: npm ci --prefix frontend
       - run: npx tsc --noEmit && npx vitest run tests/unit
+      # A re-run of an older run, or one that waited behind a newer push, must not deploy over a
+      # newer commit: only the current head of main deploys.
+      - run: test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$GITHUB_SHA" || { echo "deploy refused, $GITHUB_SHA is no longer the head of main (the newer head deploys in its own run)" >&2; exit 1; }
       # The one deploy path, shared with operators: typecheck:site, build:site,
       # the artifact prune, the 25 MiB size check, the live-snapshot guard
       # (scripts/deploy-guard.mjs, R19a) and `npx wrangler deploy` all live

@@ -1,4 +1,5 @@
-// One deploy path (plan step A4): .github/workflows/deploy.yml installs both
+// One deploy path (plan step A4): .github/workflows/deploy.yml (one run at a
+// time, main only, and only while its commit is still main's head) installs both
 // roots, runs the tests, then calls scripts/deploy-app.sh, which alone holds
 // typecheck:site → build:site → the artifact prune → the size check → the
 // live-snapshot guard (scripts/deploy-guard.mjs, R19a; its own test is
@@ -55,6 +56,17 @@ describe("deploy.yml calls the one deploy script", () => {
   it("no line but the script's step runs build:site or typecheck:site", () => {
     const lines = text.split("\n").filter((l) => !isComment(l) && l.trim() !== `- run: bash ${SCRIPT}`);
     for (const l of lines) expect(l).not.toMatch(/build:site|typecheck:site/);
+  });
+
+  // A concurrency group serializes the runs; the job-level `if:` stops a workflow_dispatch of another
+  // branch; the head check stops a re-run of an older run (or one that waited behind a newer push) from
+  // deploying over a newer commit, which the group alone does not.
+  it("serializes deploys in push order; only main's head deploys", () => {
+    expect(text).toMatch(/^concurrency:\n {2}group: qed64-deploy\n {2}cancel-in-progress: false$/m);
+    expect(text).toMatch(/^ {4}if: github\.ref == 'refs\/heads\/main'$/m);
+    const head = steps.findIndex((s) => s.includes("git ls-remote origin refs/heads/main") && s.includes('"$GITHUB_SHA"'));
+    expect(head, steps.join("\n")).toBeGreaterThan(at("vitest run tests/unit"));
+    expect(head).toBe(steps.length - 2);
   });
 
   it("hands the script wrangler's auth variables", () => {
