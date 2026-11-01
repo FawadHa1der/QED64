@@ -276,6 +276,7 @@ Rules: a liveness signal must come from the component whose liveness you need â€
 - `status().liveness.rescues` stays and is 0, and the `liveness` event of kind `rescue` is gone.
 - Trade-off: about 4,320 field edits against the original ~1 freeze per 4,400 is too small a sample to prove lost wakeups gone, and this deletes the only field signal for them. The kick still heals one invisibly, and a `wedged` death remains the signal.
 - `liveness-faults.mjs` lost-wakeups-healed now passes on: notifications dropped, every round settles, no death.
+- (architecture review K6, QED64 half) The exit entries are matched by identity wherever the glue puts them, and the boot line names each (`FileWorker exit hooked (_proc_exit at [0], exitOnMainThread at [1])`); one missing logs a `[boot] WARNING` instead of claiming the hook. The glue names the worker reads are listed in docs/ARCHITECTURE.md "Glue internals the worker reads".
 
 
 ### 53. A thread parked inside wasm is a Worker that outlives its page by two seconds

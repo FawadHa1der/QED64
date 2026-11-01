@@ -192,6 +192,28 @@ worker normalizes at exactly two helpers (`asPtr`, `asNum` — the latter
 range-checked below 2^53) and reads Lean objects only through `getValue`
 (the build does not export the HEAP views).
 
+### Glue internals the worker reads
+
+These names of the Emscripten glue are not exports. They are visible only
+because the glue is a classic, non-MODULARIZE script, whose top-level names
+are this worker's globals; a MODULARIZE build hides them (`lean.worker.js`
+`instrumentRuntimeMailbox`).
+
+| Name | Read by | Without it |
+|---|---|---|
+| the `proxiedFunctionTable` entries equal to `_proc_exit` and `exitOnMainThread` (by identity, any index) | `instrumentRuntimeMailbox` (preRun) | no FileWorker-exit hook: the only detector of `#eval IO.Process.exit` (HARDENING #52); a `[boot] WARNING` names the missing one |
+| `waitAsyncPolyfilled`, `checkMailbox` | the same | message mode off: the glue's single waitAsync waiter stays (#52 layer 2); a `[boot] WARNING` |
+| `__emscripten_check_mailbox` (a global; on b081e7c also `Module.__emscripten_check_mailbox`) | `kickMailbox`, every liveness tick | no kick, the only heal for a lost wakeup; silent |
+| `PThread.unusedWorkers`, `PThread.pthreads` (`Module.PThread` or the global) | `poolSample` | pool sample −1: #59's pool hold never engages (`lib/edit-coalescer.ts`) |
+| `PThread.getNewWorker`, `returnWorkerToPool`, `allocateUnusedWorker`, `runningWorkers`, `finishedThreads` | `instrumentPoolGrowth` (a diagnostic; R7b) | no `[pool] grew` lines |
+| `TTY.ttys` (or `Module.TTY`) | `installStdoutTap` | the boot fails loudly |
+| `runtimeKeepalivePush` | `onRuntimeInitialized` | `[boot] WARNING: runtimeKeepalivePush not in scope`; the first proxied call exits the runtime |
+| `ABORT` | `kickMailbox` guard | none (a guard) |
+
+The kernel's `runtime-contract.mjs` checks the first four rows statically
+(K6, kernel side). QED64 checks the hook and message mode at every runtime
+change with two lanes (docs/REBUILD.md "Test before landing").
+
 ## Transport (resident; the page's only transport since 2026-09-04)
 
 One real `lean --worker` runs for the life of the tab. The page never

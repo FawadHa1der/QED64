@@ -20,7 +20,7 @@ interface Liveness {
   counters: Counters;
 }
 type Action = null | { kind: "probe"; msg: Msg } | { kind: "stall"; silentMs: number } | { kind: "dead"; silentMs: number };
-interface Mailbox { mode: string; exitHooked: boolean }
+interface Mailbox { mode: string; exitHooked: boolean; exitEntries: { name: string; index: number }[] }
 interface Hooks {
   LIVENESS: Liveness["cfg"];
   LIVENESS_PROBE_PREFIX: string;
@@ -30,6 +30,8 @@ interface Hooks {
   livenessTick(L: Liveness, now: number, phase: string, docOpen?: boolean): Action;
   kickMailbox(): { kicked: boolean };
   instrumentRuntimeMailbox(): Mailbox;
+  mailboxBootLine(m: Mailbox): string;
+  EXIT_ENTRY_NAMES: readonly string[];
   runtimeMailbox: Mailbox;
   start(): void;
   stop(): void;
@@ -269,15 +271,28 @@ describe("liveness: boot-time instrumentation of the glue", () => {
     expect(sandbox.checkMailbox).toBe(checkMailbox);
     expect(table[0]).toBe(entry);
   });
-  it("reports a FileWorker exit (proxied `_proc_exit` / `exitOnMainThread`) as a death in resident mode, before the glue swallows it", () => {
-    for (const index of [0, 1]) {
-      const { sandbox, hooks: h, posted, resident } = loadWorker();
-      const procExit = () => { throw Object.assign(new Error("exit"), { name: "ExitStatus" }); };
-      const exitOnMainThread = () => { throw Object.assign(new Error("exit"), { name: "ExitStatus" }); };
-      sandbox._proc_exit = procExit;
-      sandbox.exitOnMainThread = exitOnMainThread;
-      const table = [procExit, exitOnMainThread, () => 0];
-      sandbox.proxiedFunctionTable = table;
+  /** A sandbox whose glue defines both exit functions, with `table` built from them (the K6 tests' setup). */
+  function withExits(build: (procExit: () => never, exitOnMainThread: () => never) => unknown[]) {
+    const w = loadWorker();
+    const procExit = (): never => { throw Object.assign(new Error("exit"), { name: "ExitStatus" }); };
+    const exitOnMainThread = (): never => { throw Object.assign(new Error("exit"), { name: "ExitStatus" }); };
+    w.sandbox._proc_exit = procExit;
+    w.sandbox.exitOnMainThread = exitOnMainThread;
+    const table = build(procExit, exitOnMainThread);
+    w.sandbox.proxiedFunctionTable = table;
+    return { ...w, table };
+  }
+  it("reports a FileWorker exit (proxied `_proc_exit` / `exitOnMainThread`, matched by identity at any index) as a death in resident mode, before the glue swallows it", () => {
+    // Neither entry at the index the glue used to give it (K6): found by identity, not position.
+    const order = (procExit: () => never, exitOnMainThread: () => never) => [() => 0, exitOnMainThread, () => 0, procExit];
+    {
+      const { hooks: h } = withExits(order);
+      const m = h.instrumentRuntimeMailbox();
+      expect(m.exitEntries).toEqual([{ name: "exitOnMainThread", index: 1 }, { name: "_proc_exit", index: 3 }]);
+      expect(m.exitHooked).toBe(true);
+    }
+    for (const index of [1, 3]) {
+      const { hooks: h, posted, resident, table } = withExits(order);
       expect(h.instrumentRuntimeMailbox().exitHooked).toBe(true);
       // Not resident: the glue's own behaviour, no death reported here.
       expect(() => (table[index] as (c: number) => void)(5)).toThrow();
@@ -287,13 +302,38 @@ describe("liveness: boot-time instrumentation of the glue", () => {
       expect(deaths(posted).map((d) => [d.reason, d.code])).toEqual([["exit", 5]]);
     }
   });
+  it("one exit entry missing: not hooked, and the one found still reports", () => {
+    // `exitOnMainThread` is defined but absent from the table.
+    const { hooks: h, posted, resident, table } = withExits((procExit) => [procExit, () => 0]);
+    const m = h.instrumentRuntimeMailbox();
+    expect(m.exitHooked).toBe(false);
+    expect(m.exitEntries).toEqual([{ name: "_proc_exit", index: 0 }]);
+    goResident(resident);
+    expect(() => (table[0] as (c: number) => void)(5)).toThrow();
+    expect(deaths(posted).map((d) => [d.reason, d.code])).toEqual([["exit", 5]]);
+  });
+  it("the boot line names each exit entry, and keeps the prefixes the showcase's capture matches", () => {
+    const showcase = /\[boot\] (runtime mailbox|WARNING)/;
+    const full = hooks.mailboxBootLine({ mode: "message", exitHooked: true, exitEntries: [{ name: "_proc_exit", index: 0 }, { name: "exitOnMainThread", index: 1 }] });
+    expect(full).toBe("[boot] runtime mailbox: message notifications (no Atomics.waitAsync); FileWorker exit hooked (_proc_exit at [0], exitOnMainThread at [1])");
+    expect(full).toMatch(showcase);
+    const partial = hooks.mailboxBootLine({ mode: "message", exitHooked: false, exitEntries: [{ name: "_proc_exit", index: 0 }] });
+    expect(partial.startsWith("[boot] WARNING: runtime mailbox partly instrumented")).toBe(true);
+    expect(partial).toContain("exitOnMainThread not found");
+    expect(partial).toContain("_proc_exit at [0]");
+    expect(partial).toMatch(showcase);
+    // Message mode off with both entries hooked is a WARNING too (the mode is named).
+    const asBuilt = hooks.mailboxBootLine({ mode: "as built", exitHooked: true, exitEntries: [{ name: "_proc_exit", index: 0 }, { name: "exitOnMainThread", index: 1 }] });
+    expect(asBuilt).toMatch(/^\[boot\] WARNING: runtime mailbox partly instrumented \(mode as built; /);
+    expect(hooks.EXIT_ENTRY_NAMES).toEqual(["_proc_exit", "exitOnMainThread"]);
+  });
   it("does not hook entries that are not the glue's exit functions", () => {
     const { sandbox, hooks: h } = loadWorker();
     sandbox._proc_exit = () => {};
     const originals = [() => {}, () => {}];
     const table = [...originals];
     sandbox.proxiedFunctionTable = table;
-    expect(h.instrumentRuntimeMailbox()).toMatchObject({ exitHooked: false });
+    expect(h.instrumentRuntimeMailbox()).toMatchObject({ exitHooked: false, exitEntries: [] });
     expect(table[0]).toBe(originals[0]);
     expect(table[1]).toBe(originals[1]);
   });

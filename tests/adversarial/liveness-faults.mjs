@@ -10,8 +10,9 @@
 //   mailbox-mode          the worker booted with message notifications: the
 //                         glue's waitAsync flag is off, the main pthread's
 //                         `waiting_async` word was never set, the exit hook is
-//                         installed, and `status().liveness` exists from loop
-//                         open.
+//                         installed on both entries (`_proc_exit` and
+//                         `exitOnMainThread`, found by identity), and
+//                         `status().liveness` exists from loop open.
 //   idle-no-probes        a ready, idle session is never probed (25 s).
 //   long-silent-command   a ~40 s CPU-bound `#eval` that prints nothing: the
 //                         probe is answered while it runs (≥ 3 answers), no
@@ -213,7 +214,8 @@ try {
         };
       });
       const st = (await status())?.liveness ?? null;
-      const ok = m.polyfilled === true && m.waitingAsync === 0 && m.livenessArmed && m.mailbox.mode === "message" && m.mailbox.exitHooked && st !== null;
+      const bothExits = ["_proc_exit", "exitOnMainThread"].every((n) => m.mailbox.exitEntries?.some((e) => e.name === n));
+      const ok = m.polyfilled === true && m.waitingAsync === 0 && m.livenessArmed && m.mailbox.mode === "message" && m.mailbox.exitHooked && bothExits && st !== null;
       record("mailbox-mode", ok, `${JSON.stringify(m)} status.liveness=${JSON.stringify(st)}`);
     }
 

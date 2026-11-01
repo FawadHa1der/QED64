@@ -378,7 +378,9 @@ let ringRefused = 0; // frames over cap/2 the ring refused (a > 32 MiB document)
 //    `exitOnMainThread`; with the runtime keepalive held (load-bearing, see
 //    onRuntimeInitialized) the glue never calls `onExit` and swallows the
 //    ExitStatus, leaving the exiting thread blocked. The instrumented
-//    proxied-function table reports it as `died` reason "exit".
+//    proxied-function table reports it as `died` reason "exit" (the table's
+//    `_proc_exit` and `exitOnMainThread` entries, matched by identity at any
+//    index).
 // ---------------------------------------------------------------------------
 const LIVENESS = {
   tickMs: 1000,
@@ -448,7 +450,13 @@ let livenessTimer = null;
 let livenessPublished = "";
 
 // The runtime thread's mailbox as instrumented at boot: its notification mode and the FileWorker exit hook.
-const runtimeMailbox = { mode: "as built", exitHooked: false };
+// `exitEntries`: each hooked table entry, `{ name, index }` (K6).
+const runtimeMailbox = { mode: "as built", exitHooked: false, exitEntries: [] };
+
+/** The glue's two entries a FileWorker exit reaches this thread through (HARDENING #52): `_proc_exit` (the main
+ * loop's own exit, proxied SYNC) and `exitOnMainThread` (a C `exit()` on any thread, proxied async). Found in the
+ * proxied-function table by identity, wherever the glue put them; never by position (K6). */
+const EXIT_ENTRY_NAMES = Object.freeze(["_proc_exit", "exitOnMainThread"]);
 
 /** Boot (preRun, i.e. before initRuntime: the main thread's mailbox init, a
  * static constructor, arms the first waiter and reads the mode then). The
@@ -458,25 +466,39 @@ const runtimeMailbox = { mode: "as built", exitHooked: false };
 function instrumentRuntimeMailbox() {
   const T = self.proxiedFunctionTable;
   if (Array.isArray(T)) {
+    const nameOf = new Map();
+    for (const name of EXIT_ENTRY_NAMES) if (typeof self[name] === "function") nameOf.set(self[name], name);
     for (let i = 0; i < T.length; i++) {
       const fn = T[i];
-      if (typeof fn !== "function") continue;
-      // [0] `_proc_exit` and [1] `exitOnMainThread`: a FileWorker exit. Both
-      // throw ExitStatus (swallowed by the glue); report the death first.
-      const exits = (i === 0 && fn === self._proc_exit) || (i === 1 && fn === self.exitOnMainThread);
-      if (!exits) continue; // every other entry is left as the glue built it
-      runtimeMailbox.exitHooked = true;
+      const name = typeof fn === "function" ? nameOf.get(fn) : undefined;
+      if (name === undefined) continue; // every other entry is left as the glue built it
+      runtimeMailbox.exitEntries.push({ name, index: i });
+      // Both throw ExitStatus (swallowed by the glue); report the death first.
       T[i] = function proxiedExit(code) {
         if (residentMode && !died) die(Number(code), "exit", `lean --worker exited with code ${Number(code)}`);
         return fn.apply(this, arguments);
       };
     }
   }
+  // Hooked only when BOTH are: one missing is a death nobody reports, and the boot line names which.
+  runtimeMailbox.exitHooked = EXIT_ENTRY_NAMES.every((n) => runtimeMailbox.exitEntries.some((e) => e.name === n));
   if (typeof self.waitAsyncPolyfilled === "boolean" && typeof self.checkMailbox === "function") {
     self.waitAsyncPolyfilled = true;
     runtimeMailbox.mode = "message";
   }
   return runtimeMailbox;
+}
+
+/** The instrumentation's boot line. The widgets showcase's field capture matches only its prefix
+ * (`[boot] runtime mailbox` / `[boot] WARNING`). */
+function mailboxBootLine(m) {
+  const where = EXIT_ENTRY_NAMES.map((n) => {
+    const at = m.exitEntries.filter((e) => e.name === n).map((e) => `[${e.index}]`);
+    return at.length ? `${n} at ${at.join(", ")}` : `${n} not found`;
+  }).join(", ");
+  return m.mode === "message" && m.exitHooked
+    ? `[boot] runtime mailbox: message notifications (no Atomics.waitAsync); FileWorker exit hooked (${where})`
+    : `[boot] WARNING: runtime mailbox partly instrumented (mode ${m.mode}; exit hook: ${where})`;
 }
 
 /** Serve this (Emscripten main) thread's mailbox now: the work a lost
@@ -1538,13 +1560,7 @@ async function boot(msg) {
         function runtimeMailboxMode() {
           // HARDENING #52: before initRuntime arms this thread's first
           // mailbox waiter (see instrumentRuntimeMailbox).
-          const m = instrumentRuntimeMailbox();
-          event(null, "log", {
-            stream: "stderr",
-            text: m.mode === "message" && m.exitHooked
-              ? "[boot] runtime mailbox: message notifications (no Atomics.waitAsync); FileWorker exit hooked"
-              : `[boot] WARNING: runtime mailbox partly instrumented (mode ${m.mode}, exit hook ${m.exitHooked})`,
-          });
+          event(null, "log", { stream: "stderr", text: mailboxBootLine(instrumentRuntimeMailbox()) });
         },
         function mountEverything() {
           progress(requestId, "filesystem", "Mounting verified library packs");
@@ -2108,7 +2124,7 @@ self.__qed64TestExports = {
   // Lean-side liveness under test (tests/unit/liveness.test.ts): the pure
   // bookkeeping with a fake clock, the mailbox kick, the boot instrumentation,
   // and the live loop (start, one step, stop) with its state.
-  liveness: { LIVENESS, LIVENESS_PROBE_PREFIX, createLiveness, livenessClientRequest, livenessServerFrame, livenessTick, kickMailbox, instrumentRuntimeMailbox, runtimeMailbox, state: () => liveness, step: () => livenessStep(), start: () => startLiveness(), stop: () => stopLiveness() },
+  liveness: { LIVENESS, LIVENESS_PROBE_PREFIX, createLiveness, livenessClientRequest, livenessServerFrame, livenessTick, kickMailbox, instrumentRuntimeMailbox, mailboxBootLine, EXIT_ENTRY_NAMES, runtimeMailbox, state: () => liveness, step: () => livenessStep(), start: () => startLiveness(), stop: () => stopLiveness() },
   // Runtime lifetime locks under test (tests/unit/runtime-locks.test.ts): the
   // predecessor wait against a fake navigator.locks, the named-predecessor
   // validation (HARDENING #68), and the pthread prelude.

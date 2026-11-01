@@ -246,6 +246,13 @@ gauntlets against `tests/adversarial/resident-url.sh` in that checkout. One gate
 two concurrent runs kill each other's browsers. The kernel commit must be on
 `origin/qed64-wasm64` first.
 
+**Two lanes pin the glue internals the worker reads** (docs/ARCHITECTURE.md
+"Glue internals the worker reads"; a drift there logs a `[boot] WARNING` or
+nothing): `tests/adversarial/liveness-faults.mjs --url <the isolated tree's dev url> --only 'mailbox-mode|exit-detected'`
+through the host's browser lock, and
+`QED64_LEAN_ARTIFACT=$W/artifact QED64_INIT_SNAP=$W/snapshot/init.snap npx vitest run tests/integration/fileworker-exit.test.ts`.
+Both must pass on the new runtime before it lands.
+
 **What one promote moves.** `promote-staging.mjs --staging work/staging/<buildId>`
 verifies everything staged before it touches `public/` (sizes, SHA-256,
 snapshot ↔ runtime pairing), copies the content-addressed files additively

@@ -15,15 +15,15 @@
 //   eval-exit      page didChange with `#eval (IO.Process.exit 3 : IO Unit)`:
 //                  the user-reachable exit. C exit() is the glue's `exit`
 //                  import (exitJS), which on a pthread proxies
-//                  exitOnMainThread (table [1], async) → expect code 3.
+//                  the table's `exitOnMainThread` entry (async) → expect code 3.
 //   exit           raw `exit` notification into the ring: the main loop
 //                  returns, workerMain calls IO.Process.forceExit 0 → _Exit →
-//                  proc_exit, proxied as _proc_exit (table [0], SYNC) → code 0.
+//                  proc_exit, proxied as the table's `_proc_exit` entry (SYNC) → code 0.
 //                  (Not page-reachable: the front door never forwards `exit`.)
 //   shutdown-exit  raw `shutdown` request (no params) then `exit`: the
 //                  FileWorker's main loop has no case for a param-less request
 //                  ("Got invalid JSON-RPC message"), so it dies of the
-//                  shutdown with forceExit 1 → [0], code 1.
+//                  shutdown with forceExit 1 → `_proc_exit`, code 1.
 //   batch-eval-exit  a batch `compile` of the #eval before any arm: what the
 //                  non-resident path does with an exit (informational).
 //
@@ -50,10 +50,11 @@ import { fileURLToPath } from "node:url";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const arg = (n, d) => { const i = process.argv.indexOf(`--${n}`); return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : d; };
 const has = (f) => process.argv.includes(`--${f}`);
+// `via`: the proxied-function table entry the exit goes through, by name (K6: the worker finds it by identity).
 const SCENARIOS = {
-  "eval-exit": { code: 3, via: 1 },
-  exit: { code: 0, via: 0 },
-  "shutdown-exit": { code: 1, via: 0 },
+  "eval-exit": { code: 3, via: "exitOnMainThread" },
+  exit: { code: 0, via: "_proc_exit" },
+  "shutdown-exit": { code: 1, via: "_proc_exit" },
   "batch-eval-exit": { code: 3, via: null },
 };
 const SCENARIO = arg("scenario", "exit");
@@ -198,14 +199,17 @@ function prepareGlue() {
     for (const part of artifactDir.split("/").filter(Boolean)) { dir += `/${part}`; try { FS.mkdir(dir); } catch { /* exists */ } }
     FS.mount(FS.filesystems.NODEFS, { root: artifactDir }, artifactDir);
     const T = globalThis.proxiedFunctionTable;
-    const originals = [globalThis._proc_exit, globalThis.exitOnMainThread];
-    harness.hookInstalled = T[0] !== originals[0] && T[1] !== originals[1];
-    for (const i of [0, 1]) {
+    // The worker's own record (K6: its exit entries, found by identity at any index), read in the shared global.
+    const mailbox = globalThis.__qed64TestExports.liveness.runtimeMailbox;
+    const entries = mailbox.exitEntries;
+    const originals = { _proc_exit: globalThis._proc_exit, exitOnMainThread: globalThis.exitOnMainThread };
+    harness.hookInstalled = mailbox.exitHooked && entries.every(({ name, index }) => T[index] !== originals[name]);
+    for (const { name, index } of entries) {
       // The control: the glue's own entries, i.e. no exit hook (the rest of
       // the worker's instrumentation, message mode, stays).
-      const inner = HOOK ? T[i] : originals[i];
-      T[i] = function exitObserved(code) {
-        harness.proxiedExits.push({ t: Date.now(), index: i, code: Number(code) });
+      const inner = HOOK ? T[index] : originals[name];
+      T[index] = function exitObserved(code) {
+        harness.proxiedExits.push({ t: Date.now(), name, index, code: Number(code) });
         return inner.apply(this, arguments);
       };
     }
@@ -253,7 +257,7 @@ function finish(code, why) {
   const exp = SCENARIOS[SCENARIO];
   const r = {
     ok: code === 0, why, scenario: SCENARIO, hook: HOOK, hookInstalled: harness.hookInstalled,
-    expected: { code: exp.code, tableIndex: exp.via },
+    expected: { code: exp.code, entry: exp.via },
     proxiedExits: harness.proxiedExits.map((p) => ({ ...p, t: p.t - t0 })),
     onExitCalls: harness.onExitCalls.map((p) => ({ ...p, t: p.t - t0 })),
     died: st.died.map((d) => ({ ...d, t: d.t - t0, afterTriggerMs: st.triggeredAt ? d.t - st.triggeredAt : null })),
@@ -354,7 +358,7 @@ if (HOOK) {
     mode: d?.mode === "resident",
     immediate: d !== null && d.t - st.triggeredAt < 5000,
     once: st.died.length === 1,
-    proxied: harness.proxiedExits.some((p) => p.code === expected.code && (expected.via === null || p.index === expected.via)),
+    proxied: harness.proxiedExits.some((p) => p.code === expected.code && (expected.via === null || p.name === expected.via)),
     onExitSilent: harness.onExitCalls.length === 0, // the glue's own path never fires with the keepalive held
     editDropped: (atDeath.worker.frontDoor.dropped ?? 0) < (verdict.end.worker.frontDoor.dropped ?? 0),
     ringRefused: ringAfter.startsWith("refused"),

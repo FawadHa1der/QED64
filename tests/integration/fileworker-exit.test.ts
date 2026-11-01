@@ -43,7 +43,7 @@ interface Verdict {
   ok: boolean;
   why: string;
   hookInstalled: boolean;
-  proxiedExits: { index: number; code: number }[];
+  proxiedExits: { name: string; index: number; code: number }[];
   onExitCalls: { code: number }[];
   died: Died[];
   latencyMs?: number | null;
@@ -74,14 +74,14 @@ function run(...args: string[]): Verdict {
 }
 
 describeIf("resident FileWorker exit → died 'exit' (real glue, real worker, under Node)", () => {
-  test("`exit` notification: forceExit 0 → proxied _proc_exit [0] → died exit 0 at once", { timeout: TIMEOUT }, () => {
+  test("`exit` notification: forceExit 0 → proxied _proc_exit → died exit 0 at once", { timeout: TIMEOUT }, () => {
     const v = run("--scenario", "exit");
     expect(v.hookInstalled).toBe(true);
     expect(v.checks).toBeDefined();
     expect(v.died).toHaveLength(1);
     expect(v.died[0]).toMatchObject({ reason: "exit", code: 0, mode: "resident" });
     expect(v.latencyMs!).toBeLessThan(5000);
-    expect(v.proxiedExits.some((p) => p.index === 0 && p.code === 0)).toBe(true);
+    expect(v.proxiedExits.some((p) => p.name === "_proc_exit" && p.code === 0)).toBe(true);
     // The glue's own exit path stays silent: the keepalive is held.
     expect(v.onExitCalls).toHaveLength(0);
     // The death path on a runtime that is not quiescent (the exiting thread
@@ -97,16 +97,16 @@ describeIf("resident FileWorker exit → died 'exit' (real glue, real worker, un
     const v = run("--scenario", "shutdown-exit");
     expect(v.died).toHaveLength(1);
     expect(v.died[0]).toMatchObject({ reason: "exit", code: 1, mode: "resident" });
-    expect(v.proxiedExits.some((p) => p.index === 0 && p.code === 1)).toBe(true);
+    expect(v.proxiedExits.some((p) => p.name === "_proc_exit" && p.code === 1)).toBe(true);
     expect(v.ok, v.why).toBe(true);
   });
 
-  test("`#eval IO.Process.exit 3` typed in the buffer: exit() → exitOnMainThread [1] → died exit 3", { timeout: TIMEOUT }, () => {
+  test("`#eval IO.Process.exit 3` typed in the buffer: exit() → exitOnMainThread → died exit 3", { timeout: TIMEOUT }, () => {
     const v = run("--scenario", "eval-exit");
     expect(v.died).toHaveLength(1);
     expect(v.died[0]).toMatchObject({ reason: "exit", code: 3, mode: "resident" });
     expect(v.latencyMs!).toBeLessThan(5000);
-    expect(v.proxiedExits.some((p) => p.index === 1 && p.code === 3)).toBe(true);
+    expect(v.proxiedExits.some((p) => p.name === "exitOnMainThread" && p.code === 3)).toBe(true);
     expect(v.onExitCalls).toHaveLength(0);
     expect(v.ok, v.why).toBe(true);
   });
@@ -117,7 +117,7 @@ describeIf("resident FileWorker exit → died 'exit' (real glue, real worker, un
     // shows the proxied exit ran on this thread and was swallowed there.
     const v = run("--scenario", "shutdown-exit", "--no-hook", "--idle-ms", "15000");
     expect(v.hookInstalled).toBe(true); // the worker installed it; the control took it back out
-    expect(v.proxiedExits.some((p) => p.index === 0 && p.code === 1)).toBe(true);
+    expect(v.proxiedExits.some((p) => p.name === "_proc_exit" && p.code === 1)).toBe(true);
     expect(v.idle!.diedWithinIdle).toBe(false);
     expect(v.idle!.glue.EXITSTATUS).toBe(1);
     expect(v.onExitCalls).toHaveLength(0);
@@ -137,7 +137,7 @@ describeIf("resident FileWorker exit → died 'exit' (real glue, real worker, un
     // answered and the page shows "elaborating" forever: the hook is the
     // only detector of this death.
     const v = run("--scenario", "eval-exit", "--no-hook", "--idle-ms", "40000");
-    expect(v.proxiedExits.some((p) => p.index === 1 && p.code === 3)).toBe(true);
+    expect(v.proxiedExits.some((p) => p.name === "exitOnMainThread" && p.code === 3)).toBe(true);
     expect(v.died).toHaveLength(0);
     expect(v.idle!.glue.EXITSTATUS).toBe(3);
     expect(v.idle!.worker.frontDoor.phase).toBe("elaborating");
