@@ -587,14 +587,15 @@ describe("adopt-helper.mjs: the tree digest and base-tree.json", () => {
     expect(fs.existsSync(path.join(W, "KERNEL-PIN"))).toBe(false);
   });
 
-  test("the printed landing copies the record and $W/base-tree.json, and names no KERNEL-PIN (retired 2026-10, plan B2c)", () => {
+  test("the printed landing copies the record and $W/base-tree.json, and names no KERNEL-PIN (retired 2026-10, plan B2c) and no release bundle (retired 2026-11-01, D11)", () => {
     const text = fs.readFileSync(script, "utf8");
     const landing = text.slice(text.indexOf("Landing, by the operator"));
     expect(landing).toContain(" 1. cp $W/release/release.json toolchain/lean4-wasm64-release.json\n");
     expect(landing).toContain(" 2. cp $W/base-tree.json embedding/base-tree.json");
     expect(landing).toContain("cp $USRC/Essential.olean* embedding/umbrella/QED64/"); // a rebuilt umbrella refreshes its committed copy (D9)
     expect(landing).toContain("node pipeline/release/release-manifest.mjs --worktree");
-    expect(landing).toContain("node pipeline/release/write-bundle.mjs --commit <landing commit> --dist dist --umbrella $W/");
+    expect(landing).not.toMatch(/write-bundle|release bundle/);
+    expect(fs.existsSync(path.join(root, "pipeline/release/write-bundle.mjs"))).toBe(false);
     expect(text).not.toMatch(/KERNEL-PIN|kernel-pin/);
     expect(fs.existsSync(path.join(root, "pipeline/toolchain/KERNEL-PIN"))).toBe(false);
   });

@@ -242,6 +242,4 @@ $([ $REBUILD = 1 ] && echo "    and the umbrella's committed copy, its only off-
     the mutable ones, and first pins R2's current pairing the same way, so a deployed shell that reads its copies (one built
     from HARDENING #64 on) keeps its pairing until the push deploys the new shell; an older deployed shell reads the mutable
     files and fails SNAPSHOT_UNPAIRED in that window (docs/DEPLOY.md "Atomic promotes")
- 7. the release bundle, after the landing commit and npm run build:site at it, clean (write-bundle refuses another dist; docs/RELEASE-BUNDLE.md; hosting is the user's decision 7):
-    node pipeline/release/write-bundle.mjs --commit <landing commit> --dist dist --umbrella $W/$([ $FAT = 1 ] && echo lib-tree || echo lib-tree-slim) --out <empty dir>
 EOF

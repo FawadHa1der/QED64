@@ -342,7 +342,7 @@ const CORE_TREE = "core-lib-slim";
  * base-tree) against the record and the served packs, and return the
  * manifest's `baseTree` section, built literally: the file's identity, its
  * fields, and `umbrellaFiles`, the union of every umbrella file the trees
- * carry (what a bundle ships at umbrella/<path>).
+ * carry (the files committed at embedding/umbrella/<path>).
  */
 export function baseTreeOf(bt, { record, packs, tracked }) {
   const at = INPUTS.baseTree;

@@ -458,7 +458,7 @@ describe.skipIf(!hasGit)("cross-checks refuse doctored inputs", () => {
       expect(refusal(build)).toMatch(/: umbrella does not list QED64\/Essential\.olean \(the olean every base tree carries\)/);
     });
     // A legacy umbrella is one .olean (Lean writes .olean.server and .olean.private for a split `module` only,
-    // HARDENING #79): with no facet at the top or in any tree it is accepted, and the bundle ships the one file.
+    // HARDENING #79): with no facet at the top or in any tree it is accepted, and embedding/umbrella holds the one file.
     doctored(BASE_TREE, editBt((o) => {
       const olean = (list: any[]) => list.filter((u: any) => u.path === "QED64/Essential.olean");
       o.umbrella = olean(o.umbrella);

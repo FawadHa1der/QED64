@@ -298,8 +298,8 @@ release. The manifest names every served object by sha256 and gives the
 release three ids: `releaseId`, `artifactSetId` and `shellId`. The generator
 refuses when the pinned toolchain record, the base tree, the runtime
 manifest, the snapshot index and the profiles disagree about the pairing. docs/RELEASE-BUNDLE.md covers the
-manifest, how a downstream verifies a bundle with it, and a proposed CI
-publishing step that has not been applied.
+manifest and how a downstream verifies a release with it (nothing publishes
+it: the release bundle was retired on 2026-11-01).
 
 ## The toolchain release prefix (decision 3)
 

@@ -49,7 +49,7 @@ export interface BaseTreeSection extends TrackedFile {
   initLib: string | null;
   digestRule: string | null;
   trees: Record<string, { slim: boolean; packs: BaseTreePack[]; umbrella: UmbrellaFile[]; files: number; bytes: number; digest: string }>;
-  /** The union of every umbrella file the trees carry: what a bundle ships at umbrella/<path>. */
+  /** The union of every umbrella file the trees carry: the files committed at embedding/umbrella/<path>. */
   umbrellaFiles: UmbrellaFile[];
 }
 export interface ReleaseManifest {

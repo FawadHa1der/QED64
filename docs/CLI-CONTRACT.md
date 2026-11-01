@@ -65,10 +65,11 @@ Tier 3 tools: `pipeline/snapshot/{thread-storm-probe,fileworker-exit-probe,resid
 `pipeline/toolchain/gate.mjs` (a forward to `lean4-wasm64 gate` since contract 3; both in
 [the forwards](#lean4-wasm64-the-forwards)), `pipeline/toolchain/gen-exports.py` (a stub that
 exits 2 for one cycle: moved to the fork's `wasm64-build/`),
-`pipeline/release/release-manifest.mjs` (shipped since plan B2c) and
-`pipeline/release/write-bundle.mjs` (not shipped). The last two write
-`qed64.release/v1`, whose stable field paths are a contract of their own
-(docs/RELEASE-BUNDLE.md, "Stable field paths"); their flags are tier 3. (`header-switch-probe.mjs`, an edited copy of
+and `pipeline/release/release-manifest.mjs` (shipped since plan B2c), which
+writes `qed64.release/v1`, whose stable field paths are a contract of their own
+(docs/RELEASE-BUNDLE.md, "Stable field paths"); its flags are tier 3.
+(`pipeline/release/write-bundle.mjs`, which wrote the release bundle, was
+deleted on 2026-11-01: see the changelog. `header-switch-probe.mjs`, an edited copy of
 resident-probe, was folded into it on 2026-10-05 as `--snapshots <a,b>`,
 `--mathlib` and `--act4 [--act4-ms <ms>]`.)
 
@@ -1296,6 +1297,7 @@ as QED64's own gate did.
 | 3 | 2026-10-08 | HARDENING #64 follow-up, **bake-snapshot** writes the per-build copy `<out>/index.<buildId>.json` (exactly the new `index.json`'s bytes, buildId = this bake's runtime; another runtime's copy untouched) and prints one new line after `baked`, marker `index-copy`. The upsert runs under `<out>/index.json.lock` (never taken over: a held lock is waited for at most 120 s, then exit 1 naming its holder and printing the unindexed entry) and switches both files by temp file + rename, the copy first and `index.json` last (side effect 8); before, `index.json` was rewritten in place with no lock. Flags, the other markers and the exits are unchanged; `promote-staging.mjs` (not a contract tool) ignores the staged copy and switches `public/`'s from the staged index, which for a bake's index is the same bytes. | additive (a written file, a marker) |
 | 3 | 2026-10-09 | HARDENING #66, **snapshot-probe** sets the runtime's environment at preRun. It passed `ENV` in the Module literal, which the Emscripten glue replaces (`var ENV={}`, then `Module["ENV"]=ENV`), so `QED64_PROFILE_INIT` was never forwarded (this table's row said it was) and `LEAN_PATH` was unset (the sysroot gave the same `/lib/lean` root). Now `LEAN_PATH=/lib/lean` reaches getenv as in node-runner and the browser worker, and `QED64_PROFILE_INIT` does when set. Flags, markers and exits are unchanged; found by the kernel while porting the probe (its 0249065cc0). | fix (a documented variable now works) |
 | 3 | 2026-11-01 | Docs and one test, recorded for consumers (architecture review R9a): **no tool changed**. (1) The consumer statements follow the consumers' repositories (checked 2026-11-01): lean4game's `wasm64-port` runs the installed package (its `sync-qed64.sh` copy was retired 2026-10-05), and of these tools only bake-snapshot and snapshot-probe; it passes `--probe --roots --work` and no longer sets `QED64_ALLOW_LEGACY_IMPORTS`. (2) The proof sheets run bake-snapshot, require its `baked` line (`grep -E '^baked '` under pipefail) and die on a non-zero exit; they are named as a consumer, in the Frozen `baked` row and in the re-pin rule. (3) "Adding a relative import to a file a downstream vendors one by one" is no longer breaking, and `tests/unit/cli-contract.test.ts` drops its vendoring check. (4) The inline preludes stay until the next runtime adoption. (5) The `--runner` row records that a bake through the package's runner was byte-identical on Lean 4.34 (2026-10-08), not yet on 4.35. | docs, no tool change |
+| 3 | 2026-11-01 | Tier 3, **write-bundle is deleted** (architecture review D11; the bundle half of decision 7 is retired): `pipeline/release/write-bundle.mjs`, its `.d.mts` and `tests/unit/write-bundle.test.ts`, and adopt-release's landing step 7. It was never shipped (not in `files` or closure.json) and never published; no consumer ran it. Its umbrella byte check moved into `adopt-release.sh` (`adopt-helper.mjs umbrella`, R6a), and the umbrella's off-host copy is the committed `embedding/umbrella/QED64/` (D9). release-manifest, fetch-artifacts and verify-release are unchanged; docs/RELEASE-BUNDLE.md keeps the manifest's guide and "Stable field paths" and drops "The bundle" and the CI proposal. No shim. | tier 3, removed |
 
 ## Open decisions
 
