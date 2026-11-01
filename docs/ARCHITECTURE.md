@@ -152,12 +152,16 @@ compiles ~8× — the same storm had been throttling every interpreter run
 
 ### Snapshot cache and the preparation UX
 
-The worker caches each snapshot's bytes in OPFS (`qed64-snapshots/<name>.<bytes>.<transfer>.snapz`,
-written incrementally during the first download through a sync access
-handle, committed by rename) and reads it back in 8 MiB slices on later
-sessions — the 806 MB umbrella is downloaded once per browser, not once per
-session (measured repeat-visit: 12 s to read + inflate 1.9 GiB from storage
-versus a network download). Cache failures never fail a load.
+The raw (inflated) region is cached in OPFS as
+`qed64-snapshots/<cacheKey>.raw`. Only the disposable prefetch worker writes
+it (`snapshot-prefetch.worker.js`: network → gunzip → `<key>.raw.partial` →
+rename). The Lean worker sync-reads it straight into the wasm heap in 64 MiB
+slices on later sessions, so a Mathlib region is downloaded once per browser,
+not once per session. The read opens a read-only handle and retries a busy
+one for about 3 s (another tab's or a predecessor's worker mid-read), then
+logs `[boot] raw cache busy` and streams. A missing or unreadable `.raw`
+streams the `.snapz` from the network and inflates it in the Lean worker.
+Cache failures never fail a load.
 
 Long preparation steps are rendered live by the page (frontend/src/main.ts
 `ui.progress` from the worker's `progress` events): the boot overlay and the

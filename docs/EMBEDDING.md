@@ -989,13 +989,15 @@ second write.
 **`busyWaitMs`.** Each boot loads its snapshots through `loadSnapshotByName`,
 which first prefetches the raw region with `onBusy: "wait"` (§7.4). While
 ANOTHER tab holds that region's writer lock, the boot waits for it at most
-`busyWaitMs` (default `PREFETCH_SILENCE_MS`, 3 min; 0 does not wait), then
-re-probes the cache, and if the region is still missing the session's Lean
-worker streams it itself (the heavier path the prefetch exists to avoid, so a
-short bound trades memory for latency). The bound is counted from the lock
-request; the other tab's progress does not extend it. `loadSnapshotByName`
-takes the same option as its fifth argument (`LoadSnapshotOptions`). The
-member is ECMAScript-private in `ResidentSession`, like `files`.
+`busyWaitMs` (default `PREFETCH_SILENCE_MS`, 3 min; 0 does not wait for that
+writer), then re-probes the cache, and if the region is still missing the
+session's Lean worker streams it itself (the heavier path the prefetch exists
+to avoid, so a short bound trades memory for latency). The bound is counted
+from the lock request; the other tab's progress does not extend it.
+`loadSnapshotByName` takes the same option as its fifth argument
+(`LoadSnapshotOptions`). The member is ECMAScript-private in
+`ResidentSession`, like `files`. Separately, the Lean worker's own open of a
+finished region retries a busy handle for about 3 s (§7.4).
 
 ### 7.4 The raw snapshot cache
 
@@ -1025,6 +1027,16 @@ function prefetchRaw(entry, opts?: { onProgress?; signal?; silenceMs?; workerUrl
   positive `rawBytes` (the entry's `bytes`) with `error` (`corrupt`). Its
   compressed-only mode, which fetched without the redirect and HTML
   refusals, is gone.
+- **The Lean worker's read.** `loadSnapshot` opens `<key>.raw` with a
+  read-only sync handle (`{mode: "read-only"}`: readers share one where the
+  browser knows the mode, and other browsers ignore the member). While
+  another context holds the file (an older worker's exclusive handle, or a
+  predecessor tab's worker mid-read until Blink terminates it, within about
+  2 s), it retries for about 3 s on `NoModificationAllowedError`, or on any
+  open error for a file of the expected size. It then logs
+  `[boot] raw cache busy: …` and streams the `.snapz` itself. A missing
+  `.raw` streams at once. This wait is independent of `busyWaitMs`, which
+  bounds the wait for another tab's write.
 - **Silence or abort.**
   1. The worker is terminated.
   2. `<key>.raw.partial` is removed (never `.raw`).
@@ -2050,6 +2062,9 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   with kind `rescue`. No export, type, message or revision change:
   `EMBED_API_REVISION`, `API_REVISION` and the worker `REVISION` are
   unchanged.
+- **A busy raw-cache handle is retried (architecture review R2,
+  2026-11):** see §7.4. Nothing else changed: no export, type or message
+  change, and `EMBED_API_REVISION` and the worker `REVISION` are unchanged.
 - **`qed64/edge` routes a toolchain release (plan step B2b, 2026-10-06):**
   additive options, every default unchanged (`QED64_LEGACY` and the hardened
   defaults keep `release: null`). `release` takes a `lean4-wasm64.release/v1`

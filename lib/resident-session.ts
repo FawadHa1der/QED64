@@ -78,7 +78,9 @@ export interface ResidentHost {
   /** How long each boot's snapshot load waits for ANOTHER tab that is writing
    * the same raw region (its Web Lock; the prefetch's `onBusy: "wait"` bound,
    * docs/EMBEDDING.md §7.3, §7.4) before this session's Lean worker streams
-   * the region itself. Default PREFETCH_SILENCE_MS (3 min); 0 does not wait. */
+   * the region itself. Default PREFETCH_SILENCE_MS (3 min); 0 does not wait
+   * for the writer (the worker's read of a finished region still retries a
+   * busy handle for about 3 s, docs/EMBEDDING.md §7.4). */
   busyWaitMs?: number;
 }
 

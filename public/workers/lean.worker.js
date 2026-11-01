@@ -1767,8 +1767,10 @@ function compile(msg) {
 // Deleted in W5 (dead on the raw path, and a second multi-GB copy in the JS
 // heap on the cold path): the compressed `.snapz` OPFS cache and its
 // transactional writer, the download tee that fed it, the MEMFS staging
-// file, and the `_lean_wasm_load_snapshot` path-loader branch. A cache
-// failure of any kind is a log line and a network boot, never a failed load.
+// file, and the `_lean_wasm_load_snapshot` path-loader branch. A raw region
+// another context holds open is retried for RAW_BUSY.waitMs first
+// (architecture review R2), then logged; any cache failure ends in a network
+// boot, never a failed load.
 
 async function snapshotCacheDir() {
   try {
@@ -1779,6 +1781,14 @@ async function snapshotCacheDir() {
   }
 }
 
+/** How long a load waits for another context's handle on a cached raw region (R2): an older worker's exclusive
+ * handle, or a predecessor tab's worker caught mid-read (Blink terminates one within 2 s). Async sleeps. */
+const RAW_BUSY = { waitMs: 3000, retryMs: 100 };
+/** Busy, not broken: Chromium's lock error, or any open error on a file that is there at the expected size. */
+async function rawOpenIsBusy(file, error, expectedBytes) {
+  if (error && error.name === "NoModificationAllowedError") return true;
+  try { return expectedBytes > 0 && (await file.getFile()).size === expectedBytes; } catch { return false; }
+}
 /** Sync-readable RAW (inflated) snapshot region cache entry, or null.
  * browser64's audited finding: OPFS sync-handle reads land directly in the
  * wasm heap at near-memory speed (~1.5 GB in ~200 ms of read service) — a
@@ -1786,11 +1796,25 @@ async function snapshotCacheDir() {
 async function openRawSnapshot(rawKey, expectedBytes) {
   const dir = await snapshotCacheDir();
   if (!dir || !rawKey) return null;
+  let file;
+  try { file = await dir.getFileHandle(rawKey); } catch { return null; } // not cached (NotFoundError): stream at once
+  const started = performance.now();
   let handle;
-  try {
-    handle = await (await dir.getFileHandle(rawKey)).createSyncAccessHandle();
-  } catch {
-    return null;
+  for (let tries = 1; ; tries++) {
+    try {
+      // Read-only: readers share it where the browser knows the mode (Chromium 121+); elsewhere the member is
+      // ignored and this is the exclusive handle it always was.
+      handle = await file.createSyncAccessHandle({ mode: "read-only" });
+      break;
+    } catch (error) {
+      if (!(await rawOpenIsBusy(file, error, expectedBytes))) return null;
+      const waited = performance.now() - started;
+      if (waited >= RAW_BUSY.waitMs) {
+        event(null, "log", { stream: "stderr", text: `[boot] raw cache busy: ${rawKey} was held by another tab or worker for ${Math.round(waited)} ms (${tries} tries, ${error && error.name}); streaming the snapshot instead` });
+        return null;
+      }
+      await new Promise((resolve) => setTimeout(resolve, RAW_BUSY.retryMs));
+    }
   }
   const size = handle.getSize();
   if (size === 0 || (expectedBytes > 0 && size !== expectedBytes)) {
@@ -2129,6 +2153,9 @@ self.__qed64TestExports = {
   // predecessor wait against a fake navigator.locks, the named-predecessor
   // validation (HARDENING #68), and the pthread prelude.
   lifetime: { ALIVE_LOCK, WANTED_LOCK, STOPPING_WORKERS_TOLERATED, MAX_NAMED_PREDECESSORS, namedPredecessors, waitForUnwantedRuntimes, waitedLine, pthreadPrelude },
+  // The raw snapshot cache's busy-handle retry under test (tests/unit/raw-cache-busy.test.ts, review R2): the
+  // bound is mutable so a test shortens it in its own sandbox.
+  rawCache: { RAW_BUSY, openRawSnapshot },
   // Pool-growth diagnostic under test (tests/unit/pool-growth.test.ts, HARDENING #55 addendum).
   pool: { instrumentPoolGrowth, poolSample, growths: () => poolGrowths, starts: () => poolStarts, lifetimes: () => poolLifetimes, leanWorkers, LEAN_WORKERS_MAX, PARKED_DEDICATED, RESIDENT_ARGV },
   // Front-door host wiring under test (tests/unit/front-door.test.ts): the
