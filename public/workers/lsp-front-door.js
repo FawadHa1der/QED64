@@ -22,11 +22,15 @@
 "use strict";
 
 (function (root) {
-  // Transcribed from Lean.Server.Watchdog.mkLeanServerCapabilities — with
-  // `change: 1` (full text) instead of 2:
-  // the wire then has no range type, so the client cannot diverge from the
-  // worker's document by construction (§4 row 3; vscode-languageclient
-  // honours `resolvedTextDocumentSync.change`).
+  // Transcribed from Lean.Server.Watchdog.mkLeanServerCapabilities as its derived ToJson writes
+  // it (the pinned tag's, with the `workDoneProgress: false` that WorkDoneProgressOptions adds;
+  // tests/unit/server-capabilities.test.ts names every difference):
+  // `change: 1` (full text) instead of 2, so the wire has no range type and the client cannot
+  // diverge from the worker's document by construction (§4 row 3; vscode-languageclient honours
+  // `resolvedTextDocumentSync.change`). Left out: the four providers stock Lean answers only in
+  // the watchdog (references, call hierarchy, rename, workspace symbols; the resident FileWorker
+  // has no handler and replies internalError -32603), and signatureHelp, color and the
+  // `experimental` RPC block, which no lane here gates.
   const SERVER_CAPABILITIES = {
     textDocumentSync: { openClose: true, change: 1, willSave: false, willSaveWaitUntil: false, save: { includeText: true } },
     completionProvider: { triggerCharacters: ["."], resolveProvider: true },
@@ -34,23 +38,23 @@
     declarationProvider: true,
     definitionProvider: true,
     typeDefinitionProvider: true,
-    referencesProvider: true,
-    callHierarchyProvider: true,
-    renameProvider: { prepareProvider: true },
-    workspaceSymbolProvider: true,
     documentHighlightProvider: true,
     documentSymbolProvider: true,
     foldingRangeProvider: true,
     semanticTokensProvider: {
+      // upstream's whole legend (SemanticTokenType.names / SemanticTokenModifier.names): the FileWorker emits indices into it (leanSorryLike 23, parameter 11, string 18)
       legend: {
-        tokenTypes: ["keyword", "variable", "property", "function", "namespace", "type", "enumMember", "comment"],
-        tokenModifiers: [],
+        tokenTypes: [
+          "keyword", "variable", "property", "function", "namespace", "type", "class", "enum", "interface", "struct", "typeParameter", "parameter",
+          "enumMember", "event", "method", "macro", "modifier", "comment", "string", "number", "regexp", "operator", "decorator", "leanSorryLike",
+        ],
+        tokenModifiers: ["declaration", "definition", "readonly", "static", "deprecated", "abstract", "async", "modification", "documentation", "defaultLibrary"],
       },
       full: true,
       range: true,
     },
-    codeActionProvider: { resolveProvider: true, codeActionKinds: ["quickfix", "refactor", "source.organizeImports"] },
-    inlayHintProvider: { resolveProvider: false },
+    codeActionProvider: { workDoneProgress: false, resolveProvider: true, codeActionKinds: ["quickfix", "refactor", "source.organizeImports"] },
+    inlayHintProvider: { workDoneProgress: false, resolveProvider: false },
   };
 
   // The ALLOWLIST (§5, Watchdog Parity graft; invariant K-iv): exactly the

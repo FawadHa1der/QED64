@@ -230,7 +230,12 @@ effects it returns. Frames are `{kind:"client", msg, replay?}`,
 queued) → open → dead`:
 
 - `initialize` is answered at once from the transcribed watchdog capability
-  table (with `change: 1`) and cached; a *replay* (the relay re-sending after a
+  table (with `change: 1`, and without the providers only the watchdog
+  answers (references, call hierarchy, rename, workspace symbols) and without
+  signatureHelp, color and the `experimental` block;
+  `tests/unit/server-capabilities.test.ts` compares it with a transcription of
+  the pinned tag's `mkLeanServerCapabilities` and names each difference) and
+  cached; a *replay* (the relay re-sending after a
   reboot) is cached only. `shutdown` is answered `null`. The FileWorker itself
   never answers `initialize` — in a native setup that is the watchdog's job.
 - The first `didOpen` while `ready` starts the loop: `startLoop` (the host

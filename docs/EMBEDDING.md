@@ -2026,6 +2026,23 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   `EMBED_API_REVISION` stays `1.0.0-pre.8`: no export, type or event change;
   an embedder that serves its own packs must keep the index entry's
   `release` equal to its manifest's (`stage-profiles.mjs` writes it so).
+- **The front door advertises only what the resident FileWorker answers
+  (architecture review R8, 2026-11):**
+  - `initialize` no longer offers references, call hierarchy, rename or
+    workspace symbols. Stock Lean answers them only in its watchdog, and the
+    FileWorker replied `-32603` to each, so Peek References (Shift+F12) and
+    Rename (F2) could only fail.
+  - The semantic-token legend is upstream's whole legend (24 types, 10
+    modifiers). Indices 6-7 decoded as `enumMember`/`comment` before (core
+    never emitted them); `leanSorryLike`, and Verso docstrings'
+    `parameter`/`string`, now decode.
+  - `codeActionProvider` and `inlayHintProvider` also carry upstream's
+    `workDoneProgress: false` (the LSP default, so nothing changes for a
+    client). `tests/unit/server-capabilities.test.ts` compares the table with
+    a transcription of the pinned tag's `mkLeanServerCapabilities` and names
+    each difference.
+  - The worker scripts keep `REVISION` "1", and `EMBED_API_REVISION` is
+    unchanged.
 - **`qed64/edge` routes a toolchain release (plan step B2b, 2026-10-06):**
   additive options, every default unchanged (`QED64_LEGACY` and the hardened
   defaults keep `release: null`). `release` takes a `lean4-wasm64.release/v1`

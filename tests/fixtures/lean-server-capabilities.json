@@ -1,0 +1,35 @@
+{
+  "tag": "v4.35.0",
+  "source": "leanprover/lean4 v4.35.0, transcribed by hand (no generator): src/Lean/Server/Watchdog.lean:1558-1610 mkLeanServerCapabilities, as Lean.Lsp.ServerCapabilities' derived ToJson writes it (options extending WorkDoneProgressOptions carry its workDoneProgress: false); the legend from src/Lean/Data/Lsp/LanguageFeatures.lean:460-464 (SemanticTokenType.names) and :493-495 (SemanticTokenModifier.names). Checked against the native v4.35.0 toolchain's own output of `#eval IO.println (toJson Lean.Server.Watchdog.mkLeanServerCapabilities).pretty` (after `import Lean.Server.Watchdog`). On a Lean bump, re-transcribe from the new tag and re-decide each difference in tests/unit/server-capabilities.test.ts.",
+  "capabilities": {
+    "textDocumentSync": { "openClose": true, "change": 2, "willSave": false, "willSaveWaitUntil": false, "save": { "includeText": true } },
+    "completionProvider": { "triggerCharacters": ["."], "resolveProvider": true },
+    "hoverProvider": true,
+    "declarationProvider": true,
+    "definitionProvider": true,
+    "typeDefinitionProvider": true,
+    "referencesProvider": true,
+    "callHierarchyProvider": true,
+    "renameProvider": { "prepareProvider": true },
+    "workspaceSymbolProvider": true,
+    "documentHighlightProvider": true,
+    "documentSymbolProvider": true,
+    "foldingRangeProvider": true,
+    "semanticTokensProvider": {
+      "legend": {
+        "tokenTypes": [
+          "keyword", "variable", "property", "function", "namespace", "type", "class", "enum", "interface", "struct", "typeParameter", "parameter",
+          "enumMember", "event", "method", "macro", "modifier", "comment", "string", "number", "regexp", "operator", "decorator", "leanSorryLike"
+        ],
+        "tokenModifiers": ["declaration", "definition", "readonly", "static", "deprecated", "abstract", "async", "modification", "documentation", "defaultLibrary"]
+      },
+      "full": true,
+      "range": true
+    },
+    "codeActionProvider": { "workDoneProgress": false, "resolveProvider": true, "codeActionKinds": ["quickfix", "refactor", "source.organizeImports"] },
+    "inlayHintProvider": { "workDoneProgress": false, "resolveProvider": false },
+    "signatureHelpProvider": { "workDoneProgress": false, "triggerCharacters": [" "] },
+    "colorProvider": { "workDoneProgress": false },
+    "experimental": { "moduleHierarchyProvider": {}, "rpcProvider": { "highlightMatchesProvider": {}, "rpcWireFormat": "v1" } }
+  }
+}
