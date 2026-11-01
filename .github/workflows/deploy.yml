@@ -30,8 +30,9 @@ jobs:
       - run: npm ci --prefix frontend
       - run: npx tsc --noEmit && npx vitest run tests/unit
       # The one deploy path, shared with operators: typecheck:site, build:site,
-      # the artifact prune, the 25 MiB size check and `npx wrangler deploy`
-      # all live in scripts/deploy-app.sh (its header says why). Env vars are
+      # the artifact prune, the 25 MiB size check, the live-snapshot guard
+      # (scripts/deploy-guard.mjs, R19a) and `npx wrangler deploy` all live
+      # in scripts/deploy-app.sh (its header says why). Env vars are
       # wrangler's native non-interactive auth; the account id spares
       # narrowly-scoped tokens the /accounts discovery call.
       - run: bash scripts/deploy-app.sh

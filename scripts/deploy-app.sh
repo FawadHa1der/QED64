@@ -13,16 +13,22 @@
 #   4. the prune: rm -rf dist/runtime dist/profiles dist/snapshots
 #   5. the size check: refuse (exit 1, one line) when dist/ still holds a
 #      runtime/, profiles/ or snapshots/ path, or any file over 25 MiB
-#   6. npx wrangler deploy
+#   6. the guard: node scripts/deploy-guard.mjs (architecture review R19a):
+#      refuse (exit 1) unless every .snapz public/snapshots/index.json names
+#      already answers on the live origin
+#   7. npx wrangler deploy
 #
-# Usage: scripts/deploy-app.sh [--dry-run]
-#   --dry-run  run steps 1-5 and print step 6 instead of running it (for an
+# Usage: [QED64_DEPLOY_ORIGIN=<url>|none] scripts/deploy-app.sh [--dry-run]
+#   --dry-run  run steps 1-6 and print step 7 instead of running it (for an
 #              operator checking a build, and for tests/unit/deploy-script.test.ts)
+#   QED64_DEPLOY_ORIGIN  the origin the guard asks (default the live site;
+#              none skips the guard, for a first deploy to a new origin)
 # It runs from the repository root whatever the cwd. Exit 0 deployed (or, with
-# --dry-run, ready to deploy); 1 the size check refused; 2 a bad argument; a
-# failing step stops the script with that step's own exit code. 1 also comes
-# from a failing step (vite build exits 1): a size refusal is the run whose
-# stderr ends with a `deploy-app: REFUSED:` line.
+# --dry-run, ready to deploy); 1 the size check or the guard refused; 2 a bad
+# argument; a failing step stops the script with that step's own exit code. 1
+# also comes from a failing step (vite build exits 1): a refusal is the run
+# whose stderr ends with a `deploy-app: REFUSED:` or `deploy-guard: REFUSED:`
+# line.
 #
 # Auth: wrangler's native non-interactive variables, CLOUDFLARE_API_TOKEN and
 # CLOUDFLARE_ACCOUNT_ID (the account id spares narrowly-scoped tokens the
@@ -67,6 +73,13 @@ if [ -n "$big" ]; then
   first="$(printf '%s\n' "$big" | head -n 1)"
   refuse "dist/ holds $count file(s) over 25 MiB, the Workers assets cap; first: $first ($(wc -c < "$first" | tr -d ' ') bytes)"
 fi
+
+# R19a: every .snapz public/snapshots/index.json names must already answer on the live origin
+# (scripts/upload-artifacts.sh uploads them before the push), or nothing deploys. Release-mapped
+# files are never checked through the live origin (its Worker maps them into ITS release);
+# upload-artifacts.sh checks the release's release.json in R2. Read-only, so --dry-run runs it too.
+# QED64_DEPLOY_ORIGIN overrides the origin (none: skip, for a first deploy to a new origin).
+node scripts/deploy-guard.mjs
 
 # Plain wrangler (pinned in devDependencies) instead of wrangler-action: the
 # wrapper swallowed error output on failure.

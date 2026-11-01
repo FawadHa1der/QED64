@@ -291,7 +291,7 @@ its prerequisites and its pass line):
 | `public/{runtime,profiles,snapshots}/` | the served artifacts: manifests tracked, bytes fetched (`npm run fetch:artifacts`), never committed |
 | `infra/` | `edge-worker.js` (`qed64/edge`) and `worker.js`, the live site's Worker |
 | `pipeline/` | `snapshot/` (bake, probes, Node runner, the CLI contract), `release/` (fetch, adopt, promote, verify, release manifest), `artifacts/` (pack, olean reader, umbrella), `toolchain/` (path rule, forwards to `lean4-wasm64`) |
-| `scripts/` | `deploy-app.sh`, `serve-dist.mjs` (`npm run preview:prod`), `upload-artifacts.sh` |
+| `scripts/` | `deploy-app.sh` (and its guard, `deploy-guard.mjs`), `serve-dist.mjs` (`npm run preview:prod`), `upload-artifacts.sh` |
 | `tests/` | `unit/`, `integration/`, `adversarial/` (the browser lanes), `consumer/` (G2), `mutation/` |
 | `toolchain/`, `embedding/` | the pinned toolchain release record; `closure.json` (what an embedder needs), `base-tree.json` and the served umbrella olean it names under `umbrella/` (its off-host copy; not shipped in the package) |
 | `docs/` | the contracts and the design record; `docs/history/` holds superseded documents |

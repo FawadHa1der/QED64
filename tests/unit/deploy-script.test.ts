@@ -1,9 +1,11 @@
 // One deploy path (plan step A4): .github/workflows/deploy.yml installs both
 // roots, runs the tests, then calls scripts/deploy-app.sh, which alone holds
-// typecheck:site → build:site → the artifact prune → the size check →
-// `npx wrangler deploy`. The script runs here for real, from a scratch copy of
-// the repository layout, with `npm` and `npx` replaced by stubs on an explicit
-// PATH that record their argv: no build, no network, no wrangler.
+// typecheck:site → build:site → the artifact prune → the size check → the
+// live-snapshot guard (scripts/deploy-guard.mjs, R19a; its own test is
+// deploy-guard.test.ts) → `npx wrangler deploy`. The script runs here for real,
+// from a scratch copy of the repository layout, with `npm`, `npx` and `node`
+// replaced by stubs on an explicit PATH that record their argv: no build, no
+// network, no guard, no wrangler.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -83,7 +85,7 @@ describe("the prune and `wrangler deploy` live in exactly one file", () => {
     expect([...hits.deploy]).toEqual([SCRIPT]);
   });
 
-  it("in the order install → typecheck → build → prune → size check → deploy, from the repo root, strict", () => {
+  it("in the order install → typecheck → build → prune → size check → guard → deploy, from the repo root, strict", () => {
     const lines = fs.readFileSync(path.join(root, SCRIPT), "utf8").split("\n").filter((l) => l.trim() && !isComment(l));
     const at = (re: RegExp) => lines.findIndex((l) => re.test(l));
     expect(at(/^set -euo pipefail$/)).toBe(0);
@@ -94,6 +96,7 @@ describe("the prune and `wrangler deploy` live in exactly one file", () => {
       at(/^npm run build:site$/),
       at(/^rm -rf dist\/runtime dist\/profiles dist\/snapshots$/),
       at(/find -L dist -type f -size/),
+      at(/^node scripts\/deploy-guard\.mjs$/),
       at(/^\s*npx wrangler deploy$/),
     ];
     expect(order.every((i) => i >= 0), JSON.stringify(order)).toBe(true);
@@ -101,7 +104,7 @@ describe("the prune and `wrangler deploy` live in exactly one file", () => {
   });
 });
 
-describe("scripts/deploy-app.sh against stubbed npm/npx", () => {
+describe("scripts/deploy-app.sh against stubbed npm/npx/node", () => {
   let tmp: string, repo: string, bin: string, log: string, elsewhere: string;
 
   beforeAll(() => {
@@ -126,6 +129,13 @@ describe("scripts/deploy-app.sh against stubbed npm/npx", () => {
       "",
     ].join("\n"), { mode: 0o755 });
     fs.writeFileSync(path.join(bin, "npx"), '#!/bin/sh\nprintf "npx %s\\n" "$*" >> "$STUB_LOG"\n', { mode: 0o755 });
+    // The guard: STUB_GUARD_EXIT makes it refuse, as deploy-guard.mjs does, with that exit code.
+    fs.writeFileSync(path.join(bin, "node"), [
+      "#!/bin/sh",
+      'printf "node %s\\n" "$*" >> "$STUB_LOG"',
+      'if [ -n "$STUB_GUARD_EXIT" ]; then echo "deploy-guard: REFUSED: stub" >&2; exit "$STUB_GUARD_EXIT"; fi',
+      "",
+    ].join("\n"), { mode: 0o755 });
   });
   afterAll(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
 
@@ -133,19 +143,20 @@ describe("scripts/deploy-app.sh against stubbed npm/npx", () => {
     fs.rmSync(log, { force: true });
     fs.rmSync(path.join(repo, "dist"), { recursive: true, force: true });
     // An explicit environment: the stubs first, then only the system tools; nothing inherited (no tokens).
-    const env = { PATH: `${bin}:/usr/bin:/bin`, STUB_LOG: log, STUB_FAIL: "", STUB_BIG_BYTES: "", HOME: tmp, ...extra };
+    const env = { PATH: `${bin}:/usr/bin:/bin`, STUB_LOG: log, STUB_FAIL: "", STUB_BIG_BYTES: "", STUB_GUARD_EXIT: "", HOME: tmp, ...extra };
     const r = spawnSync("/bin/bash", [path.join(repo, SCRIPT), ...args], { cwd: elsewhere, env, encoding: "utf8", timeout: 30_000 });
     const argv = fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n") : [];
     return { ...r, argv };
   };
   const BUILD = ["npm ci --prefix frontend", "npm run typecheck:site", "npm run build:site"];
+  const GUARD = "node scripts/deploy-guard.mjs";
 
   // The scratch repo has no frontend/node_modules, so the script's local-use install runs (as a stub); the skip
   // when it exists is pinned by reading the script above, so this test never creates a node_modules.
-  it("--dry-run: builds from the repo root whatever the cwd, prunes, prints the deploy and never runs npx", () => {
+  it("--dry-run: builds from the repo root whatever the cwd, prunes, runs the guard, prints the deploy and never runs npx", () => {
     const r = run(["--dry-run"]);
     expect(r.status, r.stderr).toBe(0);
-    expect(r.argv).toEqual(BUILD);
+    expect(r.argv).toEqual([...BUILD, GUARD]);
     expect(r.stdout).toContain("would run: npx wrangler deploy");
     expect(fs.existsSync(path.join(repo, "dist/index.html"))).toBe(true);
     for (const d of ["runtime", "profiles", "snapshots"]) expect(fs.existsSync(path.join(repo, "dist", d)), d).toBe(false);
@@ -155,7 +166,17 @@ describe("scripts/deploy-app.sh against stubbed npm/npx", () => {
   it("without --dry-run: the same steps, then `npx wrangler deploy`", () => {
     const r = run([]);
     expect(r.status, r.stderr).toBe(0);
-    expect(r.argv).toEqual([...BUILD, "npx wrangler deploy"]);
+    expect(r.argv).toEqual([...BUILD, GUARD, "npx wrangler deploy"]);
+  });
+
+  it("a guard refusal stops the script with exit 1 before any deploy (also with --dry-run)", () => {
+    for (const args of [[], ["--dry-run"]]) {
+      const r = run(args, { STUB_GUARD_EXIT: "1" });
+      expect(r.status, args.join(" ")).toBe(1);
+      expect(r.argv).toEqual([...BUILD, GUARD]);
+      expect(r.stdout).not.toContain("would run");
+      expect(r.stderr.trimEnd().split("\n").at(-1)).toBe("deploy-guard: REFUSED: stub");
+    }
   });
 
   it("refuses, in one line and before any deploy, a dist/ file over 25 MiB", () => {

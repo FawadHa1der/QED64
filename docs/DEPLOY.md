@@ -56,7 +56,11 @@ at the origin root.
   changes stay a manual `scripts/upload-artifacts.sh` — they change only
   when the toolchain is rebuilt or snapshots re-baked, which requires the
   14-core local pipeline anyway (GitHub's free runners have neither the
-  cores nor the ~15 GB wasm heap the umbrella bake needs).
+  cores nor the ~15 GB wasm heap the umbrella bake needs). So the upload
+  comes first and the push second; the script's guard (its step 6, below) makes
+  the deploy refuse when a push names snapshots the live origin does not
+  serve yet, and nothing deploys. Upload them, then start the workflow again
+  ('Run workflow' on `main`).
 
 ### The deploy script
 
@@ -66,31 +70,79 @@ From the repository root, whatever the cwd, under `set -euo pipefail`:
 
 1. `npm ci --prefix frontend`, only when `frontend/node_modules` is absent
    (local use; CI has installed both roots already);
-2. `npm run typecheck:site`, then `npm run build:site` (into `dist/`);
-3. the prune, `rm -rf dist/runtime dist/profiles dist/snapshots`: artifacts
+2. `npm run typecheck:site`;
+3. `npm run build:site` (into `dist/`);
+4. the prune, `rm -rf dist/runtime dist/profiles dist/snapshots`: artifacts
    are served from R2 and never bundled (Vite's `publicDir` is off for
    builds, so this is a defensive invariant);
-4. the size check: if `dist/` still holds a `runtime/`, `profiles/` or
+5. the size check: if `dist/` still holds a `runtime/`, `profiles/` or
    `snapshots/` path, or any file over 25 MiB (the Workers static-assets
    cap per file), the script prints one `deploy-app: REFUSED: …` line on
    stderr and exits 1 before wrangler uploads anything;
-5. `npx wrangler deploy` (the wrangler pinned in devDependencies; plain
+6. the guard, `node scripts/deploy-guard.mjs` (architecture review R19a,
+   below): it exits 1 with a `deploy-guard: REFUSED: …` line unless every
+   snapshot the tracked index names already answers on the live origin;
+7. `npx wrangler deploy` (the wrangler pinned in devDependencies; plain
    wrangler rather than `wrangler-action`, whose wrapper swallowed error
    output). It authenticates with `CLOUDFLARE_API_TOKEN` and
    `CLOUDFLARE_ACCOUNT_ID` when set, else with `wrangler login`.
 
-`scripts/deploy-app.sh --dry-run` runs steps 1 to 4 and prints
+**The guard.** A push that comes before its upload must deploy nothing: a
+shell whose index names `.snapz` files R2 does not hold yet fails every new
+visit until the upload (the class of QED64's 2026-10-08 outage, HARDENING
+#64, and of lean4game's 90 s window on 2026-10-09). So before the deploy,
+`scripts/deploy-guard.mjs` sends one `HEAD` (redirects not followed, 20 s
+each) for every `url` in `public/snapshots/index.json`, on the live origin
+(`QED64_DEPLOY_ORIGIN`, else fetch-artifacts' `DEFAULT_ORIGIN`,
+`https://qed64.fawadworkaddress.workers.dev/`). Each must answer 200; a
+5xx, a network error or a timeout is retried after 2 s and after 4 s (three
+tries). When the answer carries a `Content-Length`, it must equal the
+entry's `transfer` (else `bytes`); the live legacy Worker sends none on
+`HEAD` (`artifactHead: "get"`, "Local preview" below), so today the check is
+the status alone, and the sizes are checked once a Worker with
+`artifactHead: "metadata"` is live. The first refusal stops the check; it
+reads no body and writes nothing, so `--dry-run` runs it too. Each line on
+stderr starts `deploy-guard: `: one `live <url> (…)` line per snapshot, then
+`OK <k> snapshot(s) live on <origin>`, or a last `REFUSED: <url>: …` line
+(`HTTP 404 from <href> — upload it first (scripts/upload-artifacts.sh),
+then re-run the deploy`, a wrong length, or `could not be reached`). An
+index entry whose `url` is not a `.snapz` directly under `/snapshots/`, an
+index that is missing, not JSON or of another schema, and an origin that is
+not http(s) are refused before any request.
+
+It checks only these site-owned files: every QED64 Worker, old or new,
+serves `/snapshots/*.snapz` from the same bucket-root key, so the live
+Worker answers for exactly the bytes the new deploy reads. It never checks
+release-mapped files (`/runtime/*`, `/profiles/<not index.json>`) through
+the origin: the live Worker maps them into *its* release, so the next
+release's digest-named chunks would 404 and its fixed-name manifests would
+pass falsely. `scripts/upload-artifacts.sh` checks those, by refusing to
+upload unless the release's `release.json` is in R2. An adoption always
+rebakes the snapshots under new names, so the guard refuses an adoption
+pushed before its upload too. `QED64_DEPLOY_ORIGIN=<url>` points it at
+another origin, and `QED64_DEPLOY_ORIGIN=none` skips it with a
+`deploy-guard: SKIPPED:` line (a first deploy to a new origin, which has
+nothing to ask yet). By hand: `node scripts/deploy-guard.mjs [--index
+<file>] [--origin <url>]`; exit 0 every snapshot live (or skipped), 1
+refused, 2 a bad argument, with the usage line.
+
+`scripts/deploy-app.sh --dry-run` runs steps 1 to 6 and prints
 `deploy-app: --dry-run: dist/ is ready; would run: npx wrangler deploy`
 instead of deploying. Exit codes: 0 deployed (or ready, with `--dry-run`),
-1 the size check refused, 2 an unknown argument, and otherwise the exit code
-of the step that failed. 1 also comes from a failing step (vite build exits
-1): a size refusal is the run whose stderr ends with a `deploy-app: REFUSED:`
-line. `--help` prints the script's header.
+1 the size check or the guard refused, 2 an unknown argument, and otherwise
+the exit code of the step that failed. 1 also comes from a failing step
+(vite build exits 1): a refusal is the run whose stderr ends with a
+`deploy-app: REFUSED:` or `deploy-guard: REFUSED:` line. `--help` prints the
+script's header.
 `tests/unit/deploy-script.test.ts` pins `deploy.yml`'s step order (every
 `run:` line, named or block, must be a one-line `- run:` step, and no line
 but the script's step names `build:site` or `typecheck:site`), that no
 other tracked file outside docs and tests runs the prune or `wrangler
-deploy`, and the script itself, run with stub `npm`/`npx` commands.
+deploy`, and the script itself, run with stub `npm`/`npx`/`node` commands
+(the guard in its place, and a guard refusal that stops the deploy).
+`tests/unit/deploy-guard.test.ts` runs the guard against a local http
+server: live, no length, a 404, a wrong length, a retried 503, a closed
+port, refused entry URLs and indexes, the skip, and HEAD only.
 
 ### Local preview: the Worker's own code
 
