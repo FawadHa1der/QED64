@@ -7,7 +7,10 @@
 // live dedicated workers (page.on("worker") minus "close", nested pthread
 // Workers included) and record a renderer crash. The verdict per run is
 // crashed / survived; the report keeps the pool at ready (status().pool:
-// unused / running / parked) and the peak of live workers.
+// unused / running / parked), the wasm heap (api.status().memory), the peak of
+// live workers, every `.snapz` request (from the context's request events, so
+// the HTTP cache stays on; `.snapz after first ready` is a refetch on a warm
+// reload) and every `[boot] raw cache busy` line.
 //
 // Oracle: the page `crash` event, classified by the V8 OOM line in the
 // browser's stderr (captured through DEBUG=pw:browser into
@@ -20,6 +23,13 @@
 // Usage: node tests/adversarial/reload-storm.mjs [--url http://localhost:5198/] [--runs 5]
 //          [--reloads 5] [--interval-ms 3000] [--run-dir <dir>] [--tag <label>]
 //          [--headed] [--embed] [--embed-host /embed-host.html] [--ballast-mb 0] [--sample-ms 100] [--ready-each] [--console-log]
+//          [--wait-ms N] [--boot-budget-ms 600000] [--hold-ms 0]
+//   --wait-ms N  every boot message's instance.waitMs becomes N (1..60000), from an init script in every frame.
+//                The worker reads 0 as unset, so 1 is the no-wait arm (R16 #55); the run's armOk needs each
+//                `[boot] waited` line to show ≤ 60 ms or "budget spent"
+//   --boot-budget-ms N  how long the first boot may take to `ready` (default 600000)
+//   --hold-ms N  idle N ms after the first ready, before the first reload; with --reloads 0 it measures the
+//                memory at ready and at steady state (atSteady, steadyEpoch)
 //   --headed     Chrome for Testing in a real window (the default is chrome-headless-shell),
 //                with --force-device-scale-factor=1 and a 1440×900 viewport
 //   --embed      load the QED64 page (--url) as the only iframe of the same-origin host
@@ -34,7 +44,8 @@
 // A/B: one invocation per run (--runs 1 --tag <arm>-r<n>, arms interleaved) into one --run-dir, then
 // tests/adversarial/reload-storm-summary.py <run-dir> (crash counts, Fisher tests, per-reload process facts).
 // Run it through the host's browser lock. Exit 0 = no crash in any run,
-// 1 = at least one crash, 3 = the page never booted.
+// 1 = at least one crash, 2 = a bad --wait-ms / --boot-budget-ms / --hold-ms,
+// 3 = the page never booted.
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -51,6 +62,15 @@ const EMBED = has("--embed");
 const SAMPLE_MS = Number(arg("sample-ms", "0"));
 const READY_EACH = has("--ready-each");
 const CONSOLE_LOG = has("--console-log");
+const WAIT_RAW = arg("wait-ms", "");
+const WAIT_MS = WAIT_RAW === "" ? null : Number(WAIT_RAW);
+if (WAIT_MS !== null && !(Number.isInteger(WAIT_MS) && WAIT_MS >= 1 && WAIT_MS <= 60000)) { console.error("reload-storm: --wait-ms must be an integer in [1, 60000] (the worker reads 0 as unset; 1 = no wait)"); process.exit(2); }
+const BOOT_BUDGET_MS = Number(arg("boot-budget-ms", "600000"));
+if (!(Number.isInteger(BOOT_BUDGET_MS) && BOOT_BUDGET_MS > 0)) { console.error("reload-storm: --boot-budget-ms must be a positive integer"); process.exit(2); }
+const HOLD_MS = Number(arg("hold-ms", "0"));
+if (!(Number.isInteger(HOLD_MS) && HOLD_MS >= 0)) { console.error("reload-storm: --hold-ms must be a non-negative integer"); process.exit(2); }
+// Matched against the request's full URL (a query may follow the name).
+const SNAPZ = /\.snapz(?:$|\?)/;
 const target = resolveTarget(url);
 const qedPath = new URL(url).pathname + new URL(url).search;
 const BALLAST_MB = Number(arg("ballast-mb", "0"));
@@ -64,7 +84,7 @@ if (EMBED) {
 const dir = runDir(manifest.buildId ?? "unknown", target.mode);
 teeLog(dir, `reload-storm-${TAG}.log`);
 const browserMode = HEADED ? "headed" : "headless-shell";
-console.log(`reload-storm ${TAG}: ${pageUrl}${EMBED ? " (embedded)" : ""} → ${manifest.buildId}; ${browserMode}; ${RUNS} run(s) × ${RELOADS} reloads every ${INTERVAL} ms; reports in ${path.relative(root, dir)}`);
+console.log(`reload-storm ${TAG}: ${pageUrl}${EMBED ? " (embedded)" : ""} → ${manifest.buildId}; ${browserMode}; ${RUNS} run(s) × ${RELOADS} reloads every ${INTERVAL} ms${HOLD_MS ? ` after a ${HOLD_MS} ms hold` : ""}${WAIT_MS !== null ? `; boot waitMs ${WAIT_MS}` : ""}; reports in ${path.relative(root, dir)}`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // The browser's stderr (the V8 OOM line) reaches us only through Playwright's
@@ -95,6 +115,31 @@ const hostState = () => ({
   wasmNode: sh("pgrep", ["-f", "node --stack-size=8192"]).split("\n").filter(Boolean).length,
 });
 
+/** Init script, every frame (--wait-ms): each `boot` the page posts to a Worker
+ * goes out with instance.waitMs = ms, the same transfer list, and a record
+ * {wall, from, to} in globalThis.__qed64StormBoots (at most 32). The same
+ * mechanism as restart-overlap's laneProbes. Serialized into the page: it must
+ * be self-contained, and nothing in it may throw into the page. */
+function bootWaitProbe(ms) {
+  try {
+    const W = globalThis.Worker;
+    const post = W && W.prototype && W.prototype.postMessage;
+    if (typeof post !== "function") return;
+    const boots = (globalThis.__qed64StormBoots = []);
+    W.prototype.postMessage = function postMessage(msg, ...rest) {
+      let out = msg;
+      try {
+        const inst = msg && typeof msg === "object" && msg.type === "boot" ? msg.instance : null;
+        if (inst && typeof inst === "object") {
+          out = { ...msg, instance: { ...inst, waitMs: ms } };
+          if (boots.length < 32) boots.push({ wall: Date.now(), from: inst.waitMs ?? null, to: ms });
+        }
+      } catch { out = msg; }
+      return post.call(this, out, ...rest);
+    };
+  } catch { /* no Worker to wrap: the run's armOk still judges the worker's own lines */ }
+}
+
 const runs = [];
 let booted = 0;
 for (let n = 1; n <= RUNS; n++) {
@@ -110,19 +155,29 @@ for (let n = 1; n <= RUNS; n++) {
   }
   try {
     out.browserVersion = browser.version();
-    const page = await (await browser.newContext(HEADED ? { viewport: { width: 1440, height: 900 } } : {})).newPage();
+    const context = await browser.newContext(HEADED ? { viewport: { width: 1440, height: 900 } } : {});
+    if (WAIT_MS !== null) await context.addInitScript(bootWaitProbe, WAIT_MS);
+    const page = await context.newPage();
     const t0 = Date.now();
     out.t0Epoch = t0;
+    // Every .snapz request, the workers' included. A request event, not a route: any context.route makes
+    // Playwright disable the HTTP cache and pause every request, and the runtime's chunks are fetched
+    // with cache "force-cache" (lean.worker.js fetchChunk), so a route would change what a warm reload does.
+    const snapz = [];
+    context.on("request", (r) => { if (SNAPZ.test(r.url())) snapz.push({ t: Date.now() - t0 }); });
     const workers = [];
     page.on("worker", (w) => { const r = { t: Date.now() - t0, kind: workerKind(w.url()), url: w.url().replace(target.origin, "").slice(0, 80), closed: null }; workers.push(r); w.on("close", () => { r.closed = Date.now() - t0; }); });
     let crashed = null;
     page.on("crash", () => { crashed = Date.now() - t0; });
     // The worker's boot notes (HARDENING #55: "[boot] waited N ms for M stopping runtime(s)").
     const waits = [];
+    // R2 part 1: the raw snapshot cache's handle was still held (by the previous page's runtime) and was retried.
+    const rawBusy = [];
     const notes = [];
     page.on("console", (m) => {
       const s = m.text();
       if (/\[boot\] waited/.test(s)) waits.push({ t: Date.now() - t0, text: s.replace(/^.*\[boot\] /, "").slice(0, 120) });
+      if (/raw cache busy/.test(s)) rawBusy.push({ t: Date.now() - t0, text: s.slice(0, 160) });
       if (CONSOLE_LOG && /^\[lean:/.test(s) && notes.length < 400) notes.push({ t: Date.now() - t0, text: s.slice(0, 120) });
     });
     const alive = () => workers.filter((w) => w.closed === null).length;
@@ -131,7 +186,7 @@ for (let n = 1; n <= RUNS; n++) {
         let w = globalThis;
         if (embed) { const f = document.getElementById("qed64-frame"); w = f && f.contentWindow; }
         const s = w && w.qed64 && w.qed64.status();
-        return s ? { phase: s.phase, relay: s.relay, pool: s.pool } : null;
+        return s ? { phase: s.phase, relay: s.relay, pool: s.pool, memory: (w.qed64.api && typeof w.qed64.api.status === "function" && w.qed64.api.status().memory) || null } : null;
       } catch { return null; }
     }, EMBED).catch(() => null);
     const waitReady = async (ms) => { const t = Date.now(); for (;;) { if (crashed !== null) return null; const st = await status(); if (st && st.phase === "ready") return Date.now() - t; if (Date.now() - t > ms) return null; await sleep(250); } };
@@ -139,12 +194,20 @@ for (let n = 1; n <= RUNS; n++) {
     let sampling = true;
     (async () => { while (sampling) { samples.push(alive()); await sleep(250); } })();
     await page.goto(pageUrl, { waitUntil: "domcontentloaded" });
-    out.firstReadyMs = await waitReady(600000);
+    out.firstReadyMs = await waitReady(BOOT_BUDGET_MS);
     if (out.firstReadyMs === null) { out.verdict = crashed !== null ? "crashed-before-ready" : "never-ready"; }
     else {
       booted += 1;
       const st = await status();
-      out.atReady = { alive: alive(), pool: st?.pool ?? null };
+      out.atReady = { alive: alive(), pool: st?.pool ?? null, memory: st?.memory ?? null };
+      out.readyEpoch = Date.now();
+      out.firstReadyT = out.readyEpoch - t0;
+      // --hold-ms: the page idles at ready (a crash ends the hold; then there is no steady state).
+      if (HOLD_MS > 0) {
+        const until = Date.now() + HOLD_MS;
+        while (crashed === null && Date.now() < until) await sleep(Math.min(250, until - Date.now()));
+        if (crashed === null) { out.steadyEpoch = Date.now(); const s2 = await status(); out.atSteady = { alive: alive(), pool: s2?.pool ?? null, memory: s2?.memory ?? null }; }
+      }
       const ts = Date.now();
       out.reloads = [];
       for (let i = 0; i < RELOADS && crashed === null; i++) {
@@ -169,6 +232,24 @@ for (let n = 1; n <= RUNS; n++) {
     out.peakAlive = Math.max(0, ...samples);
     out.workers = workers;
     out.predecessorWaits = waits;
+    // A cold first boot always fetches .snapz before ready (the fresh profile has no raw cache): none seen
+    // means the counter was blind, and its after-ready count means nothing.
+    out.snapz = snapz.map((x) => x.t);
+    out.rawCacheBusy = rawBusy;
+    out.snapzAfterFirstReady = out.firstReadyT ? snapz.filter((x) => x.t > out.firstReadyT).length : null;
+    out.snapzCounterBlind = out.firstReadyT ? snapz.filter((x) => x.t <= out.firstReadyT).length === 0 : null;
+    if (WAIT_MS !== null) {
+      out.armOk = waits.every((w) => /budget spent/.test(w.text) || Number((/waited (\d+) ms/.exec(w.text) || [])[1]) <= 60);
+      // The last document's rewritten boots (evidence that the init script reached the frame that boots).
+      out.waitProbe = await page.evaluate((embed) => {
+        try {
+          let w = globalThis;
+          if (embed) { const f = document.getElementById("qed64-frame"); w = f && f.contentWindow; }
+          const b = w && w.__qed64StormBoots;
+          return Array.isArray(b) ? b.map((x) => ({ from: x.from, to: x.to })) : null;
+        } catch { return null; }
+      }, EMBED).catch(() => null);
+    }
     if (CONSOLE_LOG) out.console = notes;
   } catch (e) {
     out.verdict = "harness-error";
@@ -181,8 +262,9 @@ for (let n = 1; n <= RUNS; n++) {
   out.oomKind = out.oom.length ? [...new Set(out.oom.map((o) => o.kind))].join("+") : null;
   runs.push(out);
   const ca = out.crashAfterReload;
-  console.log(`run ${n}: ${out.verdict}${out.crashedAtMs !== null && out.crashedAtMs !== undefined ? ` at ${out.crashedAtMs} ms${ca ? ` (${ca.ms} ms after reload ${ca.reload})` : ""}` : ""}${out.oomKind ? ` [${out.oomKind}, ${out.oom.length} OOM line(s)]` : ""}; first ready ${out.firstReadyMs} ms; at ready ${JSON.stringify(out.atReady ?? null)}; peak live workers ${out.peakAlive}${out.predecessorWaits?.length ? `; waited for predecessors ${out.predecessorWaits.length}× (${out.predecessorWaits.map((w) => (/waited (\d+) ms/.exec(w.text) || [])[1]).join("/")} ms)` : ""}; ready after storm ${out.readyAfterMs ?? null} ms${READY_EACH ? `; reload→ready ${(out.reloads || []).map((r) => r.readyMs ?? "-").join("/")} ms` : ""}; host ${out.host.reclaimableGB} GB reclaimable`);
-  fs.writeFileSync(path.join(dir, `reload-storm-${TAG}.json`), JSON.stringify({ url: pageUrl, qed64Url: url, embed: EMBED, ballastMb: BALLAST_MB, mode: browserMode, buildId: manifest.buildId, tag: TAG, runs }, null, 1));
+  console.log(`run ${n}: ${out.verdict}${out.crashedAtMs !== null && out.crashedAtMs !== undefined ? ` at ${out.crashedAtMs} ms${ca ? ` (${ca.ms} ms after reload ${ca.reload})` : ""}` : ""}${out.oomKind ? ` [${out.oomKind}, ${out.oom.length} OOM line(s)]` : ""}; first ready ${out.firstReadyMs} ms; at ready ${JSON.stringify(out.atReady ?? null)}; peak live workers ${out.peakAlive}${out.predecessorWaits?.length ? `; waited for predecessors ${out.predecessorWaits.length}× (${out.predecessorWaits.map((w) => (/waited (\d+) ms/.exec(w.text) || [])[1]).join("/")} ms)` : ""}; ready after storm ${out.readyAfterMs ?? null} ms${READY_EACH ? `; reload→ready ${(out.reloads || []).map((r) => r.readyMs ?? "-").join("/")} ms` : ""}; host ${out.host.reclaimableGB} GB reclaimable`
+    + `; .snapz after first ready ${out.snapzAfterFirstReady ?? null}${out.snapzCounterBlind ? " (COUNTER BLIND)" : ""}; raw cache busy ${out.rawCacheBusy?.length ?? 0}${WAIT_MS !== null ? `; wait-ms ${WAIT_MS}, arm ${out.armOk ? "ok" : "INVALID"}` : ""}`);
+  fs.writeFileSync(path.join(dir, `reload-storm-${TAG}.json`), JSON.stringify({ url: pageUrl, qed64Url: url, embed: EMBED, ballastMb: BALLAST_MB, mode: browserMode, buildId: manifest.buildId, tag: TAG, waitMs: WAIT_MS, holdMs: HOLD_MS, bootBudgetMs: BOOT_BUDGET_MS, runs }, null, 1));
   await sleep(5000); // let the dead browser's memory drain before the next run
 }
 const crashedRuns = runs.filter((r) => r.verdict === "crashed" || r.verdict === "crashed-before-ready");
