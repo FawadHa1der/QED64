@@ -26,9 +26,13 @@
 //
 // Usage: node tests/adversarial/e2e.mjs [--url http://localhost:5187/] [--corpus corpus.json]
 //        [--only <exact scenario name>] [--run-dir <dir>] [--boot-budget-ms 480000] [--browser chromium|firefox]
+//        [--fs-reads]
+// --fs-reads (R15's measurement): every lean.worker's Emscripten FS is instrumented (fs-reads.mjs) and a final
+// `fs-reads` row fails when a stock session opened or found a library file under /lib.
 import fs from "node:fs";
 import path from "node:path";
-import { arg, browserName, fetchJson, launchBrowser, onlyMatches as onlyMatchesName, resolveTarget, root, runDir, settleClass, settleClassFromPhase, teeLog } from "./harness.mjs";
+import { arg, browserName, fetchJson, has, launchBrowser, onlyMatches as onlyMatchesName, resolveTarget, root, runDir, settleClass, settleClassFromPhase, teeLog } from "./harness.mjs";
+import { createFsReads } from "./fs-reads.mjs";
 
 // `--browser` is validated before the manifest fetch: a typo is this lane's refusal (exit 3), not an uncaught throw.
 try { browserName(); } catch (e) { console.error(`e2e: refused — ${e.message}`); process.exit(3); }
@@ -36,6 +40,8 @@ try { browserName(); } catch (e) { console.error(`e2e: refused — ${e.message}`
 const url = arg("url", "http://localhost:5187/");
 const corpusPath = arg("corpus", path.join(root, "tests/adversarial/corpus.json"));
 const bootBudgetMs = Number(arg("boot-budget-ms", "480000"));
+const FS_READS = has("--fs-reads");
+const fsReads = FS_READS ? createFsReads() : null;
 const target = resolveTarget(url);
 // The run identity (buildId + mode) comes from what the page will boot. An
 // unreachable manifest is an infrastructure refusal, not a scenario result.
@@ -83,6 +89,7 @@ const browser = await launchBrowser().catch((e) => { console.error(`e2e: refused
 const context = await browser.newContext();
 let page;
 function wirePage(p) {
+  if (fsReads) fsReads.attach(p);
   p.on("console", (m) => { consoleLog.push(m.text().slice(0, 300)); if (consoleLog.length > 400) consoleLog.shift(); });
   p.on("pageerror", (e) => consoleLog.push(`PAGEERROR: ${e.message.slice(0, 200)}`));
   p.on("crash", () => { pageCrashes += 1; consoleLog.push("PAGE-CRASHED"); });
@@ -94,6 +101,8 @@ function wirePage(p) {
  * under machine load (kernel builds push boots past 400 s) is not an
  * environment refusal; it is logged and the scenario judges it. */
 async function freshPage() {
+  // The closing page's lean.worker takes its record with it: read it once more first.
+  if (fsReads) await fsReads.poll();
   try { if (page && !page.isClosed()) await page.close(); } catch { /* gone */ }
   page = await context.newPage();
   wirePage(page);
@@ -109,6 +118,8 @@ async function freshPage() {
  * domcontentloaded, nothing more: the caller watches its boot. `before(page)`
  * runs before the navigation, for listeners that must see the load itself. */
 async function openPage(target, before = () => {}) {
+  // The closing page's lean.worker takes its record with it: read it once more first.
+  if (fsReads) await fsReads.poll();
   try { if (page && !page.isClosed()) await page.close(); } catch { /* gone */ }
   page = await context.newPage();
   wirePage(page);
@@ -264,7 +275,7 @@ const GOLDEN_7 = {
 // Scenario names in run order, so an abort can list what it never reached.
 const actionItems = corpus.filter((it) => Array.isArray(it.actions) && it.actions.length)
   .filter((it) => !only || onlyMatches(it.name));
-const planned = ["boot", ...FIXED.slice(0, 5).filter(runs), ...actionItems.map((it) => it.name), ...FIXED.slice(5).filter(runs)];
+const planned = ["boot", ...FIXED.slice(0, 5).filter(runs), ...actionItems.map((it) => it.name), ...FIXED.slice(5).filter(runs), ...(FS_READS ? ["fs-reads"] : [])];
 const remainingAfter = (name) => planned.slice(planned.indexOf(name) + 1).filter((n) => !results.some((r) => r.name === n));
 let exitCode = 0;
 
@@ -684,6 +695,22 @@ if (runs("final-memory")) {
   await record("final-memory", "memory", wasmOk,
     `wasm=${measured ? mem.wasmMB : "UNMEASURED"}MB js=${mem.jsHeapMB}MB max=${mem.maxGiB ?? "?"}GiB (budget wasm<3800MB)${mem.error ? ` error='${mem.error}'` : ""}`);
 }
+
+// ---------- R15: library files the lean.worker read (--fs-reads) ------------
+// A session whose LEAN_PATH includes /lib/packs/essential is "Load exact imports": its reads are by design,
+// reported and never failed. A worker that was never instrumented, an install that failed, or a stock record that
+// overflowed its 2,000 keys is a blind spot, so the row is infra, never a pass.
+if (fsReads) {
+  const s = await fsReads.finish();
+  const stock = Object.entries(s.sessions).filter(([lp]) => !/\/lib\/packs\/essential/.test(lp));
+  const hits = stock.reduce((n, [, v]) => n + v.library.hits, 0);
+  const stockOverflow = stock.reduce((n, [, v]) => n + v.overflow, 0);
+  const outcome = s.workers === 0 || s.blind > 0 || s.installFailures > 0 || stockOverflow > 0 ? "infra" : hits === 0 ? "pass" : "fail";
+  const bySession = Object.fromEntries(Object.entries(s.sessions).map(([lp, v]) => [lp || "(empty)", { workers: v.workers, hits: v.library.hits, misses: v.library.misses }]));
+  await record("fs-reads", "measure", outcome,
+    `${s.workers} lean.worker(s), ${s.blind} never instrumented, ${s.installFailures} install failure(s), stock overflow ${stockOverflow}; stock-session library hits ${hits}; sessions ${JSON.stringify(bySession)}`,
+    { fsReads: s });
+}
 } catch (e) {
   // InfraError: the page cannot boot — one infra row, the rest aborted, exit 3.
   // Anything else is a harness bug: also abort, but say so.
@@ -693,6 +720,7 @@ if (runs("final-memory")) {
   for (const n of remainingAfter(failing)) await record(n, "aborted", "aborted", `not run: ${infra ? "infrastructure refusal" : "harness error"} at ${failing}`);
   exitCode = infra ? 3 : 1;
 } finally {
+  fsReads?.stop();
   await browser.close().catch(() => {});
 }
 

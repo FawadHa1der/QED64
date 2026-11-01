@@ -42,7 +42,7 @@ paired build outputs of "Environment" below.
 | Suite | `npm run test:adversarial [-- --skip-compiler] [-- --browser firefox]` (`tests/adversarial/run.mjs`) | pretest (`typecheck:site`), its own Vite on :5187, preflight, the compiler battery, a cool-down, then e2e; one report directory per run. `--browser firefox` (default `chromium`) runs the preflight's boot smoke and every e2e scenario in Playwright's Firefox instead (HARDENING #75; `npx playwright install firefox`); the run directory name ends in `-firefox` and `e2e-report.json` carries `browser`, so a report says which engine ran (the per-run directories are timestamped either way; the legacy `work/adversarial/{report.md,e2e-report.json}` copies are the last run's, whichever engine) | fetched artifacts; the battery's pairing (or `--skip-compiler`) | lock | `report: …/report.md`, exit 0 (3 = a lane refused, 1 = product failures) |
 | Preflight | `node pipeline/release/preflight.mjs --url <page url> [--no-boot]` | the pairing the URL boots: manifest, every chunk (HEAD size, non-HTML type), the snapshot index and files, each entry's `runtime` against the manifest's `buildId`, the profile index, and one headless boot smoke | dev or served build | lock (no browser with `--no-boot`) | `PREFLIGHT OK buildId=… mode=… snapshots=…` (3 = `PREFLIGHT REFUSED: …`) |
 | Compiler battery | `node tests/adversarial/compiler-battery.mjs [--snap <file> --artifact <dir> --lib <tree>] [--jobs 3] [--probe <snapshot-probe.mjs>] [--messages-dir <dir>]` | the corpus's must-succeed, must-error and golden-message cases against the Mathlib snapshot under Node, on the runtime the browser ships (`snapshot-probe --via-mem`, a bounded pool), with no PANIC anywhere | `QED64_MATHLIB_SNAP`, `QED64_LEAN_ARTIFACT`, `QED64_LIB_TREE` (else exit 2, a `REFUSED` record) | no browser (heavy: `--jobs` wasm Nodes) | `compiler battery: N/N passed` (3 = infra only) |
-| e2e | `node tests/adversarial/e2e.mjs --url <dev url> [--only <name>]` | boot, golden message batteries, UI-glitch checks, editor action storms with recovery, `module` buffers through the resident FileWorker and the hover docstring of an imported name (kernel 0042, HARDENING #80), the share-link gate (HARDENING #77), the worker-kill drill, memory telemetry, speed budgets | dev | lock | `e2e: 29/29 passed` |
+| e2e | `node tests/adversarial/e2e.mjs --url <dev url> [--only <name>] [--fs-reads]` | boot, golden message batteries, UI-glitch checks, editor action storms with recovery, `module` buffers through the resident FileWorker and the hover docstring of an imported name (kernel 0042, HARDENING #80), the share-link gate (HARDENING #77), the worker-kill drill, memory telemetry, speed budgets | dev | lock | `e2e: 29/29 passed` |
 | Editing latency | `node tests/adversarial/editing-latency.mjs --url <dev url> [--rounds 3]` | header-switch, admit, body-edit, completion and error-clear times, read from `qed64.status()` facts only | dev | lock | `SUMMARY {…}` (3 = no header fact) |
 | Crash gauntlet | `node tests/adversarial/crash-gauntlet.mjs <url> [minutes] [mixed\|imports]` | sustained example switches, garbage bursts and header flips: the page survives and the breaker does not halt | dev | lock | the step log, exit 0 (1 = page crash, 2 = halted) |
 | Liveness faults | `node tests/adversarial/liveness-faults.mjs --url <dev url> [--only <scenario>]` | HARDENING #52's mailbox, kick, liveness probe and exit hook, each by fault injection into the live worker: mailbox-mode, idle-no-probes, long-silent-command, lost-wakeups-healed, wedge-recovery, exit-detected; and #78's early-death-detected (a fresh session's Worker terminated at its first ready, before any heartbeat, is declared dead by the watchdog the arm starts) | dev | lock | `liveness-faults: 7/7 pass` |
@@ -233,6 +233,20 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   (`?runtime=<buildId>&snapshots=snapshots-0031`); `resident-gate.sh` is the
   post-rebuild gate (typecheck, dev server restart, preflight, e2e, latency,
   battery, with cool-downs).
+- **`--fs-reads`** (e2e; R15's measurement, `tests/adversarial/fs-reads.mjs`)
+  instruments every lean.worker's Emscripten FS (`open`/`stat`/`readdir`, hit
+  or miss, with the session's `LEAN_PATH`; an open with write access, such as
+  a memory-mode pack mount, counts as a write, not a read) and adds one last
+  `fs-reads` row (one more than the pass line's count). The row fails when a
+  stock session opened or found a library file (`.olean*`, `.ir*`, `.ilean`)
+  under `/lib`, with `.` and `..` resolved first (Lean's sysroot is `/bin/..`,
+  so its own library directory is `/bin/../lib/lean`); a session whose
+  `LEAN_PATH` includes `/lib/packs/essential` ("Load exact imports") is
+  reported, never failed. A worker that was never instrumented, a failed
+  install or a stock session's overflowing record (more than 2,000 distinct
+  paths) makes the row `infra`, never a pass. The row's `fsReads` field in
+  `e2e-report.json` carries the hits, misses and the 20 most frequent library,
+  other `/lib` and outside paths per session.
 - **Cool-down.** Between browser lanes `harness.mjs cooldown` REFUSES while
   any `chrome-headless-shell` is alive (listing pid + command line: on this
   machine it may be a sibling worktree's or an interactive session's live
