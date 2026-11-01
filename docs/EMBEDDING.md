@@ -468,15 +468,15 @@ v1.1 adds:
 ## 6. The library: the `qed64` npm package
 
 The two consumers hold QED64 in two different ways (checked 2026-10-06 in
-their repositories):
+their repositories, and lean4game's cells again on 2026-11-01):
 
 | | lean4game (library tier) | the widgets showcase (page tier, and the tools) |
 |---|---|---|
-| holds QED64 as | an npm **git dependency** pinned by a full SHA: `"qed64": "github:FawadHa1der/QED64#<40-hex>"` in `client/package.json` (its `qed64-dep` branch). npm fetches the codeload tarball, with no git or SSH needed, and honours `files`. | a **git submodule**, `deps/qed64`, checked out at the pinned commit (`pins/<id>/QED64.lock.json`); a pin under test is a worktree of that submodule |
+| holds QED64 as | an npm **git dependency** pinned by a full SHA: `"qed64": "github:FawadHa1der/QED64#<40-hex>"` in `client/package.json` (branch `wasm64-port`). npm fetches the codeload tarball, with no git or SSH needed, and honours `files`. | a **git submodule**, `deps/qed64`, checked out at the pinned commit (`pins/<id>/QED64.lock.json`); a pin under test is a worktree of that submodule |
 | imports | `qed64/embed` only: every runtime name it uses is in §7.0 (`tests/unit/embed-barrel.test.ts` pins the list). Its tsconfig maps `qed64/embed` to closure.json `entry`, and `scripts/stage-workers.sh` checks that mapping against the installed package. | nothing from `qed64/embed`. Its Cloudflare Worker reuses QED64's edge code: `qed64/edge` (§6 exports, docs/DEPLOY.md "Using qed64/edge in your own Worker") was cut for it; today the Worker imports `isImmutable` from the submodule's `infra/worker.js`. |
 | workers | `scripts/stage-workers.sh` copies closure.json `workers` into `client/public/workers/` (exactly that set) and compares `runtime.minKernelPatch` with its own kernel pin | the shell's `dist/workers/` |
 | editor | its own page: lean4monaco's client, behind its translation layer, on `LspRelay.clientPort` (§7.9) | QED64's own page in an iframe, `?embed=1` (§3) |
-| pipeline CLIs (docs/CLI-CONTRACT.md) | `wasm/build-from-source.sh` runs bake-snapshot, snapshot-probe, pack, unpack, inspect and chunk-runtime from (a copy of) `node_modules/qed64` | bake-snapshot, snapshot-probe, supervised-run, preflight and olean-imports, from the submodule |
+| pipeline CLIs (docs/CLI-CONTRACT.md) | `wasm/build-from-source.sh` runs bake-snapshot and snapshot-probe from `node_modules/qed64` (or `$QED64_DIR`); its trees and runtime come from the lean4-wasm64 package | bake-snapshot, snapshot-probe, supervised-run, preflight and olean-imports, from the submodule |
 | Vite | a COOP/COEP middleware, `optimizeDeps.exclude: ["qed64"]`, `__QED64_BUILD_ID__` defined from its runtime manifest | — (it builds QED64's own `frontend/`) |
 
 The package:

@@ -515,8 +515,6 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   every flag, exit code and marker regex.
 - `node pipeline/snapshot/cli.mjs --check-preludes` must pass: the inline
   preludes are the current rendering of SPECS.
-- The files lean4game and the showcase vendor one by one must import only
-  files they vendor.
 - The path rule (tests/unit/tool-paths.test.ts): each tool, run from a scratch
   copy of the checkout with the rule's variables cleared, exits 2 with the
   `no-path` line and its usage line when nothing resolves, honours its

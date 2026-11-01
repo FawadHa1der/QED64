@@ -244,29 +244,6 @@ describe("SPECS", () => {
       }
     }
   });
-
-  test("the files downstream vendors one by one import only files it vendors (cli.mjs stays out of them)", () => {
-    // lean4game scripts/sync-qed64.sh (PIPELINE + PIPELINE_OPTIONAL) and the
-    // showcase's pin-qed64.mjs VENDOR_PATHS; lean4game's own sanity regex.
-    const lean4game = [
-      "pipeline/toolchain/chunk-runtime.mjs", "pipeline/toolchain/artifact-paths.mjs", "pipeline/toolchain/gate.mjs",
-      "pipeline/snapshot/persistent-probe.mjs", "pipeline/snapshot/bake-snapshot.mjs", "pipeline/snapshot/node-runner.mjs",
-      "pipeline/snapshot/snapshot-probe.mjs", "pipeline/artifacts/pack.mjs", "pipeline/artifacts/unpack.mjs",
-      "pipeline/artifacts/inspect.mjs", "pipeline/release/verify-release.mjs", "pipeline/artifacts/olean-imports.mjs",
-    ];
-    const snapshotDir = fs.readdirSync(path.join(root, "pipeline/snapshot")).filter((f) => f.endsWith(".mjs")).map((f) => `pipeline/snapshot/${f}`);
-    const showcase = [...snapshotDir, "pipeline/toolchain/artifact-paths.mjs", "pipeline/artifacts/olean-imports.mjs", "pipeline/artifacts/unpack.mjs"];
-    const RELATIVE = /(?:from\s+|import\s*\(\s*)["'](\.[^"']+)["']/g;
-    for (const [who, set] of [["lean4game", lean4game], ["showcase", showcase]] as const) {
-      for (const file of set) {
-        const source = fs.readFileSync(path.join(root, file), "utf8");
-        for (const m of source.matchAll(RELATIVE)) {
-          const target = path.posix.normalize(path.posix.join(path.posix.dirname(file), m[1]!));
-          expect(set, `${who}: ${file} imports ${m[1]}, which ${who} does not vendor`).toContain(target);
-        }
-      }
-    }
-  });
 });
 
 describe("the argument grammar (cliContract, the one implementation)", () => {
@@ -339,7 +316,7 @@ describe("the argument grammar (cliContract, the one implementation)", () => {
     expect(u.result!.passthrough).toEqual(["--bogus", "x"]);
   });
 
-  test("cliContract uses nothing but its parameters and Node globals (it is inlined into vendored scripts)", () => {
+  test("cliContract uses nothing but its parameters and Node globals (it is inlined into the preludes)", () => {
     const fresh = new Function(`return (${cliContract.toString()})`)() as typeof cliContract;
     const io = { out: [] as string[], err: [] as string[], code: null as number | null };
     const r = fresh({ ...compactSpec("unpack") }, ["--manifest=m", "--out", "o"], { out: (s) => io.out.push(s), err: (s) => io.err.push(s), exit: (c) => { io.code = c; } });

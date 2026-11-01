@@ -1,24 +1,30 @@
 # The pipeline CLI contract
 
-The pipeline's command-line tools are an interface: two downstream projects
+The pipeline's command-line tools are an interface: three downstream projects
 run them and parse what they print. How each one gets them (checked
-2026-10-06 in their repositories):
+2026-11-01 in their repositories):
 
-- **lean4game** runs them in its from-source lane (`wasm/build-from-source.sh`).
-  On its `qed64-dep` branch they come from the installed package
+- **lean4game** (branch `wasm64-port`) installs QED64 as a git dependency
+  pinned by a full SHA in `client/package.json`
   (`"qed64": "github:FawadHa1der/QED64#<sha>"`; every Tier 1/2 tool is in the
-  package's `files`, docs/EMBEDDING.md §6), run from a copy of
-  `node_modules/qed64`. Its deployed `wasm64-port` branch still vendors eight
-  of them file by file (`scripts/sync-qed64.sh`; olean-imports is in its
-  optional list), which is why the inline preludes below exist.
+  package's `files`, docs/EMBEDDING.md §6). Its from-source lane
+  (`wasm/build-from-source.sh`) runs bake-snapshot and snapshot-probe from
+  `node_modules/qed64` (or `$QED64_DIR`); its olean trees and runtime come
+  from the lean4-wasm64 package. Its file-by-file copy
+  (`scripts/sync-qed64.sh`) was retired in its 00bf77e (2026-10-05).
+- **The proof sheets** (the Waterproof course site, branch `website-v4.35`)
+  install QED64 the same way (`website/site/package.json`, with the same
+  commit in `website/sources.json`) and run bake-snapshot with its default
+  runner from that install or a checkout (`website/build.sh`). Their bake
+  fingerprint hashes the bytes of `pipeline/snapshot/node-runner.mjs`
+  (`website/scripts/fingerprint.mjs`), so an edit there rebakes every entry
+  at their next re-pin.
 - **The widgets showcase** runs them in place from the QED64 sources it pins:
   the git submodule `deps/qed64` at the active pin's commit, or that pin's
   worktree (`scripts/lib/qed64-src.mjs`; nothing is copied). It judges bakes
   and probes by their log lines.
 
-This document states what those consumers may rely on. In the "Consumers"
-lists below, "vendored" means lean4game's `wasm64-port` copy; the same lane on
-`qed64-dep` runs the packaged file.
+This document states what those consumers may rely on.
 
 The contract is also data: `pipeline/snapshot/cli.mjs` holds one SPEC per tool
 (flags, defaults, required flags, environment, exit codes, stable output
@@ -37,7 +43,7 @@ node pipeline/snapshot/cli.mjs --write-preludes  # regenerate the inline prelude
 | Tier | Promise |
 |---|---|
 | **1: downstream-stable** | Flags, defaults, exit codes and the stable markers below change only under the stability policy (a deprecation window of one downstream re-pin cycle). |
-| **2: internal-stable** | Same rules, but the consumers are QED64's own scripts and lean4game's from-source lane. A breaking change still needs a changelog row, and a lean4game re-pin (of its vendored copy or of its package pin). |
+| **2: internal-stable** | Same rules, but the consumers are QED64's own scripts and, through bake-snapshot, the consumers' bakes (every one runs node-runner; the proof sheets also hash its bytes). A breaking change still needs a changelog row, and a re-pin of every consumer that runs it ("Stability policy"). |
 | **3: diagnostic** | No promise. They may change or disappear without notice. |
 
 | Tool | Script | npm alias | Tier | `--help` wiring |
@@ -87,14 +93,12 @@ resident-probe, was folded into it on 2026-10-05 as `--snapshots <a,b>`,
   to run it as `node --stack-size=8192 …` and the tool continues as before.
   bake-snapshot and supervised-run start their runner with the flag
   themselves, so a plain `node` is enough for them; the re-exec is for direct
-  runs, `npm run runner`, and gates that spawn node-runner and
-  persistent-probe without it (lean4game's vendored `gate.mjs`, pinned
-  before contract 3; QED64's `gate.mjs` forwards to the package's since).
+  runs, `npm run runner`, and any harness that spawns node-runner or
+  persistent-probe without it.
 - Since toolchain patches 0020 and 0031, the one-shot Lean CLI does its work
   and then **never exits** (HARDENING #47). Whatever runs node-runner judges
   the job by its output and reaps the process. bake-snapshot and
-  supervised-run do this; the gates (the package's, lean4game's vendored
-  one) use a timeout.
+  supervised-run do this; the package's gate uses a timeout.
 
 ### Argument grammar
 
@@ -144,17 +148,16 @@ There is one implementation of the grammar, `cliContract` in
 
 ### How the tools bind to the contract
 
-`cli.mjs` lives in `pipeline/snapshot/` because the showcase used to vendor
-that directory whole (it now runs the tools from its submodule). lean4game's
-`wasm64-port` branch is different: it vendors `bake-snapshot`,
-`node-runner`, `snapshot-probe`, `persistent-probe`, `chunk-runtime`, `pack`,
-`unpack` and `olean-imports` **one file at a time**, and its sanity check
-refuses any relative import it did not copy. Those scripts therefore carry a
+`cli.mjs` lives in `pipeline/snapshot/` because the showcase once vendored
+that directory whole. The tools SPECS marks `binding: "inline"` carry a
 **generated inline prelude** between `// <cli-contract>` and
-`// </cli-contract>`. The prelude holds the verbatim source of `cliContract`,
-the tool's compact spec and its help text. (The showcase vendored
-olean-imports and unpack one file at a time before it moved to the
-submodule; the preludes keep any one-file copy self-contained.)
+`// </cli-contract>`: the verbatim source of `cliContract`, the tool's
+compact spec and its help text. The prelude's reason is gone. It existed
+because a downstream copied the scripts one file at a time (lean4game's
+`scripts/sync-qed64.sh`, retired 2026-10-05); every consumer now runs them in
+place. The preludes become imports of `cli.mjs` with the next runtime
+adoption, batched because an edit of `node-runner.mjs` rebakes the proof
+sheets.
 
 The prelude runs right after the imports (in node-runner, snapshot-probe and
 persistent-probe right after `ensureStackSize`, which prints nothing; see
@@ -162,15 +165,11 @@ persistent-probe right after `ensureStackSize`, which prints nothing; see
 importing the module stays side-effect-free.
 
 The path rule and the stack-size re-exec live in
-`pipeline/toolchain/artifact-paths.mjs`, which bake-snapshot and
-chunk-runtime imported already and which node-runner, snapshot-probe,
-persistent-probe, `gate.mjs` and resident-probe now import too. Both
-consumers vendor that file (lean4game's `PIPELINE` list, the showcase's
-submodule), so the one-by-one copies stay self-contained; the unit test's
-vendoring check covers it. The
-prelude rewrites `--flag=value` into `process.argv` as the two-token form, and
-drops the later occurrences of a repeated value flag, so the script's own
-legacy parser reads it unchanged and sees only the first value.
+`pipeline/toolchain/artifact-paths.mjs` (Node built-ins only), which every
+tool under the path rule imports. The prelude rewrites `--flag=value` into
+`process.argv` as the two-token form, and drops the later occurrences of a
+repeated value flag, so the script's own legacy parser reads it unchanged and
+sees only the first value.
 
 Only supervised-run, preflight and fetch-artifacts import `parseCli` at run
 time. No downstream copies any of them without `cli.mjs`: the showcase runs
@@ -181,16 +180,14 @@ and in closure.json's `pipeline` list, with every Tier 1/2 tool;
 `tests/unit/package-contract.test.ts` checks it).
 
 After you edit SPECS, run `node pipeline/snapshot/cli.mjs --write-preludes`.
-The unit test fails on drift. It also fails when a file downstream vendors one
-at a time imports a file that downstream does not vendor.
+The unit test fails on drift.
 
 ### Path resolution
 
 Since contract 2 (2026-10-06) every path a tool reads or writes comes from
 **one rule**, implemented once (`toolPath` / `resolveToolPath` in
 `pipeline/toolchain/artifact-paths.mjs`: Node built-ins only, no relative
-imports, in `files` and closure.json `pipeline`, and vendored one by one by
-both consumers already, so importing it adds no file to their copies):
+imports, in `files` and closure.json `pipeline`):
 
 1. **the explicit flag** (`--artifact`, `--lib`, `--work`, `--out`, `--snap`,
    `--snap-dir`, as each tool has);
@@ -226,15 +223,16 @@ Relative flag values resolve against the **current working directory**, with
 these exceptions, which resolve against the **repo root** (the directory two
 levels above the script): bake-snapshot's `--work` and `--out`, and
 chunk-runtime's `--out`. The deprecated defaults live under the repo root too.
-In a vendored copy, "the repo root" means the vendoring root, for example
-`vendor/qed64/`; in an installed package it is the package root inside
+In an installed package "the repo root" is the package root inside
 `node_modules`, which is why the defaults go.
 
 The next cycle removes step 3: a tool with neither the flag nor the variable
-then always takes step 4. lean4game's bake lane omits `--work` today (its
-`$QED64_DIR/work/snapshot` is the deprecated default, and its snapshot probe
-reads `<that>/<name>.snap`), so it sees one WARNING per bake until it passes
-`--work` or sets `QED64_WORK`.
+then always takes step 4. Every consumer already passes its paths
+explicitly: lean4game's and the proof sheets' bakes pass `--work` and
+`--out`, and the showcase passes absolute paths. Only QED64's own lanes still
+use the defaults (the compiler battery, `resident-gate.sh`, the integration
+tests); they move to the variables first. The removal lands with the next
+runtime adoption, together with the prelude change.
 
 ### Exit codes
 
@@ -259,7 +257,7 @@ decisions".
 | `QED64_STAGING` | bake-snapshot, chunk-runtime | A staging root when `--out` is absent: `--out` is `<QED64_STAGING>/<buildId>/snapshots` (bake-snapshot) or `<QED64_STAGING>/<buildId>/runtime` (chunk-runtime). `public/` is still refused. |
 | `QED64_LIB_TREE` | snapshot-probe (and the compiler battery) | The olean tree mounted at `/lib/lean` when `--lib` is absent: the tree the probed snapshot was baked from. |
 | `LEAN_COMPACTOR_RESERVE` | node-runner (forwarded into the wasm env) | Bytes the compactor reserves up front for a whole-environment save (patch 0011). bake-snapshot **sets** it for its runner from `--reserve` and overrides any inherited value. |
-| `QED64_ALLOW_LEGACY_IMPORTS` | node-runner (forwarded as `1` when non-empty) | Lets the exported-level env cache load legacy non-module packages (patch 0030). The documented form is `bake-snapshot --allow-legacy-imports`, which sets it to `1` for the runner; an inherited value is its equivalent and stays accepted (both consumers' bake lanes set the variable). |
+| `QED64_ALLOW_LEGACY_IMPORTS` | node-runner (forwarded as `1` when non-empty) | Lets the exported-level env cache load legacy non-module packages (patch 0030). The documented form is `bake-snapshot --allow-legacy-imports`, which sets it to `1` for the runner; an inherited value is its equivalent and stays accepted (the showcase's bake sets the variable; the proof sheets pass the flag). |
 | `QED64_PROFILE_INIT` | node-runner, snapshot-probe (forwarded) | Profiles the `[init]` replay. |
 | `QED64_RUNNER` | bake-snapshot | The runner script when `--runner` is absent. Unset: QED64's own `pipeline/snapshot/node-runner.mjs` (the default, not deprecated). Resolves against the cwd. |
 | `LEAN4_WASM64_DIR` | unpack (and the tier-3 `inspect.mjs` and `gate.mjs` forwards) | The [lean4-wasm64](#lean4-wasm64-the-forwards) package dir the forwards run. Set, it must be that package too (its `package.json` name is `lean4-wasm64`), else the forward refuses (`not-package`, exit 2) without falling back to the walk. Unset or empty: the first `<ancestor of the cwd>/node_modules/lean4-wasm64` whose `package.json` name is `lean4-wasm64` (the consumer's own install). Never resolved from the script's own location; the package is never imported. |
@@ -334,7 +332,7 @@ usage: bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <di
 | `--label <text>` | none | The entry's human name for the page's pill and boot card. |
 | `--initial-bytes <bytes>` | none | The initial Memory64 commit when the entry is loaded (else 2 GiB with any non-base entry). |
 | `--allow-legacy-imports` | off | Sets `QED64_ALLOW_LEGACY_IMPORTS=1` for the runner (patch 0030: the env cache loads legacy non-module packages, the lean4game games). An inherited `QED64_ALLOW_LEGACY_IMPORTS` does the same and stays accepted. |
-| `--runner <script>` | `$QED64_RUNNER`, else QED64's own `pipeline/snapshot/node-runner.mjs` (not deprecated, no WARNING) | The runner script (contract 3, additive). It is spawned as `<this node> --stack-size=8192 <script> --work … --artifact … [--lib …] -- …`, so it must take node-runner's flags. Resolves against the cwd; a script that does not exist refuses (`no-runner`, exit 2) before `<work>` is created. The default stays QED64's runner: a bake through the package's `node-runner.mjs` (which pins `LEAN_PATH=/lib/lean`, mirrors only `bin/` and shadows `<artifact>/lib/lean` with `--lib`) is not yet shown byte-identical. |
+| `--runner <script>` | `$QED64_RUNNER`, else QED64's own `pipeline/snapshot/node-runner.mjs` (not deprecated, no WARNING) | The runner script (contract 3, additive). It is spawned as `<this node> --stack-size=8192 <script> --work … --artifact … [--lib …] -- …`, so it must take node-runner's flags. Resolves against the cwd; a script that does not exist refuses (`no-runner`, exit 2) before `<work>` is created. The default stays QED64's runner: a bake through the package's `node-runner.mjs` (which pins `LEAN_PATH=/lib/lean`, mirrors only `bin/` and shadows `<artifact>/lib/lean` with `--lib`) was shown byte-identical on Lean 4.34 (2026-10-08), not yet on 4.35. |
 
 - **Environment:** `QED64_LEAN_ARTIFACT`, `QED64_WORK`, `QED64_STAGING` (the
   path rule), `QED64_RUNNER`. `LEAN_COMPACTOR_RESERVE` is set for the runner.
@@ -431,10 +429,15 @@ Older `.snapz` files are never deleted.
   `QED64_ALLOW_LEGACY_IMPORTS=1`.
 - The showcase's `judge-bake.mjs` scans the whole log for reserved substrings
   (J1) and parses the `baked` line (J3).
-- lean4game's `wasm/build-from-source.sh` bake lane runs its vendored copy
-  (`wasm64-port`) or the packaged one (`qed64-dep`) with `--name --artifact
-  --lib --reserve --out` and `QED64_ALLOW_LEGACY_IMPORTS=1`; it omits `--work`
-  (the deprecated default, one WARNING).
+- lean4game's `wasm/build-from-source.sh` bake lane runs the installed copy
+  (or `$QED64_DIR`) with `--name --probe --roots --artifact --lib --reserve
+  --work --out`. It sets no `QED64_ALLOW_LEGACY_IMPORTS`: patch 0030 admits
+  its legacy oleans.
+- The proof sheets' `website/build.sh` runs the installed copy (or a
+  checkout) with `--name --probe --artifact --lib --work --out`, each overlay
+  entry also with `--roots --label --allow-legacy-imports`, and the default
+  runner; it greps `^baked ` from each overlay entry's bake log (under
+  `set -euo pipefail`, so the line is required) and dies on a non-zero exit.
 - In QED64: `pipeline/release/adopt-release.sh` (it greps `^baked`), and
   `tests/unit/artifact-discipline.test.ts`.
 
@@ -550,7 +553,7 @@ the SIGKILL, so a watchdog kill leaves no hard link behind.
   and fail, `^ABORT:`, `load:`, `compile:` and `[lean:stdout]`, and runs the
   probe under `/usr/bin/time -l` for its peak memory footprint (E1), which the
   watchdog leaves the probe's own (one process).
-- lean4game's `build-from-source.sh --verify-snapshots` (vendored).
+- lean4game's `build-from-source.sh --verify-snapshots` (the installed package).
 
 ### supervised-run
 
@@ -633,7 +636,8 @@ the import. The target comes from `resolveTarget(url)` in
 a shim with the same flags, output and exit codes that also prints
 `preflight: WARNING — tests/adversarial/preflight.mjs is deprecated; use
 pipeline/release/preflight.mjs (docs/CLI-CONTRACT.md)` on stderr before
-anything else. It goes after both consumers re-pin past it.
+anything else. It goes after every consumer re-pins past it ("Stability
+policy").
 
 ```
 usage: preflight.mjs [--url <page url>] [--no-boot] [--boot-budget-ms 180000] [--run-dir <dir>]
@@ -877,11 +881,16 @@ usage: node-runner.mjs [--artifact <dir>] [--work <dir>] [--lib <dir>] [--] <lea
    host path inside the VFS.
 4. Does not exit after `main` returns.
 
-**Consumers:** bake-snapshot, supervised-run,
-`tests/integration/runtime-smoke.test.ts` (through supervised-run, with
-node-runner's own flags after `--`), and lean4game (vendored, through its gate
-and bakes). QED64's `pipeline/toolchain/gate.mjs` no longer runs it: it
-forwards to the package's gate, which has its own runner (contract 3).
+**Consumers:**
+
+- bake-snapshot: QED64's, lean4game's, the proof sheets' and the showcase's
+  bakes all run this file as the default runner, and the proof sheets hash
+  its bytes into their bake fingerprint.
+- supervised-run.
+- `tests/integration/runtime-smoke.test.ts`, through supervised-run with
+  node-runner's own flags after `--`.
+
+The package's gate runs its own runner.
 
 ### persistent-probe
 
@@ -921,10 +930,8 @@ usage: persistent-probe.mjs [--artifact <dir>]
 **Consumers:**
 
 - lean4-wasm64's gate checks its own copy's `PERSISTENT PROBE PASS` and
-  `runtime defect is FIXED` (QED64's `gate.mjs` forwards to it since
-  contract 3 and no longer runs this script).
+  `runtime defect is FIXED`.
 - `tests/integration/persistent-path.test.ts`.
-- lean4game (vendored).
 
 ### chunk-runtime
 
@@ -996,8 +1003,6 @@ are checked against it where it is installed).
 
 - None in QED64 since plan B2a: `import-packs.sh` and `bump-chain.sh` (the
   restamp) are deleted, and `adopt-release.sh` stages the release's chunks.
-- lean4game's `build-from-source.sh` runtime lane (vendored, pinned before
-  B1; it does not re-sync).
 - `tests/unit/artifact-discipline.test.ts`, `tests/unit/tool-paths.test.ts`,
   `tests/unit/cli-contract.test.ts` (against a fake package).
 
@@ -1049,7 +1054,6 @@ usage: pack.mjs --lib <dir> --id <name> --out <dir> [...]
 
 - None of QED64's lanes since plan B2a: the release packs, and
   `import-packs.sh` is deleted.
-- lean4game's `build-from-source.sh` core lane (vendored).
 - `tests/unit/{import-lane,pack-format,artifact-discipline}.test.ts`.
 
 ### unpack
@@ -1116,7 +1120,6 @@ are checked against it where it is installed).
 
 - None of QED64's lanes: `adopt-release.sh` runs the package's `unpack`
   directly (`import-packs.sh`, which called this script, is deleted).
-- lean4game's `build-from-source.sh` trees lane (vendored).
 - The showcase (from the submodule; no script of it calls unpack today,
   checked 2026-10-06).
 
@@ -1187,9 +1190,9 @@ script by `tests/unit/cli-contract.test.ts`); each flag is in its SPEC.
 
 | Frozen | Tool | Who parses or passes it |
 |---|---|---|
-| `--name --artifact --lib --reserve --work --out --probe`, and `--roots --label --initial-bytes --allow-legacy-imports` | bake-snapshot | the showcase's `scripts/bake.sh` (the first seven, absolute paths); lean4game's `build-from-source.sh` bake lane (`--name --artifact --lib --reserve --out`) |
-| `QED64_ALLOW_LEGACY_IMPORTS=1`, the equivalent of `--allow-legacy-imports` | bake-snapshot (inherited by its runner), node-runner | both consumers' bake lanes set it |
-| the `baked` line, and exit 0 meaning "baked" (not a Lean verdict) | bake-snapshot | the showcase's `scripts/judge-bake.mjs` J3; QED64's `adopt-release.sh` (`^baked`) |
+| `--name --artifact --lib --reserve --work --out --probe`, and `--roots --label --initial-bytes --allow-legacy-imports` | bake-snapshot | the showcase's `scripts/bake.sh` (the first seven, absolute paths); lean4game's `build-from-source.sh` bake lane (`--name --probe --roots --artifact --lib --reserve --work --out`); the proof sheets' `website/build.sh` (`--name --probe --artifact --lib --work --out`, and `--roots --label --allow-legacy-imports` for each overlay entry) |
+| `QED64_ALLOW_LEGACY_IMPORTS=1`, the equivalent of `--allow-legacy-imports` | bake-snapshot (inherited by its runner), node-runner | the showcase's `scripts/bake.sh` sets it (the proof sheets pass the flag, row above); lean4game stopped on 2026-10-08 (its adoption of the lean4-wasm64 release lean-v4.34.0-41ec565), because patch 0030 admits legacy oleans |
+| the `baked` line, and exit 0 meaning "baked" (not a Lean verdict) | bake-snapshot | the showcase's `scripts/judge-bake.mjs` J3; QED64's `adopt-release.sh` (`^baked`); the proof sheets' `website/build.sh` (`grep -E '^baked '` under pipefail, and `\|\| die` on the exit) |
 | `--snap --fresh-import --probe-file --probe --lib --artifact --budget-ms --via-mem --init-flags --workspace --dump-messages`, and `--watchdog-ms` | snapshot-probe | the showcase's `scripts/headless/exact-header.mjs`; lean4game `--verify-snapshots`; the compiler battery (the first eleven; none passes `--watchdog-ms` yet) |
 | `SNAPSHOT PROBE PASS` (exit 0), `SNAPSHOT PROBE FAIL: …`, `load:`, `compile:`, `[lean:stdout] …`, `ABORT: …` | snapshot-probe | `exact-header.mjs` (verdict, fail reason, load and compile times, the JSON messages, the abort); the compiler battery; lean4game |
 | `--target --quiet-ms --stable-ms --give-up-ms --`, and the runner arguments after `--` verbatim | supervised-run | the showcase's `scripts/headless/run-e2.sh`; `adopt-release.sh --rebuild-umbrella`; `runtime-smoke.test.ts` |
@@ -1233,18 +1236,16 @@ as QED64's own gate did.
   - changing a default, an exit code or its meaning, or a stable marker's
     text or its regex;
   - moving a script, or changing an npm alias;
-  - making a WARNING fatal;
-  - adding a relative import to a file a downstream vendors one by one (it
-    breaks lean4game's sync).
+  - making a WARNING fatal.
 - **The deprecation window is one downstream re-pin cycle.** Ship the new
   behaviour alongside the old. Make the old form print a
   `<tool>: WARNING — … is deprecated; use … (docs/CLI-CONTRACT.md)` line,
   without reserved substrings. Add a changelog row. Remove the old form only
-  after **both** lean4game (`client/src/wasm/vendor/QED64-PIN` on
-  `wasm64-port`, the `qed64` SHA in `client/package.json` on `qed64-dep`) and
-  the showcase (`pins/<id>/QED64.lock.json` and its submodule) have re-pinned
-  to a QED64 commit that carries
-  the warning.
+  after every consumer has re-pinned to a QED64 commit that carries the
+  warning:
+  - lean4game: the `qed64` SHA in `client/package.json`, `wasm64-port`;
+  - the proof sheets: the `qed64` SHA in `website/site/package.json`;
+  - the showcase: `pins/<id>/QED64.lock.json` and its submodule.
 - A breaking change bumps `CONTRACT_VERSION` in `cli.mjs`.
 - Bug fixes that turn a crash or an undefined behaviour into the documented
   one are not breaking. They do get a changelog row.
@@ -1293,6 +1294,7 @@ as QED64's own gate did.
 | 3 | 2026-10-08 | HARDENING #64, **fetch-artifacts** also writes the per-build copies of the two site-owned indexes a pinned shell reads when the mutable one names another runtime: `snapshots/index.<buildId>.json` (group `snapshots`, named by the one runtime the index's entries name) and `snapshots/profiles-index.<buildId>.json` (group `profiles`, named by the index's `runtime.buildId`), from the tracked indexes' own bytes like `runtime/runtime-manifest.<buildId>.json`; each is one more `wrote` (or `present`) line and counts in `FETCH OK`'s totals. An index whose entries name no runtime, or several, gets no copy. Flags, markers and exits are unchanged. Also: release-manifest (tier 3) refuses a present copy that is not byte-identical to its index (no new field: the manifest's format and `artifactSetId` are unchanged); `promote-staging.mjs`, not a contract tool, writes the same two copies. | additive (two written files); a refusal |
 | 3 | 2026-10-08 | HARDENING #64 follow-up, **bake-snapshot** writes the per-build copy `<out>/index.<buildId>.json` (exactly the new `index.json`'s bytes, buildId = this bake's runtime; another runtime's copy untouched) and prints one new line after `baked`, marker `index-copy`. The upsert runs under `<out>/index.json.lock` (never taken over: a held lock is waited for at most 120 s, then exit 1 naming its holder and printing the unindexed entry) and switches both files by temp file + rename, the copy first and `index.json` last (side effect 8); before, `index.json` was rewritten in place with no lock. Flags, the other markers and the exits are unchanged; `promote-staging.mjs` (not a contract tool) ignores the staged copy and switches `public/`'s from the staged index, which for a bake's index is the same bytes. | additive (a written file, a marker) |
 | 3 | 2026-10-09 | HARDENING #66, **snapshot-probe** sets the runtime's environment at preRun. It passed `ENV` in the Module literal, which the Emscripten glue replaces (`var ENV={}`, then `Module["ENV"]=ENV`), so `QED64_PROFILE_INIT` was never forwarded (this table's row said it was) and `LEAN_PATH` was unset (the sysroot gave the same `/lib/lean` root). Now `LEAN_PATH=/lib/lean` reaches getenv as in node-runner and the browser worker, and `QED64_PROFILE_INIT` does when set. Flags, markers and exits are unchanged; found by the kernel while porting the probe (its 0249065cc0). | fix (a documented variable now works) |
+| 3 | 2026-11-01 | Docs and one test, recorded for consumers (architecture review R9a): **no tool changed**. (1) The consumer statements follow the consumers' repositories (checked 2026-11-01): lean4game's `wasm64-port` runs the installed package (its `sync-qed64.sh` copy was retired 2026-10-05), and of these tools only bake-snapshot and snapshot-probe; it passes `--probe --roots --work` and no longer sets `QED64_ALLOW_LEGACY_IMPORTS`. (2) The proof sheets run bake-snapshot, require its `baked` line (`grep -E '^baked '` under pipefail) and die on a non-zero exit; they are named as a consumer, in the Frozen `baked` row and in the re-pin rule. (3) "Adding a relative import to a file a downstream vendors one by one" is no longer breaking, and `tests/unit/cli-contract.test.ts` drops its vendoring check. (4) The inline preludes stay until the next runtime adoption. (5) The `--runner` row records that a bake through the package's runner was byte-identical on Lean 4.34 (2026-10-08), not yet on 4.35. | docs, no tool change |
 
 ## Open decisions
 
@@ -1308,9 +1310,10 @@ These are recorded here, not decided:
 3. **Make bake-snapshot exit 1 when the runner printed a Lean failure line**,
    using supervised-run's classifier. The showcase's `judge-bake.mjs` exists
    because it does not.
-4. **lean4game could vendor `pipeline/snapshot/cli.mjs`** (in
-   `PIPELINE_OPTIONAL`). The inline preludes would then become imports,
-   saving about 60 generated lines per script.
+4. **Moot since 2026-10-05.** lean4game runs the installed package instead
+   of vendoring the tools, so the inline preludes can become imports of
+   `cli.mjs`; that is batched with the next runtime adoption ("How the tools
+   bind").
 5. **Turn crashes on unreadable inputs into class-2 refusals.**
    persistent-probe and chunk-runtime crash on an explicit artifact or bin
    that is missing, unpack on an unreadable manifest, and snapshot-probe on a

@@ -661,10 +661,13 @@ of the five differences.
 QED64's own `infra/worker.js` is `createWorker({...QED64_LEGACY, release})`.
 Moving the live site to the hardened defaults is a
 separate decision (plan step A4). A site that shares the bucket passes its
-own prefix and the same record shape: the showcase's
-`createWorker({ r2Prefix: "qed64-showcase/", release })` reads `/runtime/*`
-and `/profiles/*` from `lean4-wasm64/<id>/` and its `profiles/index.json` and
-`snapshots/*` from `qed64-showcase/`.
+own prefix and the same record shape:
+`createWorker({ r2Prefix: "<site>/", release })` reads `/runtime/*` and
+`/profiles/*` from `lean4-wasm64/<id>/`, and its `profiles/index.json` and
+`snapshots/*` from `<site>/`. (The showcase's Worker does not call
+`createWorker` today: it imports `isImmutable` from its submodule's
+`infra/worker.js`, checked 2026-11-01. `tests/unit/edge-worker.test.ts` runs
+the configuration it would pass.)
 
 ## Alternative: one small VPS (~€4/month)
 

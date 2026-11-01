@@ -8,7 +8,14 @@ commit named by the pinned release record `toolchain/lean4-wasm64-release.json`
 `github.com/FawadHa1der/lean4` (real git history on top of
 `cauli/lean4@5732b84`; local checkout `~/code/wasm64-lean-kernel`), the
 build environment is the Dockerfile under `docker-wasm64/` in that tree, and
-every downstream artifact is a deterministic function of those.
+every downstream artifact is a function of those, with two caveats:
+
+- A `.snapz`'s bytes, and so its digest name, also depend on the host's zlib
+  build. A changed name costs a re-download, never a wrong load, because the
+  cache key is the digest.
+- Bakes are not yet shown byte-identical across rebuilds: 3 of 14
+  proof-sheets entries differed by about 35 bytes in one rebuild on
+  2026-10-09 (the proof sheets' README).
 
 > Last checked against the tree on 2026-10-06. The one-command form of
 > sections 1-3 for a published (or staged) lean4-wasm64 release is
@@ -325,8 +332,9 @@ touches, in this order:
    defined"), and move `$W/{lib-tree,lib-tree-slim,core-lib-slim}` and
    `$W/snapshot/{init,mathlib}.snap` into `work/` (keep the previous sets
    aside as `*-<old version>`).
-6. lean4game vendors qed64 at its own pin and has its own kernel pin and
-   build lane (`wasm/build-from-source.sh` there); it is a separate bump.
+6. lean4game installs qed64 at its own pin (a git dependency in
+   `client/package.json`) and has its own kernel pin and build lane
+   (`wasm/build-from-source.sh` there); it is a separate bump.
 
 ## 4. Serve
 

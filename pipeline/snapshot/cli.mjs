@@ -5,7 +5,7 @@
 // markers downstream parses, as regexes), the ONE implementation of the
 // argument grammar (cliContract), and the help text every tool prints.
 //
-// It lives in pipeline/snapshot/ because a downstream project vendors that
+// It lives in pipeline/snapshot/ because the showcase once vendored that
 // directory whole. It is side-effect-free on import: nothing below the
 // main-module check at the end runs unless this file is the entry point.
 //
@@ -15,9 +15,11 @@
 //   "inline" — the script carries a generated prelude (renderPrelude) between
 //              `// <cli-contract>` and `// </cli-contract>`: the same
 //              cliContract source, the compact spec and the help text, so it
-//              stays self-contained. lean4game's scripts/sync-qed64.sh copies
-//              these files ONE BY ONE and refuses a relative import it did
-//              not copy, so they must not import this module.
+//              stays self-contained. That was for lean4game's one-by-one
+//              copy (scripts/sync-qed64.sh, retired 2026-10-05); the preludes
+//              become imports with the next runtime adoption, batched because
+//              an edit of node-runner.mjs rebakes the proof sheets
+//              (docs/CLI-CONTRACT.md "How the tools bind").
 //
 // CLI:
 //   node pipeline/snapshot/cli.mjs --print-specs        the contract as JSON
@@ -616,8 +618,8 @@ export const DIAGNOSTIC = [
  * the last (node-runner's loop).
  *
  * Self-contained on purpose: renderPrelude() inlines this function's SOURCE
- * into the scripts downstream vendors without this module, so it may use
- * nothing but its parameters and Node globals.
+ * into the inline-prelude scripts, which do not import this module, so it
+ * may use nothing but its parameters and Node globals.
  */
 export function cliContract(spec, args, io = { out: (s) => console.log(s), err: (s) => console.error(s), exit: (c) => process.exit(c) }) {
   const values = {};
