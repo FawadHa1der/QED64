@@ -52,7 +52,7 @@ const TOOLS: Record<string, string[]> = {
   "bake-snapshot": ["pipeline/snapshot/bake-snapshot.mjs"],
   "chunk-runtime": ["pipeline/toolchain/chunk-runtime.mjs"],
   gate: ["pipeline/toolchain/gate.mjs"],
-  "resident-probe": ["pipeline/snapshot/resident-probe.mjs", "public/workers/lsp-frames.js", "public/workers/lean.worker.js"],
+  "resident-probe": ["pipeline/snapshot/resident-probe.mjs", "public/workers/lsp-frames.js", "public/workers/worker-constants.js", "public/workers/lean.worker.js"],
 };
 const toolCheckout = (tool: string) => checkout([...TOOLS[tool]!, "pipeline/toolchain/artifact-paths.mjs"]);
 
@@ -423,9 +423,25 @@ process.exit(1);
     expect(r.status, r.stderr).toBe(2);
     expect(r.lines).toEqual([
       `resident-probe: no --snap-dir given and QED64_SNAP_DIR is unset; the deprecated default ${path.join(s, "work/snapshot")} is absent — pass --snap-dir <dir> or set QED64_SNAP_DIR`,
-      "usage: resident-probe.mjs [--artifact <stage1>] [--lib <tree>] [--budget-ms 180000] [--snap-dir <dir>] [--snapshots init,mathlib] [--mathlib] [--act2 | --act4 [--act4-ms 500]]",
+      "usage: resident-probe.mjs [--artifact <stage1>] [--lib <tree>] [--budget-ms 180000] [--snap-dir <dir>] [--snapshots init,mathlib] [--mathlib] [--act2 | --act4 [--act4-ms 500]] [--lean-option <name=value> ...] [--option-check]",
     ]);
     expect(r.lines[0]).toMatch(NO_PATH);
+    expect(tree(s)).toEqual(before);
+  });
+  // R3: --lean-option goes through worker-constants.js's residentArgv, the page's own merge.
+  test("resident-probe: a malformed --lean-option, a repeated name and --option-check with --mathlib exit 2 before the snapshot dir resolves", () => {
+    const s = toolCheckout("resident-probe");
+    const art = residentStage(s);
+    const before = tree(s);
+    for (const [args, line] of [
+      [["--lean-option", "autoImplicit"], 'error: --lean-option: leanOptions entry "autoImplicit" is not "name=value" (e.g. "autoImplicit=false")'],
+      [["--lean-option"], 'error: --lean-option: leanOptions entry "" is not "name=value" (e.g. "autoImplicit=false")'],
+      [["--lean-option", "x=1", "--lean-option", "x=2"], "error: --lean-option: leanOptions names x twice"],
+      [["--option-check", "--mathlib"], "error: --option-check judges one Init document; it cannot be combined with --mathlib, --act2 or --act4"],
+    ] as const) {
+      const r = run(s, "pipeline/snapshot/resident-probe.mjs", ["--artifact", art, ...args]);
+      expect([r.status, r.lines], args.join(" ")).toEqual([2, [line]]);
+    }
     expect(tree(s)).toEqual(before);
   });
 });

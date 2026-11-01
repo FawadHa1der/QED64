@@ -1,14 +1,23 @@
 #!/usr/bin/env node
 // Phase-1 spike for the resident FileWorker (docs/RESIDENT-WORKER-PLAN.md):
 // boot the patch-0031 artifact under Node, configure the futex stdin ring,
-// callMain(["--worker"]) — the REAL Lean FileWorker loop on the application
-// pthread — then drive initialize/didOpen through the ring and read framed
+// callMain the page's `--worker` command line — the REAL Lean FileWorker loop
+// on the application pthread, under the page's thread setup (R3) — then
+// drive initialize/didOpen through the ring and read framed
 // LSP off stdout. Exit criteria: initialize answers, fileProgress flows
 // (proves timed sleeps wake on the proxied pthread — the known emsdk risk),
 // diagnostics arrive for a deliberate error, and the loop shuts down clean.
 //
 //   node pipeline/snapshot/resident-probe.mjs [--artifact <stage1>] [--lib <tree>] [--budget-ms 180000]
 //                                             [--snap-dir <dir>] [--snapshots init,mathlib] [--mathlib] [--act2 | --act4 [--act4-ms 500]]
+//                                             [--lean-option <name=value> ...] [--option-check]
+//
+// The page's setup (architecture review R3): the command line is
+// public/workers/worker-constants.js's residentArgv (--worker
+// -Dserver.reportDelayMs=0 -DElab.async=false), the task manager gets
+// leanWorkers(os.availableParallelism()) workers (at most 8, HARDENING #69;
+// SKIP_TASK_MANAGER=1 still skips it), and LEAN_WASM_PARKED_DEDICATED is set at
+// preRun, as lean.worker.js does.
 //
 //   --artifact   the stage1 dir (else $QED64_LEAN_ARTIFACT, else the deprecated
 //                pipeline/toolchain/work/build/stage1 of this checkout, one WARNING)
@@ -33,17 +42,27 @@
 //                header-switch-probe.mjs (the Init-only text under a
 //                Mathlib-seeded session: the step-1 crash of the 2026-09
 //                gauntlets); without it, the same switch on the Init probe
+//   --lean-option  an extra Lean option (repeatable), merged into the page's
+//                command line as the page merges ResidentHost.leanOptions
+//                (by name; yours win); a malformed one exits 2
+//   --option-check the document `def idA (x : α) : α := x` passes only if Lean
+//                reports α as an unknown identifier, i.e. with
+//                `--lean-option autoImplicit=false` the option reached Lean
+//                (without it the run is the control and fails); Init only, so
+//                --mathlib, --act2 and --act4 are refused
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import vm from "node:vm";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import "../../public/workers/lsp-frames.js"; // publishes globalThis.Qed64LspFrames
+import "../../public/workers/worker-constants.js"; // globalThis.Qed64WorkerConstants: the page's argv and thread budget (R3)
 import { resolveToolPath } from "../toolchain/artifact-paths.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const arg = (n, d) => { const i = process.argv.indexOf(`--${n}`); return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : d; };
-const USAGE = "resident-probe.mjs [--artifact <stage1>] [--lib <tree>] [--budget-ms 180000] [--snap-dir <dir>] [--snapshots init,mathlib] [--mathlib] [--act2 | --act4 [--act4-ms 500]]";
+const USAGE = "resident-probe.mjs [--artifact <stage1>] [--lib <tree>] [--budget-ms 180000] [--snap-dir <dir>] [--snapshots init,mathlib] [--mathlib] [--act2 | --act4 [--act4-ms 500]] [--lean-option <name=value> ...] [--option-check]";
 const artifactDir = resolveToolPath({
   tool: "resident-probe", flag: "artifact", placeholder: "<dir>", value: arg("artifact", null), env: "QED64_LEAN_ARTIFACT",
   legacy: path.join(repoRoot, "pipeline/toolchain/work/build/stage1"), legacyLabel: "pipeline/toolchain/work/build/stage1 under the repo root",
@@ -60,13 +79,24 @@ const ACT4 = process.argv.includes("--act4");
 const ACT4_MS = Number(arg("act4-ms", process.env.ACT4_MS || "500"));
 if (MATHLIB && ACT2) { console.error("error: --act2 needs the Init probe's deliberate error; it cannot judge --mathlib (use --mathlib --act4 for a Mathlib header switch)"); process.exit(2); }
 if (ACT2 && ACT4) { console.error("error: --act2 and --act4 are separate experiments; pass one"); process.exit(2); }
+// Repeatable (tier 3); a --lean-option with no value is the empty, malformed entry.
+const LEAN_OPTIONS = process.argv.flatMap((a, i) => (a === "--lean-option" ? [process.argv[i + 1] ?? ""] : []));
+const OPTION_CHECK = process.argv.includes("--option-check");
+let ARGV; // the page's command line with LEAN_OPTIONS merged by name (worker-constants.js residentArgv)
+try { ARGV = Qed64WorkerConstants.residentArgv(LEAN_OPTIONS); } catch (e) { console.error(`error: --lean-option: ${e.message}`); process.exit(2); }
+if (OPTION_CHECK && (MATHLIB || ACT2 || ACT4)) { console.error("error: --option-check judges one Init document; it cannot be combined with --mathlib, --act2 or --act4"); process.exit(2); }
+/** The option check's verdict: Lean refused the auto-bound α (v4.35 words it "Unknown identifier `α`"). */
+const OPTION_ERROR = /unknown identifier [`'‘]α[`'’]/i;
 const SNAPSHOTS = arg("snapshots", MATHLIB ? "init,mathlib" : "init").split(",").map((s) => s.trim()).filter(Boolean);
 const SNAP_DIR = resolveToolPath({
   tool: "resident-probe", flag: "snap-dir", placeholder: "<dir>", value: arg("snap-dir", null), env: "QED64_SNAP_DIR",
   legacy: path.join(repoRoot, "work/snapshot"), legacyLabel: "work/snapshot under the repo root", holds: fs.existsSync, usage: USAGE,
 }).path;
 
-const PROBE = (MATHLIB ? [
+const PROBE = (OPTION_CHECK ? [
+  "import Init",
+  "def idA (x : α) : α := x",
+] : MATHLIB ? [
   "import Mathlib.Data.Real.Basic",
   "",
   "example (a b : ℝ) : a + b = b + a := by",
@@ -109,6 +139,8 @@ function finish(ok, why) {
     frames: frames.stats.frames,
     nonFrameStdoutBytes: frames.stats.junkBytes,
     wallMs: Date.now() - t0,
+    argv: ARGV,
+    optionError: seen.diags.some((d) => OPTION_ERROR.test(d)),
   };
   console.log(`RESIDENT PROBE ${ok ? "PASS" : "FAIL"} ${JSON.stringify(verdict)}`);
   process.exit(ok ? 0 : 1);
@@ -211,8 +243,22 @@ function onMessage(msg) {
 
 // Success conditions are evaluated from BOTH the diagnostics and the
 // fileProgress handlers: the burst order between them is not fixed.
+let optionCheckTimer = null;
 function checkActs() {
   if (ACT4) return; // act 4 judges itself from fileProgress alone
+  if (OPTION_CHECK) {
+    // One verdict, 1.5 s after the first drain: the diagnostics may land after it.
+    if (seen.progressDrained && !optionCheckTimer) {
+      optionCheckTimer = setTimeout(() => {
+        const hit = seen.diags.some((x) => OPTION_ERROR.test(x));
+        log(`option-check diagnostics: ${JSON.stringify(seen.diags)}`);
+        closeRing();
+        finish(hit, hit ? "option-check: Lean reported the auto-bound α as unknown (the option reached it)"
+          : "option-check: no \"Unknown identifier `α`\" (the option did not reach Lean, or autoImplicit is on)");
+      }, 1500);
+    }
+    return;
+  }
   {
     // Act 1: progress drained AND our deliberate error surfaced (Init probes),
     // or progress drained with no error at all (the Mathlib probe has none).
@@ -340,6 +386,7 @@ globalThis.Module = {
     // derives the app path from HOST argv, so sysroot discovery would stat a
     // host path inside the VFS. Pin the sysroot instead of discovering it.
     globalThis.Module.ENV.LEAN_SYSROOT = "/";
+    globalThis.Module.ENV.LEAN_WASM_PARKED_DEDICATED = Qed64WorkerConstants.PARKED_DEDICATED; // the page's parking (HARDENING #69)
     FS.chdir("/workspace");
   }],
   onRuntimeInitialized() {
@@ -349,11 +396,19 @@ globalThis.Module = {
     M._lean_initialize_runtime_module();
     M._lean_initialize();
     M._lean_io_mark_end_initialization();
-    if (M._lean_init_task_manager && !process.env.SKIP_TASK_MANAGER) M._lean_init_task_manager();
+    let taskManager = "skipped (SKIP_TASK_MANAGER)";
+    if (!process.env.SKIP_TASK_MANAGER) {
+      // The page's thread budget (HARDENING #69), sized from this host as the page sizes it from navigator.
+      if (M._lean_init_task_manager_using) {
+        const n = Qed64WorkerConstants.leanWorkers(os.availableParallelism());
+        M._lean_init_task_manager_using(n);
+        taskManager = `${n} worker(s)`;
+      } else if (M._lean_init_task_manager) { M._lean_init_task_manager(); taskManager = "the hardware default (no _lean_init_task_manager_using)"; }
+    }
     if (M._lean_enable_initializer_execution) M._lean_enable_initializer_execution();
     const sp = M._lean_init_search_path();
     M._lean_wasm_shell_mark_preinitialized();
-    log(`lean initialized (search path tag via ${typeof sp})`);
+    log(`lean initialized (search path tag via ${typeof sp}); task manager: ${taskManager}, parked dedicated threads: ${Qed64WorkerConstants.PARKED_DEDICATED}; argv ${JSON.stringify(ARGV)}`);
     { const mu = process.memoryUsage(); log(`MEMUSAGE after-init rss=${(mu.rss/1e9).toFixed(2)}GB arrayBuffers=${(mu.arrayBuffers/1e9).toFixed(2)}GB external=${(mu.external/1e9).toFixed(2)}GB heapUsed=${(mu.heapUsed/1e6).toFixed(0)}MB`); }
     // Seed the prebuilt env FIRST: the resident worker's header processing
     // cannot import oleans on its elaboration pthread (the long-documented
@@ -392,9 +447,7 @@ globalThis.Module = {
     if (status !== 0) return finish(false, `ring rejected: ${status}`);
     log("ring configured — callMain --worker");
     installStdoutTap(); // from here on stdout is frames (plus counted junk), byte by byte
-    M.callMain(["--worker", "-Dserver.reportDelayMs=0"]);
-    // reportDelayMs=0: the reporter's first IO.sleep on a task pthread never
-    // wakes under this emsdk (the retired pump entry point (patch 0018, removed by 0033) set the same).
+    M.callMain([...ARGV]); // The page's command line (worker-constants.js, R3).
     setInterval(() => {
       const { ctrl } = views();
       const PT = globalThis.PThread ?? {};
@@ -438,7 +491,7 @@ globalThis.Module = {
         ring = { ctrlPtr: typeof raw === "bigint" ? Number(raw) : raw };
         const st = M._lean_browser64_configure_input_ring(typeof raw === "bigint" ? raw : BigInt(raw), CAP);
         if (st !== 0) return finish(false, `act2 ring rejected: ${st}`);
-        M.callMain(["--worker", "-Dserver.reportDelayMs=0"]);
+        M.callMain([...ARGV]);
         send({ jsonrpc: "2.0", id: 2, method: "initialize", params: { processId: null, rootUri: null, capabilities: {} } });
         send({ jsonrpc: "2.0", method: "textDocument/didOpen", params: {
           textDocument: { uri: "file:///workspace/Probe.lean", languageId: "lean4", version: 3,

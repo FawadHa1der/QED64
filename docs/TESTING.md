@@ -33,7 +33,7 @@ paired build outputs of "Environment" below.
 | Lane | Command | What it proves | Needs | Lock | Pass line (exit 0) |
 |---|---|---|---|---|---|
 | Unit (G0) | `npm test` | manifest validation with hostile inputs; pack and segmentation byte-exactness; installer stream failure classes; diagnostic parsing, the LSP front door and the framer (the real worker source in a VM); the relay against a fake session; artifact discipline; the CLI contract and the path rule; the edge worker; the package contract; the adversarial harness's pure helpers; the docs' links (`docs-links.test.ts`: every relative Markdown link in README.md and docs/, and every `docs/…` path cited in the code) | nothing (`frontend/node_modules` for its `typecheck:site` pretest) | no | vitest `Test Files … passed` |
-| Integration | `npm run test:integration` | the real wasm64 runtime under Node: prelude parse, Init import + `numBits=64` + kernel-checked `rfl`, positioned errors and run verdicts (through `supervised-run`), `sorry`, the persistent path (init sequence, resident recheck, error-count return, survival after failure), the FileWorker exit hook | `QED64_LEAN_ARTIFACT`, `QED64_INIT_SNAP` (it skips, naming the variable, without them) | no (one heavy wasm Node at a time) | vitest `passed`, nothing skipped |
+| Integration | `npm run test:integration` | the real wasm64 runtime under Node: prelude parse, Init import + `numBits=64` + kernel-checked `rfl`, positioned errors and run verdicts (through `supervised-run`), `sorry`, the persistent path (init sequence, resident recheck, error-count return, survival after failure), the FileWorker exit hook; Lean options reach the FileWorker (`lean-options.test.ts`: resident-probe `--option-check` with and without `--lean-option autoImplicit=false`, on the page's argv and thread setup) | `QED64_LEAN_ARTIFACT`, `QED64_INIT_SNAP` (`lean-options.test.ts` runs resident-probe on that file's directory unless `QED64_SNAP_DIR` names one; it skips, naming the variable, without them) | no (one heavy wasm Node at a time) | vitest `passed`, nothing skipped |
 | Slow tier | `QED64_SLOW=1 npm run test:integration` | the 2,308-module `import Lean` closure; a snapshot bake produces a valid compacted region | as Integration | no | as Integration |
 | Snapshot probe | `node pipeline/snapshot/snapshot-probe.mjs --artifact <dir> --lib <tree> --snap <file> --probe-file <lean>` | a baked snapshot loads through `lean_wasm_load_snapshot` (the worker's path) and the follow-up compile is an env-cache hit within a budget | a stage1 dir, a raw `.snap` and its tree | no | `SNAPSHOT PROBE PASS` |
 | Release audit | `npm run verify:release` | every digest the browser will trust, re-derived from the bytes in `public/`, including the multi-GB raw packs | fetched artifacts | no | `RELEASE VERIFIED` |
@@ -77,11 +77,11 @@ variables at the main checkout's.
 
 | Variable | Used by | After a release adoption (`$W` = `work/adopt/<id>`) | Deprecated default (this checkout) |
 |---|---|---|---|
-| `QED64_LEAN_ARTIFACT` | `npm run test:integration` (all three files), node-runner, snapshot-probe, persistent-probe, bake-snapshot, `gate.mjs`, the compiler battery, resident-probe | `$W/artifact` (the release runtime, its `lean-lib` as `lib/lean`) | `pipeline/toolchain/work/build/stage1` when it has `bin/lean.js` (node-runner, snapshot-probe, persistent-probe, resident-probe) or `bin/lean.wasm` (bake-snapshot, the compiler battery); `gate.mjs`: the cwd when it has `bin/lean.js` |
-| `QED64_INIT_SNAP` | `tests/integration/fileworker-exit.test.ts` | `$W/snapshot/init.snap` | `work/snapshot/init.snap` |
+| `QED64_LEAN_ARTIFACT` | `npm run test:integration` (all four files), node-runner, snapshot-probe, persistent-probe, bake-snapshot, `gate.mjs`, the compiler battery, resident-probe | `$W/artifact` (the release runtime, its `lean-lib` as `lib/lean`) | `pipeline/toolchain/work/build/stage1` when it has `bin/lean.js` (node-runner, snapshot-probe, persistent-probe, resident-probe) or `bin/lean.wasm` (bake-snapshot, the compiler battery); `gate.mjs`: the cwd when it has `bin/lean.js` |
+| `QED64_INIT_SNAP` | `tests/integration/fileworker-exit.test.ts`, `tests/integration/lean-options.test.ts` (its directory, when `QED64_SNAP_DIR` is unset) | `$W/snapshot/init.snap` | `work/snapshot/init.snap` |
 | `QED64_MATHLIB_SNAP` | the compiler battery (`--snap`; `run.mjs --snap` forwards) | `$W/snapshot/mathlib.snap` | `work/snapshot/mathlib.snap` |
 | `QED64_LIB_TREE` | the compiler battery (`--lib`: the tree the snapshot was baked from), snapshot-probe | `$W/lib-tree-slim` (the battery's; snapshot-probe of the mathlib snapshot too) | `work/lib-tree-slim` (battery), `work/lib-tree` (snapshot-probe) |
-| `QED64_SNAP_DIR` | resident-probe (`--snap-dir`) | `$W/snapshot` | `work/snapshot` |
+| `QED64_SNAP_DIR` | resident-probe (`--snap-dir`), `tests/integration/lean-options.test.ts` (over `QED64_INIT_SNAP`'s directory) | `$W/snapshot` | `work/snapshot` (lean-options: only when `QED64_INIT_SNAP` is unset too) |
 | `QED64_WORK` | bake-snapshot and node-runner (`--work`) | a scratch dir of your own (a bake for another runtime must not use the paired set) | `work/snapshot` (bake), `work/runner` (runner) |
 | `QED64_STAGING` | bake-snapshot and chunk-runtime (`--out` = `<it>/<buildId>/{snapshots,runtime}`) | `work/staging` (adopt-release.sh stages into `work/staging/<buildId>/`) | `work/staging/<buildId>/…` |
 | `QED64_SLOW` | `npm run test:integration` | — | unset: the slow tier is off |
@@ -91,7 +91,9 @@ variables at the main checkout's.
 (`$W`): `QED64_LEAN_ARTIFACT=$W/artifact` (the release runtime with its
 `lean-lib` as `lib/lean`), the battery's `--snap $W/snapshot/mathlib.snap`
 and `--lib $W/lib-tree-slim` (`QED64_MATHLIB_SNAP`, `QED64_LIB_TREE`),
-`QED64_INIT_SNAP=$W/snapshot/init.snap`. The main checkout's
+`QED64_INIT_SNAP=$W/snapshot/init.snap` (the integration tier's; its
+`lean-options.test.ts` runs resident-probe on that file's directory,
+`$W/snapshot`). The main checkout's
 `pipeline/toolchain/work/build/stage1` and `work/snapshot` stay the OLD
 runtime's after a switch: pointed at them, the battery and the Node probes
 test a runtime that is no longer served.

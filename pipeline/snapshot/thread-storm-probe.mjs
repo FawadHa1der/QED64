@@ -22,6 +22,15 @@
 // (4) a `checkMailbox` message to every pthread Worker. The first probe after
 // which server frames resume names the mechanism.
 //
+// Thread setup (architecture review R3): by default the page's, from
+// public/workers/worker-constants.js, as lean.worker.js runs it: the resident
+// command line (residentArgv: --worker -Dserver.reportDelayMs=0
+// -DElab.async=false), leanWorkers(os.availableParallelism()) task-manager
+// workers (at most 8, HARDENING #69) and LEAN_WASM_PARKED_DEDICATED at preRun.
+//   --max-churn         the setup HARDENING #52's storm ran under before R3 (the
+//                       hardware-default task manager, no parked threads, Lean's
+//                       own Elab.async): parking alone cuts thread churn ~13x, so
+//                       lost-wakeup reproductions need this.
 //
 // Mailbox experiments (the worker's fix, lean.worker.js `useMessageMailbox` +
 // the liveness tick's mailbox kick, measured here without a browser):
@@ -37,15 +46,17 @@
 //   node --stack-size=8192 pipeline/snapshot/thread-storm-probe.mjs [--minutes 20]
 //     [--hang-ms 30000] [--seed 1] [--mathlib] [--artifact <stage1>] [--lib <tree>]
 //     [--burst 1] [--cancel-all] [--min-free-gb 8] [--json <out.json>]
-//     [--message-mailbox] [--kick-ms 1000] [--drop-notify 0.001]
+//     [--message-mailbox] [--kick-ms 1000] [--drop-notify 0.001] [--max-churn]
 // exit 0 = no freeze within the budget, 1 = freeze reproduced, 2 = setup error, 3 = host rule.
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import vm from "node:vm";
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import "../../public/workers/lsp-frames.js"; // globalThis.Qed64LspFrames
+import "../../public/workers/worker-constants.js"; // globalThis.Qed64WorkerConstants: the page's argv and thread budget (R3)
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const arg = (n, d) => { const i = process.argv.indexOf(`--${n}`); return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : d; };
@@ -61,6 +72,9 @@ const JSON_OUT = arg("json", "") && path.resolve(process.cwd(), arg("json", ""))
 const MESSAGE_MAILBOX = has("message-mailbox");
 const KICK_MS = Number(arg("kick-ms", "0"));
 const DROP_NOTIFY = Number(arg("drop-notify", "0"));
+const MAX_CHURN = has("max-churn");
+// The page's command line, or (--max-churn) Lean's own Elab.async as before R3.
+const ARGV = Qed64WorkerConstants.residentArgv(MAX_CHURN ? ["Elab.async=true"] : []);
 const leanJs = path.join(artifactDir, "bin/lean.js");
 if (!fs.existsSync(leanJs)) { console.error(`error: ${leanJs} not found`); process.exit(2); }
 
@@ -116,10 +130,11 @@ const st = {
   progress: { version: 0, processing: -1 }, lastFrameAt: Date.now(), frames: 0, responses: 0, cancelled: 0,
   cycles: 0, edits: 0, spawns: 0, cleanups: 0, checkMailboxCalls: 0, rpcSession: null, errors: [],
   droppedNotifications: 0, kicks: 0, kicksServing: 0, rescues: 0, checksAtLastKick: 0,
-  drainMs: [], freeze: null, poolMax: 0,
+  drainMs: [], freeze: null, poolMax: 0, taskManagerWorkers: null,
 };
 const result = () => ({
   ok: !st.freeze, minutes: MINUTES, header: HEADER, seed: Number(arg("seed", "1")),
+  threads: MAX_CHURN ? "max-churn" : "page", argv: ARGV, taskManagerWorkers: st.taskManagerWorkers,
   wallMs: Date.now() - t0, cycles: st.cycles, edits: st.edits, frames: st.frames, responses: st.responses,
   cancelledReplies: st.cancelled, spawns: st.spawns, cleanups: st.cleanups, checkMailboxCalls: st.checkMailboxCalls,
   mailbox: { mode: MESSAGE_MAILBOX ? "message" : "waitAsync", kickMs: KICK_MS, dropNotify: DROP_NOTIFY,
@@ -377,6 +392,7 @@ globalThis.Module = {
     FS.writeFile("/workspace/Probe.lean", BASE);
     globalThis.Module.ENV.LEAN_PATH = "/lib/lean";
     globalThis.Module.ENV.LEAN_SYSROOT = "/";
+    if (!MAX_CHURN) globalThis.Module.ENV.LEAN_WASM_PARKED_DEDICATED = Qed64WorkerConstants.PARKED_DEDICATED; // the page's parking (HARDENING #69)
     FS.chdir("/workspace");
   }],
   onRuntimeInitialized() {
@@ -401,7 +417,11 @@ globalThis.Module = {
     M._lean_initialize_runtime_module();
     M._lean_initialize();
     M._lean_io_mark_end_initialization();
-    if (M._lean_init_task_manager) M._lean_init_task_manager();
+    if (!MAX_CHURN && M._lean_init_task_manager_using) {
+      st.taskManagerWorkers = Qed64WorkerConstants.leanWorkers(os.availableParallelism());
+      M._lean_init_task_manager_using(st.taskManagerWorkers);
+    } else if (M._lean_init_task_manager) { M._lean_init_task_manager(); st.taskManagerWorkers = "hardware default"; }
+    log(`threads: ${MAX_CHURN ? "max-churn" : "page"} (task manager: ${st.taskManagerWorkers}${typeof st.taskManagerWorkers === "number" ? " worker(s)" : ""}, parked dedicated: ${MAX_CHURN ? "off" : Qed64WorkerConstants.PARKED_DEDICATED}); argv ${JSON.stringify(ARGV)}`);
     if (M._lean_enable_initializer_execution) M._lean_enable_initializer_execution();
     M._lean_init_search_path();
     M._lean_wasm_shell_mark_preinitialized();
@@ -419,7 +439,7 @@ globalThis.Module = {
     const raw = M._malloc(BigInt(16 + CAP)); ring = { ctrlPtr: Number(raw) };
     if (M._lean_browser64_configure_input_ring(BigInt(ring.ctrlPtr), CAP) !== 0) finish(2, "ring rejected");
     installStdoutTap();
-    M.callMain(["--worker", "-Dserver.reportDelayMs=0"]);
+    M.callMain([...ARGV]);
     send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { processId: null, rootUri: null, capabilities: {} } });
     send({ jsonrpc: "2.0", method: "textDocument/didOpen", params: { textDocument: { uri: URI, languageId: "lean4", version: 1, text: BASE } } });
     setInterval(() => { const PT = globalThis.PThread ?? {}; st.poolMax = Math.max(st.poolMax, (PT.unusedWorkers ?? []).length + Object.keys(PT.pthreads ?? {}).length); }, 500).unref();
