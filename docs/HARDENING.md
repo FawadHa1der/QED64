@@ -730,6 +730,7 @@ Cost: n = 8 halves standard-thread parallelism on hosts with more cores (10 or 1
 
 n = 8 stays; nothing calls for 10 or 12.
 Tests: `tests/unit/thread-budget.test.ts` (leanWorkers' clamp, the parking literal and its preRun placement, the explicit init before the fallback, no inert -j).
+*2026-11 (architecture review R3):* `LEAN_WORKERS_MAX`, `PARKED_DEDICATED` and `leanWorkers` moved, values unchanged, to `public/workers/worker-constants.js`, which `lean.worker.js` and its Node twins load. The preRun assignment stays in `lean.worker.js`. `thread-budget.test.ts` loads the script itself.
 
 ### 70. A file of ~20 Mathlib theorems crashed the tab (fixed: synchronous elaboration)
 
@@ -752,6 +753,7 @@ Fix (`public/workers/lean.worker.js`):
 - The resident loop's command line is `RESIDENT_ARGV = ["--worker", "-Dserver.reportDelayMs=0", "-DElab.async=false"]`. Command-line options win over `setIfNotSet`.
 - Theorems then elaborate and check in order on the command's own task.
 - A file can still opt in with `set_option Elab.async true`, at its own risk.
+- *2026-11 (architecture review R3):* `RESIDENT_ARGV` lives in `public/workers/worker-constants.js`. An embedder adds Lean options with `ResidentHost.leanOptions` (docs/EMBEDDING.md §7.3), merged by name, so `["Elab.async=true"]` turns asynchronous elaboration back on for a host that has measured its content.
 
 Measured, page :5301 (n = 8; `deep-recursion.mjs --scenarios legal`, seeded, settle time from page load):
 

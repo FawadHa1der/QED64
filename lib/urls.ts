@@ -9,6 +9,7 @@ export const WORKER_URLS: readonly string[] = Object.freeze([
   "/workers/lsp-frames.js",
   "/workers/lsp-front-door.js",
   "/workers/memory64-probe.js",
+  "/workers/worker-constants.js",
   "/workers/snapshot-prefetch.worker.js",
 ]);
 

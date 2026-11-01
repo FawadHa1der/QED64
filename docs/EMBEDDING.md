@@ -544,10 +544,11 @@ Notes for consumers:
   `snapshots.ts`. They import only each other, plus `client.ts`'s
   side-effect import of `../public/workers/memory64-probe.js`;
 - `workers`: `{path, serveAs}`. `lean.worker.js` `importScripts`
-  `lsp-frames.js`, `memory64-probe.js` and `lsp-front-door.js` from its own
-  directory, so all five ship together. `memory64-probe.js` is also in the
-  embed closure's reach: `lib/client.ts` imports it for its side
-  effect (it publishes `globalThis.Qed64Memory64`, the probe of §7.0);
+  `lsp-frames.js`, `memory64-probe.js`, `worker-constants.js` and
+  `lsp-front-door.js` from its own directory, so all six ship together.
+  `memory64-probe.js` is also in the embed closure's reach: `lib/client.ts`
+  imports it for its side effect (it publishes `globalThis.Qed64Memory64`,
+  the probe of §7.0);
 - `infra`: the edge-worker library behind `qed64/edge`;
 - `pipeline` and `pipelineData`;
 - `runtime.minKernelPatch`: `"0032"`, the oldest kernel patch level these
@@ -611,7 +612,7 @@ code block below, extracted verbatim from the packed `docs/EMBEDDING.md`.
    In production your host sends the same two headers on the HTML (with
    `qed64/edge`: `createWorker` does, docs/DEPLOY.md).
 3. **The workers at `/workers/`, re-staged before every build.** Copy
-   closure.json's `workers` (all five: `lean.worker.js` loads its siblings
+   closure.json's `workers` (all six: `lean.worker.js` loads its siblings
    from its own directory, §6) to the `serveAs` paths. The copies in your
    public directory are generated files (gitignore them): installing a new
    pin does not refresh them, and a build serves whatever they hold.
@@ -976,6 +977,7 @@ interface ResidentHost {
   files?: SessionFile[] | (() => SessionFile[] | Promise<SessionFile[]>);
   beforeArm?(session: LeanSession): Promise<void>;
   busyWaitMs?: number;                                    // §7.4; default PREFETCH_SILENCE_MS
+  leanOptions?: readonly string[];                        // each boot's Lean options (R3)
   editCoalesceMs?; editBackPressure?;                     // §7.8
 }
 type SessionFile = { path: string; text: string } | { path: string; bytes: Uint8Array };
@@ -1004,6 +1006,25 @@ from the lock request; the other tab's progress does not extend it.
 (`LoadSnapshotOptions`). The member is ECMAScript-private in
 `ResidentSession`, like `files`. Separately, the Lean worker's own open of a
 finished region retries a busy handle for about 3 s (§7.4).
+
+**`leanOptions`** (architecture review R3). Lean options for the resident
+FileWorker, as `name=value` strings (`"autoImplicit=false"`,
+`"weak.verso.code.warnLineLength=100"`).
+- They are applied on every boot like `files`, never through
+  `RestartOptions`, which the relay forgets when the header changes.
+- The worker merges them by name over its defaults
+  (`public/workers/worker-constants.js`: `server.reportDelayMs=0` for
+  latency, `Elab.async=false` for HARDENING #70); yours win, and each `-D`
+  appears once.
+- A malformed entry or a repeated name fails the boot (`INVALID_MESSAGE`,
+  before anything is fetched). An unknown name that is not `weak.`-prefixed
+  is Lean's own header error.
+- A worker script older than the field ignores it. The session then fails as
+  `stale` (offer a reload) instead of running Lean without your options;
+  `ReadyInfo.argv` is the command line the worker will run.
+- Code only: there is no URL parameter (HARDENING #57's class).
+- `Elab.async=true` is a gated exception: record peak pthreads and pool
+  growth on your heaviest content first (HARDENING #70).
 
 ### 7.4 The raw snapshot cache
 
@@ -1072,7 +1093,7 @@ internal re-export, §7.0.)
 - `manifests`: the immutable manifest, then the mutable one;
 - `chunks`: every chunk URL of `lean.js` and `lean.wasm`, deduplicated, in
   order;
-- `workers`: the five worker scripts (`WORKER_URLS`).
+- `workers`: the six worker scripts (`WORKER_URLS`).
 
 ### 7.6 Installing artifacts
 
@@ -1113,13 +1134,14 @@ itself; `parseBootParams` is an internal re-export, §7.0).
 ### 7.7 Workers: compatibility across deploys
 
 - `/workers/*.js` names are stable. A new worker is a new name.
-- **One revision for the four scripts.** `lean.worker.js`, `lsp-frames.js`,
-  `lsp-front-door.js` and `memory64-probe.js` carry the same `REVISION`.
-  `lean.worker.js` refuses a sibling of another revision
-  (`WORKER_DEP_MISMATCH`, a death whose cause is `stale`, §7.2: offer a
-  reload) instead of running mixed versions. It loads `lsp-frames.js` and
-  `memory64-probe.js` eagerly, so one that is not served is
-  `WORKER_DEP_MISSING` at script load, before the hello.
+- **One revision for the five scripts.** `lean.worker.js`, `lsp-frames.js`,
+  `lsp-front-door.js`, `memory64-probe.js` and `worker-constants.js` carry
+  the same `REVISION`. `lean.worker.js` refuses a sibling of another
+  revision (`WORKER_DEP_MISMATCH`, a death whose cause is `stale`, §7.2:
+  offer a reload) instead of running mixed versions. It loads
+  `lsp-frames.js`, `memory64-probe.js` and `worker-constants.js` eagerly, so
+  one that is not served is `WORKER_DEP_MISSING` at script load, before the
+  hello.
 - **What changes the revision.** It names the interface between the
   scripts, and it changes when a pairing of two versions would misbehave.
   `memory64-probe.js` (2026-10-06, plan step A3c) left it at `"1"`: the
@@ -1139,6 +1161,24 @@ itself; `parseBootParams` is an internal re-export, §7.0).
   like the eager import (so `WORKER_SCRIPT_LOAD_FAILED`); after either
   refusal the worker drops every later frame and never throws an uncaught
   error the page would read as the checker's crash.
+- **The Lean policy (`worker-constants.js`, 2026-11, architecture review R3)**
+  holds the resident loop's default command line (`RESIDENT_ARGV`,
+  `residentArgv(leanOptions)`) and the thread budget (`LEAN_WORKERS_MAX`,
+  `PARKED_DEDICATED`, `leanWorkers(hc)`).
+  - `lean.worker.js` and QED64's Node twins read it. A headless driver of
+    yours should import it (`import "qed64/workers/worker-constants.js"`
+    publishes `globalThis.Qed64WorkerConstants`), never parse
+    `lean.worker.js`.
+  - Its arrival left `REVISION` at "1", as `memory64-probe.js` did: an older
+    `lean.worker.js` never loads it, and a newer one beside an older set dies
+    `WORKER_DEP_MISSING`.
+  - A new or renamed export bumps `REVISION`. A changed value does not: it is
+    a semantics change (the argv or thread budget your content runs under),
+    listed in §12. Re-gate your content at that pin (lean4game's sweep, the
+    proof sheets' chrome-check). It is not "breaking" in §1's sense: one argv
+    cannot ship as v1 and v2 side by side.
+  - Messages change additively: `boot`'s `config.leanOptions` and
+    `ready.argv` are new optional fields.
 - **Feature flags.** `capabilities()` reports `protocolRevision` and
   `requests`, the request types the worker answers. A page detects a request
   with `requests?.includes(type)` and keeps its old path otherwise.
@@ -1454,6 +1494,7 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
 | scraping `wasm64-<hex>` from bundles | `dist/qed64-build.json` |
 | renaming the overlay region to `mathlib` | any name with `roots` (§8); update C6, which asserts the refusal of `import HasseView` |
 | `__qed64Bridge` expando | rename (`__qed64*` is reserved) |
+| regex-parse `RESIDENT_ARGV` out of `lean.worker.js` (`scripts/headless/wasm-lsp.mjs`) | `import "<pin>/public/workers/worker-constants.js"`: `Qed64WorkerConstants.residentArgv(opts)`, `_lean_init_task_manager_using(leanWorkers(n))`, `LEAN_WASM_PARKED_DEDICATED = PARKED_DEDICATED` at preRun (R3) |
 
 - From a pin at or after plan step A3c, `lean.worker.js` no longer carries a
   `const MEMORY64_PROBE = new Uint8Array([…])` literal: the bytes live in
@@ -2168,3 +2209,19 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   reboot, while a session that had loaded the umbrella served it covered. An
   overlay with `roots` beside the stock entry must claim a superset of the
   ten (§8). No export or type change, so `EMBED_API_REVISION` is unchanged.
+- **One Lean-options channel and one set of worker constants (architecture
+  review R3, 2026-11):**
+  - `ResidentHost.leanOptions` (§7.3) passes Lean options to the resident
+    FileWorker on every boot, merged by name over the worker's defaults.
+  - The worker refuses a malformed or repeated one (`INVALID_MESSAGE`) and
+    echoes the command line in `ReadyInfo.argv`. A session refuses a worker
+    that did not take a requested option (`stale`).
+  - `BootConfig.leanOptions` and `ReadyInfo.argv` are additive.
+  - The defaults and the thread budget moved, unchanged, from
+    `lean.worker.js` into the new worker script `worker-constants.js`
+    (§7.7), loaded eagerly. closure.json `workers`, `WORKER_URLS` and
+    `files` gain it, so `runtimeUrls().workers` has six entries. `REVISION`
+    stays "1".
+  - A driver that read `RESIDENT_ARGV` from `lean.worker.js`'s text must
+    import the script instead: the line it matched is gone.
+  - `EMBED_API_REVISION` → `1.0.0-pre.9`.

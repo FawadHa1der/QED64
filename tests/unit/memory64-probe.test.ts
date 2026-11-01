@@ -101,7 +101,7 @@ describe("lean.worker.js loads memory64-probe.js (docs/EMBEDDING.md §7.7)", () 
   it("eagerly, beside lsp-frames.js, and reports memory64 from it", () => {
     const w = loadWorker();
     expect(w.thrown).toBeNull();
-    expect(w.imported).toEqual(["lsp-frames.js", "memory64-probe.js"]);
+    expect(w.imported).toEqual(["lsp-frames.js", "memory64-probe.js", "worker-constants.js"]);
     w.deliver({ protocol: 1, requestId: "c1", type: "capabilities" });
     expect(w.posted.find((m) => m.requestId === "c1")).toMatchObject({ type: "result", result: { memory64: true } });
     // the worker's check is the shared one: a probe file that refuses is a worker that refuses

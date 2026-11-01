@@ -63,6 +63,8 @@ export interface ReadyInfo {
   capabilities: Capabilities;
   memory?: MemoryTelemetry;
   mode: "persistent";
+  /** The resident loop's command line, fixed at boot (R3); absent from a worker older than leanOptions. */
+  argv?: string[];
 }
 
 export interface ProgressEvent {
@@ -112,6 +114,11 @@ export interface BootConfig {
   memory: { initialBytes: number; maximumCandidates: number[]; maximumBytes?: number };
   leanPath: string;
   packs: LibraryPack[];
+  /** Lean options for the resident loop's command line, `name=value` ("autoImplicit=false"), merged by name over
+   * the worker's defaults (public/workers/worker-constants.js; architecture review R3). The worker refuses a
+   * malformed entry or a repeated name (INVALID_MESSAGE). A worker older than this field ignores it: check
+   * `ReadyInfo.argv`. */
+  leanOptions?: readonly string[];
 }
 
 /** What the session knows about a death beyond (code, reason, message):

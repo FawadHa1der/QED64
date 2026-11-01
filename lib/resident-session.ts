@@ -16,7 +16,7 @@
 import { downloadBeforeBoot, ensureProfile, loadSnapshotForBoot, noteBootNetworkFailure, refuseUnpairedSnapshot, reinstallProfile, type Qed64Artifacts, type Qed64Session, type StatusSink } from "./qed64-boot";
 import type { RelaySession, RestartOptions } from "./lsp-relay";
 import { LeanSession, memoryCandidates, type JsonRpcMessage, type LibraryPack, type WorkerStatus } from "./client";
-import { deathCause, failureCauseOf, stageOfWorkerPhase, stepOfInstallPhase, ENGINE_STACK_OVERFLOW, type BootStage, type FailureCause } from "./failure";
+import { deathCause, failureCauseOf, stageOfWorkerPhase, stepOfInstallPhase, ENGINE_STACK_OVERFLOW, WORKER_DEP_MISMATCH, type BootStage, type FailureCause } from "./failure";
 import { LEGACY_UMBRELLA_ROOTS, chooseSnapshots, coversModule, initialBytesForEntries, type SnapshotIndex } from "./snapshots";
 import { CANCELLED, createEditCoalescer, DEFAULT_EDIT_COALESCE_MS, type BackPressureEvent, type BackPressureOptions, type EditCoalescer } from "./edit-coalescer";
 
@@ -82,6 +82,12 @@ export interface ResidentHost {
    * for the writer (the worker's read of a finished region still retries a
    * busy handle for about 3 s, docs/EMBEDDING.md §7.4). */
   busyWaitMs?: number;
+  /** Lean options for the FileWorker, `name=value` ("autoImplicit=false"), applied on EVERY boot like `files`;
+   * never through RestartOptions, which the relay forgets when the header changes (docs/EMBEDDING.md §7.3). Merged
+   * by name over the worker's defaults (public/workers/worker-constants.js): yours win, each -D appears once. A
+   * malformed entry fails the boot; a worker script older than this field fails it as `stale`. Code only: never
+   * from a URL parameter (HARDENING #57's class). */
+  leanOptions?: readonly string[];
 }
 
 /** One file for the worker's filesystem (`LeanSession.writeFiles`). */
@@ -182,6 +188,7 @@ export class ResidentSession implements RelaySession {
   readonly #files: ResidentHost["files"];
   readonly #beforeArm: ResidentHost["beforeArm"];
   readonly #busyWaitMs: ResidentHost["busyWaitMs"];
+  readonly #leanOptions: ResidentHost["leanOptions"];
   readonly #edits: EditCoalescer<JsonRpcMessage>;
   /** The initial commit: requested (clamped to the ladder) until boot, then
    * the one the worker made — its per-rung clamp can commit less. */
@@ -194,6 +201,7 @@ export class ResidentSession implements RelaySession {
     this.#files = host.files;
     this.#beforeArm = host.beforeArm;
     this.#busyWaitMs = host.busyWaitMs;
+    this.#leanOptions = host.leanOptions;
     this.#edits = createEditCoalescer<JsonRpcMessage>({
       forward: (m, replay) => this.lean.lsp(m, replay),
       // A superseded or cancelled request's answer takes the worker's own path to the relay (which drops its pending entry and forwards it).
@@ -375,7 +383,16 @@ export class ResidentSession implements RelaySession {
       memory: { initialBytes: this.#initialBytes, maximumCandidates: under.length ? under : [this.maximumBytes] },
       leanPath: [...a.installed.keys()].map((id) => `/lib/packs/${id}`).join(":"),
       packs,
+      ...(this.#leanOptions !== undefined ? { leanOptions: this.#leanOptions } : {}),
     });
+    // R3's guard: a worker script older than leanOptions ignores them and runs Lean without them. It echoes no
+    // argv, so refuse it here, before any snapshot loads, as the stale page it is (the relay's replacement
+    // session loads the current scripts).
+    const requested = Array.isArray(this.#leanOptions) ? this.#leanOptions : [];
+    const ignored = requested.filter((o) => !ready?.argv?.includes(`-D${o}`));
+    if (ignored.length > 0) {
+      throw Object.assign(new Error(`lean.worker.js ignored leanOptions ${ignored.join(", ")}: the served worker scripts predate them (a deploy mixed versions; reload)`), { code: WORKER_DEP_MISMATCH });
+    }
     const committed = ready?.memory?.initialBytes;
     if (typeof committed === "number" && committed > 0) this.#initialBytes = committed;
     const qs: Qed64Session = { session: this.lean, loadedSnapshots: new Set() };

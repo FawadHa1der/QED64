@@ -43,9 +43,11 @@ One persistent Worker owns one Lean process for the whole session:
    WORKERFS mounts shadow the mount directory, which is why profiles must
    never share one (learned the hard way; see HARDENING.md).
 5. **Init sequence** — `lean_initialize_runtime_module → lean_initialize →
-   lean_io_mark_end_initialization → lean_init_task_manager →
-   lean_enable_initializer_execution → lean_init_search_path`, with `/bin`
-   pre-created because `lean_init_search_path` stats the executable directory.
+   lean_io_mark_end_initialization → lean_init_task_manager_using(n) →
+   lean_enable_initializer_execution → lean_init_search_path` (n =
+   `worker-constants.js` `leanWorkers`: the hardware concurrency, at most 8;
+   HARDENING #69), with `/bin` pre-created because `lean_init_search_path`
+   stats the executable directory.
 6. **Batch compiles** — `lean_wasm_compile(sourceStr, nameStr)` against
    the fork's per-import-set environment cache, allowed only *before* the
    resident loop opens (the page uses it for the exact-imports warm import;
@@ -247,7 +249,7 @@ L2  lib/client.ts — LeanSession: the only owner of the Worker and the wire pro
   │  postMessage: boot, loadSnapshot, compile, lsp {msg, replay?} (fire-and-forget), lsp-arm, telemetry, dispose
   │  events: progress, log, lsp {msg}, status {…}, heartbeat, died / error
   ▼
-L1  public/workers/lean.worker.js + lsp-front-door.js + lsp-frames.js
+L1  public/workers/lean.worker.js + lsp-front-door.js + lsp-frames.js + worker-constants.js
   │  stdin  = futex ring in shared memory; stdout = per-byte tap → Content-Length framer; stderr = log lines
   ▼
 L0  the Lean fork (release record kernel.commit; patches 0031/0032) — FileWorker.setupImports is the ONLY header resolver
@@ -326,8 +328,9 @@ success, a queued `didOpen` opened the loop under a snapshot load (refused
 `BAD_STATE` → boot failed → reboot → the same race → breaker). Opening the
 loop is `_lean_wasm_shell_mark_preinitialized()` (boot already ran the full
 init sequence; `main` must not run it again), `_lean_browser64_configure_input_ring(ptr, cap)`,
-then `callMain(["--worker", "-Dserver.reportDelayMs=0", "-DElab.async=false"])` on the application
-pthread (`PROXY_TO_PTHREAD`, patch 0031; `Elab.async=false` is HARDENING #70). Once open the worker beats every
+then `callMain(argv)` on the application pthread (`PROXY_TO_PTHREAD`, patch 0031), `argv` fixed at boot:
+`worker-constants.js`'s `residentArgv(leanOptions)`, the defaults `--worker -Dserver.reportDelayMs=0
+-DElab.async=false` (HARDENING #70) with the embedder's `ResidentHost.leanOptions` merged by name (R3). Once open the worker beats every
 2 s (`heartbeat` events; the only lifecycle-by-time signal in the system).
 After the loop opens, `loadSnapshot` and `compile` are refused `BAD_STATE`
 (invariant K-i: no environment is published after open, so Lean's

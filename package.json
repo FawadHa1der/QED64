@@ -34,6 +34,7 @@
     "public/workers/lsp-frames.js",
     "public/workers/lsp-front-door.js",
     "public/workers/memory64-probe.js",
+    "public/workers/worker-constants.js",
     "public/workers/snapshot-prefetch.worker.js",
     "pipeline/toolchain/artifact-paths.mjs",
     "pipeline/toolchain/artifact-paths.d.mts",

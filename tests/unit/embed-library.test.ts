@@ -112,7 +112,7 @@ describe("failureKindOf: the worker's real messages", () => {
 });
 
 describe("runtimeUrls", () => {
-  it("lists both manifests, every chunk once in order, and the four workers", () => {
+  it("lists both manifests, every chunk once in order, and the six workers", () => {
     const m = {
       buildId: "wasm64-3ab1c6a9da03bc29", leanVersion: "4.34.0",
       files: {
@@ -123,7 +123,7 @@ describe("runtimeUrls", () => {
     expect(runtimeUrls(m)).toEqual({
       manifests: ["/runtime/runtime-manifest.wasm64-3ab1c6a9da03bc29.json", "/runtime/runtime-manifest.json"],
       chunks: ["/runtime/chunks/lean.js.a.part-000", "/runtime/chunks/lean.js.a.part-001", "/runtime/chunks/lean.wasm.b.part-000"],
-      workers: ["/workers/lean.worker.js", "/workers/lsp-frames.js", "/workers/lsp-front-door.js", "/workers/memory64-probe.js", "/workers/snapshot-prefetch.worker.js"],
+      workers: ["/workers/lean.worker.js", "/workers/lsp-frames.js", "/workers/lsp-front-door.js", "/workers/memory64-probe.js", "/workers/worker-constants.js", "/workers/snapshot-prefetch.worker.js"],
     });
   });
 });
@@ -339,6 +339,34 @@ describe("ResidentSession.start(): stages, files, beforeArm, causes", () => {
       await defaulted;
       expect(unset.order).toEqual(["boot", "snapshot:init.snap"]);
     } finally { vi.useRealTimers(); }
+  });
+
+  // Architecture review R3: ResidentHost.leanOptions reach the worker on every boot; a worker that did not take one
+  // (a lean.worker.js older than the field, which echoes no argv) is refused as stale before any snapshot loads.
+  it("leanOptions go into the boot config, and a ready whose argv carries them is accepted", async () => {
+    const argv = ["--worker", "-Dserver.reportDelayMs=0", "-DElab.async=false", "-DautoImplicit=false"];
+    const ok = session({ leanOptions: ["autoImplicit=false"] }, { snapshots: ["init"] });
+    vi.mocked(ok.s.lean.boot).mockImplementation(async () => { ok.order.push("boot"); return { argv } as ReadyInfo; });
+    await ok.s.start();
+    expect(vi.mocked(ok.s.lean.boot).mock.calls[0]![0]).toMatchObject({ leanOptions: ["autoImplicit=false"] });
+    expect(ok.order).toEqual(["boot", "snapshot:init.snap"]);
+  });
+
+  it("leanOptions that an older worker ignored (no argv in its ready) fail the boot as stale, before any snapshot loads", async () => {
+    const old = session({ leanOptions: ["autoImplicit=false"] }, { snapshots: ["init"] });
+    vi.mocked(old.s.lean.boot).mockImplementation(async () => { old.order.push("boot"); return {} as ReadyInfo; });
+    await expect(old.s.start()).rejects.toMatchObject({
+      message: expect.stringContaining("ignored leanOptions autoImplicit=false"),
+      cause: { kind: "stale", stage: "runtime", code: "WORKER_DEP_MISMATCH" },
+    });
+    expect(old.order).toEqual(["boot"]);
+  });
+
+  it("without leanOptions the boot config has no leanOptions key, and a ready without argv is accepted", async () => {
+    const plain = session({}, { snapshots: ["init"] });
+    await plain.s.start();
+    expect(vi.mocked(plain.s.lean.boot).mock.calls[0]![0]).not.toHaveProperty("leanOptions");
+    expect(plain.order).toEqual(["boot", "snapshot:init.snap"]);
   });
 
   it("no files and no hook: nothing is written", async () => {

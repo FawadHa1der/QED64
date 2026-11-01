@@ -9,10 +9,11 @@
 //      closure.json lists under it), each target inside the extracted
 //      package; a path outside `exports` must be refused; qed64/edge,
 //      the olean reader, artifact-paths (buildIdOfArtifact on a stand-in
-//      lean.wasm), closure.json and the two classic worker scripts the
+//      lean.wasm), closure.json and the three classic worker scripts the
 //      library and Node tools import for their side effect (lsp-frames.js →
-//      globalThis.Qed64LspFrames, memory64-probe.js → globalThis.Qed64Memory64)
-//      are loaded for real; every path closure.json lists is in the tarball;
+//      globalThis.Qed64LspFrames, memory64-probe.js → globalThis.Qed64Memory64,
+//      worker-constants.js → globalThis.Qed64WorkerConstants) are loaded for
+//      real; every path closure.json lists is in the tarball;
 //      the shipped CLIs (preflight, olean-imports, fetch-artifacts, cli.mjs) run --help
 //      through the symlink and print their usage line, release-manifest --repo <this
 //      checkout> prints the repo's own manifest bytes, and fetch-artifacts
@@ -148,7 +149,8 @@ const closure = (await import("qed64/embedding/closure.json", { with: { type: "j
 // The classic worker scripts publish themselves on globalThis when imported as modules.
 await import("qed64/workers/lsp-frames.js");
 await import("qed64/workers/memory64-probe.js");
-const frames = globalThis.Qed64LspFrames, m64 = globalThis.Qed64Memory64;
+await import("qed64/workers/worker-constants.js");
+const frames = globalThis.Qed64LspFrames, m64 = globalThis.Qed64Memory64, wc = globalThis.Qed64WorkerConstants;
 const worker = edge.createWorker({ rootRedirect: "/showcase/" });
 const redirect = await worker.fetch(new Request("https://consumer.example/"), {});
 console.log(JSON.stringify({ out, loaded: {
@@ -156,6 +158,7 @@ console.log(JSON.stringify({ out, loaded: {
   artifactPaths: Object.keys(artifactPaths).sort(), buildId: artifactPaths.buildIdOfArtifact(process.argv[3]),
   frames: frames ? { keys: Object.keys(frames).sort(), decoder: typeof frames.LspFrameDecoder, revision: frames.REVISION } : null,
   memory64: m64 ? { keys: Object.keys(m64).sort(), frozen: Object.isFrozen(m64), bytes: [...m64.MEMORY64_PROBE], probe: m64.probeMemory64(), revision: m64.REVISION } : null,
+  workerConstants: wc ? { keys: Object.keys(wc).sort(), frozen: Object.isFrozen(wc), argv: [...wc.residentArgv([])], revision: wc.REVISION } : null,
   redirect: [redirect.status, redirect.headers.get("location"), redirect.headers.get("cross-origin-embedder-policy")],
 } }));
 `);
@@ -192,7 +195,9 @@ const revision = closure.workerProtocol.revision;
 if (JSON.stringify(loaded.frames) !== JSON.stringify({ keys: ["LspFrameDecoder", "REVISION"], decoder: "function", revision })) fail(`qed64/workers/lsp-frames.js published globalThis.Qed64LspFrames = ${JSON.stringify(loaded.frames)}`);
 const m64Want = { keys: ["MEMORY64_PROBE", "REVISION", "probeMemory64"], frozen: true, bytes: [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x05, 0x03, 0x01, 0x04, 0x00], probe: true, revision };
 if (JSON.stringify(loaded.memory64) !== JSON.stringify(m64Want)) fail(`qed64/workers/memory64-probe.js published globalThis.Qed64Memory64 = ${JSON.stringify(loaded.memory64)}`);
-ok(`loaded from the tarball: qed64/edge (${loaded.edge.length} exports, a worker answered 302 with COEP), olean-imports, artifact-paths (buildIdOfArtifact → ${loaded.buildId}), closure.json, lsp-frames.js (globalThis.Qed64LspFrames) and memory64-probe.js (globalThis.Qed64Memory64, frozen, validates on this Node), revision ${revision}`);
+const wcWant = { keys: ["LEAN_WORKERS_MAX", "PARKED_DEDICATED", "RESIDENT_ARGV", "REVISION", "leanWorkers", "residentArgv"], frozen: true, argv: ["--worker", "-Dserver.reportDelayMs=0", "-DElab.async=false"], revision };
+if (JSON.stringify(loaded.workerConstants) !== JSON.stringify(wcWant)) fail(`qed64/workers/worker-constants.js published globalThis.Qed64WorkerConstants = ${JSON.stringify(loaded.workerConstants)}`);
+ok(`loaded from the tarball: qed64/edge (${loaded.edge.length} exports, a worker answered 302 with COEP), olean-imports, artifact-paths (buildIdOfArtifact → ${loaded.buildId}), closure.json, lsp-frames.js (globalThis.Qed64LspFrames), memory64-probe.js (globalThis.Qed64Memory64, frozen, validates on this Node) and worker-constants.js (globalThis.Qed64WorkerConstants, frozen, the default argv), revision ${revision}`);
 // The shipped CLIs run through the symlink (Node loads the main module by its realpath while
 // argv[1] keeps the symlink path; a main guard that compares plain paths prints nothing, exit 0).
 for (const cli of ["pipeline/release/preflight.mjs", "pipeline/artifacts/olean-imports.mjs", "pipeline/release/fetch-artifacts.mjs", "pipeline/snapshot/cli.mjs"]) {

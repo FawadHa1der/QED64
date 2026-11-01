@@ -424,11 +424,11 @@ describe("front door: worker host wiring (lean.worker.js)", () => {
     hooks = (sandbox as { __qed64TestExports?: Hooks }).__qed64TestExports!;
     deliver = (data) => listeners.message!({ data });
   });
-  it("imports only lsp-frames.js and memory64-probe.js at script load; the front door loads lazily on the first `lsp` (a compile-only consumer never loads it)", () => {
-    // lean4game's wasm64-port vendors the worker scripts by name as a fixed closure:
-    // an unconditional import of lsp-front-door.js would throw before {type:"boot"}
-    // and hang every session of a closure that lacks it.
-    const eager = ["lsp-frames.js", "memory64-probe.js"];
+  it("imports only lsp-frames.js, memory64-probe.js and worker-constants.js at script load; the front door loads lazily on the first `lsp` (a compile-only consumer never loads it)", () => {
+    // A consumer stages closure.json's `workers` set from its own pin (lean4game's stage-workers.sh); an
+    // unconditional import of a script an older set lacks would throw before {type:"boot"} and hang every
+    // session.
+    const eager = ["lsp-frames.js", "memory64-probe.js", "worker-constants.js"];
     expect(imported).toEqual(eager);
     expect(posted.filter((m) => m.type === "boot")).toHaveLength(1);
     // A plain request is dispatched without the front door.
@@ -454,7 +454,7 @@ describe("front door: worker host wiring (lean.worker.js)", () => {
     // owns the runtime (`state === "compiling"`) — the ordering that broke the boot.
     hooks.frontDoor.host({ state: "compiling" });
     deliver({ protocol: 1, type: "lsp", msg: initialize(11) });
-    expect(imported).toEqual(["lsp-frames.js", "memory64-probe.js", "lsp-front-door.js"]);
+    expect(imported).toEqual(["lsp-frames.js", "memory64-probe.js", "worker-constants.js", "lsp-front-door.js"]);
     deliver({ protocol: 1, type: "lsp", msg: didOpen(1, "A") });
     deliver({ protocol: 1, type: "lsp", msg: didOpen(1, "A") }); // no status change → no second status event
     const lsp = posted.filter((m) => m.type === "event" && m.kind === "lsp");

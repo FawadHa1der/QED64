@@ -232,9 +232,9 @@ const lean4Wasm64Index = fs.existsSync(lean4Wasm64Pkg) && JSON.parse(fs.readFile
 
 describe("the worker protocol ledger (docs/EMBEDDING.md §7.7)", () => {
   const c = closure as unknown as { runtime: { minKernelPatch: string; manifestSchemas: string[] }; workerProtocol: { revision: string; protocol: number; requests: string[]; deprecated: unknown[] } };
-  it("the four worker scripts carry the ledger's revision", () => {
+  it("the five worker scripts carry the ledger's revision", () => {
     expect(read("public/workers/lean.worker.js")).toContain(`const WORKER_REVISION = "${c.workerProtocol.revision}";`);
-    const siblings = ["public/workers/lsp-frames.js", "public/workers/lsp-front-door.js", "public/workers/memory64-probe.js"];
+    const siblings = ["public/workers/lsp-frames.js", "public/workers/lsp-front-door.js", "public/workers/memory64-probe.js", "public/workers/worker-constants.js"];
     for (const f of siblings) expect(read(f), f).toContain(`REVISION: "${c.workerProtocol.revision}"`);
     // ...and those are every shipped worker but lean.worker.js and the prefetch worker (a page-spawned
     // worker of its own, which lean.worker.js never loads).

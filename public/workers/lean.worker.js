@@ -52,42 +52,26 @@ let sink = null;
 // (globalThis.Qed64Memory64) is loaded the same way, eagerly: it is the one
 // source of the Memory64 probe bytes, shared with the page library
 // (lib/client.ts imports the same file), and capabilities() needs it.
+// worker-constants.js (globalThis.Qed64WorkerConstants), the Lean policy (the
+// resident loop's default command line and the thread budget, architecture
+// review R3), is loaded the same way, eagerly, and shared with resident-probe
+// and thread-storm-probe.
 //
 // lsp-front-door.js is deliberately NOT loaded here: it is imported lazily by
 // `frontDoorApply` on the first `lsp`/`lsp-arm` message. A consumer that only
-// ever compiles (batch `compile` + `write-files`, the shape lean4game vendors
-// as a fixed closure — sync-qed64.sh PATHS + stage-game-assets.sh copy
-// the worker scripts by name) never loads it; an unconditional import of a
-// file such a closure lacks would throw at script load, never post
-// {type:"boot"}, and hang every session (review fix 3). The two eager loads
-// below post WORKER_DEP_MISSING before they throw, so a closure without one
-// of them dies with a named cause instead of hanging.
+// ever compiles (batch `compile` + `write-files`; a consumer stages
+// closure.json's `workers` set from its own pin (lean4game's
+// scripts/stage-workers.sh), so an older pin's set lacks newer scripts) never
+// loads it; an unconditional import of a file such a closure lacks would
+// throw at script load, never post {type:"boot"}, and hang every session
+// (review fix 3). The three eager loads below post WORKER_DEP_MISSING before
+// they throw, so a closure without one of them dies with a named cause
+// instead of hanging.
 // The worker-script set's interface revision (docs/EMBEDDING.md §7.7): the
-// four scripts are served by stable names and cached independently, so a
+// five scripts are served by stable names and cached independently, so a
 // deploy between this script's load and a sibling's can pair two versions; a
 // sibling of another revision is refused (WORKER_DEP_MISMATCH), never run.
 const WORKER_REVISION = "1";
-// The thread budget (HARDENING #69): the pool preallocates 24 Workers, and every live pthread holds one; 1 main +
-// LEAN_WORKERS task-manager threads + PARKED_DEDICATED parked dedicated threads + a burst (~10) must stay within it.
-// Lean's task manager would otherwise take navigator.hardwareConcurrency workers: on a 24-32-thread desktop the
-// main and the workers alone outgrow the pool, which grows it into the renderer's cage (#55).
-const LEAN_WORKERS_MAX = 8;
-/** Parked dedicated threads (kernel 0035, LEAN_WASM_PARKED_DEDICATED; read once at the task manager's construction):
- * a finished dedicated task's thread waits for the next instead of exiting, cutting thread churn ~13x and a reload
- * storm's renderer peak by ~1.2 GB (the widgets showcase's measurement). Digits only, never computed. */
-const PARKED_DEDICATED = "4";
-/** The task manager's worker count: the host's hardware concurrency, at most LEAN_WORKERS_MAX, never 0 (0 means no
- * task manager at all). */
-function leanWorkers(hc = typeof navigator !== "undefined" ? navigator.hardwareConcurrency : undefined) {
-  const n = Number.isInteger(hc) && hc > 0 ? hc : 4;
-  return Math.max(1, Math.min(n, LEAN_WORKERS_MAX));
-}
-// The resident FileWorker's command line. reportDelayMs=0: the reporter's first act is IO.sleep(reportDelayMs) on a
-// task pthread. Elab.async=false (HARDENING #70): the FileWorker turns asynchronous elaboration on only when the
-// command line leaves it unset, and under it a task that blocks in Task.get/IO.wait makes the task manager start
-// another standard worker, which never exits; a file of 20 Mathlib theorems then held ~46 pthreads at once, grew
-// the pool into the renderer's cage (#55) and crashed the tab. A file can still opt back in with set_option.
-const RESIDENT_ARGV = Object.freeze(["--worker", "-Dserver.reportDelayMs=0", "-DElab.async=false"]);
 function checkSibling(name, mod) {
   if (mod && mod.REVISION === WORKER_REVISION) return;
   const error = new Error(`${name} is revision ${mod ? JSON.stringify(mod.REVISION) : "missing"}, lean.worker.js needs ${WORKER_REVISION} (a deploy mixed versions; reload)`);
@@ -106,6 +90,7 @@ function loadSibling(name, load, published) {
 if (typeof importScripts === "function") {
   loadSibling("lsp-frames.js", () => importScripts("lsp-frames.js"), () => globalThis.Qed64LspFrames);
   loadSibling("memory64-probe.js", () => importScripts("memory64-probe.js"), () => globalThis.Qed64Memory64);
+  loadSibling("worker-constants.js", () => importScripts("worker-constants.js"), () => globalThis.Qed64WorkerConstants);
 }
 let lspMode = false;
 let lspFrames = null; // Qed64LspFrames.LspFrameDecoder, created by installStdoutTap
@@ -188,6 +173,9 @@ const RESIDENT_RING_CAP = 64 << 20;
 const RESIDENT_IDX = { READ: 0, WRITE: 1, CLOSED: 2, WAKE: 3 };
 let residentRingPtr = 0; // control words at ptr, byte ring at ptr + 16
 let residentMode = false;
+/** The resident loop's command line, fixed at boot: worker-constants.js's defaults with the page's `leanOptions`
+ * merged by name (R3); echoed in `ready.argv`. null until a boot. */
+let loopArgv = null;
 const residentEncoder = new TextEncoder();
 
 function residentViews() {
@@ -298,7 +286,8 @@ function residentOpenLoop() {
   const status = M._lean_browser64_configure_input_ring(asPtr(raw), RESIDENT_RING_CAP);
   if (Number(status) !== 0) throw new Error(`resident stdin ring rejected (${status})`);
   residentMode = true;
-  M.callMain([...RESIDENT_ARGV]);
+  // Fixed at boot (R3); a loop opened without a boot (the unit harnesses) runs the defaults.
+  M.callMain([...(loopArgv ?? Qed64WorkerConstants.RESIDENT_ARGV)]);
 }
 
 // ---------------------------------------------------------------------------
@@ -1465,6 +1454,16 @@ async function boot(msg) {
     state = "dead";
     return;
   }
+  // The resident loop's command line is a boot input (R3): worker-constants.js's defaults with the page's
+  // `leanOptions` merged by name. A malformed entry fails here, before anything is fetched; `ready.argv` echoes
+  // the result, so a page can refuse a worker that ignored them (an older one does).
+  try {
+    loopArgv = Qed64WorkerConstants.residentArgv(cfg.leanOptions);
+  } catch (error) {
+    fail(msg.requestId, new Error(`Malformed boot config: ${error && error.message}`), "INVALID_MESSAGE", false);
+    state = "dead";
+    return;
+  }
   state = "booting";
   const caps = capabilities();
   if (!caps.ok) {
@@ -1549,6 +1548,7 @@ async function boot(msg) {
             capabilities: caps,
             memory: memoryTelemetry(),
             mode: "persistent",
+            argv: [...loopArgv],
           },
         });
         // NOT Booting → Ready for the front door: the page's snapshot loads
@@ -1603,7 +1603,7 @@ async function boot(msg) {
           mountPacks(FS, bootConfig.packs || [], String(bootConfig.leanPath).split(":")[0]);
           self.Module.ENV.LEAN_PATH = bootConfig.leanPath;
           // LEAN_WASM_STACK_PROBE_SLOTS stays unset: QED64 does not tune the runtime's engine-stack guard (HARDENING #71).
-          self.Module.ENV.LEAN_WASM_PARKED_DEDICATED = PARKED_DEDICATED;
+          self.Module.ENV.LEAN_WASM_PARKED_DEDICATED = Qed64WorkerConstants.PARKED_DEDICATED;
           try {
             FS.chdir("/workspace");
           } catch {
@@ -1639,9 +1639,9 @@ async function boot(msg) {
           M._lean_io_mark_end_initialization();
           // The task manager's size is fixed here (main never initializes again: _lean_wasm_shell_mark_preinitialized).
           if (M._lean_init_task_manager_using) {
-            const n = leanWorkers();
+            const n = Qed64WorkerConstants.leanWorkers(typeof navigator !== "undefined" ? navigator.hardwareConcurrency : undefined);
             M._lean_init_task_manager_using(n);
-            event(null, "log", { stream: "stderr", text: `[boot] task manager: ${n} worker(s) (hardware concurrency ${typeof navigator !== "undefined" ? navigator.hardwareConcurrency : "?"}, at most ${LEAN_WORKERS_MAX}); parked dedicated threads: ${PARKED_DEDICATED}` });
+            event(null, "log", { stream: "stderr", text: `[boot] task manager: ${n} worker(s) (hardware concurrency ${typeof navigator !== "undefined" ? navigator.hardwareConcurrency : "?"}, at most ${Qed64WorkerConstants.LEAN_WORKERS_MAX}); parked dedicated threads: ${Qed64WorkerConstants.PARKED_DEDICATED}` });
           } else if (M._lean_init_task_manager) M._lean_init_task_manager();
           if (M._lean_enable_initializer_execution) M._lean_enable_initializer_execution();
           const sp = M._lean_init_search_path();
@@ -2186,7 +2186,7 @@ self.__qed64TestExports = {
   // bound is mutable so a test shortens it in its own sandbox.
   rawCache: { RAW_BUSY, openRawSnapshot },
   // Pool-growth diagnostic under test (tests/unit/pool-growth.test.ts, HARDENING #55 addendum).
-  pool: { instrumentPoolGrowth, poolSample, growths: () => poolGrowths, starts: () => poolStarts, lifetimes: () => poolLifetimes, leanWorkers, LEAN_WORKERS_MAX, PARKED_DEDICATED, RESIDENT_ARGV },
+  pool: { instrumentPoolGrowth, poolSample, growths: () => poolGrowths, starts: () => poolStarts, lifetimes: () => poolLifetimes },
   // Front-door host wiring under test (tests/unit/front-door.test.ts): the
   // machine's state and the merged status, read-only.
   frontDoor: {

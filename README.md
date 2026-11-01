@@ -89,7 +89,7 @@ Install QED64 as a git dependency pinned by a full commit (npm honours its
 You need four things ([docs/EMBEDDING.md](docs/EMBEDDING.md) §6.1). First,
 COOP/COEP on your page, and in Vite `optimizeDeps: { exclude: ["qed64"] }`
 and `build: { target: "es2022" }` (the code below uses top-level `await`,
-which Vite's default target refuses). Second, the five workers that
+which Vite's default target refuses). Second, the six workers that
 `embedding/closure.json` lists, copied to their `serveAs` paths before every
 build. Third, the artifacts at `/runtime/`, `/profiles/` and `/snapshots/` on
 your origin: the package does not ship the tracked manifests, so fetch
@@ -287,7 +287,7 @@ its prerequisites and its pass line):
 |---|---|
 | `lib/` | the library, `qed64/embed` (`index.ts` is the barrel): worker client, OPFS installer, snapshot index, boot, session adapter, LSP relay, edit coalescer, causes, parameters |
 | `frontend/` | the page (its own `package.json`): lean4monaco over the in-browser LSP, the page API, import completion |
-| `public/workers/` | the five worker scripts (`lean.worker.js` runs the runtime; the LSP front door, framer, Memory64 probe, snapshot prefetch) |
+| `public/workers/` | the six worker scripts (`lean.worker.js` runs the runtime; the LSP front door, framer, Memory64 probe, worker constants, snapshot prefetch) |
 | `public/{runtime,profiles,snapshots}/` | the served artifacts: manifests tracked, bytes fetched (`npm run fetch:artifacts`), never committed |
 | `infra/` | `edge-worker.js` (`qed64/edge`) and `worker.js`, the live site's Worker |
 | `pipeline/` | `snapshot/` (bake, probes, Node runner, the CLI contract), `release/` (fetch, adopt, promote, verify, release manifest), `artifacts/` (pack, olean reader, umbrella), `toolchain/` (path rule, forwards to `lean4-wasm64`) |
