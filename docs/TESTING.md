@@ -50,7 +50,7 @@ paired build outputs of "Environment" below.
 | InfoView actions | `node tests/adversarial/infoview-actions.mjs --url <dev url> [--only <scenario>]` | the InfoView's editor RPC on the real page (HARDENING #56): capability-flag, try-this-apply, conv-generate, foreign-show | dev | lock | `infoview-actions: 4/4 pass` |
 | Reload storm | `node tests/adversarial/reload-storm.mjs --url <url> [--runs 5] [--embed] [--ballast-mb N] [--headed] [--wait-ms N] [--boot-budget-ms 600000] [--hold-ms 0]` | five reloads 3 s apart per run, a fresh browser per run, `ready` again after them; a crash is classified by the V8 OOM line (HARDENING #53, #55); `--embed` reloads a same-origin host page around the frame; `--ballast-mb N` (with `--embed`) makes that host hold N MiB of live JS objects in the renderer's shared pointer cage, a heavy embedding page (#55 residual: 800 MiB crashes 8/8, 0 MiB 0/8); `--wait-ms 1` is the no-wait arm (R16 #55); each run also counts the `.snapz` requests after the first ready and the `[boot] raw cache busy` lines | dev or served build (stock and `--embed`) | lock | `RELOAD-STORM <tag>: 0/N crashed …` (1 = a crash, 2 = a bad `--wait-ms`/`--boot-budget-ms`/`--hold-ms`, 3 = nothing booted) |
 | Restart overlap | `node tests/adversarial/restart-overlap.mjs --url <url> [--mode idle\|busy\|wedged\|frozen\|frozen-card] [--rule own\|tolerance] [--runs 1 --tag <arm>-r<n>] [--embed] [--ballast-mb N] [--headed]` | a document replacing its own runtime (`api.restart()`, a wedged or heartbeat-loss reboot, a restart of a frozen checker), a fresh browser per run: a 25 ms Web Locks trace counts the Workers of the runtimes the new boot named alive at the replacement's allocation, at its pool spawn and up to `runtime-initialized` (each with its sample bracket), beside the per-Worker records, the worker's `[boot] waited` line, T0 → `ready` and any renderer crash (classified as the reload storm does); `--rule tolerance` deletes the boot's `instance.predecessors`, an old page and the A/B control, and each run checks its arm held (HARDENING #68) | dev or served build (stock and `--embed`) | lock | `RESTART-OVERLAP <tag>: N/N completed … — PASS` (a crash is data; 1 = a run did not complete, an `arm-invalid` run, or under `--rule own` a named predecessor's Worker alive at the allocation or before `runtime-initialized`; 2 = usage; 3 = refused, or no run got as far as the action) |
-| Edit storm | `node tests/adversarial/edit-storm.mjs --url <served url> [--reps 2] [--scenarios …]` | an edit per keystroke over work that ignores cancellation: no crash, death or reboot, ready at the last version, the pool within tolerance (HARDENING #59; `?edithold=0` is the control arm) | served build | lock | `edit-storm: N/N pass` |
+| Edit storm | `node tests/adversarial/edit-storm.mjs --url <served url> [--reps 2] [--scenarios …] [--run-dir <dir>] [--tag <label>]` | an edit per keystroke over work that ignores cancellation: no crash, death or reboot, ready at the last version, the pool within tolerance (HARDENING #59; `?edithold=0` is the control arm); the opt-in `pagelong` is `pageslow` with a 133-character example, about 20 s of typing (R16 #59: growth must not trend with typing length); `--tag` names `edit-storm-<tag>.json`, its samples and its log, so interleaved arms share one `--run-dir` | served build | lock | `edit-storm: N/N pass` (1 = a run failed, 2 = a bad `--tag`, 3 = infrastructure) |
 | Boot card | `node tests/adversarial/boot-card.mjs --url <served url> [--scenario slow-link\|check-fallback\|all]` | a cold first visit over a shaped link: the boot card shows progress the whole way, and the check fallback appears while an Init-only buffer elaborates (HARDENING #54) | served build | lock | `boot-card: N/N passed` |
 | Unpaired snapshot | `node tests/adversarial/unpaired-snapshot.mjs --url <served url> [--scenario unpaired\|rescued]` | a snapshot of another runtime is refused before the runtime starts and before a byte of it downloads (HARDENING #62); `rescued`: a mispaired served index is replaced by the pinned runtime's per-build copy (HARDENING #64) | served build (with its per-build copies) | lock | `unpaired-snapshot: PASS (n/n checks, <scenario>)` |
 | Snapshot network cut | `node tests/adversarial/snapshot-network-cut.mjs --url <served url> [--scenarios once,lasting,manifest] [--cut-mode truncate\|abort]` | a single cut `.snapz` response is absorbed (ready, 0 deaths); a lasting cut halts the relay with a `network` death after one runtime start, not three, and a reload after the network returns is ready, in both cut modes (truncate: a body that ends early is `network`; abort: "Failed to fetch") (HARDENING #63) | served build | lock | `snapshot-network-cut: 2/2 pass` |
@@ -400,24 +400,33 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   parameter, with no off-origin request).
 - **Edit storm** (`edit-storm.mjs --url <prod preview> [--reps 2]
   [--scenarios sleep,sleepreq,pagesleep,pagecadence,fast,pageslow]
-  [--grow-tolerance 4]`, HARDENING #59; docs/EMBEDDING.md §7.8): an edit per
-  keystroke over work that ignores cancellation, measured by the worker's
-  pool sample every 100 ms. Hatch scenarios send one full-text didChange per
-  typed character through `qed64.test.lsp.notify`, the library path past
-  the page's own client (`fast`, `slow`, `heavy`; `sleep` above `#eval
-  IO.sleep 3000`; `sleepreq` with a goal request after every change); page
-  scenarios type into the page's Monaco with the InfoView open on the line
-  above the sleep (`pagesleep` at 10 ms/char, `pageslow` at 150 ms/char)
-  or above a cheap `#eval` (`pagecadence`, which reports the changes and
-  requests that pace sends). A run passes when the typing happened, the
-  renderer did not crash, no death or reboot, the checker is ready at the
-  last typed version, and the pool total grew by at most the tolerance; it
-  also counts the didChanges and requests that reached the relay and the
-  session's back-pressure holds, releases, caps and longest hold.
-  `--url …/?edithold=0` runs the same build with the hold off (the control
-  arm for `pageslow`, which crashed on every build without it). Serve a
-  build (`scripts/serve-dist.mjs`), not the dev server, and run it through
-  the host browser lock.
+  [--grow-tolerance 4] [--run-dir <dir>] [--tag <label>]`, HARDENING #59;
+  docs/EMBEDDING.md §7.8): an edit per keystroke over work that ignores
+  cancellation, measured by the worker's pool sample every 100 ms. Hatch
+  scenarios send one full-text didChange per typed character through
+  `qed64.test.lsp.notify`, the library path past the page's own client
+  (`fast`, `slow`, `heavy`; `sleep` above `#eval IO.sleep 3000`; `sleepreq`
+  with a goal request after every change); page scenarios type into the
+  page's Monaco with the InfoView open on the line above the sleep
+  (`pagesleep` at 10 ms/char, `pageslow` at 150 ms/char) or above a cheap
+  `#eval` (`pagecadence`, which reports the changes and requests that pace
+  sends). `pagelong`, opt-in and not in the default list, is `pageslow`
+  with a 133-character example, about 20 s of typing: growth must not
+  trend with typing length (R16 #59). A run passes when the typing
+  happened, the renderer did not crash, no death or reboot, the checker is
+  ready at the last typed version, and the pool total grew by at most the
+  tolerance; it also counts the didChanges and requests that reached the
+  relay and the session's back-pressure holds, releases, caps and longest
+  hold. `--url …/?edithold=0` runs the same build with the hold off (the
+  control arm for `pageslow`, which crashed on every build without it).
+  `--tag <label>` (`[A-Za-z0-9._-]`, at most 80, not starting with `-`;
+  exit 2 otherwise) names the report `edit-storm-<label>.json`, its
+  `-<scenario>-<rep>-samples.json` files and its log, so interleaved arms
+  (one invocation each, as in `--url …/?edithold=0 --tag holdoff-r1` then
+  `--url … --tag default-r1`) can share one `--run-dir`; without it the
+  names stay `edit-storm.json` and `edit-storm.log`. Serve a build
+  (`scripts/serve-dist.mjs`), not the dev server, and run it through the
+  host browser lock.
 - **Unpaired snapshot** (`unpaired-snapshot.mjs --url <served build>
   [--scenario unpaired|rescued] [--runtime wasm64-0000000000000000]
   [--buffer <text>] [--wait-ms 90000 (rescued: 180000)] [--headed]`,

@@ -41,6 +41,9 @@
 //             read at the end (requests that waited for a slot, answered
 //             cancelled or superseded here). `--url …/?edithold=0` runs the
 //             same build with the hold off, the control arm.
+//   pagelong  (not in the default list) pageslow with a 133-character
+//             example (about 20 s of typing): growth must not trend with
+//             typing length (R16 #59)
 // Verdict per run: the typing happened, no renderer crash, no death or
 // reboot, ready at the last version typed, and the pool (unused + running,
 // the exact total: a finished thread's Worker goes back to the pool) not
@@ -50,8 +53,13 @@
 //
 // Usage: node tests/adversarial/edit-storm.mjs [--url http://localhost:5185/]
 //          [--reps 2] [--scenarios sleep,sleepreq,pagesleep,pagecadence,fast,pageslow] [--grow-tolerance 4]
+//          [--run-dir <dir>] [--tag <label>]
+//   --scenarios  the default list is shown; pagelong is opt-in (--scenarios pageslow,pagelong)
+//   --tag        [A-Za-z0-9._-]{0,80}, not starting with '-': names the report
+//                edit-storm-<tag>.json, its samples and its log, so interleaved
+//                arms (one invocation each) can share one --run-dir
 // Run it through the host's browser lock (one heavy runtime at a time).
-// Exit 0 = every run passed, 1 = a run failed, 3 = infrastructure.
+// Exit 0 = every run passed, 1 = a run failed, 2 = usage, 3 = infrastructure.
 import { chromium } from "playwright";
 import fs from "node:fs";
 import path from "node:path";
@@ -61,13 +69,18 @@ const url = arg("url", "http://localhost:5185/");
 const REPS = Number(arg("reps", "2"));
 const SCENARIOS = arg("scenarios", "sleep,sleepreq,pagesleep,pagecadence,fast,pageslow").split(",");
 const GROW = Number(arg("grow-tolerance", "4"));
+// A leading '-' is refused too: `--tag` with its value missing would otherwise take the next flag as the tag.
+const TAG = arg("tag", "");
+if (!/^(?:[A-Za-z0-9._][A-Za-z0-9._-]{0,79})?$/.test(TAG)) { console.error("edit-storm: --tag must match [A-Za-z0-9._-]{0,80} and not start with '-'"); process.exit(2); }
 const target = resolveTarget(url);
 const manifest = await fetchJson(target.manifestUrl).catch((e) => { console.error(`edit-storm: refused — ${e.message}`); process.exit(3); });
 const dir = runDir(manifest.buildId ?? "unknown", target.mode);
-teeLog(dir, "edit-storm.log");
-const OUT = path.join(dir, "edit-storm.json");
+teeLog(dir, `edit-storm${TAG ? `-${TAG}` : ""}.log`);
+const OUT = path.join(dir, `edit-storm${TAG ? `-${TAG}` : ""}.json`); // the per-run samples files follow OUT's name
 console.log(`edit-storm: ${url} → ${manifest.buildId}; scenarios ${SCENARIOS.join(",")} × ${REPS}; reports in ${path.relative(root, dir)}`);
 const BODY = "example (a b : ℕ) (h : a ≤ b) : a + 1 ≤ b + 1 := by omega";
+// pagelong's example: 133 characters, about 20 s at 150 ms/char (BODY is 57, about 8.6 s).
+const BODY_LONG = "example (a b c d e f g k : ℕ) (h₁ : a ≤ b) (h₂ : c ≤ d) (h₃ : e ≤ f) (h₄ : g ≤ k) : a + c + e + g + 1 ≤ b + d + f + k + 1 := by omega";
 const SUFFIX = {
   fast: "", slow: "",
   heavy: "\n\ntheorem qed64_heavy : ∀ n < 60, n * n < 3600 := by decide\n",
@@ -75,9 +88,10 @@ const SUFFIX = {
   sleepreq: "\n\n#eval (IO.sleep 3000 : IO Unit)\n",
   pagesleep: "\n\n#eval (IO.sleep 3000 : IO Unit)\n",
   pageslow: "\n\n#eval (IO.sleep 3000 : IO Unit)\n",
+  pagelong: "\n\n#eval (IO.sleep 3000 : IO Unit)\n",
   pagecadence: "\n\n#eval (1 : Nat)\n",
 };
-const isPage = (sc) => sc === "pagesleep" || sc === "pageslow" || sc === "pagecadence";
+const isPage = (sc) => sc === "pagesleep" || sc === "pageslow" || sc === "pagecadence" || sc === "pagelong";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const results = [];
 
@@ -120,7 +134,7 @@ async function run(browser, sc, rep) {
     // so every change re-elaborates the sleep (below it, Lean would reuse the unchanged prefix and the scenario measures nothing).
     const placed = await page.evaluate(() => globalThis.qed64.api.setCursor({ lineNumber: 2, column: 1 }));
     if (placed !== true) throw new Error(`setCursor refused: ${JSON.stringify(placed)}`);
-    await page.keyboard.type(BODY, { delay: sc === "pagesleep" ? 10 : 150 });
+    await page.keyboard.type(sc === "pagelong" ? BODY_LONG : BODY, { delay: sc === "pagesleep" ? 10 : 150 });
     const endedAt = Date.now();
     await sleep(800); // the client's 250 ms delayer, then the forward
     const doc = await page.evaluate(() => globalThis.qed64.api.getDocument());
