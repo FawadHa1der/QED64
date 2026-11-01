@@ -4,7 +4,8 @@
 // the cross-tab Web Lock (busy "return" vs "wait" + re-probe, decided per
 // caller), cleanup on silence/abort (partial removed, never .raw; a commit
 // that beat the bail is "done"), a worker that fails to load, late messages,
-// same-origin URLs only, and the exported cache helpers. Over a fake Worker,
+// the durable-storage ask (a fresh write only, never awaited), same-origin
+// URLs only, and the exported cache helpers. Over a fake Worker,
 // OPFS and a LockManager that grants a task later, as browsers do.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { isCacheKeyOf, isRawCached, prefetchRaw, rawRegionName, removeRawRegion, SNAPSHOT_CACHE_DIR } from "../../lib/raw-cache";
@@ -76,10 +77,10 @@ const flush = async () => { for (let i = 0; i < 50; i++) await Promise.resolve()
 /** Real timers only: run tasks (a lock grant is one) until `cond` holds. */
 const until = async (cond: () => boolean) => { for (let i = 0; i < 50 && !cond(); i++) await new Promise((r) => setTimeout(r, 0)); };
 
-function stub({ withLocks = false } = {}) {
+function stub({ withLocks = false, persist }: { withLocks?: boolean; persist?: () => Promise<boolean> } = {}) {
   opfs = new FakeOpfs();
   locks = withLocks ? new FakeLocks() : undefined;
-  vi.stubGlobal("navigator", { storage: { getDirectory: async () => ({ getDirectoryHandle: async () => opfs.dir }) }, ...(locks ? { locks } : {}) });
+  vi.stubGlobal("navigator", { storage: { getDirectory: async () => ({ getDirectoryHandle: async () => opfs.dir }), ...(persist ? { persist } : {}) }, ...(locks ? { locks } : {}) });
 }
 beforeEach(() => { FakeWorker.all = []; vi.stubGlobal("Worker", FakeWorker); stub(); });
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
@@ -288,6 +289,57 @@ describe("busy is the lock's answer, per caller", () => {
     locks!.release(LOCK); // b is still queued for the lock
     await vi.advanceTimersByTimeAsync(0);
     await expect(b).resolves.toEqual({ status: "done", bytes: 1000 });
+    expect(FakeWorker.all).toHaveLength(0);
+  });
+});
+
+describe("durable storage (HARDENING #75; moved from the installer by D1)", () => {
+  /** Firefox: the promise waits on the persistent-storage doorhanger, which a headless run never answers. */
+  const never = () => vi.fn(() => new Promise<boolean>(() => {}));
+  it("a fresh write asks once and resolves although persist() never settles", async () => {
+    const persist = never();
+    stub({ persist });
+    const r = prefetchRaw(entry);
+    await flush();
+    expect(persist).toHaveBeenCalledTimes(1);
+    expect(FakeWorker.all).toHaveLength(1);
+    FakeWorker.all[0]!.emit({ status: "done", bytes: 1000 });
+    await expect(r).resolves.toEqual({ status: "done", bytes: 1000 });
+    expect(persist).toHaveBeenCalledTimes(1);
+  });
+  it("under the Web Lock it asks once too; a rejected ask is swallowed", async () => {
+    const persist = vi.fn(() => Promise.reject(new Error("denied")));
+    stub({ withLocks: true, persist });
+    const r = prefetchRaw(entry);
+    await until(() => FakeWorker.all.length > 0);
+    await flush();
+    expect(persist).toHaveBeenCalledTimes(1);
+    FakeWorker.all[0]!.emit({ status: "done", bytes: 1000 });
+    await expect(r).resolves.toEqual({ status: "done", bytes: 1000 });
+  });
+  it("a cached region asks nothing", async () => {
+    const persist = never();
+    stub({ persist });
+    opfs.files.set(RAW, 1000);
+    await expect(prefetchRaw(entry)).resolves.toEqual({ status: "cached", bytes: 1000 });
+    await flush();
+    expect(persist).not.toHaveBeenCalled();
+  });
+  it("a 'return' caller answered busy, and a waiter that finds the other tab's write done, ask nothing", async () => {
+    const persist = never();
+    stub({ withLocks: true, persist });
+    locks!.held.add(LOCK); // another tab is writing
+    await expect(prefetchRaw(entry, { onBusy: "return" })).resolves.toEqual({ status: "busy" });
+    await flush();
+    expect(persist).not.toHaveBeenCalled();
+    const waits: string[] = [];
+    const waiter = prefetchRaw(entry, { onBusy: "wait", onBusyWait: () => waits.push("waiting") });
+    await until(() => waits.length > 0);
+    opfs.files.set(RAW, 1000); // the other tab committed
+    locks!.release(LOCK);
+    await expect(waiter).resolves.toEqual({ status: "done", bytes: 1000 });
+    await flush();
+    expect(persist).not.toHaveBeenCalled();
     expect(FakeWorker.all).toHaveLength(0);
   });
 });

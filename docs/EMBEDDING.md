@@ -1050,6 +1050,10 @@ function prefetchRaw(entry, opts?: { onProgress?; signal?; silenceMs?; workerUrl
   `PREFETCH_SILENCE_MS`), then re-probes `.raw`. The lock request is
   withdrawn when the last waiting caller leaves. `loadSnapshotByName` uses
   `"wait"`, with `ResidentHost.busyWaitMs` (§7.3) as its `busyWaitMs`.
+- **Durable storage.** A fresh write asks `navigator.storage.persist()`
+  first and never waits for the answer (HARDENING #75). A cached region, a
+  caller answered `busy`, and a waiter that finds another tab's write done
+  ask nothing.
 - **It needs the raw size.** The prefetch worker refuses a message without a
   positive `rawBytes` (the entry's `bytes`) with `error` (`corrupt`). Its
   compressed-only mode, which fetched without the redirect and HTML
@@ -2225,3 +2229,11 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   - A driver that read `RESIDENT_ARGV` from `lean.worker.js`'s text must
     import the script instead: the line it matched is gone.
   - `EMBED_API_REVISION` → `1.0.0-pre.9`.
+- **`prefetchRaw` asks for durable storage before a fresh write (D1/R15,
+  2026-11):** see §7.4. The unawaited `navigator.storage.persist()` that
+  `installProfile` makes before a pack write is made here too, so the raw
+  snapshot region (1.1 GB for the umbrella) keeps the ask once the library
+  packs leave the browser. Firefox may show its persistent-storage prompt on
+  a site's first region download; the boot never waits for the answer. No
+  export, type or message change: `EMBED_API_REVISION` and the worker
+  `REVISION` are unchanged.

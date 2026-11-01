@@ -6,6 +6,8 @@
 // heap dies when it is done (a Lean worker that streams and inflates itself
 // measured ~4.6 GB heavier for its whole life). Since W5 the prefetch worker is
 // the only writer of `.raw`, through `<cacheKey>.raw.partial` and a rename.
+// A fresh write first asks for durable storage (askPersistence; never awaited,
+// HARDENING #75).
 //
 // prefetchRaw is single-flight per cache key:
 //   * in this page: callers of one key share one worker; each keeps its own
@@ -218,7 +220,15 @@ async function runFlight(entry: SnapshotEntry, key: string, f: Flight, opts: Pre
   }
 }
 
+/** Durable storage for the region about to be written (the 1.1 GB umbrella region is otherwise evictable). Asked,
+ * never awaited: Firefox prompts, and in Playwright Firefox 153 the promise never settled (HARDENING #75); a denied
+ * request is best-effort storage. The library packs' installer made this ask until D1 (2026-11). */
+function askPersistence(): void {
+  Promise.resolve().then(() => navigator.storage.persist?.()).catch(() => { /* best-effort */ });
+}
+
 function runWorker(entry: SnapshotEntry, key: string, f: Flight, opts: PrefetchRawOptions): Promise<PrefetchRawResult> {
+  askPersistence();
   const silenceMs = opts.silenceMs ?? PREFETCH_SILENCE_MS;
   return new Promise<PrefetchRawResult>((resolve) => {
     let settled = false;
