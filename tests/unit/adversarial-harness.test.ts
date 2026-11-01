@@ -6,7 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { MODE, batteryArgv, browserArgv, browserName, coolDown, laneSections, memoryReading, onlyMatches, parseMeminfo, parseVmStat, resolveTarget, settleClass, settleClassFromPhase, suiteExitCode } from "../../tests/adversarial/harness.mjs";
-import { classify, missingInputs } from "../../tests/adversarial/compiler-battery.mjs";
+import { COMPILE_ONLY, classify, missingInputs } from "../../tests/adversarial/compiler-battery.mjs";
 
 describe("onlyMatches", () => {
   test("a plain name matches exactly, never as a substring", () => {
@@ -100,6 +100,31 @@ describe("compiler-battery classify", () => {
     const hung = classify(item({ mustSucceed: true }), { out: "== load snapshot ==\n", code: null, wallMs: 80000, budget: 20000 });
     expect(hung.outcome).toBe("fail");
     expect(hung.failures).toContain("killed (hang)");
+  });
+
+  // --transport fileworker (R4): resident-probe's marker, its message lines and its verdict line.
+  test("the FileWorker lane: a document's errors are the verdict; a probe that elaborated then failed is a fail; one that died before is infra", () => {
+    const errored = [
+      "[9.1s] resident: reached elaboration",
+      `{"caption":"","severity":"error","pos":{"line":3,"column":8},"endPos":{"line":3,"column":11},"data":"Unknown identifier \`foo\`"}`,
+      "compile: tag=0 elapsed=900ms errors=1",
+      `RESIDENT PROBE PASS {"ok":true,"why":"progress drained (file probe)"}`,
+    ].join("\n");
+    const pass = classify(item({ mustError: true, containsMsgs: ["Unknown identifier"] }), { out: errored, code: 0, wallMs: 16000, budget: 20000 });
+    expect([pass.outcome, pass.failures]).toEqual(["pass", []]);
+    const late = "[9.1s] resident: reached elaboration\n[50.0s] ring state read=1 write=1 wake=2\nRESIDENT PROBE FAIL {\"ok\":false,\"why\":\"budget exceeded\"}\n";
+    const fail = classify(item({ mustSucceed: true }), { out: late, code: 1, wallMs: 50000, budget: 20000 });
+    expect(fail.outcome).toBe("fail");
+    expect(fail.failures).toContain("resident probe: budget exceeded");
+    const died = classify(item({ mustSucceed: true }), { out: `RESIDENT PROBE FAIL {"ok":false,"why":"ABORT: Aborted(OOM)"}\n`, code: 1, wallMs: 4000, budget: 20000 });
+    expect(died.outcome).toBe("infra");
+    expect(died.failures).toEqual([`infra: RESIDENT PROBE FAIL {"ok":false,"why":"ABORT: Aborted(OOM)"}`]);
+  });
+
+  test("COMPILE_ONLY names corpus items (a renamed item would silently run on the FileWorker lane)", () => {
+    const names = new Set(JSON.parse(fs.readFileSync(path.resolve(__dirname, "../adversarial/corpus.json"), "utf8")).items.map((it: { name: string }) => it.name));
+    expect(COMPILE_ONLY.size).toBeGreaterThan(0);
+    for (const n of COMPILE_ONLY) expect(names.has(n), n).toBe(true);
   });
 
   test("missing snapshot or runtime is decided from the harness's inputs, before any probe", () => {

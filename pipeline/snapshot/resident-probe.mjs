@@ -11,6 +11,7 @@
 //   node pipeline/snapshot/resident-probe.mjs [--artifact <stage1>] [--lib <tree>] [--budget-ms 180000]
 //                                             [--snap-dir <dir>] [--snapshots init,mathlib] [--mathlib] [--act2 | --act4 [--act4-ms 500]]
 //                                             [--lean-option <name=value> ...] [--option-check]
+//                                             [--probe-file <file> [--dump-messages] [--settle-ms 5000]]
 //
 // The page's setup (architecture review R3): the command line is
 // public/workers/worker-constants.js's residentArgv (--worker
@@ -50,6 +51,23 @@
 //                `--lean-option autoImplicit=false` the option reached Lean
 //                (without it the run is the control and fails); Init only, so
 //                --mathlib, --act2 and --act4 are refused
+//   --probe-file runs that document as the page does (act 1 only, no
+//                EXPERIMENT requests), with --snapshots init,mathlib by
+//                default: it prints `resident: reached elaboration` at the
+//                first non-empty fileProgress; once progress has stayed
+//                drained for --settle-ms (default 5000; a kind-2 fatalError
+//                entry, which a refused header leaves standing, counts as
+//                drained, as in the page's front door) it prints the final
+//                diagnostics (with --dump-messages one {"caption":"",…} JSON
+//                line each, snapshot-probe's shape: severity by name, pos and
+//                endPos 1-based lines and LSP's UTF-16 columns), then
+//                `compile: tag=0 elapsed=<ms since didOpen> errors=<n>`, and
+//                exits 0 whatever the document's errors are (the compiler
+//                battery's --transport fileworker judges them, review R4).
+//                The budget, an abort and an exit before the settle end in
+//                `RESIDENT PROBE FAIL {…}`, exit 1. Refused with --mathlib,
+//                --act2, --act4 and --option-check (exit 2); --lean-option
+//                applies to it
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -62,7 +80,7 @@ import { resolveToolPath } from "../toolchain/artifact-paths.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const arg = (n, d) => { const i = process.argv.indexOf(`--${n}`); return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : d; };
-const USAGE = "resident-probe.mjs [--artifact <stage1>] [--lib <tree>] [--budget-ms 180000] [--snap-dir <dir>] [--snapshots init,mathlib] [--mathlib] [--act2 | --act4 [--act4-ms 500]] [--lean-option <name=value> ...] [--option-check]";
+const USAGE = "resident-probe.mjs [--artifact <stage1>] [--lib <tree>] [--budget-ms 180000] [--snap-dir <dir>] [--snapshots init,mathlib] [--mathlib] [--act2 | --act4 [--act4-ms 500]] [--lean-option <name=value> ...] [--option-check] [--probe-file <file> [--dump-messages] [--settle-ms 5000]]";
 const artifactDir = resolveToolPath({
   tool: "resident-probe", flag: "artifact", placeholder: "<dir>", value: arg("artifact", null), env: "QED64_LEAN_ARTIFACT",
   legacy: path.join(repoRoot, "pipeline/toolchain/work/build/stage1"), legacyLabel: "pipeline/toolchain/work/build/stage1 under the repo root",
@@ -85,15 +103,22 @@ const OPTION_CHECK = process.argv.includes("--option-check");
 let ARGV; // the page's command line with LEAN_OPTIONS merged by name (worker-constants.js residentArgv)
 try { ARGV = Qed64WorkerConstants.residentArgv(LEAN_OPTIONS); } catch (e) { console.error(`error: --lean-option: ${e.message}`); process.exit(2); }
 if (OPTION_CHECK && (MATHLIB || ACT2 || ACT4)) { console.error("error: --option-check judges one Init document; it cannot be combined with --mathlib, --act2 or --act4"); process.exit(2); }
+// File mode (review R4, the compiler battery's --transport fileworker): one document, act 1 only, judged by the caller.
+const PROBE_FILE = arg("probe-file", null);
+const DUMP = process.argv.includes("--dump-messages");
+const SETTLE_MS = Number(arg("settle-ms", "5000"));
+if (PROBE_FILE && (MATHLIB || ACT2 || ACT4 || OPTION_CHECK)) { console.error("error: --probe-file runs one document (act 1 only); it cannot be combined with --mathlib, --act2, --act4 or --option-check"); process.exit(2); }
+if (PROBE_FILE && !fs.existsSync(PROBE_FILE)) { console.error(`error: --probe-file ${PROBE_FILE} not found`); process.exit(2); }
+if (!(Number.isFinite(SETTLE_MS) && SETTLE_MS >= 0)) { console.error(`error: --settle-ms must be a number of milliseconds >= 0 (got ${arg("settle-ms", "")})`); process.exit(2); }
 /** The option check's verdict: Lean refused the auto-bound α (v4.35 words it "Unknown identifier `α`"). */
 const OPTION_ERROR = /unknown identifier [`'‘]α[`'’]/i;
-const SNAPSHOTS = arg("snapshots", MATHLIB ? "init,mathlib" : "init").split(",").map((s) => s.trim()).filter(Boolean);
+const SNAPSHOTS = arg("snapshots", MATHLIB || PROBE_FILE ? "init,mathlib" : "init").split(",").map((s) => s.trim()).filter(Boolean);
 const SNAP_DIR = resolveToolPath({
   tool: "resident-probe", flag: "snap-dir", placeholder: "<dir>", value: arg("snap-dir", null), env: "QED64_SNAP_DIR",
   legacy: path.join(repoRoot, "work/snapshot"), legacyLabel: "work/snapshot under the repo root", holds: fs.existsSync, usage: USAGE,
 }).path;
 
-const PROBE = (OPTION_CHECK ? [
+const PROBE = PROBE_FILE ? ((t) => (t.endsWith("\n") ? t : `${t}\n`))(fs.readFileSync(PROBE_FILE, "utf8")) : (OPTION_CHECK ? [
   "import Init",
   "def idA (x : α) : α := x",
 ] : MATHLIB ? [
@@ -113,7 +138,7 @@ const PROBE = (OPTION_CHECK ? [
   "#eval answer",
   "theorem answer_is : answer = 42 := rfl",
   "example : answer = 43 := rfl",
-]).join("\n") + "\n";
+]).join("\n") + "\n"; // the array branches only; --probe-file's text is taken as is (one final newline)
 
 // ---------------------------------------------------------------------------
 // Result tracking
@@ -122,6 +147,10 @@ const seen = { initializeResponse: false, fileProgressEvents: 0, progressDrained
   act: 1, exit2: false, act2Diags: 0, act2Drained: false, act4Armed: false, act4SentAt: 0 };
 const t0 = Date.now();
 const log = (s) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1)}s] ${s}`);
+// File mode: the latest diagnostics set (LSP publishes the whole set each time), whether
+// elaboration started (any progress entry) and whether work was seen (kind 1), the
+// stable-drain timer, the didOpen time, and whether the result is out.
+let fileDiags = []; let reachedElab = false; let sawProcessing = false; let settleTimer = null; let openedAt = 0; let fileDone = false;
 let finished = false;
 function finish(ok, why) {
   if (finished) return;
@@ -207,6 +236,21 @@ function onMessage(msg) {
   if (msg.method === "$/lean/fileProgress") {
     seen.fileProgressEvents += 1;
     const processing = msg.params?.processing ?? [];
+    if (PROBE_FILE) {
+      // Done once progress has stayed drained for SETTLE_MS; any new work restarts the wait.
+      // FileProgressKind 2 (fatalError) is terminal, not work: after a refused header the
+      // FileWorker reports one kind-2 entry for the whole file and never clears it (the
+      // page's front door, lsp-front-door.js, counts it the same way).
+      if (processing.length > 0 && !reachedElab) { reachedElab = true; log("resident: reached elaboration"); }
+      const working = processing.filter((e) => !e || e.kind !== 2);
+      if (working.length > 0) {
+        sawProcessing = true; clearTimeout(settleTimer); settleTimer = null;
+      } else if (sawProcessing || seen.fileProgressEvents > 1) {
+        seen.progressDrained = true;
+        if (!settleTimer) settleTimer = setTimeout(finishFile, SETTLE_MS);
+      }
+      return;
+    }
     if (ACT4) {
       // Act 4: the first non-empty progress means the header's session is
       // elaborating; ACT4_MS later the whole document arrives again WITHOUT
@@ -231,6 +275,16 @@ function onMessage(msg) {
     return;
   }
   if (msg.method === "textDocument/publishDiagnostics") {
+    if (PROBE_FILE) {
+      const ds = msg.params?.diagnostics ?? [];
+      // The FileWorker's notice that the ring closed is not the document's; keep the set before it.
+      if (!ds.some((d) => /^Cannot read LSP message: Stream was closed/.test(String(d.message)))) {
+        fileDiags = ds;
+        seen.diags = ds.map((d) => String(d.message).slice(0, 120));
+        seen.errors = ds.filter((d) => d.severity === 1).length;
+      }
+      return;
+    }
     for (const d of msg.params?.diagnostics ?? []) {
       seen.diags.push(String(d.message).slice(0, 120));
       // The FileWorker's own notice that the probe closed its stdin ring is not an error of the document.
@@ -245,6 +299,7 @@ function onMessage(msg) {
 // fileProgress handlers: the burst order between them is not fixed.
 let optionCheckTimer = null;
 function checkActs() {
+  if (PROBE_FILE) return; // file mode settles from fileProgress alone (finishFile)
   if (ACT4) return; // act 4 judges itself from fileProgress alone
   if (OPTION_CHECK) {
     // One verdict, 1.5 s after the first drain: the diagnostics may land after it.
@@ -298,6 +353,22 @@ function checkActs() {
       seen.act2Diags = seen.diags.length;
     }
   }
+}
+
+/** File mode's result, once the drain has settled: the document's final diagnostics in
+ * snapshot-probe's --dump-messages shape, then its `compile:` line. A document with errors
+ * still exits 0: the caller (compiler-battery.mjs --transport fileworker) judges it. */
+function finishFile() {
+  if (fileDone || finished) return;
+  fileDone = true;
+  const SEV = { 1: "error", 2: "warning", 3: "information", 4: "hint" };
+  if (DUMP) for (const d of fileDiags) console.log(JSON.stringify({ caption: "", severity: SEV[d.severity] ?? String(d.severity),
+    pos: { line: d.range.start.line + 1, column: d.range.start.character }, endPos: { line: d.range.end.line + 1, column: d.range.end.character },
+    data: String(d.message) }));
+  const errors = fileDiags.filter((d) => d.severity === 1).length;
+  console.log(`compile: tag=0 elapsed=${Date.now() - openedAt}ms errors=${errors}`);
+  closeRing();
+  setTimeout(() => finish(true, "progress drained (file probe)"), 500);
 }
 
 // ---------------------------------------------------------------------------
@@ -463,6 +534,7 @@ globalThis.Module = {
       processId: null, rootUri: null, capabilities: {} } });
     // NO 'initialized' here: initAndRunWorker reads initialize then didOpen
     // DIRECTLY — anything between them corrupts the opening sequence.
+    openedAt = Date.now();
     send({ jsonrpc: "2.0", method: "textDocument/didOpen", params: {
       textDocument: { uri: "file:///workspace/Probe.lean", languageId: "lean4", version: 1, text: (process.env.PROBE_HEADER ? process.env.PROBE_HEADER + "\n" : "") + PROBE } } });
     // Discriminator experiment (phase-1 blocker): after the reporter goes
@@ -470,8 +542,9 @@ globalThis.Module = {
     // answers immediately through the stdout writer; hover needs a body
     // elaboration snapshot. Their arrival (or not) tells reporter-wedged vs
     // writer-stalled vs elaboration-stuck apart. Not under --act4: that act
-    // measures one switch, and the extra requests would blur its drain.
-    if (!ACT4) setTimeout(() => {
+    // measures one switch, and the extra requests would blur its drain; not
+    // under --probe-file: the page sends no such requests on its own.
+    if (!ACT4 && !PROBE_FILE) setTimeout(() => {
       log("EXPERIMENT: sending rpc/connect + hover");
       send({ jsonrpc: "2.0", id: 9001, method: "$/lean/rpc/connect", params: { uri: "file:///workspace/Probe.lean" } });
       send({ jsonrpc: "2.0", id: 9002, method: "textDocument/hover", params: {
@@ -482,6 +555,8 @@ globalThis.Module = {
   },
   onExit: (code) => {
     log(`main exited code=${code}`);
+    // File mode: the FileWorker exits once finishFile closes the ring; before that, an exit is a failure.
+    if (PROBE_FILE) { if (!fileDone) finish(false, `exit code=${code} before the drain settled`); return; }
     if (seen.act === 2 && !seen.exit2) {
       seen.exit2 = true;
       log("worker requested restart — re-callMain in the SAME process");

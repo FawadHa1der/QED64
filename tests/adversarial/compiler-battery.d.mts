@@ -7,6 +7,8 @@ export type BatteryRow = {
 };
 /** The message JSON lines a probe run printed (`--dump-messages`), in order. */
 export function messageLines(out: string): string[];
+/** Items `--transport fileworker` skips: their point is the exact (compile) path (#43). */
+export const COMPILE_ONLY: ReadonlySet<string>;
 export function missingInputs(inputs: { snap: string; artifact: string }): string[];
 export function classify(item: BatteryItem, run: { out: string; code: number | null; wallMs: number; budget: number; spawnError?: (Error & { code?: string }) | null }): BatteryRow;
 export function rewriteAliases(src: string): string;

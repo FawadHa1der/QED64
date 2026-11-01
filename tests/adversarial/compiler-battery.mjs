@@ -17,7 +17,12 @@
 // its first compile line without a wasm panic. An infra-only battery exits 3
 // (refused), never 1 (product failure).
 // Usage: node tests/adversarial/compiler-battery.mjs [--corpus <file>] [--jobs 3] [--run-dir <dir>]
-//          [--snap <mathlib.snap>] [--artifact <stage1>] [--lib <tree>]
+//          [--snap <mathlib.snap>] [--artifact <stage1>] [--lib <tree>] [--transport compile|fileworker]
+// --transport fileworker (tier 3, architecture review R4) runs each item as the
+// page does instead: the resident FileWorker (pipeline/snapshot/resident-probe.mjs
+// --probe-file) on the worker's argv and thread setup, init.snap (beside --snap)
+// and --snap seeded, no alias rewrite (headers are served covered or refused),
+// a 5 s stable-drain settle; COMPILE_ONLY items are skipped, --probe is refused.
 // The pairing under test: each flag, else QED64_MATHLIB_SNAP / QED64_LEAN_ARTIFACT /
 // QED64_LIB_TREE, else (deprecated, one WARNING each) this checkout's
 // work/snapshot/mathlib.snap, pipeline/toolchain/work/build/stage1 and
@@ -34,7 +39,10 @@ import { fileURLToPath } from "node:url";
 import { resolveToolPath } from "../../pipeline/toolchain/artifact-paths.mjs";
 import { arg, root, teeLog } from "./harness.mjs";
 
-const USAGE = "compiler-battery.mjs [--corpus <file>] [--jobs 3] [--run-dir <dir>] [--snap <mathlib.snap>] [--artifact <stage1>] [--lib <tree>] [--probe <snapshot-probe.mjs>] [--messages-dir <dir>]";
+const USAGE = "compiler-battery.mjs [--corpus <file>] [--jobs 3] [--run-dir <dir>] [--snap <mathlib.snap>] [--artifact <stage1>] [--lib <tree>] [--probe <snapshot-probe.mjs>] [--messages-dir <dir>] [--transport compile|fileworker]";
+
+/** Items the FileWorker lane skips: their point is the exact (compile) path. #43: covered, this header's names collide ("already declared"). */
+export const COMPILE_ONLY = new Set(["mathlib-name-shadow-faithful-compile"]);
 
 /** The message JSON lines a probe run printed (`--dump-messages`), in order. */
 export const messageLines = (out) => [...out.matchAll(/\{"caption":.*/g)].map((m) => m[0]);
@@ -75,9 +83,10 @@ export function classify(item, { out, code, wallMs, budget, spawnError = null })
   // Died before the probe reached its compile step (snapshot load failed,
   // node crashed, artifact unreadable) and nothing in the output is a wasm
   // panic: the environment, not the compiler, produced this row.
-  const reachedCompile = msgs.length > 0 || /compile: tag=/.test(out);
+  // resident-probe (--transport fileworker) prints its marker once the FileWorker elaborates.
+  const reachedCompile = msgs.length > 0 || /compile: tag=|resident: reached elaboration/.test(out);
   if (code !== 0 && code !== null && !reachedCompile && !panic) {
-    const why = (/SNAPSHOT PROBE FAIL: .*|ABORT: .*|Error: .*/.exec(out) || [`exit ${code} before the compile step`])[0];
+    const why = (/SNAPSHOT PROBE FAIL: .*|RESIDENT PROBE FAIL .*|ABORT: .*|Error: .*/.exec(out) || [`exit ${code} before the compile step`])[0];
     return row("infra", [`infra: ${why.slice(0, 160)}`]);
   }
   // "No directory|does not exist" are the compiler's own unresolvable-import
@@ -97,6 +106,9 @@ export function classify(item, { out, code, wallMs, budget, spawnError = null })
   if (wallMs > budget + 45000) failures.push(`over budget: ${wallMs}ms (budget ${budget}ms + load allowance)`);
   if (code === null) failures.push("killed (hang)");
   if (/snapshot probe crashed|Worker unrecoverable|unwind/i.test(out)) failures.push("runtime crashed");
+  // The FileWorker lane: a resident-probe that elaborated and then failed (budget, abort, an early exit) is the product's.
+  const rf = /RESIDENT PROBE FAIL (\{.*\})/.exec(out);
+  if (rf && reachedCompile) { let why = "failed"; try { why = JSON.parse(rf[1]).why; } catch {} failures.push(`resident probe: ${why}`); }
   return row(failures.length ? "fail" : "pass", failures, { note: knownPanicNote });
 }
 
@@ -138,8 +150,23 @@ async function main() {
   if (dir) { fs.mkdirSync(dir, { recursive: true }); teeLog(dir, "compiler.log"); }
   const corpusPath = arg("corpus", path.join(root, "tests/adversarial/corpus.json"));
   const jobs = Number(arg("jobs", "3"));
-  const corpus = JSON.parse(fs.readFileSync(corpusPath, "utf8")).items
+  // --transport: compile (the batch path, snapshot-probe) or fileworker (the page's resident FileWorker, resident-probe; tier 3, R4).
+  const transport = arg("transport", "compile");
+  const fileworker = transport === "fileworker";
+  let corpus = JSON.parse(fs.readFileSync(corpusPath, "utf8")).items
     .filter((it) => typeof it.source === "string" && it.source.length > 0 && !(it.actions && it.actions.length));
+  /** A flag refusal (exit 2) still leaves a fresh all-infra report naming it. */
+  const refuse = (why, extra = {}) => {
+    writeReport(dir, infraRows(corpus, `infra: ${why}`), { refused: why, ...extra });
+    console.error(`${why}\nusage: ${USAGE}\ncompiler battery: REFUSED — ${why}`);
+    process.exit(2);
+  };
+  if (!["compile", "fileworker"].includes(transport)) refuse(`compiler-battery: --transport must be compile or fileworker (got ${transport})`);
+  if (fileworker && process.argv.includes("--probe")) refuse("compiler-battery: --probe names a snapshot-probe; the FileWorker lane runs resident-probe", { transport });
+  if (fileworker) {
+    for (const it of corpus) if (COMPILE_ONLY.has(it.name)) console.log(`skip ${it.name} (compile path only)`);
+    corpus = corpus.filter((it) => !COMPILE_ONLY.has(it.name));
+  }
   // The olean tree is the one the snapshot was baked from (a staged pairing brings its own).
   // No pairing resolved: the rule's exit 2, after a fresh all-infra report naming why.
   const said = [];
@@ -154,13 +181,11 @@ async function main() {
   const { snap, artifact, lib } = inputs;
   // --probe: another snapshot-probe with this CLI (the bake move's acceptance runs the corpus through QED64's probe and
   // the lean4-wasm64 package's, docs/TESTING.md); --messages-dir: each item's message JSON lines, for diffing two runs.
-  const probe = path.resolve(arg("probe", path.join(root, "pipeline/snapshot/snapshot-probe.mjs")));
-  if (!fs.existsSync(probe)) {
-    const why = `compiler-battery: --probe ${probe} does not exist`;
-    writeReport(dir, infraRows(corpus, `infra: ${why}`), { refused: why });
-    console.error(`${why}\nusage: ${USAGE}\ncompiler battery: REFUSED — ${why}`);
-    process.exit(2);
-  }
+  const probe = fileworker ? path.join(root, "pipeline/snapshot/resident-probe.mjs") : path.resolve(arg("probe", path.join(root, "pipeline/snapshot/snapshot-probe.mjs")));
+  if (!fs.existsSync(probe)) refuse(fileworker ? `compiler-battery: ${probe} does not exist` : `compiler-battery: --probe ${probe} does not exist`, fileworker ? { transport } : {});
+  // The FileWorker lane seeds init.snap and --snap by name from --snap's directory (resident-probe --snap-dir/--snapshots).
+  const snapDir = path.dirname(snap);
+  const seeds = [...new Set(["init", path.basename(snap, ".snap")])].join(",");
   const messagesDir = arg("messages-dir", "");
   if (messagesDir) fs.mkdirSync(messagesDir, { recursive: true });
   fs.mkdirSync(path.join(root, "work"), { recursive: true });
@@ -169,14 +194,18 @@ async function main() {
   function runOne(item) {
     return new Promise((resolve) => {
       const file = path.join(scratch, `${item.name.replace(/[^\w.-]/g, "_")}.lean`);
-      const src = rewriteAliases(item.source);
+      // The compile path keys its env cache exactly, so it needs the alias rewrite; the FileWorker resolves headers as the page does.
+      const src = fileworker ? item.source : rewriteAliases(item.source);
       fs.writeFileSync(file, src.endsWith("\n") ? src : src + "\n");
       const budget = Math.min(item.expect.budgetMs ?? 20000, 120000);
       const t0 = Date.now();
-      const child = spawn("node", ["--stack-size=8192", probe,
-        "--snap", snap, "--probe-file", file, "--budget-ms", String(budget + 30000),
-        "--via-mem", "--init-flags", "1", "--artifact", artifact,
-        "--lib", lib, "--dump-messages"], { cwd: root });
+      const child = spawn("node", fileworker
+        ? ["--stack-size=8192", probe, "--artifact", artifact, "--lib", lib, "--snap-dir", snapDir, "--snapshots", seeds,
+          "--probe-file", file, "--budget-ms", String(budget + 30000), "--dump-messages"]
+        : ["--stack-size=8192", probe,
+          "--snap", snap, "--probe-file", file, "--budget-ms", String(budget + 30000),
+          "--via-mem", "--init-flags", "1", "--artifact", artifact,
+          "--lib", lib, "--dump-messages"], { cwd: root });
       let out = "";
       let spawnError = null;
       child.stdout.on("data", (d) => { out += d; });
@@ -195,6 +224,8 @@ async function main() {
   // Inputs first: without the snapshot or the runtime no probe can produce a
   // verdict, so every item is one `infra` row and nothing is spawned.
   const missing = missingInputs({ snap, artifact });
+  if (fileworker && !snap.endsWith(".snap")) missing.push(`${snap} named <name>.snap (the FileWorker lane seeds snapshots by name)`);
+  if (fileworker && !fs.existsSync(path.join(snapDir, "init.snap"))) missing.push(`${path.join(snapDir, "init.snap")} (the FileWorker lane seeds init and --snap from --snap's directory)`);
   if (missing.length) {
     results.push(...infraRows(corpus, `infra: missing ${missing.join(", ")}`));
     console.error(`compiler battery: REFUSED — missing ${missing.join(", ")}`);
@@ -212,8 +243,9 @@ async function main() {
     await Promise.all(Array.from({ length: jobs }, workerLoop));
   }
   fs.rmSync(scratch, { recursive: true, force: true });
-  const { failed, infra } = writeReport(dir, results);
-  console.log(`\ncompiler battery: ${results.length - failed}/${results.length} passed${infra ? ` (${infra} infra)` : ""}`);
+  const { failed, infra } = writeReport(dir, results, { transport });
+  // The compile lane's line is the documented pass line (docs/TESTING.md); the FileWorker lane names itself.
+  console.log(`\ncompiler battery${fileworker ? " (fileworker)" : ""}: ${results.length - failed}/${results.length} passed${infra ? ` (${infra} infra)` : ""}`);
   // Product failures → 1; infra-only failures → 3 (the run is not a verdict).
   process.exit(failed === 0 ? 0 : failed === infra ? 3 : 1);
 }

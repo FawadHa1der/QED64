@@ -272,7 +272,7 @@ describe("the tools in a scratch checkout: the variable is honoured", () => {
     expect(io.code).toBe(2);
     expect(io.err).toEqual([
       `compiler-battery: no --snap given and QED64_MATHLIB_SNAP is unset; the deprecated default ${path.join(s, "work/snapshot/mathlib.snap")} is absent — pass --snap <file> or set QED64_MATHLIB_SNAP`,
-      `usage: compiler-battery.mjs [--corpus <file>] [--jobs 3] [--run-dir <dir>] [--snap <mathlib.snap>] [--artifact <stage1>] [--lib <tree>] [--probe <snapshot-probe.mjs>] [--messages-dir <dir>]`,
+      `usage: compiler-battery.mjs [--corpus <file>] [--jobs 3] [--run-dir <dir>] [--snap <mathlib.snap>] [--artifact <stage1>] [--lib <tree>] [--probe <snapshot-probe.mjs>] [--messages-dir <dir>] [--transport compile|fileworker]`,
     ]);
     io.err.length = 0; io.code = null;
     const env = { QED64_MATHLIB_SNAP: "/e/m.snap", QED64_LEAN_ARTIFACT: "/e/stage1", QED64_LIB_TREE: "/e/slim" };
@@ -423,7 +423,7 @@ process.exit(1);
     expect(r.status, r.stderr).toBe(2);
     expect(r.lines).toEqual([
       `resident-probe: no --snap-dir given and QED64_SNAP_DIR is unset; the deprecated default ${path.join(s, "work/snapshot")} is absent — pass --snap-dir <dir> or set QED64_SNAP_DIR`,
-      "usage: resident-probe.mjs [--artifact <stage1>] [--lib <tree>] [--budget-ms 180000] [--snap-dir <dir>] [--snapshots init,mathlib] [--mathlib] [--act2 | --act4 [--act4-ms 500]] [--lean-option <name=value> ...] [--option-check]",
+      "usage: resident-probe.mjs [--artifact <stage1>] [--lib <tree>] [--budget-ms 180000] [--snap-dir <dir>] [--snapshots init,mathlib] [--mathlib] [--act2 | --act4 [--act4-ms 500]] [--lean-option <name=value> ...] [--option-check] [--probe-file <file> [--dump-messages] [--settle-ms 5000]]",
     ]);
     expect(r.lines[0]).toMatch(NO_PATH);
     expect(tree(s)).toEqual(before);
@@ -438,6 +438,27 @@ process.exit(1);
       [["--lean-option"], 'error: --lean-option: leanOptions entry "" is not "name=value" (e.g. "autoImplicit=false")'],
       [["--lean-option", "x=1", "--lean-option", "x=2"], "error: --lean-option: leanOptions names x twice"],
       [["--option-check", "--mathlib"], "error: --option-check judges one Init document; it cannot be combined with --mathlib, --act2 or --act4"],
+    ] as const) {
+      const r = run(s, "pipeline/snapshot/resident-probe.mjs", ["--artifact", art, ...args]);
+      expect([r.status, r.lines], args.join(" ")).toEqual([2, [line]]);
+    }
+    expect(tree(s)).toEqual(before);
+  });
+  // R4: --probe-file runs one document in act 1; its refusals come before the snapshot dir resolves too.
+  test("resident-probe: --probe-file with another mode, a missing file or a bad --settle-ms exits 2 before the snapshot dir resolves", () => {
+    const s = toolCheckout("resident-probe");
+    const art = residentStage(s);
+    const doc = path.join(s, "Doc.lean");
+    fs.writeFileSync(doc, "#check 1\n");
+    const before = tree(s);
+    const combined = "error: --probe-file runs one document (act 1 only); it cannot be combined with --mathlib, --act2, --act4 or --option-check";
+    for (const [args, line] of [
+      [["--probe-file", doc, "--mathlib"], combined],
+      [["--probe-file", doc, "--act2"], combined],
+      [["--probe-file", doc, "--act4"], combined],
+      [["--probe-file", doc, "--option-check"], combined],
+      [["--probe-file", path.join(s, "none.lean")], `error: --probe-file ${path.join(s, "none.lean")} not found`],
+      [["--probe-file", doc, "--settle-ms", "soon"], "error: --settle-ms must be a number of milliseconds >= 0 (got soon)"],
     ] as const) {
       const r = run(s, "pipeline/snapshot/resident-probe.mjs", ["--artifact", art, ...args]);
       expect([r.status, r.lines], args.join(" ")).toEqual([2, [line]]);
@@ -464,7 +485,7 @@ describe("compiler-battery's CLI refusal leaves a record (no stale or missing re
     const r = run(s, "tests/adversarial/compiler-battery.mjs", ["--corpus", corpus, "--run-dir", runDir]);
     expect(r.status, r.stderr).toBe(2);
     const why = `compiler-battery: no --snap given and QED64_MATHLIB_SNAP is unset; the deprecated default ${path.join(s, "work/snapshot/mathlib.snap")} is absent — pass --snap <file> or set QED64_MATHLIB_SNAP`;
-    const usage = "usage: compiler-battery.mjs [--corpus <file>] [--jobs 3] [--run-dir <dir>] [--snap <mathlib.snap>] [--artifact <stage1>] [--lib <tree>] [--probe <snapshot-probe.mjs>] [--messages-dir <dir>]";
+    const usage = "usage: compiler-battery.mjs [--corpus <file>] [--jobs 3] [--run-dir <dir>] [--snap <mathlib.snap>] [--artifact <stage1>] [--lib <tree>] [--probe <snapshot-probe.mjs>] [--messages-dir <dir>] [--transport compile|fileworker]";
     expect(r.lines).toEqual([why, usage, `compiler battery: REFUSED — ${why}`]);
     expect(r.lines[0]).toMatch(NO_PATH);
     expect(fs.readFileSync(path.join(runDir, "compiler.log"), "utf8").split("\n").filter(Boolean)).toEqual(r.lines);
@@ -511,6 +532,70 @@ console.log("SNAPSHOT PROBE PASS");
     const report = readJson(path.join(runDir, "compiler-report.json"));
     expect([report.total, report.infra, report.refused]).toEqual([2, 2, `compiler-battery: --probe ${missing} does not exist`]);
     expect(fs.readdirSync(path.join(s, "work"))).toEqual(["adversarial"]);
+  });
+
+  // R4, tier 3: --transport fileworker runs resident-probe (here a FAKE at its path that records how it was started).
+  const FAKE_RESIDENT = `import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+const a = process.argv.slice(2);
+const file = a[a.indexOf("--probe-file") + 1];
+fs.appendFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "calls.jsonl"), JSON.stringify({ argv: a, text: fs.readFileSync(file, "utf8") }) + "\\n");
+console.log("[1.0s] resident: reached elaboration");
+console.log('{"caption":"","severity":"information","pos":{"line":2,"column":0},"endPos":{"line":2,"column":6},"data":"1 : Nat"}');
+console.log("compile: tag=0 elapsed=900ms errors=0");
+console.log('RESIDENT PROBE PASS {"ok":true,"why":"progress drained (file probe)"}');
+`;
+  test("--transport fileworker: an unknown transport and --probe exit 2 with a record; a missing init.snap beside --snap is the all-infra refusal (exit 3)", () => {
+    const { s, corpus, runDir } = batteryCheckout();
+    const art = fakeStage1(path.join(s, "art"), { wasm: true });
+    fs.writeFileSync(path.join(s, "m.snap"), "a snapshot");
+    fs.mkdirSync(path.join(s, "tree"));
+    const pairing = ["--corpus", corpus, "--run-dir", runDir, "--snap", path.join(s, "m.snap"), "--artifact", art, "--lib", path.join(s, "tree")];
+    const bad = run(s, "tests/adversarial/compiler-battery.mjs", [...pairing, "--transport", "browser"]);
+    expect(bad.status, bad.stderr).toBe(2);
+    expect(bad.lines.at(-1)).toBe("compiler battery: REFUSED — compiler-battery: --transport must be compile or fileworker (got browser)");
+    const probe = run(s, "tests/adversarial/compiler-battery.mjs", [...pairing, "--transport", "fileworker", "--probe", path.join(s, "p.mjs")]);
+    expect(probe.status, probe.stderr).toBe(2);
+    const why = "compiler-battery: --probe names a snapshot-probe; the FileWorker lane runs resident-probe";
+    expect(probe.lines.at(-1)).toBe(`compiler battery: REFUSED — ${why}`);
+    expect(readJson(path.join(runDir, "compiler-report.json"))).toMatchObject({ total: 2, infra: 2, refused: why, transport: "fileworker" });
+    fs.mkdirSync(path.join(s, "pipeline/snapshot"), { recursive: true });
+    fs.writeFileSync(path.join(s, "pipeline/snapshot/resident-probe.mjs"), FAKE_RESIDENT);
+    const noInit = run(s, "tests/adversarial/compiler-battery.mjs", [...pairing, "--transport", "fileworker"]);
+    expect(noInit.status, noInit.stderr).toBe(3);
+    expect(noInit.lines.at(-1)).toBe(`compiler battery: REFUSED — missing ${path.join(s, "init.snap")} (the FileWorker lane seeds init and --snap from --snap's directory)`);
+    expect(readJson(path.join(runDir, "compiler-report.json"))).toMatchObject({ total: 2, infra: 2, transport: "fileworker" });
+    expect(fs.existsSync(path.join(s, "pipeline/snapshot/calls.jsonl"))).toBe(false); // nothing was spawned
+  });
+
+  test("--transport fileworker runs resident-probe on the item as written (no alias rewrite), seeding init and --snap from its directory; COMPILE_ONLY items are skipped", () => {
+    const { s, runDir } = batteryCheckout();
+    const corpus = path.join(s, "fw-corpus.json");
+    fs.writeFileSync(corpus, JSON.stringify({ items: [
+      { name: "alias", category: "c", source: "import Mathlib\n#check 1", expect: { mustSucceed: true } },
+      { name: "mathlib-name-shadow-faithful-compile", category: "c", source: "#check 1", expect: {} },
+    ] }));
+    const art = fakeStage1(path.join(s, "art"), { wasm: true });
+    const snaps = path.join(s, "snaps");
+    fs.mkdirSync(snaps);
+    fs.writeFileSync(path.join(snaps, "umbrella.snap"), "a snapshot");
+    fs.writeFileSync(path.join(snaps, "init.snap"), "an init snapshot");
+    fs.mkdirSync(path.join(s, "tree"));
+    fs.mkdirSync(path.join(s, "pipeline/snapshot"), { recursive: true });
+    fs.writeFileSync(path.join(s, "pipeline/snapshot/resident-probe.mjs"), FAKE_RESIDENT);
+    const msgs = path.join(s, "msgs");
+    const r = run(s, "tests/adversarial/compiler-battery.mjs", ["--corpus", corpus, "--run-dir", runDir, "--snap", path.join(snaps, "umbrella.snap"), "--artifact", art, "--lib", path.join(s, "tree"), "--transport", "fileworker", "--messages-dir", msgs, "--jobs", "1"]);
+    expect(r.status, r.stderr + r.stdout).toBe(0);
+    expect(r.stdout).toContain("skip mathlib-name-shadow-faithful-compile (compile path only)");
+    expect(r.stdout).toContain("compiler battery (fileworker): 1/1 passed");
+    const calls = fs.readFileSync(path.join(s, "pipeline/snapshot/calls.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    expect(calls).toHaveLength(1);
+    const file = calls[0].argv[calls[0].argv.indexOf("--probe-file") + 1];
+    expect(calls[0].argv).toEqual(["--artifact", art, "--lib", path.join(s, "tree"), "--snap-dir", snaps, "--snapshots", "init,umbrella", "--probe-file", file, "--budget-ms", "50000", "--dump-messages"]);
+    expect(calls[0].text).toBe("import Mathlib\n#check 1\n");
+    expect(fs.readFileSync(path.join(msgs, "alias.jsonl"), "utf8")).toBe('{"caption":"","severity":"information","pos":{"line":2,"column":0},"endPos":{"line":2,"column":6},"data":"1 : Nat"}\n');
+    expect(readJson(path.join(runDir, "compiler-report.json"))).toMatchObject({ total: 1, failed: 0, infra: 0, transport: "fileworker" });
   });
 
   test("the snapshot resolves by its variable but no runtime does: the refusal names --artifact / QED64_LEAN_ARTIFACT", () => {
