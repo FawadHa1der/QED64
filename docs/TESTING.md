@@ -42,7 +42,7 @@ paired build outputs of "Environment" below.
 | Suite | `npm run test:adversarial [-- --skip-compiler] [-- --browser firefox]` (`tests/adversarial/run.mjs`) | pretest (`typecheck:site`), its own Vite on :5187, preflight, the compiler battery, a cool-down, then e2e; one report directory per run. `--browser firefox` (default `chromium`) runs the preflight's boot smoke and every e2e scenario in Playwright's Firefox instead (HARDENING #75; `npx playwright install firefox`); the run directory name ends in `-firefox` and `e2e-report.json` carries `browser`, so a report says which engine ran (the per-run directories are timestamped either way; the legacy `work/adversarial/{report.md,e2e-report.json}` copies are the last run's, whichever engine) | fetched artifacts; the battery's pairing (or `--skip-compiler`) | lock | `report: …/report.md`, exit 0 (3 = a lane refused, 1 = product failures) |
 | Preflight | `node pipeline/release/preflight.mjs --url <page url> [--no-boot]` | the pairing the URL boots: manifest, every chunk (HEAD size, non-HTML type), the snapshot index and files, each entry's `runtime` against the manifest's `buildId`, the profile index, and one headless boot smoke | dev or served build | lock (no browser with `--no-boot`) | `PREFLIGHT OK buildId=… mode=… snapshots=…` (3 = `PREFLIGHT REFUSED: …`) |
 | Compiler battery | `node tests/adversarial/compiler-battery.mjs [--snap <file> --artifact <dir> --lib <tree>] [--jobs 3] [--probe <snapshot-probe.mjs>] [--messages-dir <dir>] [--transport compile\|fileworker]` | the corpus's must-succeed, must-error and golden-message cases against the Mathlib snapshot under Node, on the runtime the browser ships (`snapshot-probe --via-mem`, a bounded pool), with no PANIC anywhere. `--transport fileworker` (tier 3, R4) runs each item as the page does: the resident FileWorker (`resident-probe.mjs --probe-file`) on the worker's argv and thread setup, with `init.snap` (beside `--snap`) and `--snap` seeded, no alias rewrite (headers are served covered or refused), and a 5 s stable-drain settle; `mathlib-name-shadow-faithful-compile` runs on the compile path only (#43), and its pass line reads `compiler battery (fileworker): N/N passed` | `QED64_MATHLIB_SNAP`, `QED64_LEAN_ARTIFACT`, `QED64_LIB_TREE` (else exit 2, a `REFUSED` record) | no browser (heavy: `--jobs` wasm Nodes) | `compiler battery: N/N passed` (3 = infra only) |
-| e2e | `node tests/adversarial/e2e.mjs --url <dev url> [--only <name>] [--fs-reads]` | boot, golden message batteries, UI-glitch checks, editor action storms with recovery, `module` buffers through the resident FileWorker and the hover docstring of an imported name (kernel 0042, HARDENING #80), the share-link gate (HARDENING #77), the worker-kill drill, memory telemetry, speed budgets | dev | lock | `e2e: 28/28 passed` |
+| e2e | `node tests/adversarial/e2e.mjs --url <dev url> [--only <name>] [--fs-reads]` | boot, golden message batteries, UI-glitch checks, editor action storms with recovery, `module` buffers through the resident FileWorker and the hover docstring of an imported name (kernel 0042, HARDENING #80), the share-link gate (HARDENING #77), `import Lean` on every session path (HARDENING #82), the worker-kill drill, memory telemetry, speed budgets | dev | lock | `e2e: 29/29 passed` |
 | Editing latency | `node tests/adversarial/editing-latency.mjs --url <dev url> [--rounds 3]` | header-switch, admit, body-edit, completion and error-clear times, read from `qed64.status()` facts only | dev | lock | `SUMMARY {…}` (3 = no header fact) |
 | Crash gauntlet | `node tests/adversarial/crash-gauntlet.mjs <url> [minutes] [mixed\|imports]` | sustained example switches, garbage bursts and header flips: the page survives and the breaker does not halt | dev | lock | the step log, exit 0 (1 = page crash, 2 = halted) |
 | Liveness faults | `node tests/adversarial/liveness-faults.mjs --url <dev url> [--only <scenario>]` | HARDENING #52's mailbox, kick, liveness probe and exit hook, each by fault injection into the live worker: mailbox-mode, idle-no-probes, long-silent-command, lost-wakeups-healed, wedge-recovery, exit-detected; and #78's early-death-detected (a fresh session's Worker terminated at its first ready, before any heartbeat, is declared dead by the watchdog the arm starts) | dev | lock | `liveness-faults: 7/7 pass` |
@@ -118,7 +118,7 @@ A fresh clone runs G1 after `npm run fetch:artifacts`, in two halves:
    npm ci && npm --prefix frontend ci && npx playwright install chromium firefox
    npm run fetch:artifacts          # public/: runtime chunks, profile parts, snapshots (~1.6 GB), verified
    npm test                         # G0's unit suite
-   npm run test:adversarial -- --skip-compiler   # preflight, cool-down, e2e (28/28)
+   npm run test:adversarial -- --skip-compiler   # preflight, cool-down, e2e (29/29)
    ```
    and the page lanes below against a dev server on the same tree (page-api,
    infoview-actions, liveness-faults, reload-storm stock and embedded,
@@ -232,6 +232,14 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   30 s (the heartbeat-loss path: 6 s + a 2 s probe, ×3 for load), that
   `relay.stats` moved by exactly `workerDeaths: 1, reboots: 1, userRestarts: 0`,
   and that `relay.session.id` changed — unreadable counters fail the row.
+  `import-lean-sessions` (HARDENING #82) seeds the buffer before each of
+  three visits and requires `status()` ready with header mode `covered` for
+  the header it set (`header.key` names the import) and
+  `relay.session.snapshots` holding `mathlib`: after a light (Init-only)
+  session gains `import Lean` (exactly one user restart), on a fresh page
+  with `import Lean` restored (no user restart), and after a Mathlib session
+  switched to it is killed (one worker death, no user restart, a new
+  session). It puts back the buffer the earlier scenarios saved.
 - **Run directories.** Each run writes to
   `work/adversarial/runs/<ts>-<buildId>-<mode>/` (preflight.json, e2e.log,
   e2e-report.json, compiler.log, gauntlet-*.log, latency-*.json, report.md);

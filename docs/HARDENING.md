@@ -953,4 +953,5 @@ Tests:
 - tests/unit/resident-session.test.ts ("umbrella roots", the editor's policy);
 - tests/unit/overlay-environments.test.ts (the stock entry's claims; the superset rule; over the real relay, `import Lean` from a light session, a reload, and a crash after a switch, with the stock index and without one: the light and crash legs fail on the old list);
 - tests/unit/umbrella-lists.test.ts (the list, and each package root's module in the tracked essential manifest);
-- tests/unit/adversarial-harness.test.ts (`settleClass` reads the new pill as `headerUnresolvable`).
+- tests/unit/adversarial-harness.test.ts (`settleClass` reads the new pill as `headerUnresolvable`);
+- the fixed e2e scenario `import-lean-sessions` (tests/adversarial/e2e.mjs), in a real browser: a light session gains the header; a fresh page with it restored; a crash after a Mathlib session switched to it. Each leg must end ready on the umbrella with the header served `covered`. Measured on 2026-11-01 against a dev server of the branch (runtime wasm64-36d7f415704473d9, Chromium): e2e 29/29, the widen at 4.0 s, the restored page at 1.5 s, the crash reboot at 9.9 s; with the old four-root list put back in lib/snapshots.ts, all three legs ended `headerRefused` on the init snapshot alone.

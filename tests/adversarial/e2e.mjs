@@ -69,7 +69,7 @@ for (const it of corpus) {
 // mode for chasing one flaky scenario without cohort contamination.
 // Whole-name matching lives in harness.mjs (pinned by
 // tests/unit/adversarial-harness.test.ts).
-const FIXED = ["golden-7-battery", "error-clear-staleness", "import-composition", "switch-init", "switch-mathlib", "import-completion", "hover-docstring", "shared-link-gate", "worker-kill-recovery", "final-memory"];
+const FIXED = ["golden-7-battery", "error-clear-staleness", "import-composition", "switch-init", "switch-mathlib", "import-completion", "hover-docstring", "shared-link-gate", "import-lean-sessions", "worker-kill-recovery", "final-memory"];
 const only = arg("only", "");
 const onlyMatches = (name) => onlyMatchesName(name, only);
 const runs = (name) => !only || onlyMatches(name);
@@ -637,6 +637,66 @@ if (runs("shared-link-gate")) {
   await record("shared-link-gate", "functional", first.pass && saved.pass && pasted.ok && errors.length === 0,
     `first visit: ${first.detail}; saved buffer: ${saved.detail}; pasted into the open tab: ${pasted.detail}; consoleErrors=${errors.length}${errors.length ? " " + JSON.stringify(errors.slice(0, 3)) : ""}`,
     { openMs: saved.ms });
+}
+
+// ---------- scenario: `import Lean` on every session path (HARDENING #82) ----
+// A header naming only Lean (or Std, Aesop, Qq, Plausible, LeanSearchClient) is served covered by the umbrella,
+// whatever the session's history: a light session that gains it widens once; a fresh page with it restored boots the
+// umbrella; a crash after a Mathlib buffer was switched to it reboots onto the umbrella (no restart options to reuse,
+// so the policy re-runs on `import Lean`). On the old four-root list every path ended refused for good. Each
+// visit seeds the buffer before any page script runs (top frame only), as shared-link-gate does; the buffer the
+// earlier scenarios saved is put back at the end (the corpus shares one context). A leg waits for the header fact of
+// the text it set (`status().header.key` names the import), so the verdict of the previous header never passes it.
+if (runs("import-lean-sessions")) {
+  consoleLog = [];
+  const LEAN_DOC = "import Lean\n\nopen Lean in\nexample : Name := `qed64.probe\n";
+  const INIT_DOC = "theorem t : 1 + 1 = 2 := rfl\n";
+  const MATHLIB_DOC = "import Mathlib.Data.Real.Basic\n\nexample (a b : ℝ) : a + b = b + a := add_comm a b\n";
+  const storedBefore = await page.evaluate(() => localStorage.getItem("qed64.buffer")).catch(() => null);
+  const visit = (seed) => openPage(url, (p) => p.addInitScript((v) => { if (window !== window.top) return; try { localStorage.setItem("qed64.buffer", v); } catch { /* no storage */ } }, seed));
+  const facts = () => page.evaluate(() => {
+    const s = globalThis.qed64?.status?.(), session = globalThis.qed64?.relay?.session;
+    return { phase: s?.phase ?? null, mode: s?.header?.mode ?? null, key: Array.isArray(s?.header?.key) ? s.header.key.map(String) : [], snapshots: Array.isArray(session?.snapshots) ? [...session.snapshots] : null, session: session?.id ?? null };
+  }).catch(() => null);
+  // Ready on the umbrella, with a header that imports `module` served covered.
+  const servedOn = (module) => (f) => !!f && f.phase === "ready" && f.mode === "covered" && f.key.includes(module) && !!f.snapshots?.includes("mathlib");
+  const onLean = servedOn("Lean");
+  const until = async (pred, ms) => { const t0 = Date.now(); for (;;) { const f = await facts(); if (pred(f)) return { ok: true, ms: Date.now() - t0, f }; if (Date.now() - t0 > ms) return { ok: false, ms: Date.now() - t0, f }; await page.waitForTimeout(250); } };
+  const show = (f) => (f ? `${f.phase}/${f.mode}(${f.key.join(",")})/[${(f.snapshots ?? []).join(",")}]` : "unreadable");
+  // 1. a light (Init-only) session gains `import Lean`: one widen to the umbrella
+  await visit(INIT_DOC);
+  await waitTerminal(bootBudgetMs, 1000);
+  const light = await facts();
+  const s1 = await statsSnap();
+  await setBuffer(LEAN_DOC);
+  const widened = await until(onLean, 300000);
+  const d1 = statsDelta(s1, await statsSnap());
+  const leg1 = light?.phase === "ready" && JSON.stringify(light.snapshots) === JSON.stringify(["init"]) && widened.ok && d1?.userRestarts === 1 && d1?.workerDeaths === 0;
+  // 2. a fresh page with `import Lean` restored: the umbrella at boot, no widen
+  await visit(LEAN_DOC);
+  const reloaded = await until(onLean, bootBudgetMs);
+  const s2 = await statsSnap();
+  const leg2 = reloaded.ok && s2?.userRestarts === 0;
+  // 3. a Mathlib buffer switched to `import Lean` (covered, no restart), then the worker is killed: the relay reboots
+  // with no restart options, so the policy runs on `import Lean` (the heartbeat watchdog runs from the arm, #78)
+  await visit(MATHLIB_DOC);
+  const mathlib = await until(servedOn("Mathlib.Data.Real.Basic"), bootBudgetMs);
+  await setBuffer(LEAN_DOC);
+  const switched = await until(onLean, 60000);
+  const s3 = await statsSnap();
+  const before = switched.f?.session ?? null;
+  const killed = switched.ok && await page.evaluate(() => {
+    const w = globalThis.qed64?.relay?.session?.lean?.worker;
+    if (!w || typeof w.terminate !== "function") return false; // the tap is missing: the leg fails, nothing to wait for
+    w.terminate();
+    return true;
+  }).catch(() => false);
+  const rebooted = killed ? await until((f) => onLean(f) && f.session !== before, 300000) : { ok: false, ms: 0, f: await facts() };
+  const d3 = statsDelta(s3, await statsSnap());
+  const leg3 = mathlib.ok && switched.ok && killed && before !== null && rebooted.ok && d3?.workerDeaths === 1 && d3?.userRestarts === 0;
+  await page.evaluate((v) => { if (v === null) localStorage.removeItem("qed64.buffer"); else localStorage.setItem("qed64.buffer", v); }, storedBefore).catch(() => {});
+  await record("import-lean-sessions", "functional", leg1 && leg2 && leg3,
+    `light→widen: boot=${show(light)} then ${show(widened.f)}@${widened.ms}ms restarts=${d1?.userRestarts ?? "?"} deaths=${d1?.workerDeaths ?? "?"}; restored: ${show(reloaded.f)}@${reloaded.ms}ms restarts=${s2?.userRestarts ?? "?"}; crash after switch: mathlib=${show(mathlib.f)}@${mathlib.ms}ms switched=${show(switched.f)} killed=${killed} rebooted=${show(rebooted.f)}@${rebooted.ms}ms session=${before}→${rebooted.f?.session ?? "?"} deaths=${d3?.workerDeaths ?? "?"} restarts=${d3?.userRestarts ?? "?"}`);
 }
 
 // ---------- recovery drill: hard worker kill ---------------------------------
