@@ -294,7 +294,6 @@ its prerequisites and its pass line):
 | `scripts/` | `deploy-app.sh`, `serve-dist.mjs` (`npm run preview:prod`), `upload-artifacts.sh` |
 | `tests/` | `unit/`, `integration/`, `adversarial/` (the browser lanes), `consumer/` (G2), `mutation/` |
 | `toolchain/`, `embedding/` | the pinned toolchain release record; `closure.json` (what an embedder needs) and `base-tree.json` |
-| `src/`, `frontend/src/embed/`, `frontend/src/{qed64-boot,resident-session,lsp-relay}.ts` | one-cycle shims at the library's old paths (each re-exports its `lib/` file) |
 | `docs/` | the contracts and the design record; `docs/history/` holds superseded documents |
 
 ## License

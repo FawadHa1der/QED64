@@ -1,6 +1,6 @@
 # Resident FileWorker — the plan (PATCH-BACKLOG #4, promoted)
 
-> Paths are as of each dated entry. Since plan A7 (2026-10-06) the library files this plan names under `frontend/src/` and `src/` live in `lib/` (the old paths are one-cycle shims). `finish.sh`, `bump-chain.sh`, `import-packs.sh` and `KERNEL-PIN` were removed in 2026-10 (plans B1, B2a and B2c): the toolchain build is the fork's `wasm64-build/`, and a release is adopted with `pipeline/release/adopt-release.sh`. The pairing served today is in docs/PROVENANCE.md.
+> Paths are as of each dated entry. Since plan A7 (2026-10-06) the library files this plan names under `frontend/src/` and `src/` live in `lib/` (the old paths' one-cycle shims were deleted in 2026-11, architecture review R9a). `finish.sh`, `bump-chain.sh`, `import-packs.sh` and `KERNEL-PIN` were removed in 2026-10 (plans B1, B2a and B2c): the toolchain build is the fork's `wasm64-build/`, and a release is adopted with `pipeline/release/adopt-release.sh`. The pairing served today is in docs/PROVENANCE.md.
 
 Status (2026-09-04): **resident is the page's only transport.** The
 second-review design is implemented (docs/history/ARCHITECTURE-REEVALUATION-2-2026-09-02.md,

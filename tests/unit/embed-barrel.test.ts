@@ -57,7 +57,7 @@ describe("qed64/embed barrel", () => {
   it("main.ts imports the barrel's names from the barrel, not from their deep paths", () => {
     const main = fs.readFileSync(path.join(root, "frontend/src/main.ts"), "utf8");
     expect(main).toMatch(/\} from "\.\.\/\.\.\/lib";/);
-    // ...nor through the one-cycle shims at the old paths (plan A7).
+    // ...nor through the library's pre-A7 paths (deleted, R9a).
     for (const deep of ["../../lib/qed64-boot", "../../lib/lsp-relay", "../../lib/resident-session", "../../lib/snapshots", "../../lib/failure",
       "./embed", "./qed64-boot", "./lsp-relay", "./resident-session", "../../src/runtime/snapshots", "./embed/failure"]) {
       expect(main, deep).not.toContain(`from "${deep}"`);

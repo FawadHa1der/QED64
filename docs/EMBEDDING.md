@@ -501,9 +501,7 @@ The package:
   - `"./embedding/closure.json"`;
   - `"./package.json"`.
 - `files`: exactly the closure below, plus the license, README and this
-  document, and for one pin cycle the 12 path shims of plan step A7 (§12:
-  the library's old paths, each a one-line re-export of its `lib/` file; not
-  in the closure). 65 files, about 230 kB packed. `npm run test:consumer`
+  document (`npm pack --dry-run` lists them). `npm run test:consumer`
   (tests/consumer/check-consumer.mjs) proves the packed files alone resolve
   and build.
 
@@ -1496,18 +1494,12 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   (`qed64-dep`, `lean-v4.34`) changes two places at that bump:
   - `client/tsconfig.json`'s `paths` entry for `qed64/embed` becomes
     `../node_modules/qed64/lib/index.ts`. The old
-    `frontend/src/embed/index.ts` is a shim for one cycle, so tsc still
-    compiles through it, but `scripts/stage-workers.sh` compares the entry
-    with closure.json `entry` by real path and refuses the old one.
+    `frontend/src/embed/index.ts` was a one-cycle shim and is deleted (§12),
+    and `scripts/stage-workers.sh` compares the entry with closure.json
+    `entry` by real path and refuses the old one.
   - `client/src/wasm/game-translation-guard.test.ts` imports
-    `frontend/src/embed/edit-coalescer.ts` by file path: it keeps working
-    through the shim for one cycle (the test's resolve hook adds the `.ts`
-    the shim's extensionless re-export needs); point it at
-    `lib/edit-coalescer.ts` before the shims go.
-  The vendored lane (`wasm64-port`, `sync-qed64.sh` `PATHS`) copies the
-  files by their old paths, which are shims at A7: it must vendor the 12
-  `lib/` files instead (their imports are siblings, plus
-  `../public/workers/memory64-probe.js`), or retire for the package lane.
+    `frontend/src/embed/edit-coalescer.ts` by file path: point it at
+    `lib/edit-coalescer.ts` (lean4game's `wasm64-port` does).
 - Route URL overrides through `validateBootOverrides` (lean4game keeps its
   own parser; `parseBootParams` is internal since `1.0.0-pre.5`) and boot
   with `installArtifacts(ui, {overrides, profiles: "none"})` or the exported
@@ -2141,3 +2133,17 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   `EMBED_API_REVISION` stays `1.0.0-pre.6` (§7: the revision is the semver
   of the library API) and the page API's revision is unchanged; the workers
   and their protocol revision are untouched.
+- **The A7 path shims are deleted (architecture review R9a, 2026-11):**
+  - What went: the 12 one-line re-exports at the library's old paths
+    (`frontend/src/embed/*`,
+    `frontend/src/{qed64-boot,resident-session,lsp-relay}.ts`,
+    `src/install/profiles.ts`, `src/runtime/{client,snapshots}.ts`) and
+    their `files` entries. This is the one pin cycle after A7 that its row
+    promised.
+  - Who is affected: none of the consumers imports an old path. lean4game
+    imports `qed64/embed` and `lib/edit-coalescer.ts`. The proof sheets
+    import `qed64/embed`, `qed64/edge` and `lib/lsp-relay.ts`. The showcase
+    imports none.
+  - What to do: import `qed64/embed`, or a `lib/` file by its path.
+  - No export, type or behaviour change. `EMBED_API_REVISION` is
+    unchanged.
