@@ -19,11 +19,14 @@
 # is QED64/Essential.olean plus the facets Lean wrote beside it: .olean.server (and .olean.private,
 # fat tree only) exist only when it was compiled as a split `module`, which the 4.34 umbrella was
 # (HARDENING #51); a legacy compile, as from 4.35 on, writes the one .olean (HARDENING #79).
+# A reused umbrella must be the one embedding/base-tree.json names (every file of its top-level
+# umbrella, by sha256 and size; review R6a), checked before anything is fetched: a stale copy is refused.
 # --fat-tree also writes $W/lib-tree (no --slim). --dry-run validates and prints the plan, fetching
 # and writing nothing. --keep keeps $W/release's chunks and pack parts after a successful run.
 # Refusals: one stderr line `adopt-release: …`, exit 2. A failed step: ADOPT-FAIL <step>, exit 1.
 # Env: QED64_PUBLIC_DIR (the served tree a release is compared with, default public/; read only),
-# QED64_ADOPT_IGNORE_DISK=1 (skip the free-space floor: 12 GB under work/, 16 GB with the fat tree).
+# QED64_BASE_TREE (the served base tree a reused --umbrella must match, default embedding/base-tree.json;
+# read only), QED64_ADOPT_IGNORE_DISK=1 (skip the free-space floor: 12 GB under work/, 16 GB with the fat tree).
 set -u
 Q=$(cd "$(dirname "$0")/../.." && pwd -P); cd "$Q" || exit 2
 H=(node "$Q/pipeline/release/adopt-helper.mjs")
@@ -64,6 +67,7 @@ FORBID=(--forbid "$Q/public" --forbid "$Q/work/adopt" --forbid "$Q/work/staging"
 PUB=$(cd "$PUB" && pwd -P)
 case "$Q/" in "$SRC/"*) refuse "this checkout lies inside the release dir $SRC, which is never written";; esac
 W="$Q/work/adopt/$ID"; SERVED=${QED64_PUBLIC_DIR:-$Q/public}; FLOOR=$(node -p 'require("./embedding/closure.json").runtime.minKernelPatch')
+BT=${QED64_BASE_TREE:-$Q/embedding/base-tree.json}
 patch_ge() { echo "$1 $2" | awk '{ if ($1 !~ /^[0-9][0-9][0-9][0-9][a-z]?$/ || $2 !~ /^[0-9][0-9][0-9][0-9][a-z]?$/) exit 2;
   na = substr($1, 1, 4) + 0; nb = substr($2, 1, 4) + 0; exit (na > nb || (na == nb && substr($1, 5) >= substr($2, 5))) ? 0 : 1 }'; }
 realdir() { # <dir under work/>: absent, or a real dir with no link 3 levels down (rm -rf, unpack and cp would go through it)
@@ -99,7 +103,8 @@ copy_umbrella() { # <src> <W> <fat 0|1> <notes>: the umbrella into each lib tree
 BID="?"; PATCH="?"; KCOMMIT="?"; LEANVER="?"; MODE="?"
 if [ $FROMDIR = 1 ]; then checkrecord "$SRC/release.json"; fi
 if [ -n "$UMBD" ]; then [ -s "$UMBD/QED64/Essential.olean" ] || refuse "--umbrella $UMBD has no QED64/Essential.olean"; UMBD=$(cd "$UMBD" && pwd -P)
-  case "$UMBD/" in "$Q/work/adopt/"*|"$Q/work/staging/"*) refuse "--umbrella $UMBD lies inside $Q/work/adopt or work/staging, which an adoption deletes and rewrites: copy the umbrella out first";; esac; fi
+  case "$UMBD/" in "$Q/work/adopt/"*|"$Q/work/staging/"*) refuse "--umbrella $UMBD lies inside $Q/work/adopt or work/staging, which an adoption deletes and rewrites: copy the umbrella out first";; esac
+  "${H[@]}" umbrella --umbrella "$UMBD" --base-tree "$BT" || exit 2; fi # R6a: the served umbrella's bytes, before hours of bakes
 derive() { # what follows from the record: re-run once a URL release's record is fetched
   STAGING="$Q/work/staging/$BID"; NEED_GB=12; [ $FAT = 1 ] && NEED_GB=16
   SKIP=""; [ "$MODE" = runtime-only ] && SKIP=" --skip-packs"; TREES="core-lib-slim lib-tree-slim"; [ $FAT = 1 ] && TREES="$TREES lib-tree"
@@ -118,7 +123,7 @@ plan for $ID: runtime $BID, Lean $LEANVER, kernel $KCOMMIT (patch $PATCH, floor 
   fetch           node $T/cli.mjs fetch --from $SRC --out $W/release --only runtime-chunks,lean-lib,lean-core,mathlib-essential --id $ID --digest $DIG
                   node $T/cli.mjs fetch --from $SRC --out $W/artifact --only runtime --id $ID --digest $DIG
   verify          $([ $FROMDIR = 1 ] && echo "node $T/cli.mjs verify --release $SRC$SKIP" || echo "skipped: --from is a URL (the fetch verifies every file against the pinned record)")
-  checks          the --id/--digest pin, kernel.patch >= $FLOOR, runtime not the served one${ALLOW[@]+" (--allow-served: a rehearsal)"}, umbrella mode; before the fetch: node pipeline/release/verify-release.mjs --public $PUB (read only)
+  checks          the --id/--digest pin, kernel.patch >= $FLOOR, runtime not the served one${ALLOW[@]+" (--allow-served: a rehearsal)"}, umbrella mode$([ -n "$UMBD" ] && echo " (--umbrella = $BT's umbrella, by sha256 and size)"); before the fetch: node pipeline/release/verify-release.mjs --public $PUB (read only)
   artifact-lib    rm -rf $W/artifact/lib; node $T/cli.mjs unpack --manifest $R/lean-lib.manifest.json --out $W/artifact/lib/lean
   base-trees      rm -rf $(for t in $TREES; do printf '%s ' "$W/$t"; done)
                   node $T/cli.mjs unpack --slim --manifest $R/$INITLIB.manifest.json --out $W/core-lib-slim

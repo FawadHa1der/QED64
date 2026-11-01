@@ -271,8 +271,9 @@ The QED64 lanes outside SPECS use the same rule with their own variables:
 | `QED64_INIT_SNAP` | `tests/integration/fileworker-exit.test.ts` | The init `.snap` (deprecated default `work/snapshot/init.snap`). The integration tests skip, naming the variable, when it or the artifact is absent. |
 
 Other `QED64_*` variables belong to shell lanes, not to these tools:
-`QED64_ADOPT_IGNORE_DISK` and `QED64_PUBLIC_DIR` (the served tree it compares
-a release with) are documented in `pipeline/release/adopt-release.sh`, and
+`QED64_ADOPT_IGNORE_DISK`, `QED64_PUBLIC_DIR` (the served tree it compares
+a release with) and `QED64_BASE_TREE` (the served base tree a reused
+`--umbrella` must match) are documented in `pipeline/release/adopt-release.sh`, and
 `QED64_SLOW` in docs/TESTING.md. (`QED64_LEAN_VERSION`, `QED64_ARTIFACT`,
 `QED64_SNAP_WORK` and the rest left with `bump-chain.sh` in plan B2a.)
 

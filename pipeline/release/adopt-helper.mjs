@@ -18,6 +18,11 @@
 //              carries (sha256/bytes) and the tree digest (treeDigest below); top-level `umbrella` is the slim
 //              tree's: Essential.olean, and its .olean.server when the umbrella is a split `module` (HARDENING #79).
 //              The landing copies it to embedding/base-tree.json, which release-manifest.mjs reads.
+//   umbrella   --umbrella <dir> --base-tree <base-tree.json>
+//              Refuse an --umbrella whose files are not the served umbrella (architecture review R6a): what
+//              copy_umbrella puts in the slim tree (QED64/Essential.olean, and its .olean.server when present)
+//              must be exactly the base tree's top-level `umbrella`, each file with its sha256 and size.
+//              `.olean.private`, which only the fat audit tree takes, is not checked. Prints nothing when it holds.
 //   (kernel-pin, which wrote a generated KERNEL-PIN, is retired 2026-10 with that file (plan B2c): the
 //   kernel commit is the pinned record's kernel.commit, toolchain.kernel in qed64.release/v1.)
 //
@@ -213,10 +218,34 @@ function baseTree(o) {
   for (const [name, t] of Object.entries(trees)) console.log(`base-tree ${name}: ${t.files} files, ${t.bytes} bytes, ${t.digest}`);
 }
 
+function umbrella(o) {
+  if (!o.umbrella || !o["base-tree"]) refuse("umbrella: --umbrella <dir> and --base-tree <file> are required");
+  const at = o["base-tree"];
+  const bt = readJson(at, "base tree");
+  const want = bt?.umbrella;
+  if (bt?.schema !== BASE_TREE_SCHEMA || !Array.isArray(want) || !want.some((u) => u?.path === UMBRELLA[0])) {
+    refuse(`umbrella: ${at} is not a ${BASE_TREE_SCHEMA} whose umbrella lists ${UMBRELLA[0]}`);
+  }
+  const dir = path.resolve(o.umbrella);
+  const have = UMBRELLA.filter((p, i) => i === 0 || fs.existsSync(path.join(dir, p)));
+  const list = (paths) => [...paths].sort().join(" + ");
+  const named = list(want.map((u) => u?.path));
+  // The set first: a base-tree path that is not one of the two UMBRELLA names (../x) is refused before anything is read.
+  if (list(have) !== named) refuse(`--umbrella ${dir} holds ${list(have)}, ${at} names ${named} — not the umbrella the served base trees carry`);
+  for (const u of want) {
+    const file = path.join(dir, u.path);
+    const bytes = fs.statSync(file).size;
+    const sha = sha256File(file);
+    if (bytes !== u.bytes || sha !== u.sha256) {
+      refuse(`--umbrella ${u.path} is ${sha.slice(0, 16)}… (${bytes} B), ${at} names ${String(u.sha256).slice(0, 16)}… (${u.bytes} B) — not the umbrella the served base trees carry`);
+    }
+  }
+}
+
 if (process.argv[1] && fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url))) {
   const [cmd, ...rest] = process.argv.slice(2);
   const o = parse(rest);
-  const jobs = { record, confine, "base-tree": baseTree };
+  const jobs = { record, confine, "base-tree": baseTree, umbrella };
   if (!jobs[cmd]) refuse(`adopt-helper: unknown subcommand ${JSON.stringify(cmd)} (${Object.keys(jobs).join(", ")})`);
   // Any other failure (an unreadable entry, a failed readlink) is one refusal line too, never a stack trace.
   try { jobs[cmd](o); } catch (e) {

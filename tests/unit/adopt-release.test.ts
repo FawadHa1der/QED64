@@ -2,7 +2,8 @@
 // against FAKES: a hand-written release dir (release.json with a valid
 // self-digest, releaseDigest = sha256(JSON.stringify(rest, null, 2))), a tools
 // dir whose cli.mjs only records its argv, a fake served tree
-// (QED64_PUBLIC_DIR) and an isolated --public. Nothing here fetches, unpacks,
+// (QED64_PUBLIC_DIR), a fake served base tree (QED64_BASE_TREE) and an
+// isolated --public. Nothing here fetches, unpacks,
 // bakes or boots a runtime; a dry run calls the package for --version only.
 // Plus adopt-helper.mjs's tree digest and base-tree.json.
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
@@ -27,6 +28,8 @@ let tools: string;
 let served: string;
 let pub: string;
 let umbrella: string;
+let baseTree: string;
+let baseTreeLegacy: string;
 beforeAll(() => {
   tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "qed64-adopt-")));
   tools = path.join(tmp, "tools");
@@ -63,6 +66,12 @@ beforeAll(() => {
   fs.mkdirSync(path.join(umbrella, "QED64"), { recursive: true });
   fs.writeFileSync(path.join(umbrella, "QED64/Essential.olean"), "olean");
   fs.writeFileSync(path.join(umbrella, "QED64/Essential.olean.server"), "server");
+  // The served base trees a reused --umbrella is checked against (R6a): the split fixture's two files, and a legacy one.
+  const olean = { path: "QED64/Essential.olean", sha256: sha("olean"), bytes: 5 };
+  baseTree = path.join(tmp, "base-tree.json");
+  fs.writeFileSync(baseTree, JSON.stringify({ schema: "qed64.base-tree/v1", umbrella: [olean, { path: "QED64/Essential.olean.server", sha256: sha("server"), bytes: 6 }] }));
+  baseTreeLegacy = path.join(tmp, "base-tree-legacy.json");
+  fs.writeFileSync(baseTreeLegacy, JSON.stringify({ schema: "qed64.base-tree/v1", umbrella: [olean] }));
 });
 afterAll(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
 
@@ -102,7 +111,7 @@ function state(dir: string): Record<string, string> {
 }
 
 function adopt(args: string[], env: Record<string, string> = {}) {
-  const base: Record<string, string | undefined> = { ...process.env, QED64_PUBLIC_DIR: served };
+  const base: Record<string, string | undefined> = { ...process.env, QED64_PUBLIC_DIR: served, QED64_BASE_TREE: baseTree };
   delete base.LEAN4_WASM64_DIR;
   fs.rmSync(path.join(tools, "argv.log"), { force: true });
   const r = spawnSync("bash", [script, ...args], { cwd: root, encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL", env: { ...base, ...env } });
@@ -253,7 +262,7 @@ describe("adopt-release.sh --dry-run", () => {
     const legacy = path.join(tmp, "umbrella-legacy");
     fs.mkdirSync(path.join(legacy, "QED64"), { recursive: true });
     fs.writeFileSync(path.join(legacy, "QED64/Essential.olean"), "olean");
-    const one = adopt([...noUmbrella, "--umbrella", legacy, "--fat-tree"]);
+    const one = adopt([...noUmbrella, "--umbrella", legacy, "--fat-tree"], { QED64_BASE_TREE: baseTreeLegacy });
     expect(one.status, one.stderr).toBe(0);
     const WL = path.join(root, "work/adopt", ID);
     expect(one.stdout).toContain(`reuse cp ${legacy}/QED64/Essential.olean → ${WL}/lib-tree-slim/QED64/ ${WL}/lib-tree/QED64/  (+ Essential.olean.private into lib-tree: ABSENT in the source)`);
@@ -271,6 +280,50 @@ describe("adopt-release.sh --dry-run", () => {
     expect(r.stdout).toContain(`then cp ${W}/umbrella/Essential.olean (+ .olean.server if the compile writes one) → ${W}/lib-tree-slim/QED64/ ${W}/lib-tree/QED64/  (+ Essential.olean.private into lib-tree: if the compile writes one)`);
     expect(r.stdout).toContain(`node pipeline/release/stage-profiles.mjs --packs ${W}/release/profiles --build-id ${NEW_ID} --lean-version 9.9.9 --expect-modules ${W}/release/lists/essential-modules.txt --out ${path.join(root, "work/staging", NEW_ID)}/profiles`);
     expect(r.stdout).toMatch(/disk {5}\d+ GB free under .*, floor 16 GB/); // the fat tree is implied
+  });
+
+  test("a reused --umbrella must be the umbrella the served base tree names, file by file (R6a)", () => {
+    const rel = fakeRelease("rel-r6a");
+    const withUmbrella = (dir: string) => valid(rel).map((a) => (a === umbrella ? dir : a));
+    const fixture = (name: string, files: Record<string, string>) => {
+      const dir = path.join(tmp, name);
+      fs.mkdirSync(path.join(dir, "QED64"), { recursive: true });
+      for (const [f, text] of Object.entries(files)) fs.writeFileSync(path.join(dir, "QED64", f), text);
+      return dir;
+    };
+    // The same size, other bytes (a stale umbrella): refused by sha256, before the plan is printed.
+    const other = fixture("umbrella-r6a-other", { "Essential.olean": "OLEAN", "Essential.olean.server": "server" });
+    refused(adopt(withUmbrella(other)), /--umbrella QED64\/Essential\.olean is [0-9a-f]{16}… \(5 B\), .*base-tree\.json names [0-9a-f]{16}… \(5 B\) — not the umbrella the served base trees carry/);
+    // The file set is the base tree's: a missing .olean.server, and one the base tree does not name.
+    const one = fixture("umbrella-r6a-one", { "Essential.olean": "olean" });
+    refused(adopt(withUmbrella(one)), /holds QED64\/Essential\.olean, .*base-tree\.json names QED64\/Essential\.olean \+ QED64\/Essential\.olean\.server/);
+    refused(adopt(valid(rel), { QED64_BASE_TREE: baseTreeLegacy }), /holds QED64\/Essential\.olean \+ QED64\/Essential\.olean\.server, .*names QED64\/Essential\.olean —/);
+    // A base-tree path that is not an umbrella name is refused by the set, before anything is read; so is another schema.
+    const escaping = path.join(tmp, "base-tree-escaping.json");
+    fs.writeFileSync(escaping, JSON.stringify({ schema: "qed64.base-tree/v1", umbrella: [{ path: "QED64/Essential.olean", sha256: sha("olean"), bytes: 5 }, { path: "../x", sha256: sha("x"), bytes: 1 }] }));
+    refused(adopt(valid(rel), { QED64_BASE_TREE: escaping }), /names \.\.\/x \+ QED64\/Essential\.olean — not the umbrella/);
+    const schema = path.join(tmp, "base-tree-schema.json");
+    fs.writeFileSync(schema, JSON.stringify({ schema: "qed64.base-tree/v0", umbrella: [] }));
+    refused(adopt(valid(rel), { QED64_BASE_TREE: schema }), /umbrella: .*base-tree-schema\.json is not a qed64\.base-tree\/v1 whose umbrella lists QED64\/Essential\.olean/);
+    // No readable base tree is a refusal, never a pass.
+    const nope = path.join(tmp, "nope.json");
+    refused(adopt(valid(rel), { QED64_BASE_TREE: nope }), /base tree .*nope\.json is not readable JSON/);
+    // A rebuilt umbrella reads no base tree.
+    const changed = fakeRelease("rel-r6a-changed", (r) => { (r.packs as { id: string; rawSha256: string }[])[1]!.rawSha256 = sha("new essential"); });
+    const rebuilt = adopt([...valid(changed).filter((a) => a !== "--umbrella" && a !== umbrella), "--rebuild-umbrella"], { QED64_BASE_TREE: nope });
+    expect(rebuilt.status, rebuilt.stderr).toBe(0);
+    // With --from <URL> the check runs before the record is fetched: the refusal is the umbrella's, not the fetch's.
+    const repo = fakeRepo("repo-r6a-url");
+    const url = `https://github.com/FawadHa1der/lean4/releases/download/${ID}/`;
+    const live = withUmbrella(other).filter((a) => a !== "--dry-run").map((a) => (a === "--from-dir" ? "--from" : a === rel.dir ? url : a));
+    const viaUrl = repo.run(live, { FAKE_FETCH_FAIL: `fetch: release is lean-v9.9.9-0000000, expected ${ID}` });
+    refusedLine(viaUrl, /--umbrella QED64\/Essential\.olean is [0-9a-f]{16}… \(5 B\)/);
+    expect(viaUrl.stdout).toBe("");
+    expect(fs.existsSync(repo.W)).toBe(false);
+    // A valid run's plan says what was checked.
+    const ok = adopt(valid(rel));
+    expect(ok.status, ok.stderr).toBe(0);
+    expect(ok.stdout).toMatch(/umbrella mode \(--umbrella = .*base-tree\.json's umbrella, by sha256 and size\)/);
   });
 
   test("no lean4-wasm64: one line naming the install; a URL source is planned without being fetched", () => {
@@ -299,7 +352,7 @@ function fakeRepo(name: string) {
     fs.copyFileSync(path.join(root, f), path.join(q, f));
   }
   return { q, W: path.join(q, "work/adopt", ID), run: (args: string[], env: Record<string, string> = {}) => {
-    const base: Record<string, string | undefined> = { ...process.env, QED64_PUBLIC_DIR: served };
+    const base: Record<string, string | undefined> = { ...process.env, QED64_PUBLIC_DIR: served, QED64_BASE_TREE: baseTree };
     delete base.LEAN4_WASM64_DIR;
     const r = spawnSync("bash", [path.join(q, "pipeline/release/adopt-release.sh"), ...args], { cwd: q, encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL", env: { ...base, ...env } });
     return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", errLines: (r.stderr ?? "").split("\n").filter(Boolean) };
@@ -493,7 +546,7 @@ describe("adopt-helper.mjs: the tree digest and base-tree.json", () => {
     // The kernel pin is the record's kernel.commit now (toolchain.kernel in qed64.release/v1): no generated file.
     const k = spawnSync("node", [helper, "kernel-pin", "--work", W, "--release", path.join(rel.dir, "release.json"), "--init-lib", "lean-lib", "--staging", "work/staging/x"], { encoding: "utf8" });
     expect(k.status).toBe(2);
-    expect(k.stderr).toMatch(/^adopt-release: adopt-helper: unknown subcommand "kernel-pin" \(record, confine, base-tree\)/);
+    expect(k.stderr).toMatch(/^adopt-release: adopt-helper: unknown subcommand "kernel-pin" \(record, confine, base-tree, umbrella\)/);
     expect(fs.existsSync(path.join(W, "KERNEL-PIN"))).toBe(false);
   });
 

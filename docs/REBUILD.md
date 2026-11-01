@@ -131,7 +131,13 @@ fetching and writing nothing):
    profile manifest its `profiles/index.json` lists (dry run too), and, in a
    real run before the fetch, a clean `verify-release.mjs --public` (the
    promote demands the same, hours later). `--umbrella` must not lie in
-   `work/adopt` or `work/staging` (a rerun deletes the trees it reads). `$W`
+   `work/adopt` or `work/staging` (a rerun deletes the trees it reads), and
+   must be the served umbrella: the files `copy_umbrella` puts in the slim
+   tree (`Essential.olean`, and its `.olean.server` when present) are exactly
+   `embedding/base-tree.json`'s top-level `umbrella`, each with its sha256 and
+   size (`adopt-helper.mjs umbrella`; `QED64_BASE_TREE` names another base
+   tree, which the tests use). A stale copy, such as the 4.34 umbrella still
+   in `work/lib-tree`, is refused before anything is fetched. `$W`
    and the staging dir must be real directories with no symlink three
    levels down (a rerun's `rm -rf`, unpacks and copies would follow it).
    With `--from <URL>` the record is fetched first, and an id or digest
