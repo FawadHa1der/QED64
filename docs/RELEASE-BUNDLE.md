@@ -182,7 +182,9 @@ checked here instead:
 | With `--dist`: `dist/` contains `runtime/`, `profiles/` or `snapshots/` | Artifacts are served from R2 and must never be bundled (deploy-app.sh prunes them) |
 
 The second group is structural. A manifest has to pass these before it can be
-described at all: known schemas; served URLs spelled `/runtime/chunks/<file>`,
+described at all: known schemas (the runtime manifest's:
+`RUNTIME_MANIFEST_SCHEMAS`, equal to closure.json `runtime.manifestSchemas`);
+served URLs spelled `/runtime/chunks/<file>`,
 `/snapshots/<file>` or `/profiles/<file>`; content-addressed names (the file
 name carries the first 16 hex digits of its sha256, which is what makes
 `rclone copy` and the year-long immutable cache sound); chunk and part sizes

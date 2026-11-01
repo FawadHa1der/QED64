@@ -330,6 +330,12 @@ describe.skipIf(!hasGit)("cross-checks refuse doctored inputs", () => {
     });
   });
 
+  test("a runtime manifest of a schema the worker does not read (RUNTIME_MANIFEST_SCHEMAS, architecture review M3)", () => {
+    doctored("public/runtime/runtime-manifest.json", editJson((rt) => { rt.schema = "org.lean-browser64.runtime/v9"; }), () => {
+      expect(refusal(build)).toMatch(/runtime manifest: schema is "org\.lean-browser64\.runtime\/v9", expected org\.lean-browser64\.runtime\/v1/);
+    });
+  });
+
   test("the toolchain record: schema, its own digest, the fields read", () => {
     doctored(RECORD, editJson((r) => { r.schema = "lean4-wasm64.release/v0"; }), () => {
       expect(refusal(build)).toMatch(/toolchain\/lean4-wasm64-release\.json: schema is "lean4-wasm64\.release\/v0", expected lean4-wasm64\.release\/v1/);

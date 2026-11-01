@@ -27,6 +27,8 @@ One persistent Worker owns one Lean process for the whole session:
 2. **Verified materialization** — lean.js/lean.wasm are fetched as ≤16 MiB
    chunks, each SHA-256-checked, then whole-file-checked, then served to
    Emscripten as private object URLs. Content-Encoding transforms are refused.
+   A manifest whose schema or file encoding the worker does not read
+   (closure.json `runtime.manifestSchemas`) is refused before any fetch.
 3. **Memory** — one shared `WebAssembly.Memory({address:"i64"})`, 256 MiB
    initial, maximum probed downward (8 → 6 → 4 → 3 GiB) so constrained
    machines still boot. The module was linked with a 16 GiB declared maximum,

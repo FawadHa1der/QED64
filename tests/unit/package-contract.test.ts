@@ -19,6 +19,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { WORKER_URLS } from "../../lib/urls";
+import { RUNTIME_MANIFEST_SCHEMAS } from "../../pipeline/release/release-manifest.mjs";
 import { SPECS } from "../../pipeline/snapshot/cli.mjs";
 
 const root = path.resolve(__dirname, "../..");
@@ -230,7 +231,7 @@ const lean4Wasm64Pkg = path.join(root, "node_modules/lean4-wasm64/package.json")
 const lean4Wasm64Index = fs.existsSync(lean4Wasm64Pkg) && JSON.parse(fs.readFileSync(lean4Wasm64Pkg, "utf8")).name === "lean4-wasm64" ? path.join(root, "node_modules/lean4-wasm64/index.mjs") : null;
 
 describe("the worker protocol ledger (docs/EMBEDDING.md §7.7)", () => {
-  const c = closure as unknown as { runtime: { minKernelPatch: string }; workerProtocol: { revision: string; protocol: number; requests: string[]; deprecated: unknown[] } };
+  const c = closure as unknown as { runtime: { minKernelPatch: string; manifestSchemas: string[] }; workerProtocol: { revision: string; protocol: number; requests: string[]; deprecated: unknown[] } };
   it("the four worker scripts carry the ledger's revision", () => {
     expect(read("public/workers/lean.worker.js")).toContain(`const WORKER_REVISION = "${c.workerProtocol.revision}";`);
     const siblings = ["public/workers/lsp-frames.js", "public/workers/lsp-front-door.js", "public/workers/memory64-probe.js"];
@@ -244,6 +245,16 @@ describe("the worker protocol ledger (docs/EMBEDDING.md §7.7)", () => {
     expect(src).toContain(`const WORKER_REQUESTS = Object.freeze(${JSON.stringify(c.workerProtocol.requests).replace(/,/g, ", ")});`);
     expect(read("lib/client.ts")).toContain(`export const PROTOCOL = ${c.workerProtocol.protocol};`);
     expect(Array.isArray(c.workerProtocol.deprecated)).toBe(true);
+  });
+  // Architecture review M3 (the format guard): the worker refuses any other schema before it fetches a byte, and
+  // a consumer's staging check compares its runtime's schema with closure.json's list. The full list is not
+  // hard-coded here, so a schema that joins it changes no test in this file.
+  it("the runtime manifest schemas the worker reads: closure.json, the worker and the release generator agree; v1 stays readable; the pinned runtime is one of them", () => {
+    expect(c.runtime.manifestSchemas).toContain("org.lean-browser64.runtime/v1");
+    expect(read("public/workers/lean.worker.js")).toContain(`const RUNTIME_MANIFEST_SCHEMAS = Object.freeze(${JSON.stringify(c.runtime.manifestSchemas).replace(/,/g, ", ")});`);
+    expect([...RUNTIME_MANIFEST_SCHEMAS]).toEqual(c.runtime.manifestSchemas);
+    expect(c.runtime.manifestSchemas).toContain(record.runtime.schema ?? "org.lean-browser64.runtime/v1");
+    expect(c.runtime.manifestSchemas).toContain(JSON.parse(read("public/runtime/runtime-manifest.json")).schema);
   });
   // The floor is checked against the pinned release record (toolchain/lean4-wasm64-release.json, a
   // byte copy of the fork's release.json), never against the lean4-wasm64 package: it is a

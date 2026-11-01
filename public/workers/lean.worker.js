@@ -981,6 +981,27 @@ function capabilities() {
 // Verified runtime materialization (chunks → SHA-256 → Blob URLs)
 // ---------------------------------------------------------------------------
 
+/** The runtime manifest schemas this worker reads (embedding/closure.json runtime.manifestSchemas; pinned equal by
+ * tests/unit/package-contract.test.ts; docs/EMBEDDING.md §7.7), and the file encodings each allows. A manifest without
+ * `schema` (an embedder's own object; every served one carries it) is read as v1. */
+const RUNTIME_MANIFEST_SCHEMAS = Object.freeze(["org.lean-browser64.runtime/v1"]);
+const RUNTIME_PART_ENCODINGS = Object.freeze({ "org.lean-browser64.runtime/v1": Object.freeze(["identity"]) });
+
+/** null when this worker reads the manifest's format, else why not. Refused before anything is fetched
+ * (RUNTIME_MANIFEST_MISMATCH): a worker that cannot read a format would download its parts and fail every boot on
+ * the whole-file size (materialize). */
+function runtimeFormatFault(runtime) {
+  const schema = runtime.schema ?? RUNTIME_MANIFEST_SCHEMAS[0];
+  if (!RUNTIME_MANIFEST_SCHEMAS.includes(schema)) {
+    return `runtime manifest schema ${JSON.stringify(runtime.schema)} is not one this worker reads (${RUNTIME_MANIFEST_SCHEMAS.join(", ")}): pair the runtime with QED64 workers that read it`;
+  }
+  for (const name of ["lean.js", "lean.wasm"]) {
+    const encoding = runtime.files[name].encoding ?? "identity";
+    if (!RUNTIME_PART_ENCODINGS[schema].includes(encoding)) return `runtime manifest ${name}: encoding ${JSON.stringify(runtime.files[name].encoding)} is not one this worker reads in ${schema}`;
+  }
+  return null;
+}
+
 function hex(buffer) {
   let out = "";
   for (const b of new Uint8Array(buffer)) out += b.toString(16).padStart(2, "0");
@@ -1420,6 +1441,14 @@ async function boot(msg) {
     typeof cfg.leanPath === "string";
   if (!filesOk) {
     fail(msg.requestId, new Error("Malformed boot config."), "INVALID_MESSAGE", false);
+    state = "dead";
+    return;
+  }
+  // The format (docs/EMBEDDING.md §7.7): a schema or file encoding this worker does not read is refused before the
+  // buildId rule and before any fetch.
+  const formatFault = runtimeFormatFault(cfg.runtime);
+  if (formatFault) {
+    fail(msg.requestId, new Error(formatFault), "RUNTIME_MANIFEST_MISMATCH", false);
     state = "dead";
     return;
   }

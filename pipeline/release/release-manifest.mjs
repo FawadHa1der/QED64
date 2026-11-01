@@ -76,6 +76,8 @@ export const KERNEL_REPO = "FawadHa1der/lean4";
 export const KERNEL_BRANCH = "qed64-wasm64";
 export const RECORD_SCHEMA = "lean4-wasm64.release/v1";
 export const BASE_TREE_SCHEMA = "qed64.base-tree/v1";
+/** The runtime manifest schemas this generator describes: the ones QED64's worker reads (embedding/closure.json runtime.manifestSchemas; tests/unit/package-contract.test.ts pins them equal). */
+export const RUNTIME_MANIFEST_SCHEMAS = Object.freeze(["org.lean-browser64.runtime/v1"]);
 /** The R2 key rule of decision 3 (docs/DEPLOY.md, "The toolchain release prefix"), recorded verbatim as hosting.rule. */
 export const HOSTING_RULE = "a path under runtime/ or profiles/ that is not site-owned is stored at <toolchainPrefix><path>; every other path at <path>";
 /** Repo-relative paths of the tracked inputs (the per-pack manifests are
@@ -490,7 +492,7 @@ export function buildReleaseManifest(source, { dist = null } = {}) {
   // -- runtime
   const rtBytes = need(INPUTS.runtimeManifest, "runtime manifest");
   const rt = parse(rtBytes, INPUTS.runtimeManifest, "runtime manifest");
-  if (rt?.schema !== "org.lean-browser64.runtime/v1") refuse(`runtime manifest: schema is ${JSON.stringify(rt?.schema)}, expected org.lean-browser64.runtime/v1`);
+  if (!RUNTIME_MANIFEST_SCHEMAS.includes(rt?.schema)) refuse(`runtime manifest: schema is ${JSON.stringify(rt?.schema)}, expected ${RUNTIME_MANIFEST_SCHEMAS.join(" or ")}`);
   const buildId = rt.buildId;
   if (typeof buildId !== "string" || !BUILD_ID.test(buildId)) refuse(`runtime manifest: buildId ${JSON.stringify(buildId)} is not wasm64-<16 hex>`);
   if (typeof rt.leanVersion !== "string" || !rt.leanVersion) refuse("runtime manifest: no leanVersion");

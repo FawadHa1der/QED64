@@ -78,7 +78,10 @@
   ],
   "runtime": {
     "minKernelPatch": "0032",
-    "note": "the oldest kernel patch level whose runtime these workers drive correctly (the resident header resolver and $/qed64/headerStatus, patch 0032), not what QED64 serves; compare against your release.json kernel.patch (lean4-wasm64 comparePatchIds ordering: NNNN, then an optional lowercase suffix)"
+    "manifestSchemas": [
+      "org.lean-browser64.runtime/v1"
+    ],
+    "note": "the oldest kernel patch level whose runtime these workers drive correctly (the resident header resolver and $/qed64/headerStatus, patch 0032), not what QED64 serves; compare against your release.json kernel.patch (lean4-wasm64 comparePatchIds ordering: NNNN, then an optional lowercase suffix); manifestSchemas: the runtime manifest schemas lean.worker.js reads (the fork's formats/runtime-manifest.md), refusing any other before it fetches a byte (RUNTIME_MANIFEST_MISMATCH); a consumer pairing these workers with its own runtime compares that runtime's schema (release.json runtime.schema, else its runtime-manifest.json schema; absent = org.lean-browser64.runtime/v1) with this list at staging, as it compares kernel.patch with minKernelPatch; a closure without the key reads v1 only"
   },
   "workerProtocol": {
     "revision": "1",

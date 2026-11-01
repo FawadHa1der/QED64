@@ -155,4 +155,31 @@ describe("lean.worker.js boot (the real worker source in a VM)", () => {
     expect(w.posted.map((m) => m.error?.code)).not.toContain("RUNTIME_MANIFEST_MISMATCH");
     expect(w.posted.map((m) => m.error?.code)).not.toContain("INVALID_MESSAGE");
   });
+  // The format guard (architecture review M3; embedding/closure.json runtime.manifestSchemas, docs/EMBEDDING.md
+  // §7.7). Object.assign: RuntimeManifest has no `schema` or `encoding` field. The list after "reads" is not
+  // pinned, so a schema that joins it changes no regex here.
+  it("refuses a manifest of a schema, or a file of an encoding, it does not read, before fetching anything, unrecoverably", () => {
+    const gzipWasm = () => { const m = good(); Object.assign(m.files["lean.wasm"], { encoding: "gzip" }); return m; };
+    for (const [runtime, words] of [
+      [Object.assign(good(), { schema: "org.lean-browser64.runtime/v9" }), /runtime manifest schema "org\.lean-browser64\.runtime\/v9" is not one this worker reads/],
+      [gzipWasm(), /lean\.wasm: encoding "gzip" is not one this worker reads in org\.lean-browser64\.runtime\/v1/],
+    ] as const) {
+      const w = worker();
+      w.dispatch(boot(runtime));
+      expect(w.posted).toHaveLength(1);
+      expect(w.posted[0]).toMatchObject({ type: "error", requestId: "r1", error: { code: "RUNTIME_MANIFEST_MISMATCH", recoverable: false } });
+      const { code, message } = w.posted[0]!.error!;
+      expect(message).toMatch(words);
+      expect(failureCauseOf(Object.assign(new Error(message), { code }), { stage: "runtime" }).kind).toBe("corrupt");
+    }
+  });
+  it("reads a v1 manifest and one without a schema as before", async () => {
+    for (const runtime of [Object.assign(good(), { schema: "org.lean-browser64.runtime/v1" }), good()]) {
+      const w = worker();
+      w.dispatch(boot(runtime));
+      await new Promise((r) => setTimeout(r, 20));
+      expect(w.posted.map((m) => m.error?.code)).not.toContain("RUNTIME_MANIFEST_MISMATCH");
+      expect(w.posted.map((m) => m.error?.code)).not.toContain("INVALID_MESSAGE");
+    }
+  });
 });

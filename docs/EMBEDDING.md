@@ -557,6 +557,14 @@ Notes for consumers:
   `kernel.patch` (lean4-wasm64's `comparePatchIds` ordering: `NNNN`, then an
   optional lowercase suffix; QED64 pins its own in
   `toolchain/lean4-wasm64-release.json`);
+- `runtime.manifestSchemas`: the runtime manifest schemas the worker reads,
+  today `["org.lean-browser64.runtime/v1"]`. It refuses any other schema, or
+  a file `encoding` it does not read, before it fetches a byte
+  (`RUNTIME_MANIFEST_MISMATCH`, §7.2). A consumer pairing these workers with
+  its own runtime compares that runtime's schema with this list at staging,
+  as it compares `kernel.patch` with `runtime.minKernelPatch`: release.json
+  `runtime.schema` when the record carries it, else `runtime-manifest.json`
+  `schema` (absent = v1). A closure without the key reads v1 only;
 - `workerProtocol`: §7.7.
 
 ### 6.1 Minimal Vite consumer
@@ -849,7 +857,7 @@ interface FailureCause { kind: FailureKind; httpStatus?: number; stage?: BootSta
 |------|---------|------|
 | `network` | the fetch was rejected, the stream was cut, the body ended before the bytes it announced, or 5xx/429 (retrying can help) | `Failed to fetch`, `HTTP 503`, `the transfer of <file> ended early: received <n> of <expected> bytes` |
 | `missing` | the server does not have it: a deploy problem, so retrying cannot help | every 4xx except 408/425/429; an HTML answer where JSON or binary belongs (the workers and the index loader sniff it); `SNAPSHOT_NOT_IN_INDEX` |
-| `corrupt` | it arrived in full but is wrong | chunk length or SHA-256 mismatch; a gzip/DecompressionStream error of a body that arrived in full; "not a compacted-region file"; a size the index does not declare; "raw size mismatch"; `SNAPSHOT_LOAD_RESULT` (the Lean loader refused the region); `RUNTIME_MANIFEST_MISMATCH` (a runtime manifest whose `buildId` is not `wasm64-` + the first 16 hex digits of its own `files["lean.wasm"].sha256`: the runtime/v1 invariant every reader may check; the page refuses it before fetching, the worker before booting) |
+| `corrupt` | it arrived in full but is wrong | chunk length or SHA-256 mismatch; a gzip/DecompressionStream error of a body that arrived in full; "not a compacted-region file"; a size the index does not declare; "raw size mismatch"; `SNAPSHOT_LOAD_RESULT` (the Lean loader refused the region); `RUNTIME_MANIFEST_MISMATCH` (a runtime manifest whose `buildId` is not `wasm64-` + the first 16 hex digits of its own `files["lean.wasm"].sha256`: the runtime/v1 invariant every reader may check; the page refuses it before fetching, the worker before booting; also a manifest whose `schema`, or a file's `encoding`, this worker does not read (`closure.json` `runtime.manifestSchemas`, §7.7), refused before anything is fetched) |
 | `unpaired` | a snapshot baked by another runtime build | `SNAPSHOT_UNPAIRED` |
 | `oom` | an allocation or reservation failed | `MEMORY_FAILED`, `could not allocate`, `Cannot enlarge memory` |
 | `storage` | OPFS or quota | `QuotaExceededError` |
@@ -1143,6 +1151,14 @@ itself; `parseBootParams` is an internal re-export, §7.0).
   `closure.json` → `workerProtocol.deprecated` with the release it went
   unused in, and leaves the worker one release later. Long-lived tabs are
   covered by the recoverable refusal above and by the revision check.
+- **Runtime manifest formats.** The worker reads the schemas `closure.json`
+  lists under `runtime.manifestSchemas` and refuses any other, or a file
+  `encoding` the schema does not allow it, before any fetch
+  (`RUNTIME_MANIFEST_MISMATCH`, `corrupt`). A worker older than this check
+  has no list: on another format it downloads the parts and fails every
+  boot on the whole-file size, so consumers check the list at staging
+  (§6). A schema joins the list in a QED64 commit before any runtime uses
+  it, and leaves it the way a request does (`workerProtocol.deprecated`).
 - **A `telemetry` request may be answered after a `status` event.** The
   worker re-samples its status before replying and emits the event when
   the status changed (the pool sample included); an unchanged status emits
@@ -2065,6 +2081,19 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
 - **A busy raw-cache handle is retried (architecture review R2,
   2026-11):** see §7.4. Nothing else changed: no export, type or message
   change, and `EMBED_API_REVISION` and the worker `REVISION` are unchanged.
+- **Runtime manifest schema guard (architecture review M3, 2026-11):**
+  `embedding/closure.json` gains `runtime.manifestSchemas`
+  (`["org.lean-browser64.runtime/v1"]`, §6), and `lean.worker.js` refuses a
+  runtime manifest whose `schema`, or a file whose `encoding`, it does not
+  read, before it fetches a byte (`RUNTIME_MANIFEST_MISMATCH`, `corrupt`,
+  §7.2 and §7.7). A served manifest is v1 and an embedder's own object
+  without `schema` is read as v1, so every boot that worked still does.
+  `pipeline/release/release-manifest.mjs` exports the same list
+  (`RUNTIME_MANIFEST_SCHEMAS`) and `tests/unit/package-contract.test.ts`
+  pins the three copies equal. A consumer that pairs these workers with its
+  own runtime should compare its runtime's schema with the list at
+  staging. No library change: `EMBED_API_REVISION` is unchanged, the four
+  workers keep `REVISION` "1", and `PROTOCOL` is unchanged.
 - **`qed64/edge` routes a toolchain release (plan step B2b, 2026-10-06):**
   additive options, every default unchanged (`QED64_LEGACY` and the hardened
   defaults keep `release: null`). `release` takes a `lean4-wasm64.release/v1`
