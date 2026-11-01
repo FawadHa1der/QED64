@@ -8,7 +8,7 @@
 // the REAL relay and editor policy; only the kernel is modelled.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  chooseSnapshots, coversModule, entryLabel, entryRoots, initialBytesForEntries, loadSnapshotIndex, widenTarget,
+  LEGACY_UMBRELLA_ROOTS, chooseSnapshots, coversModule, entryLabel, entryRoots, initialBytesForEntries, loadSnapshotIndex, widenTarget,
   type SnapshotEntry, type SnapshotIndex,
 } from "../../lib/snapshots";
 import {
@@ -22,7 +22,8 @@ const GiB = 1073741824;
 const MiB = 1048576;
 const entry = (name: string, bytes: number, extra: Partial<SnapshotEntry> = {}): SnapshotEntry => ({ name, url: `/snapshots/${name}.x.snapz`, bytes, imports: [], ...extra });
 const STOCK: SnapshotIndex = { schema: "qed64.snapshot-index/v1", snapshots: [entry("init", 122 * MiB), entry("mathlib", 1127 * MiB, { imports: ["QED64.Essential"] })] };
-const WIDGET_ROOTS = ["Mathlib", "Batteries", "MIL", "QED64", "ProofWidgets", "HasseView", "SimpLens"];
+// An overlay built on QED64.Essential claims every umbrella root (§8: beside the stock entry, a superset) plus its own.
+const WIDGET_ROOTS = [...LEGACY_UMBRELLA_ROOTS, "ProofWidgets", "HasseView", "SimpLens"];
 const OVERLAY: SnapshotIndex = {
   schema: "qed64.snapshot-index/v1",
   snapshots: [entry("init", 122 * MiB), entry("mathlib", 1127 * MiB, { imports: ["QED64.Essential"] }), entry("widgets8", 1400 * MiB, { roots: WIDGET_ROOTS, label: "Mathlib + widgets", initialBytes: 3 * GiB })],
@@ -30,7 +31,7 @@ const OVERLAY: SnapshotIndex = {
 const HEADERS = [
   "", "theorem t : True := trivial\n", "import Mathlib\n", "import Mathlib.Data.Real.Basic\nimport Foo\n", "import Init.Data.List\n",
   "import Batteries.Data.List\n", "import MIL.Common\n", "import Mathlib2\n", "import Lean\n", "import Aesop\n", "import HasseView\n",
-  "public import Mathlib.Tactic\n", "import QED64.Essential\n",
+  "public import Mathlib.Tactic\n", "import QED64.Essential\n", "import Std.Data.HashMap\n", "import ProofWidgets\n", "import Lake\n",
 ];
 
 describe("an index without roots behaves exactly as before", () => {
@@ -48,12 +49,24 @@ describe("an index without roots behaves exactly as before", () => {
       [["Mathlib.Data.Real.Basic"], ["init"]], [["Mathlib.Data.Real.Basic", "Foo"], ["init"]], [["Mathlib2"], ["init"]],
       [["Mathlib.Bogus"], ["init", "mathlib"]], [[], ["init"]], [["MIL.Common", "Batteries.X"], ["init"]],
       [["Init.Data.Lisst"], ["init"]], [["Init.Data.Lisst", "Mathlib.Tactic"], ["init"]], // an Init typo: no entry changes that verdict
+      [["Lean"], ["init"]], [["Lean.Elab.Command", "Aesop"], ["init"]], [["ProofWidgets.Component.HtmlDisplay"], ["init"]], [["Lean.Bogus"], ["init", "mathlib"]],
     ] as Array<[string[], string[]]>) {
       expect(widenTarget(STOCK, missing, loaded)?.name === "mathlib", JSON.stringify([missing, loaded])).toBe(legacy(missing, loaded));
     }
   });
   it("without an index, the policy IS the legacy one", () => {
     expect(makeEditorPolicy(null)).toBe(EDITOR_POLICY);
+  });
+  it("the stock entry claims the umbrella's package roots, not ProofWidgets, Lake or ImportGraph (HARDENING #82)", () => {
+    for (const m of ["Lean", "Lean.Elab.Command", "Std.Data.HashMap", "Aesop", "Qq", "Plausible", "LeanSearchClient"]) {
+      expect(chooseSnapshots(STOCK, [m]), m).toEqual(["init", "mathlib"]);
+      expect(widenTarget(STOCK, [m], ["init"], [m])?.name, m).toBe("mathlib");
+      expect(widenTarget(STOCK, [m], ["init", "mathlib"], [m]), m).toBeNull(); // claimed by what is loaded: the kernel's refusal stands
+    }
+    for (const m of ["ProofWidgets", "ProofWidgets.Component.HtmlDisplay", "Lake", "ImportGraph.Imports", "LeanSearchClient2"]) {
+      expect(chooseSnapshots(STOCK, [m]), m).toEqual(["init"]);
+      expect(widenTarget(STOCK, [m], ["init"], [m]), m).toBeNull();
+    }
   });
 });
 
@@ -100,12 +113,17 @@ describe("an overlay that declares roots", () => {
     // A module no loaded entry claims still widens — to an entry claiming the refuted one too.
     expect(widenTarget(OVERLAY, ["Mathlib.D", "HasseView"], ["init", "mathlib"], [...header, "HasseView"])?.name).toBe("widgets8");
   });
-  it.each(["Aesop", "Qq", "Lean.Elab.Command"])("a header module no root names (%s) does not block the overlay widen", (other) => {
-    // The umbrella's closure serves it, and so does the overlay's: the kernel judges it, as chooseSnapshots leaves it.
+  it.each(["Aesop", "Qq", "Lean.Elab.Command"])("a header module the umbrella's roots claim (%s) does not block the widen to an overlay that claims them too (§8: a superset)", (other) => {
     const header = ["Mathlib.Tactic", other, "HasseView"];
     expect(chooseSnapshots(OVERLAY, header)).toEqual(["init", "widgets8"]);
     expect(widenTarget(OVERLAY, ["HasseView"], ["init", "mathlib"], header)?.name).toBe("widgets8");
-    expect(widenTarget(OVERLAY, [other], ["init", "widgets8"], header)).toBeNull(); // were the overlay to lack it: no entry claims it
+    expect(widenTarget(OVERLAY, [other], ["init", "widgets8"], header)).toBeNull(); // the loaded overlay claims it: the kernel has refuted that claim
+  });
+  it("an overlay claiming less than the umbrella beside it is never widened to for a header naming the difference (why §8 asks for a superset)", () => {
+    const NARROW: SnapshotIndex = { ...OVERLAY, snapshots: [OVERLAY.snapshots[0]!, OVERLAY.snapshots[1]!, entry("widgets8", 1400 * MiB, { roots: ["Mathlib", "Batteries", "MIL", "QED64", "HasseView"] })] };
+    const header = ["Mathlib.Tactic", "Aesop", "HasseView"];
+    expect(chooseSnapshots(NARROW, header)).toEqual(["init", "mathlib"]); // two covered modules each: the smaller
+    expect(widenTarget(NARROW, ["HasseView"], ["init", "mathlib"], header)).toBeNull(); // the umbrella claims Aesop, the overlay does not
   });
 
   it("labels and roots", () => {
@@ -113,6 +131,7 @@ describe("an overlay that declares roots", () => {
     expect(entryLabel(STOCK.snapshots[1]!)).toBe("Mathlib");
     expect(entryLabel(entry("game", 1))).toBe("game");
     expect(entryRoots(STOCK.snapshots[0]!)).toEqual([]);
+    expect(entryRoots(STOCK.snapshots[1]!)).toEqual(LEGACY_UMBRELLA_ROOTS);
     expect(coversModule(["Mathlib"], "Mathlib")).toBe(true);
     expect(coversModule(["Mathlib"], "MathlibX.Y")).toBe(false);
   });
@@ -216,6 +235,19 @@ describe("the page's self-widen over the real relay (frontend/src/self-widen.ts)
     await p.edit(MATHLIB_DOC);
     expect([p.session().snapshots, p.relay.status().phase]).toEqual([["init", "mathlib"], "ready"]);
     expect(p.widens).toEqual(["Mathlib", "Mathlib"]);
+  });
+
+  it.each([["the stock index", STOCK], ["no index", null]] as const)("import Lean reaches the umbrella on every path: a light session widens, a reload boots it, a crash after a switch reboots onto it (%s; HARDENING #82)", async (_, index) => {
+    const LEAN_DOC = `import Lean\n${BODY}`;
+    const light = await open(index, INIT_DOC);
+    await light.edit(LEAN_DOC); // refused on init alone; the umbrella claims Lean, so the page widens once
+    expect([light.session().snapshots, light.relay.status().phase, light.widens]).toEqual([["init", "mathlib"], "ready", ["Mathlib"]]);
+    const reload = await open(index, LEAN_DOC); // the restored buffer: the policy boots the umbrella, no widen
+    expect([reload.session().snapshots, reload.relay.status().phase, reload.widens]).toEqual([["init", "mathlib"], "ready", []]);
+    const switched = await open(index, MATHLIB_DOC);
+    await switched.edit(LEAN_DOC); // covered on the umbrella
+    await switched.crash(); // no restart options to reuse: the policy re-runs on `import Lean`
+    expect([switched.session().snapshots, switched.relay.status().phase, switched.relay.stats.userRestarts, switched.widens]).toEqual([["init", "mathlib"], "ready", 0, []]);
   });
 
   it("a Mathlib session typing a Mathlib import never swaps environments (an overlay that also claims Mathlib)", async () => {

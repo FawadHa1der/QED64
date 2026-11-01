@@ -1377,20 +1377,31 @@ An entry may have **any name**. The page then:
   replacement serves the whole header from one environment). For example, a
   Mathlib session gaining `import HasseView` widens to an overlay whose
   roots include both, whatever else the header imports from the umbrella's
-  closure (`Aesop`, `Qq`, `Lean.*`: a module no root names is the kernel's
-  to judge). It never widens when every missing module is Init or claimed by
-  a loaded entry's roots: the kernel has just refuted that claim (a prefix
-  being typed, a typo), and no snapshot would change the verdict. The
-  decision is stateless, so a session a reboot booted without the entry (the
-  header changed, then a crash) widens again.
+  closure, provided the overlay claims every root the umbrella entry claims
+  (`Aesop`, `Qq`, `Lean.*` are umbrella roots; see below); a module no root
+  names is the kernel's to judge. It never widens when every missing module
+  is Init or claimed by a loaded entry's roots: the kernel has just refuted
+  that claim (a prefix being typed, a typo), and no snapshot would change the
+  verdict. The decision is stateless, so a session a reboot booted without
+  the entry (the header changed, then a crash) widens again.
 
 It is **opt-in.** Without `roots`, the entry named `mathlib` serves the
-umbrella roots (`Mathlib`, `Batteries`, `MIL`, `QED64`) and no other entry
-serves any. A legacy index therefore behaves exactly as before; the unit tests
-pin this parity on the stock index and drive the page's self-widen
-(`frontend/src/self-widen.ts`) over the real relay. The exact-imports restart keeps the
-session's own snapshot list. The roots are claims, not membership: the
-kernel's header verdict stays authoritative.
+umbrella roots, `LEGACY_UMBRELLA_ROOTS`: `Mathlib`, `Batteries`, `MIL` and
+`QED64` (the aliases' roots and the umbrella module), and `Lean`, `Std`,
+`Aesop`, `Qq`, `Plausible` and `LeanSearchClient` (packages whose root module
+is in the umbrella's closure; since 2026-11, HARDENING #82). `ProofWidgets`,
+`Lake` and `ImportGraph` are not claimed: the umbrella holds some of their
+modules but not their roots. No other entry serves any, and the editor's
+policy without an index uses the same list. An overlay built on
+`QED64.Essential` that declares `roots` and is served beside the stock entry
+must claim a superset of these roots: otherwise a Mathlib session whose
+header also names, say, `Aesop` never widens to it (the umbrella claims
+`Aesop`, the overlay does not, so no entry is known to serve the whole
+header). An index without `roots` therefore decides exactly as the editor's
+policy does; the unit tests pin this parity on the stock index and drive the
+page's self-widen (`frontend/src/self-widen.ts`) over the real relay. The
+exact-imports restart keeps the session's own snapshot list. The roots are
+claims, not membership: the kernel's header verdict stays authoritative.
 
 ---
 
@@ -2147,3 +2158,13 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   - What to do: import `qed64/embed`, or a `lib/` file by its path.
   - No export, type or behaviour change. `EMBED_API_REVISION` is
     unchanged.
+- **One umbrella-root list; a header naming only `Lean`, `Std`, `Aesop`,
+  `Qq`, `Plausible` or `LeanSearchClient` boots the umbrella (HARDENING #82,
+  2026-11):** `LEGACY_UMBRELLA_ROOTS` gains those six roots and
+  `isUmbrellaModule` reads it (so `needsMathlib`, `snapshotsForHeader` and
+  `EDITOR_POLICY` follow), as do `entryRoots`, `chooseSnapshots` and
+  `widenTarget` for an entry named `mathlib` without `roots`. Such a header
+  used to boot init alone and stay refused on a fresh page or after a crash
+  reboot, while a session that had loaded the umbrella served it covered. An
+  overlay with `roots` beside the stock entry must claim a superset of the
+  ten (§8). No export or type change, so `EMBED_API_REVISION` is unchanged.

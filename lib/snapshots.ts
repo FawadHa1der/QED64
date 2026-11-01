@@ -191,10 +191,21 @@ export function snapshotCacheKey(entry: SnapshotEntry): string {
 // them, so an overlay index that declares `roots` is booted and widened to by
 // itself, and an index without them behaves exactly as before.
 
-/** The roots the umbrella snapshot serves (patch 0032 K1: `QED64.Essential`
- * covers every Mathlib/Batteries module in the essential profile, and the
- * tutorial aliases Mathlib, Mathlib.Tactic, Batteries, MIL.Common). */
-export const LEGACY_UMBRELLA_ROOTS: readonly string[] = Object.freeze(["Mathlib", "Batteries", "MIL", "QED64"]);
+/** The module roots the stock umbrella snapshot (`QED64.Essential`, the
+ * `mathlib` entry) serves, on a component boundary: the ONE list behind the
+ * editor's policy without an index (resident-session.ts `isUmbrellaModule`)
+ * and an entry named `mathlib` without `roots` (`entryRoots`; docs/EMBEDDING.md §8).
+ * - `Mathlib`, `Batteries`, `MIL`: the roots of the kernel's aliases and of
+ *   every Mathlib/Batteries module in the essential profile; `QED64`: the
+ *   umbrella module itself;
+ * - `Lean`, `Std`, `Aesop`, `Qq`, `Plausible`, `LeanSearchClient`: packages
+ *   whose root module is in the umbrella's closure, so a header naming only
+ *   them is served there (HARDENING #82: a light session refused it for good).
+ * Not `ProofWidgets`, `Lake` or `ImportGraph`: essential holds some of their
+ * modules but not their roots, and a claim would stream the umbrella at a
+ * 2 GiB commit for a header the kernel still refuses. The name is the public
+ * export's (lib/index.ts); a served index's `roots` replace it per entry. */
+export const LEGACY_UMBRELLA_ROOTS: readonly string[] = Object.freeze(["Mathlib", "Batteries", "MIL", "QED64", "Lean", "Std", "Aesop", "Qq", "Plausible", "LeanSearchClient"]);
 /** The entries every session loads first. */
 export const BASE_SNAPSHOTS: readonly string[] = Object.freeze(["init"]);
 
@@ -235,8 +246,9 @@ export function chooseSnapshots(index: SnapshotIndex, modules: readonly string[]
  * some entry claims and the base does not serve — the new session serves the
  * whole header from ONE environment (an entry covering only what is missing
  * NOW would be refused for what the old session covered, and widening back
- * would loop); a module no root names (`Aesop`, `Lean.Elab`) tells no entry
- * apart and is left to the kernel, as in chooseSnapshots. Else null — always
+ * would loop); a module no root names (`ProofWidgets.Component.Basic`: the
+ * umbrella holds it, under a root it does not claim) tells no entry apart and
+ * is left to the kernel, as in chooseSnapshots. Else null — always
  * when every missing module is Init or claimed by a loaded entry's roots: the
  * kernel has just refuted that claim (a prefix being typed, a typo) and, as
  * for a near-miss root no entry claims, no snapshot would change the verdict.

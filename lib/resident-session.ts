@@ -17,7 +17,7 @@ import { downloadBeforeBoot, ensureProfile, loadSnapshotForBoot, noteBootNetwork
 import type { RelaySession, RestartOptions } from "./lsp-relay";
 import { LeanSession, memoryCandidates, type JsonRpcMessage, type LibraryPack, type WorkerStatus } from "./client";
 import { deathCause, failureCauseOf, stageOfWorkerPhase, stepOfInstallPhase, ENGINE_STACK_OVERFLOW, type BootStage, type FailureCause } from "./failure";
-import { chooseSnapshots, initialBytesForEntries, type SnapshotIndex } from "./snapshots";
+import { LEGACY_UMBRELLA_ROOTS, chooseSnapshots, coversModule, initialBytesForEntries, type SnapshotIndex } from "./snapshots";
 import { CANCELLED, createEditCoalescer, DEFAULT_EDIT_COALESCE_MS, type BackPressureEvent, type BackPressureOptions, type EditCoalescer } from "./edit-coalescer";
 
 const MiB = 1048576;
@@ -105,20 +105,19 @@ export function importedModulesOf(text: string): string[] {
   return out;
 }
 
-/** The roots the umbrella snapshot serves (patch 0032 K1: `QED64.Essential`
- * covers every Mathlib/Batteries module in the essential profile, and the
- * four tutorial aliases Mathlib, Mathlib.Tactic, Batteries, MIL.Common). A
+/** True for a module under one of the umbrella's roots (snapshots.ts
+ * `LEGACY_UMBRELLA_ROOTS`, the one list), on a component boundary. A
  * near-miss root (`Mathlib2`) is NOT one of these: the kernel refuses it and
  * no snapshot would change that. */
-const UMBRELLA_ROOTS: ReadonlySet<string> = new Set(["Mathlib", "Batteries", "MIL", "QED64"]);
-export const isUmbrellaModule = (name: string): boolean => UMBRELLA_ROOTS.has(name.split(".")[0] ?? "");
+export const isUmbrellaModule = (name: string): boolean => coversModule(LEGACY_UMBRELLA_ROOTS, name);
 
 /** True when any import line names a module the umbrella serves. */
 export const needsMathlib = (headerText: string): boolean => importedModulesOf(headerText).some(isUmbrellaModule);
 
 /** The editor's default policy (§6 amendment 15): an Init-only document
- * boots light — the init snapshot only — and anything naming Mathlib boots
- * the umbrella too. A header that later grows a Mathlib import on a light
+ * boots light — the init snapshot only — and anything naming a module under
+ * an umbrella root (Mathlib, Lean, Std, … — snapshots.ts LEGACY_UMBRELLA_ROOTS)
+ * boots the umbrella too. A header that later grows a Mathlib import on a light
  * session is refused by the kernel (nothing loaded covers it); the page then
  * restarts with the umbrella (frontend/src/self-widen.ts, called from main.ts). */
 export const snapshotsForHeader = (headerText: string): string[] => (needsMathlib(headerText) ? ["init", "mathlib"] : ["init"]);

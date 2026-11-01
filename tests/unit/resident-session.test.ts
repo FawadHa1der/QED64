@@ -1,8 +1,8 @@
 // The editor's boot policy (lib/resident-session.ts; second review
 // §6 amendment 15): the initial document decides the boot-only snapshot list
 // and the initial memory commit — an Init-only document boots light (init
-// snapshot, 256 MiB), anything naming a module the umbrella serves boots the
-// umbrella at 2 GiB. The policy functions are pure functions of the text;
+// snapshot, 256 MiB), anything naming a module under an umbrella root boots
+// the umbrella at 2 GiB. The policy functions are pure functions of the text;
 // the adapter itself is exercised over a fake Worker (no DOM): how it
 // resolves boot inputs from policy + restart options, and that its
 // `terminate()` is the synchronous kill the relay's `unload()` reaches.
@@ -43,13 +43,14 @@ describe("import-line extraction", () => {
 });
 
 describe("umbrella roots", () => {
-  it("are the roots patch 0032's resolver covers with QED64.Essential", () => {
-    for (const m of ["Mathlib", "Mathlib.Tactic", "Mathlib.Data.Real.Basic", "Batteries", "Batteries.Data.List.Basic", "MIL.Common", "QED64.Essential"]) {
+  it("are the umbrella's roots: the aliases' (Mathlib, Batteries, MIL), QED64, and the packages whose root module the umbrella holds (HARDENING #82)", () => {
+    for (const m of ["Mathlib", "Mathlib.Tactic", "Mathlib.Data.Real.Basic", "Batteries", "Batteries.Data.List.Basic", "MIL.Common", "QED64.Essential",
+      "Lean", "Lean.Elab.Command", "Std", "Std.Data.HashMap", "Aesop", "Qq", "Plausible", "LeanSearchClient"]) {
       expect(isUmbrellaModule(m), m).toBe(true);
     }
   });
-  it("never fuzzy-match a near-miss root (the kernel refuses those and no snapshot changes that)", () => {
-    for (const m of ["Mathlib2.Foo", "Batteries2", "MILx.Common", "Init", "Lean", "Std.Data.HashMap", ""]) {
+  it("never fuzzy-match a near-miss root, and never claim ProofWidgets, Lake or ImportGraph (their root modules are not in the umbrella)", () => {
+    for (const m of ["Mathlib2.Foo", "Batteries2", "MILx.Common", "Init", "Init.Data.List", "Lean2", "ProofWidgets", "ProofWidgets.Component.HtmlDisplay", "Lake", "ImportGraph.Imports", ""]) {
       expect(isUmbrellaModule(m), m).toBe(false);
     }
   });
@@ -66,15 +67,15 @@ describe("snapshotsForHeader / initialBytesForHeader (the editor's policy)", () 
     expect(snapshotsForHeader("")).toEqual(["init"]);
     expect(initialBytesForHeader("")).toBe(256 * MiB);
   });
-  it("a Mathlib document boots the umbrella at 2 GiB", () => {
-    for (const text of [mathlib, mil, "import Mathlib\n", "import Mathlib.Tactic\n", "import Batteries\n", "import QED64.Essential\n"]) {
+  it("a document naming an umbrella root boots the umbrella at 2 GiB (Lean, Std, Aesop … too: HARDENING #82)", () => {
+    for (const text of [mathlib, mil, "import Mathlib\n", "import Mathlib.Tactic\n", "import Batteries\n", "import QED64.Essential\n", "import Lean\n", "import Std.Data.HashMap\n", "import Aesop\n"]) {
       expect(needsMathlib(text), text).toBe(true);
       expect(snapshotsForHeader(text), text).toEqual(["init", "mathlib"]);
       expect(initialBytesForHeader(text), text).toBe(2048 * MiB);
     }
   });
-  it("a header the umbrella cannot serve boots light (the kernel refuses it either way)", () => {
-    for (const text of ["import Mathlib2.Foo\n", "import Lean\n", "import Mathl\n", "-- import Mathlib\n"]) {
+  it("a header no environment the page can boot contains boots light (the kernel refuses it either way)", () => {
+    for (const text of ["import Mathlib2.Foo\n", "import Mathl\n", "import ProofWidgets\n", "import Lake\n", "-- import Mathlib\n"]) {
       expect(snapshotsForHeader(text), text).toEqual(["init"]);
       expect(initialBytesForHeader(text), text).toBe(256 * MiB);
     }
