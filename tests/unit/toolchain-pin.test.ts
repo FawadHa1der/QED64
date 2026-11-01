@@ -7,7 +7,8 @@
 //   - the shell's runtime manifest is the release's runtime (buildId);
 //   - every TRACKED file under public/runtime/ and public/profiles/ the Worker
 //     routes to the release is byte-identical to the release's (record.files);
-//   - the shipped Worker routes by this record.
+//   - the shipped Worker routes by this record (and serves the two site
+//     indexes from its own deploy's assets, D2).
 // Imports nothing from lean4-wasm64: the record and the tracked files only.
 import { describe, expect, test } from "vitest";
 import { createHash } from "node:crypto";
@@ -79,7 +80,7 @@ describe("toolchain/lean4-wasm64-release.json pins the release the Worker serves
     expect(siteOwned).toEqual(["/profiles/index.json"]);
   });
 
-  test("infra/worker.js routes by this record: the runtime manifest to lean4-wasm64/<id>/, the snapshot index to the bucket root", async () => {
+  test("infra/worker.js routes by this record: the runtime manifest to lean4-wasm64/<id>/, a .snapz to the bucket root, the two indexes to the deploy's own assets", async () => {
     const asked: string[] = [];
     const bucket = {
       async get(key: string) {
@@ -91,15 +92,24 @@ describe("toolchain/lean4-wasm64-release.json pins the release the Worker serves
         return null;
       },
     };
-    const env = { ASSETS: { fetch: async () => new Response(null, { status: 404 }) }, ARTIFACTS: bucket };
-    await shipped.fetch(new Request("https://qed64.example/runtime/runtime-manifest.json"), env);
-    expect(asked[0]).toBe(`get lean4-wasm64/${record.id}/runtime/runtime-manifest.json`);
-    asked.length = 0;
-    await shipped.fetch(new Request("https://qed64.example/snapshots/index.json"), env);
-    expect(asked).toEqual(["get snapshots/index.json"]);
-    asked.length = 0;
-    await shipped.fetch(new Request("https://qed64.example/profiles/index.json"), env);
-    expect(asked).toEqual(["get profiles/index.json"]);
+    const assetsAsked: string[] = [];
+    const assets = {
+      async fetch(request: Request) {
+        assetsAsked.push(`${request.method} ${new URL(request.url).pathname}`);
+        return new Response('{"from":"assets"}', { status: 200, headers: { "content-type": "application/json" } });
+      },
+    };
+    const env = { ASSETS: assets, ARTIFACTS: bucket };
+    const ask = async (p: string) => {
+      asked.length = 0;
+      assetsAsked.length = 0;
+      await shipped.fetch(new Request(`https://qed64.example${p}`), env);
+      return { r2: [...asked], assets: [...assetsAsked] };
+    };
+    expect((await ask("/runtime/runtime-manifest.json")).r2).toEqual([`get lean4-wasm64/${record.id}/runtime/runtime-manifest.json`]);
+    expect((await ask("/snapshots/init.0123456789abcdef.snapz")).r2).toEqual(["get snapshots/init.0123456789abcdef.snapz"]);
+    // D2: QED64's two site indexes ship in the deploy (dist/), never read from R2
+    for (const p of ["/snapshots/index.json", "/profiles/index.json"]) expect(await ask(p), p).toEqual({ r2: [], assets: [`GET ${p}`] });
   });
 
   test("the per-build index copies of this record's runtime (HARDENING #64) are the site's: bucket root, never the release prefix", async () => {
@@ -109,7 +119,7 @@ describe("toolchain/lean4-wasm64-release.json pins the release the Worker serves
       const asked: string[] = [];
       const bucket = { async get(key: string) { asked.push(`get ${key}`); return null; }, async head(key: string) { asked.push(`head ${key}`); return null; } };
       const r = await shipped.fetch(new Request(`https://qed64.example${p}`), { ASSETS: { fetch: async () => new Response(null, { status: 404 }) }, ARTIFACTS: bucket });
-      expect([r.status, r.headers.get("cache-control"), asked], p).toEqual([404, "public, max-age=0, must-revalidate", [`get ${p.slice(1)}`]]);
+      expect([r.status, r.headers.get("cache-control"), asked], p).toEqual([404, "no-store", [`get ${p.slice(1)}`]]);
     }
   });
 });

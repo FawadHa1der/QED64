@@ -335,7 +335,7 @@ const entry = {
 // lib/snapshots.ts). Another runtime's copy in --out is never touched.
 // QED64's own path does not need it: promote-staging derives public/'s copy
 // from the staged index.json and ignores this one, and upload-artifacts.sh
-// sends no local copy (it writes R2's from the mutable file). It suits only
+// sends no copy at all (since D2 QED64's indexes ship in its deploy). It suits only
 // a consumer that serves its staging dir UNMERGED (uploads --out as baked):
 // the copy arrives with the index, so a page pinned to this runtime keeps
 // reading its pairing when that consumer's next pairing is uploaded ahead of

@@ -650,6 +650,13 @@ Follow-up (2026-10-08, the same day): two gaps promised to lean4game and require
 
 Rule: every file a deployed shell reads must be either immutable for its pairing or pinned to it. A mutable pointer shared by two pairings is safe only when the switch of the pointer and the switch of its reader are one deploy; an upload that runs ahead of the deploy must leave every mutable file a deployed shell reads as it was.
 
+**Superseded for QED64's own site (2026-11, architecture review D2).**
+- The rule above, applied in full: QED64's two indexes ship in the deploy (`dist/`, served from the Worker's static assets by one `extraRoutes` entry in `infra/worker.js`), so the pointer and its reader switch in one deploy, and an upload changes nothing a deployed shell reads (docs/DEPLOY.md "Atomic deploys").
+- QED64 writes no per-build copies to R2 any more: `scripts/upload-artifacts.sh` has no pin step and uploads only the `.snapz` the index names (and overlay directories). The promote's and fetch-artifacts' local copies go in the clean-ups that follow.
+- `scripts/deploy-guard.mjs` (R19a) refuses a deploy whose `.snapz` are not live yet, so the order is still upload, then push.
+- The reader rule (`pairedCopyOr`, `pairedBuildId`, `pinnedBuildId`) and `isImmutable`'s revalidate rule stay: lean4game passes the options, and its site and the showcase's still publish copies.
+- QED64's earlier copies, and R2's `snapshots/index.json` and `profiles/index.json`, stay frozen at its bucket root while a pre-change Worker version is a rollback target (until the next runtime adoption after D2 is live and stable).
+
 ### 65. A rejected pinned runtime-manifest fetch failed the boot (fixed)
 
 Reported 2026-10-08 by lean4game (its 4.34 regression, D7 with the proxy refusing, and its offline boots, on a local build that lacked the pinned copy; on QED64 bf9d947, still so on main 8c461a8 and on #64). `resolveRuntimeManifest` (lib/qed64-boot.ts) reads the shell's pinned `/runtime/runtime-manifest.<buildId>.json` first and falls back to the mutable `/runtime/runtime-manifest.json` when the copy answers a 404 or a non-JSON body. But the pinned `fetch` had no catch: when it REJECTED ("Failed to fetch": a site without the copy behind a refusing proxy, a dead link while `navigator.onLine` is still true), the whole resolve rejected and the boot failed, although the mutable manifest, or a service worker's cached copy of it, would have served.

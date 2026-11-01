@@ -8,7 +8,11 @@
 // ctx); its Response is written back (status, every header, the body streamed;
 // HEAD sends none). env holds Node stand-ins for the two bindings in
 // wrangler.toml:
-//   ASSETS     the Workers static-assets subset QED64 relies on, over DIST
+//   ASSETS     the Workers static-assets subset QED64 relies on, over DIST,
+//              the shell plus QED64's two indexes (dist/snapshots/index.json
+//              and dist/profiles/index.json, which the build copies from the
+//              tracked public/ files and infra/worker.js serves from ASSETS:
+//              docs/DEPLOY.md "Atomic deploys")
 //              (`[assets] directory = "dist"`, run_worker_first, no
 //              not_found_handling, the default html_handling
 //              "auto-trailing-slash"): "/" and "<dir>/" serve their
@@ -62,19 +66,21 @@
 // with the isolation headers (logged), never a 200 head and a reset socket; a
 // read error after the head is logged (a client going away is not).
 // Content-Length: live R2 bodies carry their length, so an artifact GET on the
-// live (legacy) Worker has Content-Length although the worker sets none. The
+// legacy Worker has Content-Length although the worker sets none. The
 // Node layer adds it from the object's known size when the worker's response
 // has none, and for the worker's own small bodies ("not found": the live 404
-// has Content-Length: 9) from the bytes; it never does for HEAD (the live
-// legacy HEAD carries none either). The live headers this mimics were read
+// has Content-Length: 9) from the bytes; it never does for HEAD (the legacy
+// Worker's HEAD carries none either). The live headers this mimics were read
 // with curl on 2026-10-06; tests/unit/serve-dist.test.ts pins them.
 //
-// QED64_EDGE=legacy (default) runs infra/worker.js exactly, what the live site
-// runs (createWorker({...QED64_LEGACY, release}));
-// QED64_EDGE=hardened runs createWorker({ release }), the
-// hardened defaults (ranges, metadata HEAD, 405, no-store errors), which
-// the live site has NOT adopted: preview and test them here. Any other value
-// exits 2 with the usage line, before listening.
+// QED64_EDGE=hardened (default) runs infra/worker.js exactly, what is deployed:
+// createWorker({ release, extraRoutes }), the hardened defaults (ranges,
+// metadata HEAD, 405, no-store errors) with the pinned record, and the two
+// indexes answered from ASSETS (dist/). QED64_EDGE=legacy runs
+// createWorker({...QED64_LEGACY, release}), the Worker deployed before 2026-11:
+// it reads /snapshots/index.json and /profiles/index.json from ARTIFACTS
+// (public/), as that Worker reads them from R2. Use it to preview a rollback
+// to it. Any other value exits 2 with the usage line, before listening.
 //
 // Local only, never in the Worker: GET/HEAD /embed-host.html is answered in
 // the Node layer before the worker, from public/embed-host.html with the
@@ -86,9 +92,9 @@
 // QED64_RELEASE_DIR=<dir> serves the toolchain release's files from a release
 // directory (above). A QED64_RELEASE_DIR that is not a served-layout release
 // directory of the pinned id exits 2 with the usage line, before listening.
-// The hardened mode is what infra/worker.js would be with the hardened
-// defaults: createWorker({ release }) on the same pinned
-// record, so it previews exactly what adopting them would ship.
+// Both modes route the same pinned record. A dist/ built before the two
+// indexes shipped in it has none: the hardened mode then answers them 404
+// (rebuild it).
 //
 // Tests import createDistServer (tests/unit/serve-dist.test.ts); it listens
 // only when run as the main module.
@@ -100,22 +106,23 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
-import legacyWorker from "../infra/worker.js";
-import { createWorker, DEFAULT_ARTIFACT_PREFIXES, parseRange, RELEASE_R2_ROOT, resolveRange } from "../infra/edge-worker.js";
+import shippedWorker from "../infra/worker.js";
+import { createWorker, DEFAULT_ARTIFACT_PREFIXES, parseRange, QED64_LEGACY, RELEASE_R2_ROOT, resolveRange } from "../infra/edge-worker.js";
 import pinnedRelease from "../toolchain/lean4-wasm64-release.json" with { type: "json" };
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 export const DEFAULT_PORT = 5185;
 export const DEFAULT_DIST = path.join(ROOT, "dist");
 export const DEFAULT_PUBLIC = path.join(ROOT, "public");
-export const USAGE = "usage: [PORT=<port>] [DIST=<dir>] [QED64_EDGE=legacy|hardened] [QED64_RELEASE_DIR=<release dir>] node scripts/serve-dist.mjs";
+export const USAGE = "usage: [PORT=<port>] [DIST=<dir>] [QED64_EDGE=hardened|legacy] [QED64_RELEASE_DIR=<release dir>] node scripts/serve-dist.mjs";
 /** The release id infra/worker.js routes to (the pinned record's). */
 export const RELEASE_ID = pinnedRelease.id;
 
-/** The edge modes: the worker each one runs. */
+/** The edge modes: the worker each one runs. hardened is infra/worker.js, what
+ * is deployed; legacy is the Worker deployed before 2026-11 (a rollback target). */
 export const EDGE_MODES = Object.freeze({
-  legacy: () => legacyWorker,
-  hardened: () => createWorker({ release: pinnedRelease }),
+  hardened: () => shippedWorker,
+  legacy: () => createWorker({ ...QED64_LEGACY, release: pinnedRelease }),
 });
 
 // Workers static assets' content types, as the live site sends them (checked
@@ -430,7 +437,7 @@ async function writeResponse(req, res, response) {
     headers[name] = name in headers ? [].concat(headers[name], value) : value;
   }
   const status = response.status;
-  // HEAD: the headers the worker set, nothing added (the live legacy HEAD carries no Content-Length).
+  // HEAD: the headers the worker set, nothing added (the legacy Worker's HEAD carries no Content-Length).
   if (req.method === "HEAD" || status === 204 || status === 304) {
     if (response.body !== null) await response.body.cancel().catch(() => {});
     res.writeHead(status, headers).end();
@@ -498,10 +505,10 @@ async function serveEmbedHost(req, res, publicDir) {
 }
 
 /** An http.Server (not listening) that answers every request through the
- * worker of `edge` ("legacy" | "hardened") over `dist` and `publicDir`, and
- * `releaseDir` (optional) for the toolchain release's keys. */
-export function createDistServer({ dist = DEFAULT_DIST, publicDir = DEFAULT_PUBLIC, edge = "legacy", releaseDir = null } = {}) {
-  if (!Object.hasOwn(EDGE_MODES, edge)) throw new TypeError(`serve-dist: unknown edge mode ${JSON.stringify(edge)} (legacy, hardened)`);
+ * worker of `edge` ("hardened", the default | "legacy") over `dist` and
+ * `publicDir`, and `releaseDir` (optional) for the toolchain release's keys. */
+export function createDistServer({ dist = DEFAULT_DIST, publicDir = DEFAULT_PUBLIC, edge = "hardened", releaseDir = null } = {}) {
+  if (!Object.hasOwn(EDGE_MODES, edge)) throw new TypeError(`serve-dist: unknown edge mode ${JSON.stringify(edge)} (hardened, legacy)`);
   if (releaseDir !== null) {
     const problem = releaseDirProblem(releaseDir);
     if (problem !== null) throw new TypeError(`serve-dist: ${problem}`);
@@ -540,9 +547,9 @@ const isMain = (() => {
 })();
 
 if (isMain) {
-  const edge = process.env.QED64_EDGE || "legacy";
+  const edge = process.env.QED64_EDGE || "hardened";
   if (!Object.hasOwn(EDGE_MODES, edge)) {
-    console.error(`serve-dist: unknown QED64_EDGE=${JSON.stringify(edge)} (legacy, hardened)`);
+    console.error(`serve-dist: unknown QED64_EDGE=${JSON.stringify(edge)} (hardened, legacy)`);
     console.error(USAGE);
     process.exit(2);
   }

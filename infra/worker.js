@@ -25,17 +25,35 @@
  * every /runtime/* and /profiles/<not index.json> file a shell pinned to this
  * record asks for is in the release prefix, and the bucket root's runtime/
  * and profiles/ copies (all but profiles/index.json) were deleted the same week. A release-mapped miss is a
- * 404; release-mapped errors are never cached.
+ * 404; every error is no-store.
  *
- * The logic lives in ./edge-worker.js (a dependency-free library other
- * projects vendor). Every other switch is QED64_LEGACY's, the pre-library
- * worker's behaviour (tests/unit/edge-worker.test.ts pins site-owned paths
- * and assets against tests/fixtures/edge-worker/); moving to the hardened
- * defaults is a separate decision: docs/DEPLOY.md, "Reusing the edge worker".
+ * QED64's two site indexes are static assets of this deploy (D2 of the
+ * 2026-10-28 architecture review, docs/DEPLOY.md "Atomic deploys"): the build
+ * copies the tracked public/snapshots/index.json and public/profiles/index.json
+ * into dist/, and the route below answers a GET or HEAD of exactly those paths
+ * from ASSETS. A deploy, a `wrangler rollback` and a revert-and-push therefore
+ * switch the shell, the release record and the indexes together, and R2 holds
+ * only digest-named QED64 objects (the frozen pre-change indexes aside). Every
+ * other switch is qed64/edge's hardened default (ranges, metadata HEAD, 405,
+ * unsafe-key refusal, explicit lengths, asset HEAD length, no-store errors);
+ * QED64_LEGACY, which this file ran until 2026-11, stays in the library,
+ * frozen. The logic lives in ./edge-worker.js (a dependency-free library other
+ * projects vendor; tests/unit/edge-worker.test.ts pins this file as
+ * createWorker({ release }) plus its index route).
  */
-import { createWorker, isImmutable, QED64_LEGACY } from "./edge-worker.js";
+import { createWorker, isImmutable } from "./edge-worker.js";
 import release from "../toolchain/lean4-wasm64-release.json" with { type: "json" };
 
 export { isImmutable };
 
-export default createWorker({ ...QED64_LEGACY, release });
+// Exact paths, GET and HEAD only: an overlay's /snapshots/<dir>/index.json, the frozen per-build
+// copies and any other method fall through to the artifact route (R2; 405 for other methods).
+const DEPLOYED_INDEXES = new Set(["/snapshots/index.json", "/profiles/index.json"]);
+
+export default createWorker({
+  release,
+  extraRoutes: [{
+    match: (url, request) => DEPLOYED_INDEXES.has(url.pathname) && (request.method === "GET" || request.method === "HEAD"),
+    handle: (request, env, ctx, kit) => kit.serveAsset(request),
+  }],
+});

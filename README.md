@@ -196,7 +196,7 @@ git clone https://github.com/FawadHa1der/QED64 && cd QED64
 npm ci                     # the root: library, pipeline, tests (and the pinned lean4-wasm64 package)
 npm --prefix frontend ci   # the page: lean4monaco, Vite
 npm run fetch:artifacts    # public/: runtime chunks, profile packs, snapshots (~1.65 GB), each sha256-verified
-npm run build:site         # dist/: the page (writes dist/qed64-build.json last)
+npm run build:site         # dist/: the page and the two indexes it deploys with (writes dist/qed64-build.json last)
 npm run preview:prod       # http://localhost:5185, served by the live Worker's own code (infra/worker.js)
 ```
 

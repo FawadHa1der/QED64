@@ -725,6 +725,25 @@ describe.skipIf(!hasGit)("--dist: the shell section", () => {
     fs.writeFileSync(path.join(bundled, "runtime/chunks/x.part-000"), "x");
     expect(refusal(withDist(bundled))).toMatch(/contains runtime\/ — artifacts are served from R2/);
 
+    // D2: the shell carries QED64's two indexes, byte for byte the committed ones (the deploy serves them)
+    const withIndexes = () => {
+      const d = makeDist(buildId);
+      for (const r of ["profiles/index.json", "snapshots/index.json"]) {
+        fs.mkdirSync(path.join(d, path.dirname(r)), { recursive: true });
+        fs.writeFileSync(path.join(d, r), atHead(`public/${r}`));
+      }
+      return d;
+    };
+    const shipped = withDist(withIndexes())();
+    expect(shipped.shell!.files.map((f) => f.path)).toEqual(expect.arrayContaining(["profiles/index.json", "snapshots/index.json"]));
+    const drift = withIndexes();
+    fs.appendFileSync(path.join(drift, "snapshots/index.json"), " ");
+    expect(refusal(withDist(drift))).toMatch(/--dist: snapshots\/index\.json is not .*public\/snapshots\/index\.json — the deploy would serve another pairing's index/);
+    // any other file under profiles/ or snapshots/ is still an artifact bundled
+    const snapz = withIndexes();
+    fs.writeFileSync(path.join(snapz, "snapshots/init.0123456789abcdef.snapz"), "x");
+    expect(refusal(withDist(snapz))).toMatch(/contains snapshots\/init\.0123456789abcdef\.snapz — artifacts are served from R2/);
+
     const noEntry = makeDist(buildId);
     fs.writeFileSync(path.join(noEntry, "index.html"), "<!doctype html><p>static</p>\n");
     expect(refusal(withDist(noEntry))).toMatch(/loads no module script/);

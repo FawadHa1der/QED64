@@ -236,10 +236,9 @@ $([ $REBUILD = 1 ] && echo "    and the umbrella's committed copy, its only off-
  5. nothing more for the Worker: infra/worker.js imports the record of step 1 (plan B2b); check: npx vitest run tests/unit/toolchain-pin.test.ts
     and node pipeline/release/release-manifest.mjs --worktree > /dev/null (refuses a record, base tree and served manifests that disagree)
  6. USER: the release's owner uploads lean4-wasm64/$ID/ to R2 first; then upload, then push and deploy. scripts/upload-artifacts.sh
-    reads only its own checkout's public/ and uploads the site-owned files (the new snapshots, profiles/index.json; the runtime
-    and the packs are the release's, under lean4-wasm64/$ID/), so the snapshots and the indexes must be in that public/: $UPLOAD
-    The upload writes both indexes' per-build copies (snapshots/index.$BID.json, snapshots/profiles-index.$BID.json) before
-    the mutable ones, and first pins R2's current pairing the same way, so a deployed shell that reads its copies (one built
-    from HARDENING #64 on) keeps its pairing until the push deploys the new shell; an older deployed shell reads the mutable
-    files and fails SNAPSHOT_UNPAIRED in that window (docs/DEPLOY.md "Atomic promotes")
+    reads only its own checkout's public/ and uploads only the .snapz the snapshot index names (the runtime and the packs are
+    the release's, under lean4-wasm64/$ID/; the two indexes ship with the deploy), so the new .snapz must be in that public/: $UPLOAD
+    Commit steps 1-3 in one commit first; the push then deploys the shell, the Worker's record and both indexes in one Worker
+    version, and its guard (scripts/deploy-guard.mjs) refuses the deploy until every .snapz the committed index names answers
+    on the live origin (docs/DEPLOY.md "Atomic deploys")
 EOF

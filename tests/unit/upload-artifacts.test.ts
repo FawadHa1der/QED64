@@ -1,16 +1,15 @@
-// scripts/upload-artifacts.sh under decision 3: QED64 uploads only its
-// site-owned files (public/snapshots/, public/profiles/index.json); the
-// toolchain release (runtime, packs) is its owner's, under
-// lean4-wasm64/<id>/, and must already be in R2. The script runs here for
-// real, from a scratch copy of the repository layout under the OS temp dir,
-// with `rclone` replaced by a stub on an explicit PATH that records its argv
-// (and answers `lsf` from STUB_R2_HAS_RELEASE, or fails it with STUB_LSF_EXIT
-// and STUB_LSF_STDERR; any other lsf from STUB_R2_HAS, or fails it with
-// STUB_KEY_LSF_EXIT when it is STUB_KEY_LSF_FAIL; `cat` of R2's mutable
-// indexes from STUB_R2_SNAPSHOT_INDEX / STUB_R2_PROFILE_INDEX, or fails it
-// with STUB_CAT_EXIT when it is STUB_CAT_FAIL; with STUB_PUTS, each `copy` or
-// `copyto` appends the R2 keys it lands as one line, one parallel transfer, and
-// a `copy` then fails with STUB_COPY_EXIT): no network, no credentials.
+// scripts/upload-artifacts.sh under decision 3 and D2: QED64 uploads only its
+// snapshots, each .snapz its tracked index names and each overlay directory
+// whole; never an index (both ship in the deploy, docs/DEPLOY.md "Atomic
+// deploys") and never a per-build copy. The toolchain release (runtime,
+// packs) is its owner's, under lean4-wasm64/<id>/, and must already be in R2.
+// The script runs here for real, from a scratch copy of the repository layout
+// under the OS temp dir, with `rclone` replaced by a stub on an explicit PATH
+// that records its argv (and answers `lsf` of release.json from
+// STUB_R2_HAS_RELEASE, or fails it with STUB_LSF_EXIT and STUB_LSF_STDERR;
+// with STUB_PUTS, each `copy` or `copyto` appends the R2 keys it lands as one
+// line, one transfer; a `copy` then fails with STUB_COPY_EXIT, a `copyto` with
+// STUB_COPYTO_EXIT): no network, no credentials.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -21,7 +20,6 @@ const root = path.resolve(__dirname, "../..");
 const SCRIPT = "scripts/upload-artifacts.sh";
 const ID = "lean-v4.34.0-a8817d0";
 const BUILD = "wasm64-3ab1c6a9da03bc29";
-const LIVE = "wasm64-f69cca24d0878a58"; // the runtime R2's mutable indexes name before this upload (the deployed pairing)
 const R2 = "qed64-r2:qed64-artifacts";
 
 describe("scripts/upload-artifacts.sh against a stubbed rclone", () => {
@@ -55,37 +53,26 @@ describe("scripts/upload-artifacts.sh against a stubbed rclone", () => {
       "#!/bin/sh",
       'printf "rclone %s\\n" "$*" >> "$STUB_LOG"',
       'if [ "$1" = lsf ]; then',
-      '  case "$2" in',
-      '    */release.json)',
-      '      [ -n "$STUB_LSF_STDERR" ] && printf "%s\\n" "$STUB_LSF_STDERR" >&2',
-      '      [ -n "$STUB_LSF_EXIT" ] && exit "$STUB_LSF_EXIT"',
-      '      [ "$STUB_R2_HAS_RELEASE" = 1 ] && echo release.json; exit 0 ;;',
-      '    *)',
-      '      if [ -n "$STUB_KEY_LSF_EXIT" ] && [ "qed64-r2:qed64-artifacts/$STUB_KEY_LSF_FAIL" = "$2" ]; then echo "ERROR : $2: lsf failed" >&2; exit "$STUB_KEY_LSF_EXIT"; fi',
-      '      for k in $STUB_R2_HAS; do [ "qed64-r2:qed64-artifacts/$k" = "$2" ] && basename "$k"; done; exit 0 ;;',
-      '  esac',
+      '  [ -n "$STUB_LSF_STDERR" ] && printf "%s\\n" "$STUB_LSF_STDERR" >&2',
+      '  [ -n "$STUB_LSF_EXIT" ] && exit "$STUB_LSF_EXIT"',
+      '  case "$2" in */release.json) [ "$STUB_R2_HAS_RELEASE" = 1 ] && echo release.json ;; esac',
+      '  exit 0',
       'fi',
-      'if [ "$1" = cat ]; then',
-      '  if [ -n "$STUB_CAT_EXIT" ] && [ "qed64-r2:qed64-artifacts/$STUB_CAT_FAIL" = "$2" ]; then echo "ERROR : $2: 500 InternalError" >&2; exit "$STUB_CAT_EXIT"; fi',
-      '  case "$2" in',
-      '    */snapshots/index.json) [ -n "$STUB_R2_SNAPSHOT_INDEX" ] && printf "%s" "$STUB_R2_SNAPSHOT_INDEX" && exit 0 ;;',
-      '    */profiles/index.json) [ -n "$STUB_R2_PROFILE_INDEX" ] && printf "%s" "$STUB_R2_PROFILE_INDEX" && exit 0 ;;',
-      '  esac',
-      '  echo "ERROR : $2: object not found" >&2; exit 3',
-      'fi',
-      'if [ -n "$STUB_PUTS" ] && { [ "$1" = copy ] || [ "$1" = copyto ]; }; then',
+      'if [ "$1" = copy ] || [ "$1" = copyto ]; then',
       '  verb=$1 src=$2 dst=${3#qed64-r2:qed64-artifacts/}; shift 3; ex=',
       '  while [ $# -gt 0 ]; do [ "$1" = --exclude ] && { ex="$ex $2"; shift; }; shift; done',
       '  set -f',
       '  if [ "$verb" = copyto ]; then keys=$dst; else',
       // the files rclone would send: every file under the source, less those an --exclude names (a pattern that starts
-  // with / is anchored to the source root, as rclone's are; any other matches the file name at any depth)
+      // with / is anchored to the source root, as rclone's are; any other matches the file name at any depth)
       '    keys=$(cd "$src" && find . -type f | sed "s|^\\./||" | sort | while read -r f; do',
       '      skip=; for p in $ex; do case "$p" in (/*) case "/$f" in ($p) skip=1 ;; esac ;; (*) case "${f##*/}" in ($p) skip=1 ;; esac ;; esac; done',
       '      [ -n "$skip" ] || printf "%s " "$dst/$f"; done)',
       '  fi',
-      '  echo $keys >> "$STUB_PUTS"',
+      '  [ -n "$STUB_PUTS" ] && echo $keys >> "$STUB_PUTS"',
       '  if [ "$verb" = copy ] && [ -n "$STUB_COPY_EXIT" ]; then exit "$STUB_COPY_EXIT"; fi',
+      '  if [ "$verb" = copyto ] && [ -n "$STUB_COPYTO_EXIT" ]; then exit "$STUB_COPYTO_EXIT"; fi',
+      '  exit 0',
       'fi',
       "",
     ].join("\n"), { mode: 0o755 });
@@ -99,44 +86,36 @@ describe("scripts/upload-artifacts.sh against a stubbed rclone", () => {
     const env = { PATH: `${bin}:/usr/bin:/bin`, STUB_LOG: log, STUB_R2_HAS_RELEASE: "1", HOME: tmp, TMPDIR: tmp, ...extra };
     const r = spawnSync("/bin/bash", [path.join(repo, SCRIPT), ...args], { cwd: elsewhere, env, encoding: "utf8", timeout: 30_000 });
     const argv = fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n") : [];
+    everyArgv.push(...argv);
     return { ...r, argv };
   };
+  /** Every rclone command line of every run in this file, for the last test. */
+  const everyArgv: string[] = [];
   const LSF = `rclone lsf ${R2}/lean4-wasm64/${ID}/release.json`;
-  /** Step 1's reads when R2 lists neither mutable index (a fresh bucket): absent, nothing to read. */
-  const READS = [`rclone lsf ${R2}/snapshots/index.json`, `rclone lsf ${R2}/profiles/index.json`];
-  /** Step 1's reads when R2 lists both: each is read, to learn the runtime it names now. */
-  const INDEXES = "snapshots/index.json profiles/index.json";
-  const READ_BOTH = [`rclone lsf ${R2}/snapshots/index.json`, `rclone cat ${R2}/snapshots/index.json`, `rclone lsf ${R2}/profiles/index.json`, `rclone cat ${R2}/profiles/index.json`];
-  /** Step 2: the snapshots, without the top-level index or any local per-build copy, before any index names them. */
-  const SNAPSHOTS = `rclone copy public/snapshots ${R2}/snapshots --exclude /index.json --exclude index.*.json --exclude profiles-index.*.json --checksum --transfers 4 --s3-chunk-size 64M --progress`;
-  /** Step 3, first: this runtime's per-build copies, from the mutable files, before them (HARDENING #64). */
-  const PINS = [
-    `rclone copyto public/snapshots/index.json ${R2}/snapshots/index.${BUILD}.json --checksum --s3-no-check-bucket`,
-    `rclone copyto public/profiles/index.json ${R2}/snapshots/profiles-index.${BUILD}.json --checksum --s3-no-check-bucket`,
-  ];
-  /** Steps 2 and 3: the snapshots, the per-build copies, then snapshots/index.json, then profiles/index.json. */
-  const SITE = [
-    SNAPSHOTS,
-    ...PINS,
-    `rclone copyto public/snapshots/index.json ${R2}/snapshots/index.json --checksum --s3-no-check-bucket`,
-    `rclone copyto public/profiles/index.json ${R2}/profiles/index.json --checksum --s3-no-check-bucket`,
-  ];
+  /** One named .snapz, a single copyto (multipart, no bucket check: an object-scoped token cannot create one). */
+  const SNAPZ_PUT = (f: string) => `rclone copyto public/snapshots/${f} ${R2}/snapshots/${f} --checksum --s3-chunk-size 64M --s3-no-check-bucket --progress`;
+  /** An overlay directory, whole, without any per-build copy of its own index. */
+  const OVERLAY_PUT = (o: string) => `rclone copy public/snapshots/${o} ${R2}/snapshots/${o} --exclude index.*.json --exclude profiles-index.*.json --checksum --transfers 4 --s3-chunk-size 64M --progress`;
+  /** The default layout's whole upload: its one named .snapz. */
+  const SITE = [SNAPZ_PUT("init.0123456789abcdef.snapz")];
 
-  it("default: checks the release is in R2, then uploads only snapshots/ and profiles/index.json (no per-build manifest copy), each index's per-build copy first", () => {
+  it("uploads only the .snapz the index names; never an index or a per-build copy", () => {
     layout();
     const r = run([]);
     expect(r.status, r.stderr).toBe(0);
-    expect(r.argv).toEqual([LSF, ...READS, ...SITE, `rclone ls ${R2}/snapshots`]);
+    expect(r.argv).toEqual([LSF, ...SITE, `rclone ls ${R2}/snapshots`]);
     expect(r.stderr).toContain(`preflight ok: release ${ID}, runtime ${BUILD}, 1 snapshots`);
+    expect(r.stdout).toContain("snapshot upload complete; nothing a visitor sees has changed. Next: push main");
+    expect(r.stdout).not.toContain("wrangler deploy");
     expect(fs.readdirSync(path.join(repo, "public/runtime"))).toEqual(["chunks", "runtime-manifest.json"]);
-    // the per-build index copies go to R2 straight from the mutable files: nothing is written locally
+    // nothing is written locally
     expect(fs.readdirSync(path.join(repo, "public/snapshots")).sort()).toEqual(["index.json", "init.0123456789abcdef.snapz"]);
   });
 
-  // A same-runtime rebake is served at once (no deploy), so the order in which its objects land in R2 is
-  // what visitors see: one `rclone copy` holding the index too finished the small index.json long before a
-  // ~300 MB mathlib .snapz, and new visits fetched a snapshot the index named but R2 did not have yet.
-  it("lands every .snapz before any index (the per-build copies too), snapshots/index.json alone, profiles/index.json last; a failed snapshot copy writes no index", () => {
+  // The two indexes ship in the deploy (D2), so the upload's set is exactly the guard's: the .snapz the
+  // committed index names (an older bake still in the checkout is not re-sent), plus overlays, whose own
+  // index travels with them as before.
+  it("exactly the named .snapz, each overlay directory whole; never an index of its own; a failed copy stops the upload", () => {
     layout();
     const MATHLIB = "mathlib.fedcba9876543210.snapz";
     write("public/snapshots/index.json", JSON.stringify({ snapshots: [
@@ -144,51 +123,50 @@ describe("scripts/upload-artifacts.sh against a stubbed rclone", () => {
       { name: "mathlib", url: `/snapshots/${MATHLIB}`, runtime: BUILD },
     ] }));
     write(`public/snapshots/${MATHLIB}`, "mathlib snap");
-    // an overlay set (README: public/snapshots/<overlay>/, opened with ?snapshots=snapshots/<overlay>): its own
-    // index.json is not the mutable one and travels with its snapshots, as before
+    // an older bake the index no longer names
+    write("public/snapshots/old.aaaaaaaaaaaaaaaa.snapz", "stale snap");
+    // an overlay set (README: public/snapshots/<overlay>/, opened with ?snapshots=snapshots/<overlay>)
     write("public/snapshots/widgets8/index.json", "overlay index");
     write("public/snapshots/widgets8/hasse.aaaaaaaaaaaaaaaa.snapz", "overlay snap");
-    // the local per-build copies a promote writes beside the indexes: R2's come from step 2 only
+    write(`public/snapshots/widgets8/index.${BUILD}.json`, "overlay copy");
+    // the local per-build copies a promote or fetch-artifacts writes beside the indexes
     write(`public/snapshots/index.${BUILD}.json`, "local copy");
     write(`public/snapshots/profiles-index.${BUILD}.json`, "local copy");
     const puts = path.join(tmp, "puts.log");
-    // each line: the keys one rclone write lands, in no order among themselves (one parallel transfer)
+    // each line: the keys one rclone write lands, in no order among themselves (one transfer)
     const landed = (extra: Record<string, string> = {}) => {
       fs.rmSync(puts, { force: true });
-      const r = run([], { STUB_PUTS: puts, STUB_R2_HAS: INDEXES, STUB_R2_SNAPSHOT_INDEX: r2Snapshots(BUILD), STUB_R2_PROFILE_INDEX: r2Profiles(BUILD), ...extra });
+      const r = run([], { STUB_PUTS: puts, ...extra });
       const batches = fs.existsSync(puts) ? fs.readFileSync(puts, "utf8").trim().split("\n").map((l) => l.split(" ").sort()) : [];
       return { ...r, batches };
     };
-    const SNAPZ = ["snapshots/init.0123456789abcdef.snapz", `snapshots/${MATHLIB}`];
-    const OBJECTS = [...SNAPZ, "snapshots/widgets8/hasse.aaaaaaaaaaaaaaaa.snapz", "snapshots/widgets8/index.json"].sort();
+    const PLAN = [SNAPZ_PUT("init.0123456789abcdef.snapz"), SNAPZ_PUT(MATHLIB), OVERLAY_PUT("widgets8")];
 
     const r = landed();
     expect(r.status, r.stderr).toBe(0);
-    const at = (key: string) => r.batches.findIndex((b) => b.includes(key));
-    const index = at("snapshots/index.json");
-    expect(r.batches[index]).toEqual(["snapshots/index.json"]); // alone, not in the snapshots' transfer
-    for (const key of SNAPZ) expect(at(key), key).toBeGreaterThanOrEqual(0);
-    for (const key of SNAPZ) expect(at(key), key).toBeLessThan(index);
-    expect(r.batches[r.batches.length - 1]).toEqual(["profiles/index.json"]);
     expect(r.batches).toEqual([
-      OBJECTS, // step 2: no top-level index and no local per-build copy in the parallel transfer; the overlay whole
-      [`snapshots/index.${BUILD}.json`], // step 3, from the mutable files' bytes, after the snapshots they name
-      [`snapshots/profiles-index.${BUILD}.json`],
-      ["snapshots/index.json"],
-      ["profiles/index.json"],
+      ["snapshots/init.0123456789abcdef.snapz"],
+      [`snapshots/${MATHLIB}`],
+      ["snapshots/widgets8/hasse.aaaaaaaaaaaaaaaa.snapz", "snapshots/widgets8/index.json"],
     ]);
+    expect(r.argv).toEqual([LSF, ...PLAN, `rclone ls ${R2}/snapshots`]);
+    const keys = r.batches.flat();
+    for (const k of ["snapshots/index.json", "profiles/index.json", "snapshots/old.aaaaaaaaaaaaaaaa.snapz"]) expect(keys, k).not.toContain(k);
+    expect(keys.filter((k) => /^snapshots\/(?:profiles-)?index\.[^/]*\.json$/.test(k))).toEqual([]);
+    expect(keys.filter((k) => /index\.wasm64-/.test(k))).toEqual([]);
 
-    // a snapshot transfer that fails stops the upload: no index, copy or mutable, names what it did not finish
-    const failed = landed({ STUB_COPY_EXIT: "1" });
+    // a copy that fails stops the upload there (set -e): nothing after it is sent
+    const failed = landed({ STUB_COPYTO_EXIT: "1" });
     expect(failed.status).toBe(1);
     expect(failed.batches).toEqual(r.batches.slice(0, 1));
-    expect(failed.argv.at(-1)).toBe(SITE[0]);
+    expect(failed.argv).toEqual([LSF, PLAN[0]]);
 
-    // DRY_RUN prints the same order and lands nothing
+    // DRY_RUN prints the same plan and lands nothing
     const dry = landed({ DRY_RUN: "1" });
     expect(dry.status, dry.stderr).toBe(0);
     expect(dry.batches).toEqual([]);
-    expect(dry.stdout.trim().split("\n")).toEqual([...SITE].map((c) => `would run: ${c}`).concat("dry run: nothing uploaded"));
+    expect(dry.argv).toEqual([LSF]);
+    expect(dry.stdout.trim().split("\n")).toEqual(PLAN.map((c) => `would run: ${c}`).concat("dry run: nothing uploaded"));
   });
 
   it("refuses in one line, exit 3, when the release is not in R2, before any write", () => {
@@ -229,7 +207,7 @@ describe("scripts/upload-artifacts.sh against a stubbed rclone", () => {
     for (const [opts, msg] of [
       [{ manifestBuild: "wasm64-0000000000000000" }, `public/runtime/runtime-manifest.json is runtime wasm64-0000000000000000, the toolchain release ${ID} is ${BUILD}`],
       [{ snapshotBuild: "wasm64-0000000000000000" }, `snapshot init is for runtime wasm64-0000000000000000, the toolchain release ${ID} is ${BUILD}`],
-      // its per-build copy is named by this runtime, so the profile index must be this runtime's
+      // the deploy serves the profile index with the record, so it must be this runtime's
       [{ profileBuild: "wasm64-0000000000000000" }, `public/profiles/index.json is for runtime wasm64-0000000000000000, the toolchain release ${ID} is ${BUILD}`],
       [{ profileBuild: null }, `public/profiles/index.json is for runtime (none recorded), the toolchain release ${ID} is ${BUILD}`],
     ] as const) {
@@ -244,6 +222,13 @@ describe("scripts/upload-artifacts.sh against a stubbed rclone", () => {
     const missing = run([]);
     expect([missing.status, missing.argv]).toEqual([3, []]);
     expect(missing.stderr).toContain("MISSING: public/snapshots/init.0123456789abcdef.snapz");
+    // an entry the upload could not send as one snapshots/<file> key (the deploy guard refuses it too)
+    layout();
+    write("public/snapshots/sub/init.0123456789abcdef.snapz", "snap");
+    write("public/snapshots/index.json", JSON.stringify({ snapshots: [{ name: "init", url: "/snapshots/sub/init.0123456789abcdef.snapz", runtime: BUILD }] }));
+    const nested = run([]);
+    expect([nested.status, nested.argv]).toEqual([3, []]);
+    expect(nested.stderr).toContain('upload-artifacts: snapshot init names "/snapshots/sub/init.0123456789abcdef.snapz", not a .snapz directly under /snapshots/');
   });
 
   it("--legacy-root is retired: refused with exit 2 before anything runs (the Worker never reads root runtime/ or profiles/)", () => {
@@ -261,95 +246,10 @@ describe("scripts/upload-artifacts.sh against a stubbed rclone", () => {
     layout();
     const r = run([], { DRY_RUN: "1" });
     expect(r.status, r.stderr).toBe(0);
-    expect(r.argv).toEqual([LSF, ...READS]);
+    expect(r.argv).toEqual([LSF]);
     expect(r.stdout.trim().split("\n")).toEqual([...[...SITE].map((c) => `would run: ${c}`), "dry run: nothing uploaded"]);
     const refused = run([], { DRY_RUN: "1", STUB_R2_HAS_RELEASE: "0" });
     expect(refused.status).toBe(3);
-  });
-
-  // HARDENING #64: the shell deployed with R2's CURRENT pairing reads that runtime's per-build copies;
-  // the first upload after the change (or a copy lost) finds none, so the upload makes them inside R2
-  // from the mutable indexes BEFORE it replaces those.
-  const r2Snapshots = (rt: string | string[]) => JSON.stringify({ snapshots: [rt].flat().map((runtime, i) => ({ name: `s${i}`, runtime })) });
-  const r2Profiles = (rt: string) => JSON.stringify({ runtime: { buildId: rt }, profiles: [] });
-  const LIVE_S = `snapshots/index.${LIVE}.json`;
-  const LIVE_P = `snapshots/profiles-index.${LIVE}.json`;
-  // every read first, then the copies: a read that fails refuses before any write
-  const PRESERVE = [
-    `rclone lsf ${R2}/snapshots/index.json`, `rclone cat ${R2}/snapshots/index.json`, `rclone lsf ${R2}/${LIVE_S}`,
-    `rclone lsf ${R2}/profiles/index.json`, `rclone cat ${R2}/profiles/index.json`, `rclone lsf ${R2}/${LIVE_P}`,
-    `rclone copyto ${R2}/snapshots/index.json ${R2}/${LIVE_S} --s3-no-check-bucket`,
-    `rclone copyto ${R2}/profiles/index.json ${R2}/${LIVE_P} --s3-no-check-bucket`,
-  ];
-
-  it("pins R2's current pairing first: its indexes are copied inside R2 to their per-build names when absent, before anything is replaced", () => {
-    layout();
-    const live = { STUB_R2_HAS: INDEXES, STUB_R2_SNAPSHOT_INDEX: r2Snapshots([LIVE, LIVE]), STUB_R2_PROFILE_INDEX: r2Profiles(LIVE) };
-    const r = run([], live);
-    expect(r.status, r.stderr).toBe(0);
-    expect(r.argv).toEqual([LSF, ...PRESERVE, ...SITE, `rclone ls ${R2}/snapshots`]);
-    expect(r.stderr).toContain(`upload-artifacts: R2's snapshots/index.json is runtime ${LIVE}, which has no ${LIVE_S} yet: copying it there first (HARDENING #64)`);
-    expect(r.stderr).toContain(`upload-artifacts: R2's profiles/index.json is runtime ${LIVE}, which has no ${LIVE_P} yet: copying it there first (HARDENING #64)`);
-    // DRY_RUN reads and prints the copies, writes nothing
-    const dry = run([], { ...live, DRY_RUN: "1" });
-    expect(dry.status, dry.stderr).toBe(0);
-    expect(dry.argv).toEqual([LSF, ...PRESERVE.filter((c) => !c.includes("copyto"))]);
-    expect(dry.stdout.trim().split("\n").slice(0, 2)).toEqual(PRESERVE.filter((c) => c.includes("copyto")).map((c) => `would run: ${c}`));
-    // a copy already there is never overwritten (only the missing one is made)
-    const one = run([], { ...live, STUB_R2_HAS: `${INDEXES} ${LIVE_S}` });
-    expect(one.argv).toEqual([LSF, ...PRESERVE.filter((c) => !c.includes(`${R2}/${LIVE_S} --s3`)), ...SITE, `rclone ls ${R2}/snapshots`]);
-    const both = run([], { ...live, STUB_R2_HAS: `${INDEXES} ${LIVE_S} ${LIVE_P}` });
-    expect(both.argv).toEqual([LSF, ...PRESERVE.filter((c) => !c.includes("copyto")), ...SITE, `rclone ls ${R2}/snapshots`]);
-  });
-
-  it("pins nothing from R2 when its indexes are this upload's runtime, mixed, name no runtime, or are absent", () => {
-    layout();
-    for (const [extra, reads] of [
-      [{ STUB_R2_HAS: INDEXES, STUB_R2_SNAPSHOT_INDEX: r2Snapshots(BUILD), STUB_R2_PROFILE_INDEX: r2Profiles(BUILD) }, READ_BOTH], // a re-upload of the same pairing
-      [{ STUB_R2_HAS: INDEXES, STUB_R2_SNAPSHOT_INDEX: r2Snapshots([LIVE, BUILD]), STUB_R2_PROFILE_INDEX: "not json" }, READ_BOTH],
-      [{ STUB_R2_HAS: INDEXES, STUB_R2_SNAPSHOT_INDEX: "<!doctype html>", STUB_R2_PROFILE_INDEX: JSON.stringify({ profiles: [] }) }, READ_BOTH],
-      [{}, READS], // a fresh bucket: lsf lists neither, so neither is read
-      // rclone's own "not found" exits (3 directory, 4 file) mean R2 answered: absent
-      [{ STUB_KEY_LSF_FAIL: "snapshots/index.json", STUB_KEY_LSF_EXIT: "3" }, READS],
-      [{ STUB_KEY_LSF_FAIL: "profiles/index.json", STUB_KEY_LSF_EXIT: "4" }, READS],
-    ] as [Record<string, string>, string[]][]) {
-      const r = run([], extra);
-      expect(r.status, r.stderr).toBe(0);
-      expect(r.argv, JSON.stringify(extra)).toEqual([LSF, ...reads, ...SITE, `rclone ls ${R2}/snapshots`]);
-    }
-  });
-
-  // The first upload after #64 deploys is the only one that makes the deployed pairing's copies, so an R2
-  // read that fails is never taken for an absent index: it refuses, exit 3, before any write (DRY_RUN too).
-  it("fails closed: an lsf or a cat of R2 that errors refuses, exit 3, before any write", () => {
-    layout();
-    const live = { STUB_R2_HAS: INDEXES, STUB_R2_SNAPSHOT_INDEX: r2Snapshots(LIVE), STUB_R2_PROFILE_INDEX: r2Profiles(LIVE) };
-    const L = (k: string) => `rclone lsf ${R2}/${k}`;
-    const C = (k: string) => `rclone cat ${R2}/${k}`;
-    for (const [extra, argv, msg] of [
-      // a present object whose read fails (an R2 5xx, throttling, a dropped connection)
-      [{ STUB_CAT_FAIL: "snapshots/index.json", STUB_CAT_EXIT: "5" }, [L("snapshots/index.json"), C("snapshots/index.json")],
-        `cannot check R2 (rclone cat snapshots/index.json exit 5): ERROR : ${R2}/snapshots/index.json: 500 InternalError`],
-      // the profile index's read fails AFTER the snapshot index's pin was decided: that pin is not written either
-      [{ STUB_CAT_FAIL: "profiles/index.json", STUB_CAT_EXIT: "1" }, [L("snapshots/index.json"), C("snapshots/index.json"), L(LIVE_S), L("profiles/index.json"), C("profiles/index.json")],
-        `cannot check R2 (rclone cat profiles/index.json exit 1): ERROR : ${R2}/profiles/index.json: 500 InternalError`],
-      // the listing itself fails
-      [{ STUB_KEY_LSF_FAIL: "snapshots/index.json", STUB_KEY_LSF_EXIT: "7" }, [L("snapshots/index.json")],
-        `cannot check R2 (rclone lsf exit 7): ERROR : ${R2}/snapshots/index.json: lsf failed`],
-      // whether the pin's copy exists cannot be told: never assume it is absent (nor present)
-      [{ STUB_KEY_LSF_FAIL: LIVE_P, STUB_KEY_LSF_EXIT: "5" }, [L("snapshots/index.json"), C("snapshots/index.json"), L(LIVE_S), L("profiles/index.json"), C("profiles/index.json"), L(LIVE_P)],
-        `cannot check R2 (rclone lsf exit 5): ERROR : ${R2}/${LIVE_P}: lsf failed`],
-    ] as [Record<string, string>, string[], string][]) {
-      for (const dry of [{}, { DRY_RUN: "1" }] as Record<string, string>[]) {
-        const r = run([], { ...live, ...extra, ...dry });
-        const label = JSON.stringify({ ...extra, ...dry });
-        expect(r.status, label).toBe(3);
-        expect(r.argv, label).toEqual([LSF, ...argv]);
-        expect(r.argv.filter((c) => / copy(to)? /.test(c)), label).toEqual([]);
-        expect(r.stdout, label).toBe("");
-        expect(r.stderr.trim().split("\n").filter((l) => !l.startsWith("preflight ok") && !l.includes("copying it there first")), label).toEqual([`upload-artifacts: ${msg}`]);
-      }
-    }
   });
 
   it("refuses an unknown argument with exit 2 before running anything", () => {
@@ -358,5 +258,13 @@ describe("scripts/upload-artifacts.sh against a stubbed rclone", () => {
     expect(r.status).toBe(2);
     expect(r.argv).toEqual([]);
     expect(r.stderr).toContain("usage: [DRY_RUN=1] scripts/upload-artifacts.sh");
+  });
+
+  // Last, over every run above: R2's indexes and per-build copies are frozen since D2, so no command
+  // reads one (no cat) or names one as a source or a key (the overlay's --exclude patterns aside).
+  it("no run read or wrote an index: no rclone cat, no index.json or profiles-index key", () => {
+    expect(everyArgv.length).toBeGreaterThan(10);
+    const named = everyArgv.map((l) => l.replace(/ --exclude \S+/g, ""));
+    expect(named.filter((l) => / cat |index\.json|profiles-index/.test(l) && l !== LSF)).toEqual([]);
   });
 });

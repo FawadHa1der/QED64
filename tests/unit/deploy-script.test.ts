@@ -1,7 +1,8 @@
 // One deploy path (plan step A4): .github/workflows/deploy.yml (one run at a
 // time, main only, and only while its commit is still main's head) installs both
 // roots, runs the tests, then calls scripts/deploy-app.sh, which alone holds
-// typecheck:site → build:site → the artifact prune → the size check → the
+// typecheck:site → build:site → the artifact prune (all but QED64's two
+// indexes, which ship with the shell: D2) → the size and index check → the
 // live-snapshot guard (scripts/deploy-guard.mjs, R19a; its own test is
 // deploy-guard.test.ts) → `npx wrangler deploy`. The script runs here for real,
 // from a scratch copy of the repository layout, with `npm`, `npx` and `node`
@@ -106,7 +107,8 @@ describe("the prune and `wrangler deploy` live in exactly one file", () => {
       at(/^\[ -d frontend\/node_modules \] \|\| npm ci --prefix frontend$/),
       at(/^npm run typecheck:site$/),
       at(/^npm run build:site$/),
-      at(/^rm -rf dist\/runtime dist\/profiles dist\/snapshots$/),
+      at(/^rm -rf dist\/runtime$/),
+      at(/find "dist\/\$dir" -mindepth 1 -maxdepth 1 ! -name index\.json -exec rm -rf \{\} \+$/),
       at(/find -L dist -type f -size/),
       at(/^node scripts\/deploy-guard\.mjs$/),
       at(/^\s*npx wrangler deploy$/),
@@ -125,17 +127,24 @@ describe("scripts/deploy-app.sh against stubbed npm/npx/node", () => {
     bin = path.join(tmp, "bin");
     log = path.join(tmp, "argv.log");
     elsewhere = path.join(tmp, "elsewhere");
-    for (const d of [path.join(repo, "scripts"), path.join(repo, "frontend"), bin, elsewhere]) fs.mkdirSync(d, { recursive: true });
+    for (const d of [path.join(repo, "scripts"), path.join(repo, "frontend"), path.join(repo, "public/profiles"), path.join(repo, "public/snapshots"), bin, elsewhere]) fs.mkdirSync(d, { recursive: true });
     fs.copyFileSync(path.join(root, SCRIPT), path.join(repo, SCRIPT));
-    // `npm run build:site` writes a dist/ with the artifact directories the prune must remove, plus
-    // STUB_BIG_BYTES of one sparse file; STUB_FAIL names a script that exits STUB_FAIL_CODE (default 7).
+    // the tracked indexes the build copies into dist/ (D2)
+    fs.writeFileSync(path.join(repo, "public/profiles/index.json"), '{"schema":"qed64.profile-index/v1","profiles":[]}\n');
+    fs.writeFileSync(path.join(repo, "public/snapshots/index.json"), '{"schema":"qed64.snapshot-index/v1","snapshots":[]}\n');
+    // `npm run build:site` writes a dist/ with the artifacts the prune must remove and the two indexes it
+    // must keep (copied from public/, as vite's build does; STUB_NO_INDEX=<dir> skips that one,
+    // STUB_INDEX_DRIFT=1 appends a byte to the profile index's copy), plus STUB_BIG_BYTES of one sparse
+    // file; STUB_FAIL names a script that exits STUB_FAIL_CODE (default 7).
     fs.writeFileSync(path.join(bin, "npm"), [
       "#!/bin/sh",
       'printf "npm %s\\n" "$*" >> "$STUB_LOG"',
       'if [ "$1" = run ] && [ "$2" = "$STUB_FAIL" ]; then exit "${STUB_FAIL_CODE:-7}"; fi',
       'if [ "$1" = run ] && [ "$2" = build:site ]; then',
       "  rm -rf dist && mkdir -p dist/assets dist/runtime dist/profiles/mathlib dist/snapshots",
-      "  echo shell > dist/index.html; echo chunk > dist/runtime/lean.wasm.0; echo pack > dist/profiles/mathlib/p.pack; echo snap > dist/snapshots/index.json",
+      "  echo shell > dist/index.html; echo chunk > dist/runtime/lean.wasm.0; echo pack > dist/profiles/mathlib/p.pack; echo snap > dist/snapshots/init.0.snapz",
+      '  for d in profiles snapshots; do [ "$STUB_NO_INDEX" = "$d" ] || cp "public/$d/index.json" "dist/$d/"; done',
+      '  if [ "$STUB_INDEX_DRIFT" = 1 ]; then printf x >> dist/profiles/index.json; fi',
       '  if [ -n "$STUB_BIG_BYTES" ]; then dd if=/dev/zero of=dist/assets/big.bin bs=1 count=0 seek="$STUB_BIG_BYTES" 2>/dev/null; fi',
       "fi",
       "",
@@ -155,7 +164,7 @@ describe("scripts/deploy-app.sh against stubbed npm/npx/node", () => {
     fs.rmSync(log, { force: true });
     fs.rmSync(path.join(repo, "dist"), { recursive: true, force: true });
     // An explicit environment: the stubs first, then only the system tools; nothing inherited (no tokens).
-    const env = { PATH: `${bin}:/usr/bin:/bin`, STUB_LOG: log, STUB_FAIL: "", STUB_BIG_BYTES: "", STUB_GUARD_EXIT: "", HOME: tmp, ...extra };
+    const env = { PATH: `${bin}:/usr/bin:/bin`, STUB_LOG: log, STUB_FAIL: "", STUB_BIG_BYTES: "", STUB_GUARD_EXIT: "", STUB_NO_INDEX: "", STUB_INDEX_DRIFT: "", HOME: tmp, ...extra };
     const r = spawnSync("/bin/bash", [path.join(repo, SCRIPT), ...args], { cwd: elsewhere, env, encoding: "utf8", timeout: 30_000 });
     const argv = fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n") : [];
     return { ...r, argv };
@@ -165,14 +174,36 @@ describe("scripts/deploy-app.sh against stubbed npm/npx/node", () => {
 
   // The scratch repo has no frontend/node_modules, so the script's local-use install runs (as a stub); the skip
   // when it exists is pinned by reading the script above, so this test never creates a node_modules.
-  it("--dry-run: builds from the repo root whatever the cwd, prunes, runs the guard, prints the deploy and never runs npx", () => {
+  it("--dry-run: builds from the repo root whatever the cwd, prunes all but the two indexes, runs the guard, prints the deploy and never runs npx", () => {
     const r = run(["--dry-run"]);
     expect(r.status, r.stderr).toBe(0);
     expect(r.argv).toEqual([...BUILD, GUARD]);
     expect(r.stdout).toContain("would run: npx wrangler deploy");
     expect(fs.existsSync(path.join(repo, "dist/index.html"))).toBe(true);
-    for (const d of ["runtime", "profiles", "snapshots"]) expect(fs.existsSync(path.join(repo, "dist", d)), d).toBe(false);
+    expect(fs.existsSync(path.join(repo, "dist/runtime"))).toBe(false);
+    for (const d of ["profiles", "snapshots"]) {
+      expect(fs.readdirSync(path.join(repo, "dist", d)), d).toEqual(["index.json"]);
+      expect(fs.readFileSync(path.join(repo, "dist", d, "index.json")), d).toEqual(fs.readFileSync(path.join(repo, "public", d, "index.json")));
+    }
     expect(fs.existsSync(path.join(elsewhere, "dist"))).toBe(false);
+  });
+
+  // D2: the deploy serves QED64's two tracked indexes with the shell, so a build without one, or with
+  // other bytes, would ship no pairing or another; refused before the guard and before any deploy.
+  it("refuses, in one line and before the guard, a dist/ missing an index or holding other bytes than the tracked one", () => {
+    for (const [extra, line] of [
+      [{ STUB_NO_INDEX: "snapshots" }, "deploy-app: REFUSED: dist/snapshots/index.json is missing: the deploy serves QED64's tracked public/snapshots/index.json with the shell (npm run build:site copies it)"],
+      [{ STUB_NO_INDEX: "profiles" }, "deploy-app: REFUSED: dist/profiles/index.json is missing: the deploy serves QED64's tracked public/profiles/index.json with the shell (npm run build:site copies it)"],
+      [{ STUB_INDEX_DRIFT: "1" }, "deploy-app: REFUSED: dist/profiles/index.json is not byte-identical to the tracked public/profiles/index.json"],
+    ] as [Record<string, string>, string][]) {
+      for (const args of [[], ["--dry-run"]]) {
+        const r = run(args, extra);
+        const label = JSON.stringify({ ...extra, args });
+        expect(r.status, label).toBe(1);
+        expect(r.argv, label).toEqual(BUILD);
+        expect(r.stderr.trim().split("\n"), label).toEqual([line]);
+      }
+    }
   });
 
   it("without --dry-run: the same steps, then `npx wrangler deploy`", () => {

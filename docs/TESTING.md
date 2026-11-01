@@ -146,9 +146,13 @@ the site owns, still from `--origin`.
 `npm run preview:prod` (`scripts/serve-dist.mjs`) is the live Worker's own
 code (`infra/worker.js`) behind a Node server, with `dist/` and `public/` as
 its bindings (docs/DEPLOY.md, "Local preview: the Worker's own code"); the
-lanes that name it run against it unchanged. Its default `QED64_EDGE=legacy`
-is what is deployed; `QED64_EDGE=hardened` serves the hardened edge-worker
-defaults, which the live site has not adopted.
+lanes that name it run against it unchanged. Its default `QED64_EDGE=hardened`
+is `infra/worker.js`, what is deployed: the hardened edge-worker defaults, the
+pinned record, and the two indexes from `dist/` (D2: the build copies the
+tracked `public/snapshots/index.json` and `public/profiles/index.json` in).
+`QED64_EDGE=legacy` is the Worker deployed before 2026-11, a rollback target,
+which reads the two indexes from `public/`. A `dist/` built before this change
+has no indexes (they answer 404 under the default): rebuild it.
 
 ## Adversarial suite (`npm run test:adversarial`, tests/adversarial/)
 
@@ -577,19 +581,28 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
 - Equivalence: a request matrix (GET/HEAD/POST/…, shell, assets, every
   artifact prefix, missing keys, odd paths, Range headers) runs through the
   ORIGINAL worker (`tests/fixtures/edge-worker/worker-47f50e8.js`,
-  sha256-pinned), `createWorker(QED64_LEGACY)` and the shipped
-  `infra/worker.js` against fake ASSETS/R2 bindings; status, statusText,
-  headers, body and every binding call must be identical. Flipping any
-  legacy switch fails it.
+  sha256-pinned) and `createWorker(QED64_LEGACY)` against fake ASSETS/R2
+  bindings; status, statusText, headers, body and every binding call must be
+  identical. Flipping any legacy switch fails it.
+- The shipped `infra/worker.js` is pinned over the same matrix as
+  `createWorker({ release })` (the hardened defaults and the pinned record)
+  plus its index route: GET and HEAD of `/snapshots/index.json` and
+  `/profiles/index.json` are answered from ASSETS with no R2 call, every
+  other request exactly as the reference answers it (a POST on an index is a
+  405, an overlay's index and a `.snapz` stay in R2, every error is
+  no-store).
 - The hardened defaults (ranges/If-Range/416, metadata HEAD, 405 + Allow,
   unsafe keys, r2Prefix validation, rootRedirect, extraRoutes + kit,
   decorate, isolation overrides, no-store errors) are pinned against the
   same fakes, whose ranged `get()` throws where R2 would be leaned on.
 - The local preview (`tests/unit/serve-dist.test.ts`): `scripts/serve-dist.mjs`
   answers through the worker itself, in-process on port 0 over a scratch
-  `dist/` and `public/` in the OS temp dir. Pinned per `QED64_EDGE` mode: the
-  isolation headers and the cache rule on the shell, an asset and artifacts
-  (through a symlinked `chunks/`), 404s, HEAD lengths as on the live site,
+  `dist/` and `public/` in the OS temp dir. Pinned per `QED64_EDGE` mode
+  (`hardened`, `infra/worker.js`; `legacy`, the Worker deployed before
+  2026-11): the isolation headers and the cache rule on the shell, an asset
+  and artifacts (through a symlinked `chunks/`), the two indexes (from
+  `dist/` when hardened, from `public/` when legacy), 404s, HEAD lengths as
+  on the live site,
   doubled slashes and `/index` answering one 307 as live (no `Location`
   starting with `//`), a mode-000 file answering 500 with the isolation
   headers,

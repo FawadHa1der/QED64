@@ -15,9 +15,9 @@
  * `createWorker(QED64_LEGACY)` reproduces the pre-library QED64 worker byte
  * for byte (status, headers, body, and every binding call);
  * tests/unit/edge-worker.test.ts runs a request matrix through both. QED64's
- * own infra/worker.js is QED64_LEGACY plus its toolchain release
- * (`release`; it used `releaseFallback` until 2026-10-25), identical to it on site-owned paths and
- * assets. The hardened defaults (ranges, metadata HEAD, 405,
+ * own infra/worker.js takes the hardened defaults with its toolchain release
+ * and one extra route (its two indexes from the deploy's static assets);
+ * until 2026-11 it was QED64_LEGACY plus the release. The hardened defaults (ranges, metadata HEAD, 405,
  * traversal refusal, explicit Content-Length, asset HEAD Content-Length,
  * no-store errors) come from the lean4game and widgets-showcase forks of that
  * worker; each one is a switch, and QED64_LEGACY sets every switch to the old

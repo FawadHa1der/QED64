@@ -10,9 +10,13 @@
 #                                  CI has installed both roots already)
 #   2. npm run typecheck:site
 #   3. npm run build:site         (dist/)
-#   4. the prune: rm -rf dist/runtime dist/profiles dist/snapshots
+#   4. the prune: rm -rf dist/runtime, and every entry of dist/profiles/
+#      and dist/snapshots/ but index.json (the deploy carries QED64's two
+#      indexes with the shell: docs/DEPLOY.md "Atomic deploys")
 #   5. the size check: refuse (exit 1, one line) when dist/ still holds a
-#      runtime/, profiles/ or snapshots/ path, or any file over 25 MiB
+#      runtime/ path, lacks dist/profiles/index.json or dist/snapshots/index.json
+#      or holds one that is not byte-identical to the tracked public/ file,
+#      holds any other profiles/ or snapshots/ path, or any file over 25 MiB
 #   6. the guard: node scripts/deploy-guard.mjs (architecture review R19a):
 #      refuse (exit 1) unless every .snapz public/snapshots/index.json names
 #      already answers on the live origin
@@ -51,21 +55,33 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 npm run typecheck:site
 npm run build:site
 
-# Artifacts are served from R2 — never bundle them as worker assets.
-# (publicDir is off for builds; this prune is a defensive invariant, and the
+# The deploy carries the shell and QED64's two indexes (dist/profiles/index.json and
+# dist/snapshots/index.json, copied from the tracked public/ files by the build: docs/DEPLOY.md
+# "Atomic deploys"); every other artifact is served from R2 and never bundled. (publicDir is off
+# for builds and the build copies only those two, so this prune is a defensive invariant, and the
 # only copy of it: deploy.yml calls this script.)
-rm -rf dist/runtime dist/profiles dist/snapshots
+rm -rf dist/runtime
+for dir in profiles snapshots; do
+  [ -d "dist/$dir" ] || continue
+  find "dist/$dir" -mindepth 1 -maxdepth 1 ! -name index.json -exec rm -rf {} +
+done
 
-# Workers static assets refuse any file over 25 MiB, and an artifact
-# directory in dist/ would ship a stale runtime beside R2's. Refuse here, in
-# one line, before wrangler uploads anything.
+# Workers static assets refuse any file over 25 MiB, an artifact in dist/
+# would ship a stale runtime or snapshot beside R2's, and a deploy without
+# its two indexes (or with other bytes than the tracked ones) would serve
+# another pairing, or none. Refuse here, in one line, before wrangler uploads
+# anything.
 refuse() { echo "deploy-app: REFUSED: $*" >&2; exit 1; }
 [ -d dist ] || refuse "no dist/ after npm run build:site"
-for dir in runtime profiles snapshots; do
-  if [ -e "dist/$dir" ] || [ -L "dist/$dir" ]; then
-    refuse "dist/$dir is still present after the prune (artifacts are served from R2, never bundled)"
-  fi
+if [ -e dist/runtime ] || [ -L dist/runtime ]; then
+  refuse "dist/runtime is still present after the prune (the runtime is the toolchain release's, served from R2, never bundled)"
+fi
+for idx in profiles/index.json snapshots/index.json; do
+  { [ -f "dist/$idx" ] && [ ! -L "dist/$idx" ]; } || refuse "dist/$idx is missing: the deploy serves QED64's tracked public/$idx with the shell (npm run build:site copies it)"
+  cmp -s "dist/$idx" "public/$idx" || refuse "dist/$idx is not byte-identical to the tracked public/$idx"
 done
+stray="$(find dist/profiles dist/snapshots -mindepth 1 ! -path dist/profiles/index.json ! -path dist/snapshots/index.json -print -quit)"
+[ -z "$stray" ] || refuse "dist/ holds $stray: of the artifact directories the deploy carries only profiles/index.json and snapshots/index.json (everything else is served from R2)"
 max_bytes=$((25 * 1024 * 1024))
 big="$(find -L dist -type f -size +${max_bytes}c)"
 if [ -n "$big" ]; then

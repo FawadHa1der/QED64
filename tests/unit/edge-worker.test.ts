@@ -6,11 +6,11 @@
 //     worker-47f50e8.js, byte-for-byte `git show 47f50e8:infra/worker.js`,
 //     sha256-pinned below) and through createWorker(QED64_LEGACY), and every
 //     response must agree on status, statusText, headers and body, and every
-//     binding call on its arguments. The shipped infra/worker.js (QED64_LEGACY +
-//     the toolchain release, decision 3) agrees exactly on site-owned paths and
-//     assets; on /runtime/* and /profiles/<not index.json> it reads only
-//     lean4-wasm64/<id>/ (no fallback to the root key since 2026-10-25), and
-//     its misses there are no-store ("the shipped worker" below).
+//     binding call on its arguments. The shipped infra/worker.js is no longer
+//     in the equivalence (D2, 2026-11): it is pinned as createWorker({ release })
+//     (the hardened defaults and the pinned record) plus its index route, GET
+//     and HEAD of /snapshots/index.json and /profiles/index.json answered from
+//     ASSETS ("the shipped worker" below).
 // (b) The hardened defaults other projects get: single-range GETs (If-Range,
 //     416), metadata HEAD, 405 + Allow, traversal refusal, r2Prefix
 //     validation, rootRedirect, extraRoutes + kit, decorate, isolation
@@ -208,14 +208,12 @@ describe("equivalence: createWorker(QED64_LEGACY) is the pre-library worker, byt
     const subjects: [string, EdgeWorker][] = [
       ["legacy", legacy],
       ["createWorker(QED64_LEGACY)", createWorker(QED64_LEGACY)],
-      ["infra/worker.js", shipped as EdgeWorker],
     ];
     let compared = 0;
     for (const c of MATRIX) {
       const label = `${c.method} ${c.path}${c.headers ? " " + JSON.stringify(c.headers) : ""}`;
       const results = [];
-      // the shipped worker routes release-mapped paths elsewhere: compared below
-      for (const [name, w] of subjects.filter(([n]) => n !== "infra/worker.js" || !releaseMapped(c.path))) {
+      for (const [name, w] of subjects) {
         const env = makeEnv();
         const init: RequestInit = { method: c.method, headers: c.headers };
         if (c.body !== undefined) init.body = c.body;
@@ -232,63 +230,71 @@ describe("equivalence: createWorker(QED64_LEGACY) is the pre-library worker, byt
     }
     const mappedCases = MATRIX.filter((c) => releaseMapped(c.path)).length;
     expect(mappedCases).toBeGreaterThan(20);
-    expect(compared).toBe(MATRIX.length * 2 - mappedCases);
+    expect(compared).toBe(MATRIX.length);
   });
 
-  test("the shipped worker: release-mapped paths read only lean4-wasm64/<id>/ (no root fallback since 2026-10-25), misses are no-store", async () => {
-    const pinned = JSON.parse(fs.readFileSync(path.join(root, "toolchain/lean4-wasm64-release.json"), "utf8")) as { id: string };
+  test("the shipped worker: createWorker({ release }) (hardened, the pinned record) except GET/HEAD of the two deployed indexes, which ASSETS answers", async () => {
+    const pinned = JSON.parse(fs.readFileSync(path.join(root, "toolchain/lean4-wasm64-release.json"), "utf8")) as ReleaseRecord;
     const rp = `lean4-wasm64/${pinned.id}/`;
-    const toRelease = (key: string) => rp + key; // runtime/x → lean4-wasm64/<id>/runtime/x (the mounts are identity: /runtime/ → runtime/)
-    // the same objects, the release's at its prefix: what R2 holds once decision 3 is live
-    const moved = Object.fromEntries(Object.entries(OBJECTS).map(([k, v]) => [releaseMapped("/" + k) ? toRelease(k) : k, v]));
-    const noStoreErrors = (snap: Awaited<ReturnType<typeof snapshot>>) =>
-      snap.status < 400 ? snap : { ...snap, headers: snap.headers.map(([k, v]) => [k, k === "cache-control" ? "no-store" : v] as [string, string]) };
-    let compared = 0;
-    for (const c of MATRIX.filter((m) => releaseMapped(m.path))) {
+    const reference = createWorker({ release: pinned });
+    const REVALIDATE = "public, max-age=0, must-revalidate";
+    // the same objects, the release's at its prefix: what R2 holds under decision 3
+    const moved = Object.fromEntries(Object.entries(OBJECTS).map(([k, v]) => [releaseMapped("/" + k) ? rp + k : k, v]));
+    // the deploy's copies of the tracked indexes (dist/), other bytes than R2's frozen ones, so the source shows
+    const INDEXES: Record<string, { body: string; type: string }> = {
+      "/snapshots/index.json": { body: '{"schema":"qed64.snapshot-index/v1","snapshots":[],"from":"assets"}', type: "application/json" },
+      "/profiles/index.json": { body: '{"schema":"qed64.profile-index/v1","profiles":[],"from":"assets"}', type: "application/json" },
+    };
+    const env = () => ({ ASSETS: fakeAssets({ ...FILES, ...INDEXES }), ARTIFACTS: fakeBucket(moved) });
+    const deployed = (c: Case) => (c.method === "GET" || c.method === "HEAD") && new URL(ORIGIN + c.path).pathname in INDEXES;
+    let routed = 0;
+    for (const c of MATRIX) {
       const label = `${c.method} ${c.path}${c.headers ? " " + JSON.stringify(c.headers) : ""}`;
       const init = (): RequestInit => ({ method: c.method, headers: c.headers, ...(c.body !== undefined ? { body: c.body } : {}) });
-      const want = makeEnv();
-      const wantSnap = noStoreErrors(await snapshot(await legacy.fetch(req(c.path, init()), want)));
-      const pathname = new URL(ORIGIN + c.path).pathname;
-      const unsafe = artifactKey(pathname) === null;
-      // (1) the release prefix populated
-      const live = { ASSETS: fakeAssets(FILES), ARTIFACTS: fakeBucket(moved) };
-      const liveSnap = await snapshot(await (shipped as EdgeWorker).fetch(req(c.path, init()), live));
-      // (2) only the root populated (the pre-decision-3 bucket): no fallback, so the read answers as the
-      // legacy worker does for an absent object, and the root key is never asked
-      const old = makeEnv();
-      const oldSnap = await snapshot(await (shipped as EdgeWorker).fetch(req(c.path, init()), old));
-      const absent = { ASSETS: fakeAssets(FILES), ARTIFACTS: fakeBucket({}) };
-      const absentSnap = noStoreErrors(await snapshot(await legacy.fetch(req(c.path, init()), absent)));
-      if (unsafe) {
-        // refused before R2: the same 404 body, no-store, nothing asked
-        for (const [snap, env] of [[liveSnap, live], [oldSnap, old]] as const) {
-          expect([snap.status, Buffer.from(snap.body, "base64").toString(), env.ARTIFACTS.calls], label).toEqual([404, "not found", []]);
-          expect(snap.headers, label).toContainEqual(["cache-control", "no-store"]);
-        }
-        compared++;
+      const got = env();
+      const r = await (shipped as EdgeWorker).fetch(req(c.path, init()), got);
+      if (deployed(c)) {
+        const { pathname } = new URL(ORIGIN + c.path);
+        expect(got.ARTIFACTS.calls, label).toEqual([]);
+        expect(got.ASSETS.calls[0], label).toBe(`${c.method} ${pathname}`);
+        expect([r.status, r.headers.get("cache-control")], label).toEqual([200, REVALIDATE]);
+        isolated(r);
+        expect(await r.text(), label).toBe(c.method === "GET" ? INDEXES[pathname]!.body : "");
+        routed++;
         continue;
       }
-      // a release key's object carries the release key's etag (the fake R2 names etags by key)
-      const etagFix = (snap: typeof liveSnap) => ({ ...snap, headers: snap.headers.map(([k, v]) => [k, k === "etag" ? v.replace(rp, "") : v] as [string, string]) });
-      expect(etagFix(liveSnap), `release prefix: ${label}`).toEqual(wantSnap);
-      expect(oldSnap, `no root fallback: ${label}`).toEqual(absentSnap);
-      const legacyCalls = want.ARTIFACTS.calls;
-      expect(legacyCalls.length, label).toBe(1);
-      const [call] = legacyCalls;
-      expect(live.ARTIFACTS.calls, `release prefix calls: ${label}`).toEqual([{ ...call, key: toRelease(call!.key) }]);
-      expect(old.ARTIFACTS.calls, `no root fallback calls: ${label}`).toEqual([{ ...call, key: toRelease(call!.key) }]);
-      compared++;
+      const want = env();
+      const wantSnap = await snapshot(await reference.fetch(req(c.path, init()), want));
+      expect(await snapshot(r), label).toEqual(wantSnap);
+      expect(got.ARTIFACTS.calls, `R2 calls: ${label}`).toEqual(want.ARTIFACTS.calls);
+      expect(got.ASSETS.calls, `ASSETS calls: ${label}`).toEqual(want.ASSETS.calls);
     }
-    expect(compared).toBe(MATRIX.filter((m) => releaseMapped(m.path)).length);
+    expect(routed).toBe(MATRIX.filter(deployed).length);
+    expect(routed).toBeGreaterThan(4); // GET and HEAD of both, the /a/../ spelling, #frag, if-none-match
+
     // what this pins, spelled out
-    const env = makeEnv();
-    const miss = await (shipped as EdgeWorker).fetch(req("/runtime/chunks/nope.part-001"), env);
-    expect([miss.status, miss.headers.get("cache-control")]).toEqual([404, "no-store"]);
-    expect(env.ARTIFACTS.calls.map((c) => c.key)).toEqual([`${rp}runtime/chunks/nope.part-001`]);
-    const site = makeEnv();
-    const index = await (shipped as EdgeWorker).fetch(req("/profiles/index.json"), site);
-    expect([index.status, site.ARTIFACTS.calls.map((c) => c.key)]).toEqual([200, ["profiles/index.json"]]);
+    const at = async (p: string, init?: RequestInit, e = env()) => ({ r: await (shipped as EdgeWorker).fetch(req(p, init), e), e });
+    // another method on an index falls through to the artifact route: 405, no binding asked
+    const post = await at("/snapshots/index.json", { method: "POST", body: "x" });
+    expect([post.r.status, post.r.headers.get("allow"), post.r.headers.get("cache-control"), post.e.ARTIFACTS.calls, post.e.ASSETS.calls]).toEqual([405, "GET, HEAD", "no-store", [], []]);
+    // a deploy without the indexes (a dist/ built before they shipped): a 404 the browser re-asks for
+    const bare = await at("/profiles/index.json", undefined, { ASSETS: fakeAssets(FILES), ARTIFACTS: fakeBucket(moved) });
+    expect([bare.r.status, bare.r.headers.get("cache-control"), bare.e.ARTIFACTS.calls]).toEqual([404, "no-store", []]);
+    // HEAD carries the GET's length (assetHeadLength): the binding is asked HEAD, then GET
+    const head = await at("/profiles/index.json", { method: "HEAD" });
+    expect([head.r.status, head.r.headers.get("content-length"), head.e.ASSETS.calls]).toEqual([200, String(INDEXES["/profiles/index.json"]!.body.length), ["HEAD /profiles/index.json", "GET /profiles/index.json"]]);
+    // an overlay's own index is not a deployed one: R2, the site's key
+    const overlay = await at("/snapshots/widgets8/index.json");
+    expect([overlay.r.status, overlay.e.ARTIFACTS.calls.map((c) => c.key), overlay.e.ASSETS.calls]).toEqual([404, ["snapshots/widgets8/index.json"], []]);
+    // a release-mapped miss: the release prefix only, no-store
+    const miss = await at("/runtime/chunks/nope.part-001");
+    expect([miss.r.status, miss.r.headers.get("cache-control"), miss.e.ARTIFACTS.calls.map((c) => c.key)]).toEqual([404, "no-store", [`${rp}runtime/chunks/nope.part-001`]]);
+    // a missing site .snapz is no longer cached for a year (R18: errorCacheControl "no-store")
+    const gone = await at(`/snapshots/missing.${HEX16}.snapz`);
+    expect([gone.r.status, gone.r.headers.get("cache-control"), gone.e.ARTIFACTS.calls.map((c) => c.key)]).toEqual([404, "no-store", [`snapshots/missing.${HEX16}.snapz`]]);
+    // a present .snapz: immutable, with its length (fullGetLength)
+    const snap = await at(SNAPZ);
+    expect([snap.r.status, snap.r.headers.get("cache-control"), snap.r.headers.get("content-length")]).toEqual([200, "public, max-age=31536000, immutable", String(BYTES.length)]);
   });
 
   test("the matrix exercises what it claims (pins the legacy behaviour it preserves)", async () => {
@@ -1078,10 +1084,12 @@ describe("release: the record is checked when the worker is created", () => {
   });
 });
 
-// HARDENING #64: the per-build copies of the site-owned indexes. The shipped worker must read them
-// from the site (the bucket root), never from the release prefix, and serve them must-revalidate:
-// their NAME carries a 16-hex buildId, which the digest rule alone would call immutable, and a
-// rebake for the same runtime rewrites them; a 404 before their upload must not be cached a year.
+// HARDENING #64: the per-build copies of the site-owned indexes. QED64 publishes none since D2 (its
+// indexes ship in its deploy), but its frozen ones and other sites' still exist. The shipped worker
+// must read them from the site (the bucket root), never from the release prefix, and serve them
+// must-revalidate: their NAME carries a 16-hex buildId, which the digest rule alone would call
+// immutable, and a rebake for the same runtime rewrites them. A 404 is no-store, as every error is
+// under the hardened defaults (R18).
 describe("the per-build index copies (/snapshots/index.<buildId>.json, /snapshots/profiles-index.<buildId>.json)", () => {
   const ID = `wasm64-${HEX16}`;
   const COPIES = [`/snapshots/index.${ID}.json`, `/snapshots/profiles-index.${ID}.json`];
@@ -1094,17 +1102,17 @@ describe("the per-build index copies (/snapshots/index.<buildId>.json, /snapshot
     expect(isImmutable(`/snapshots/x-index.${ID}.json`)).toBe(true); // only the two names, not any *-index
   });
 
-  test("the shipped worker: site-owned (bucket root, one lookup, no release prefix), 200 and 404 both must-revalidate", async () => {
+  test("the shipped worker: site-owned (bucket root, one lookup, no release prefix), 200 must-revalidate, 404 no-store", async () => {
     for (const p of COPIES) {
       const key = p.slice(1);
       const hit = { ASSETS: fakeAssets(FILES), ARTIFACTS: fakeBucket({ [key]: { bytes: json({ schema: "x" }), contentType: "application/json" } }) };
       const r = await (shipped as EdgeWorker).fetch(req(p), hit);
       expect([r.status, r.headers.get("cache-control"), hit.ARTIFACTS.calls.map((c) => `${c.op} ${c.key}`)], p).toEqual([200, REVALIDATE, [`get ${key}`]]);
       isolated(r);
-      // a deployment older than the copies: a miss the browser re-asks for, not a year-long cached 404
+      // no copy for this runtime (QED64 writes none since D2): a miss the browser re-asks for, never cached
       const miss = makeEnv();
       const m = await (shipped as EdgeWorker).fetch(req(p), miss);
-      expect([m.status, m.headers.get("cache-control"), miss.ARTIFACTS.calls.map((c) => `${c.op} ${c.key}`)], p).toEqual([404, REVALIDATE, [`get ${key}`]]);
+      expect([m.status, m.headers.get("cache-control"), miss.ARTIFACTS.calls.map((c) => `${c.op} ${c.key}`)], p).toEqual([404, "no-store", [`get ${key}`]]);
     }
     // why not /profiles/index.<buildId>.json: the record's siteOwned names /profiles/index.json exactly,
     // so that path is the release's (and the release does not carry it)

@@ -5,8 +5,11 @@ compatibility_date = "2026-08-01"
 # registration in the dashboard); attach a custom domain later via routes.
 workers_dev = true
 
-# App shell only: dist/ minus the R2-served artifact directories (the deploy
-# script prunes them after `vite build`; Workers assets cap files at 25 MiB).
+# dist/: the app shell plus QED64's two indexes (profiles/index.json and
+# snapshots/index.json, copied from the tracked public/ files by the build, so
+# one deploy pairs them with the shell and the release record: docs/DEPLOY.md
+# "Atomic deploys"). Never the runtime, the packs or the .snapz: R2 serves them
+# (the deploy script refuses them; Workers assets cap files at 25 MiB).
 [assets]
 directory = "dist"
 binding = "ASSETS"

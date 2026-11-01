@@ -57,8 +57,10 @@
 // public/snapshots/profiles-index.<buildId>.json; HARDENING #64) is not
 // byte-identical to the index it copies; with
 // --dist: dist/workers/* is not exactly the source's public/workers/*, the
-// main bundle does not pin exactly {buildId}, or an artifact directory was
-// bundled. Plus the structural checks a manifest must pass to be described
+// main bundle does not pin exactly {buildId}, or it bundles a file under
+// runtime/, profiles/ or snapshots/ other than profiles/index.json and
+// snapshots/index.json, or those two differ from the tracked indexes. Plus
+// the structural checks a manifest must pass to be described
 // at all (schemas, content-addressed names, sizes that add up, pack.mjs's
 // content digest). Usage errors exit 2.
 //
@@ -130,6 +132,9 @@ const BUILD_ID = /^wasm64-[0-9a-f]{16}$/;
 const BUILD_ID_SCAN = /wasm64-[0-9a-f]{16}(?![0-9a-f])/g;
 const SAFE_BASENAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const ARTIFACT_DIRS = ["runtime", "profiles", "snapshots"];
+/** The two artifact-directory files a shell carries: QED64's site indexes, which the deploy serves
+ * from its static assets (docs/DEPLOY.md "Atomic deploys"). */
+const DEPLOYED_INDEXES = ["profiles/index.json", "snapshots/index.json"];
 
 const strip = (digest) => (typeof digest === "string" && /^sha256:[0-9a-f]{64}$/.test(digest) ? digest.slice(7) : null);
 const isSize = (n) => Number.isSafeInteger(n) && n > 0;
@@ -559,7 +564,7 @@ export function buildReleaseManifest(source, { dist = null } = {}) {
   // The pinned shell reads each site-owned index's per-build copy when the
   // mutable index names another runtime (HARDENING #64, lib/qed64-boot.ts):
   // present, it must be the same bytes as the index it copies. Not an input and not listed (gitignored, re-derived
-  // from the tracked index by promote, fetch-artifacts and the upload; the
+  // from the tracked index by promote and fetch-artifacts; the
   // manifest's format and artifactSetId stay what they were), only a check.
   const sameCopy = (copyRepoPath, bytes, of) => {
     const copy = source.read(copyRepoPath);
@@ -689,8 +694,9 @@ export function buildReleaseManifest(source, { dist = null } = {}) {
  * The app-shell section of a built dist/: a sorted `<sha256>  <relpath>`
  * listing (the format `shasum -a 256` prints), its sha256, and the runtime
  * id(s) the main bundle pins. Refuses a dist whose workers are not the
- * source's public/workers, whose bundle pins anything but `buildId`, or that
- * carries an artifact directory. The workers it reads are recorded as inputs
+ * source's public/workers, whose bundle pins anything but `buildId`, that
+ * carries an artifact file other than the two deployed indexes, or whose
+ * deployed indexes are not the source's tracked ones. The workers it reads are recorded as inputs
  * (`inputs`: each file, `listed`: the directory) for source.describe().
  */
 /** The shell's own identity file (frontend/build/build-info.mjs). */
@@ -701,10 +707,18 @@ export function shellSection(distDir, { source, buildId, inputs = new Map(), lis
   try { isDir = fs.statSync(distDir).isDirectory(); } catch { /* absent */ }
   if (!isDir) refuse(`--dist ${distDir} is not a directory`);
   const rels = walkFiles(distDir).sort(byteOrder);
-  for (const dir of ARTIFACT_DIRS) {
-    if (rels.some((r) => r.startsWith(`${dir}/`))) refuse(`--dist ${distDir} contains ${dir}/ — artifacts are served from R2, never bundled (scripts/deploy-app.sh prunes them)`);
+  for (const r of rels) {
+    const dir = ARTIFACT_DIRS.find((d) => r.startsWith(`${d}/`));
+    if (dir !== undefined && !DEPLOYED_INDEXES.includes(r)) refuse(`--dist ${distDir} contains ${dir === "runtime" ? "runtime/" : r} — artifacts are served from R2, never bundled; of runtime/, profiles/ and snapshots/ a shell carries only ${DEPLOYED_INDEXES.join(" and ")} (scripts/deploy-app.sh prunes the rest)`);
   }
   const bytesOf = new Map(rels.map((r) => [r, fs.readFileSync(path.join(distDir, r))]));
+  // The deploy serves these two from the shell (docs/DEPLOY.md "Atomic deploys"): byte for byte the tracked index, or another pairing would ship. Absent: a shell built before they shipped in dist/.
+  for (const r of DEPLOYED_INDEXES) {
+    if (!bytesOf.has(r)) continue;
+    const repoPath = `public/${r}`;
+    const tracked = inputs.get(repoPath) ?? source.read(repoPath);
+    if (tracked === null || !bytesOf.get(r).equals(tracked)) refuse(`--dist: ${r} is not ${source.label}'s ${repoPath} — the deploy would serve another pairing's index`);
+  }
   // dist/qed64-build.json names the shell (frontend/build/build-info.mjs), so it
   // is not part of what it names: the listing covers every other file, and a
   // build-info file that disagrees with this tree is refused.

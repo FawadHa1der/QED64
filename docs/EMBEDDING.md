@@ -373,23 +373,28 @@ Page-tier facts (stable, for preflights and deploy tools):
   HTML, a network error, a malformed body or a copy naming any other runtime
   keeps the mutable one). A paired site (the showcase's origin, lean4game's,
   a local tree) is never asked for a copy. `?snapshots=<dir>` reads only its
-  own `index.json`. (The profile index's copy, `/snapshots/profiles-index.<buildId>.json`,
-  is still written by promote and upload; no page reads it since D1.) A page that reads the
+  own `index.json`. (No page reads the profile index's copy,
+  `/snapshots/profiles-index.<buildId>.json`, since D1.) A page that reads the
   snapshot index itself gets the same rule from `loadSnapshotIndex` /
   `fetchSnapshotIndex` with `pairedBuildId` (§7.0): the copy is
   `index.<buildId>.json` in the directory of the index it was given.
   The option is only half of the protection: it reads a copy, and the site
   must publish one. Without it the copy request answers 404, the mutable
   index is kept and the page refuses its entries `SNAPSHOT_UNPAIRED`, as
-  before. Writers: QED64's promote and upload derive `/snapshots/`'s copies
-  from the index the site serves. `bake-snapshot` writes
+  before. Writers: QED64's own site publishes none since 2026-11. Its two
+  indexes are static assets of each deploy (docs/DEPLOY.md "Atomic
+  deploys"), always paired with the shell deployed with them, so the stock
+  page never asks for a copy. The copies it published before stay at its
+  bucket root, frozen, while a Worker version from before is a rollback
+  target. A site that uploads its indexes ahead of its deploy still needs
+  copies. `bake-snapshot` writes
   `index.<buildId>.json` beside the `index.json` it upserts (same bytes;
   docs/CLI-CONTRACT.md), but that is the STAGING index, holding only the
   entries baked into that `<out>`: it suits only a site that serves its
   staging dir unmerged (uploads the baked dir as it is). A site that merges
   staged entries into its served index, keeping other names (lean4game's
   `scripts/stage-snapshots.py`), publishes a copy derived from its MERGED
-  index instead, as QED64's promote and upload do: written with the merged
+  index instead: written with the merged
   index's bytes when every entry names one runtime (a mixed merge has no
   pairing to pin, so it gets none), uploaded before the mutable
   `index.json`, never overwriting another runtime's copy already
@@ -399,8 +404,14 @@ Page-tier facts (stable, for preflights and deploy tools):
 - **`dist/` layout.**
   - `index.html`, `assets/*`, `workers/*`, `infoview/*`, and
     `qed64-build.json`;
-  - `runtime/`, `profiles/` and `snapshots/` are served beside it, not built
-    into it.
+  - `profiles/index.json` and `snapshots/index.json`, byte copies of the
+    tracked indexes, are built into it (since 2026-11), so one deploy
+    carries the shell and the indexes it pairs with. Every other file under
+    `runtime/`, `profiles/` and `snapshots/` is served beside it, never
+    built in. An embedder that serves this dist behind its own Worker and
+    routes `/profiles/` and `/snapshots/` to its own store first (the
+    showcase) never serves the two, and may drop them when it stages its
+    assets.
 - **`dist/qed64-build.json`** `{schema: "qed64.build/v1", buildId,
   leanVersion, sourceRevision, commit, dirty, shell, apiRevision,
   embedApiRevision}`.
@@ -603,7 +614,7 @@ code block below, extracted verbatim from the packed `docs/EMBEDDING.md`.
      optimizeDeps: { exclude: ["qed64"] },   // serve the closure as source modules, as lean4game does
      build: { target: "es2022" },   // top-level await, as in (a); every Memory64 browser has it (Vite's default target does not)
      // optional: define: { __QED64_BUILD_ID__: JSON.stringify("<runtime buildId>") } makes the boot ask for
-     // /runtime/runtime-manifest.<buildId>.json first (docs/DEPLOY.md "Atomic promotes"); without it the
+     // /runtime/runtime-manifest.<buildId>.json first (docs/DEPLOY.md "Atomic deploys"); without it the
      // boot reads the mutable /runtime/runtime-manifest.json.
    };
    ```
@@ -671,8 +682,9 @@ code block below, extracted verbatim from the packed `docs/EMBEDDING.md`.
    runtime: serve them as one set (docs/DEPLOY.md "Consistency rule"). In
    development, put them in Vite's `publicDir` (and add them to
    `server.watch.ignored`; they are gigabytes); in production,
-   docs/DEPLOY.md is the layout QED64 itself serves (R2 behind
-   `qed64/edge`, same origin).
+   docs/DEPLOY.md is the layout QED64 itself serves (the shell and its two
+   indexes as Workers static assets, everything else in R2, behind
+   `qed64/edge` on one origin).
 
 **(a) Without the editor: drive a session headlessly.** Your code is the
 language client. It boots a `ResidentSession` behind an `LspRelay` and
@@ -1127,7 +1139,8 @@ mutable path only, as before. A `runtime` or `snapshots`
 passed in is not fetched. A page that fetches the snapshot index itself
 (not through `fetchSnapshotIndexFor` or `installArtifacts`) passes
 `pairedBuildId` to get the same order, and its site publishes the copy
-derived from the index it serves (§4). installArtifacts also removes, once
+derived from the index it serves (§4), or serves its indexes from its own
+deploy, as QED64's does, which needs none. installArtifacts also removes, once
 and off the boot's path, the OPFS pack store (`qed64-packs/`) and
 `localStorage["qed64.opfs.byteCeiling"]` that releases before D1 wrote
 (best effort; it never fails the boot).
@@ -2290,3 +2303,23 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   matched the old words matches `kind === "restart"` (or the prefix)
   instead. No export, type or message-shape change: `EMBED_API_REVISION` is
   unchanged.
+- **Atomic deploys (architecture review D2, 2026-11):** a page-tier change
+  (additive, principle 1).
+  - The stock page's `dist/` gains `profiles/index.json` and
+    `snapshots/index.json`, byte copies of the tracked indexes (§4 "`dist/`
+    layout"); QED64's Worker serves them from the deploy, so the shell, the
+    release record and the indexes switch in one deploy (docs/DEPLOY.md
+    "Atomic deploys").
+  - QED64 publishes no new per-build index copies; the ones it published
+    before stay frozen while a Worker version from before is a rollback
+    target. The reader rule (`pairedBuildId`, `pinnedBuildId`, §4 and
+    §7.6) stays: lean4game passes the options, and other sites still
+    publish copies.
+  - QED64's `infra/worker.js` takes the hardened `qed64/edge` defaults
+    (ranges, metadata HEAD, 405 for other methods, unsafe-key refusal,
+    explicit lengths, asset HEAD length, `errorCacheControl: "no-store"`)
+    with its release and one extra route; `QED64_LEGACY` is unchanged and
+    frozen.
+  - No export, type or behaviour change in `qed64/embed`, `qed64/edge` or
+    the workers: `EMBED_API_REVISION`, the page API's `API_REVISION` and
+    the workers' `WORKER_REVISION` are unchanged.

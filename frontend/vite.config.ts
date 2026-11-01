@@ -9,7 +9,7 @@ import { lean4monacoFixesEsbuild, lean4monacoFixesVite, webviewCopyTransform } f
 import { buildInfoPlugin } from "./build/build-info.mjs";
 
 // The runtime this shell is PAIRED with (see docs/DEPLOY.md, "Atomic
-// promotes"): the shell first asks for the immutable, digest-named manifest
+// deploys"): the shell first asks for the immutable, digest-named manifest
 // of this exact build and only falls back to the mutable path, so deploying
 // a new shell never races the mutable manifest switch in R2.
 // The dev server may serve only the repository, but Vite resolves a module to
@@ -34,9 +34,10 @@ const pairedBuildId = JSON.parse(
 // Build: this IS the deployed app shell — it builds into the repo-root dist/
 // that `wrangler deploy` ships as Workers assets. Artifacts must NOT be in
 // the bundle (they stream from R2, same-origin, via infra/worker.js), so
-// publicDir is off and only the worker scripts are copied in. All runtime
-// paths are root-absolute (/infoview/*, /workers/*, /runtime/* …), so the
-// shell must stay mounted at the origin root.
+// publicDir is off and only the worker scripts and the two tracked indexes
+// (public/snapshots/index.json, public/profiles/index.json) are copied in.
+// All runtime paths are root-absolute (/infoview/*, /workers/*, /runtime/* …),
+// so the shell must stay mounted at the origin root.
 export default defineConfig(({ command }) => ({
   publicDir: command === "serve" ? "../public" : false,
   define: { __QED64_BUILD_ID__: JSON.stringify(pairedBuildId) },
@@ -78,6 +79,14 @@ export default defineConfig(({ command }) => ({
         // /workers/* — served by publicDir in dev, so copy them only for the
         // production bundle.
         { src: "../public/workers/*", dest: "workers" },
+        // QED64's two site indexes ship IN the deploy (docs/DEPLOY.md "Atomic deploys"): the Worker serves
+        // /snapshots/index.json and /profiles/index.json from these copies, so one deploy switches the shell,
+        // the release record it pins and the indexes paired with them. Build only: dev keeps reading them
+        // through publicDir. Nothing else under public/{runtime,profiles,snapshots} is ever built in.
+        ...(command === "build" ? [
+          { src: "../public/snapshots/index.json", dest: "snapshots" },
+          { src: "../public/profiles/index.json", dest: "profiles" },
+        ] : []),
       ],
     }),
   ],

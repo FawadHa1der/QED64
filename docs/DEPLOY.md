@@ -7,10 +7,10 @@ to 845 MB with free egress** (a Mathlib user downloads ~2.2 GB once).
 GitHub Pages (100 MB/file, no headers), Cloudflare Pages (25 MiB/file) and
 Netlify/Vercel free bandwidth caps all fail one of these.
 
-The setup that fits: **Cloudflare Workers static assets (app shell) + R2
-(artifacts), one origin, headers set in `infra/worker.js`** (a thin
-wrapper over the reusable `infra/edge-worker.js`; see "Reusing the edge
-worker" below).
+The setup that fits: **Cloudflare Workers static assets (the app shell and
+QED64's two indexes) + R2 (artifacts), one origin, headers set in
+`infra/worker.js`** (a thin wrapper over the reusable `infra/edge-worker.js`;
+see "Reusing the edge worker" below).
 
 The deployed shell is the lean4monaco editor in `frontend/` (Monaco + the
 real vscode-lean4 InfoView on the in-browser wasm64 LSP). `npm run
@@ -37,12 +37,13 @@ at the origin root.
    (runtime chunks, library packs) must be in the bucket under
    `lean4-wasm64/<release id>/`, uploaded by its owner (see "The toolchain
    release prefix" below); then run `scripts/upload-artifacts.sh`, which
-   uploads QED64's own snapshots (multipart), then `snapshots/index.json`
-   and `profiles/index.json`; re-run only when they change.
+   uploads QED64's snapshots (multipart); re-run only when they change.
+   The two indexes ship with the deploy ("Atomic deploys" below).
 4. `scripts/deploy-app.sh` — builds the shell and `wrangler deploy`s it
    (see "The deploy script" below; `--dry-run` first if you want to see the
-   build pass without deploying). The app is live at
-   `qed64.<account>.workers.dev` (or attach a domain).
+   build pass without deploying). A first deploy to a new origin sets
+   `QED64_DEPLOY_ORIGIN=none`: its guard has nothing to ask yet. The app is
+   live at `qed64.<account>.workers.dev` (or attach a domain).
 
 ## Continuous integration & deployment
 
@@ -85,13 +86,19 @@ From the repository root, whatever the cwd, under `set -euo pipefail`:
    (local use; CI has installed both roots already);
 2. `npm run typecheck:site`;
 3. `npm run build:site` (into `dist/`);
-4. the prune, `rm -rf dist/runtime dist/profiles dist/snapshots`: artifacts
-   are served from R2 and never bundled (Vite's `publicDir` is off for
-   builds, so this is a defensive invariant);
-5. the size check: if `dist/` still holds a `runtime/`, `profiles/` or
-   `snapshots/` path, or any file over 25 MiB (the Workers static-assets
-   cap per file), the script prints one `deploy-app: REFUSED: …` line on
-   stderr and exits 1 before wrangler uploads anything;
+4. the prune: `rm -rf dist/runtime`, and every entry of `dist/profiles/`
+   and `dist/snapshots/` but `index.json`. The deploy carries the shell and
+   QED64's two indexes, which the build copies from the tracked `public/`
+   files ("Atomic deploys" below); every other artifact is served from R2
+   and never bundled (Vite's `publicDir` is off for builds and the build
+   copies only those two, so this is a defensive invariant);
+5. the size and index check: if `dist/` still holds a `runtime/` path,
+   lacks `dist/profiles/index.json` or `dist/snapshots/index.json`, holds
+   one that is not byte-identical to the tracked `public/` file, holds any
+   other `profiles/` or `snapshots/` path, or holds any file over 25 MiB
+   (the Workers static-assets cap per file), the script prints one
+   `deploy-app: REFUSED: …` line on stderr and exits 1 before wrangler
+   uploads anything;
 6. the guard, `node scripts/deploy-guard.mjs` (architecture review R19a,
    below): it exits 1 with a `deploy-guard: REFUSED: …` line unless every
    snapshot the tracked index names already answers on the live origin;
@@ -110,10 +117,11 @@ each) for every `url` in `public/snapshots/index.json`, on the live origin
 `https://qed64.fawadworkaddress.workers.dev/`). Each must answer 200; a
 5xx, a network error or a timeout is retried after 2 s and after 4 s (three
 tries). When the answer carries a `Content-Length`, it must equal the
-entry's `transfer` (else `bytes`); the live legacy Worker sends none on
-`HEAD` (`artifactHead: "get"`, "Local preview" below), so today the check is
-the status alone, and the sizes are checked once a Worker with
-`artifactHead: "metadata"` is live. The first refusal stops the check; it
+entry's `transfer` (else `bytes`). A Worker from before 2026-11
+(`QED64_LEGACY`, `artifactHead: "get"`) sends none on `HEAD`, so against it
+the check is the status alone (the first deploy of "Atomic deploys" is
+checked that way); the hardened Worker deployed since answers `HEAD` from
+R2's metadata with the length, so the sizes are checked too. The first refusal stops the check; it
 reads no body and writes nothing, so `--dry-run` runs it too. Each line on
 stderr starts `deploy-guard: `: one `live <url> (…)` line per snapshot, then
 `OK <k> snapshot(s) live on <origin>`, or a last `REFUSED: <url>: …` line
@@ -153,8 +161,9 @@ but the script's step names `build:site` or `typecheck:site`), its
 concurrency group, the main-only `if:` and the head check just before the
 script's step, that no other tracked file outside docs and tests runs the
 prune or `wrangler deploy`, and the script itself, run with stub
-`npm`/`npx`/`node` commands (the guard in its place, and a guard refusal
-that stops the deploy).
+`npm`/`npx`/`node` commands (the prune keeping exactly the two indexes, a
+build missing one or holding other bytes refused, the guard in its place,
+and a guard refusal that stops the deploy).
 `tests/unit/deploy-guard.test.ts` runs the guard against a local http
 server: live, no length, a 404, a wrong length, a retried 503, a closed
 port, refused entry URLs and indexes, the skip, and HEAD only.
@@ -170,7 +179,8 @@ no local path rules or headers to drift from the Worker's. `env` holds Node
 stand-ins for the two `wrangler.toml` bindings:
 
 - `ASSETS`: the Workers static-assets subset QED64 relies on, over `dist/`
-  (or `DIST=<dir>`): `/` and `<dir>/` serve their `index.html`,
+  (or `DIST=<dir>`), the shell plus the two indexes the build copies in:
+  `/` and `<dir>/` serve their `index.html`,
   `html_handling`'s default `auto-trailing-slash` redirects
   (`/index.html` and `/x.html` answer 307 to `/` and `/x`, `/index` and
   `<dir>/index` 307 to `/` and `<dir>/`; a run of slashes, `//assets/x.html`,
@@ -203,21 +213,25 @@ log line, never a 200 head on a reset connection.
 Where the Workers runtime adds a `Content-Length` the worker does not set
 (an R2 body, the worker's own `not found`), the Node layer adds it too, so
 a legacy artifact GET carries its length and a legacy HEAD carries none,
-exactly as on the live site (header table checked against
-`qed64.fawadworkaddress.workers.dev` on 2026-10-06: the same headers apart
-from Cloudflare's own, etag values, and lengths of files the two builds
-differ in).
+exactly as on the live site while it ran the legacy Worker (header table
+checked against `qed64.fawadworkaddress.workers.dev` on 2026-10-06: the
+same headers apart from Cloudflare's own, etag values, and lengths of files
+the two builds differ in).
 
-`QED64_EDGE` picks the worker: `legacy` (the default) is `infra/worker.js`,
-`createWorker({...QED64_LEGACY, release})`, what is deployed; `hardened` is
-`createWorker({ release })`, the defaults of "Legacy vs hardened" below, which the live
-site has **not** adopted. Use it to preview and test that switch locally
-(Range 206/416, metadata HEAD with `Content-Length`, 405, no-store errors)
-before deciding on it (both modes route the same pinned release, so the
-only difference is the hardened switches). Any other value exits 2 with the usage line before
+`QED64_EDGE` picks the worker: `hardened` (the default) is `infra/worker.js`,
+what is deployed: the hardened defaults of "Legacy vs hardened" below
+(Range 206/416, metadata HEAD with `Content-Length`, 405, no-store errors),
+the pinned record, and the two indexes answered from `dist/`. `legacy` is
+`createWorker({...QED64_LEGACY, release})`, the Worker deployed before
+2026-11 and a rollback target while it is one ("Atomic deploys"): it reads
+`/snapshots/index.json` and `/profiles/index.json` from `public/`, as that
+Worker reads them from R2. Use it to preview a rollback to it. Both modes
+route the same pinned release. A `dist/` built before the indexes shipped
+in it has none: under `hardened` they answer 404 and the page finds no
+snapshot index, so rebuild it. Any other value exits 2 with the usage line before
 listening. The startup line names the mode and the release: `prod preview:
-http://localhost:5185 (<dist> + public artifacts) edge=legacy
-release=lean-v4.34.0-a8817d0`, plus ` releaseDir=<dir>` when set.
+http://localhost:5185 (<dist> + public artifacts) edge=hardened
+release=lean-v4.35.0-b081e7c`, plus ` releaseDir=<dir>` when set.
 
 One route is local only and never in the Worker: `/embed-host.html` (the
 test embed host, `public/embed-host.html`) is answered by the Node layer
@@ -231,10 +245,10 @@ in-memory bindings, which must agree.
 Snapshots are binary-paired to the runtime. **Never serve a runtime
 without its snapshots** (or vice versa). The runtime and the packs are the
 toolchain release's, uploaded by its owner under `lean4-wasm64/<id>/` first;
-QED64 uploads only its snapshots and the two indexes, from a promote of the
-same staging, with `scripts/upload-artifacts.sh` (`rclone copy`, never
-`sync`), and the commit of the record and the deploy pair them, exactly like
-the local promote. A toolchain release is adopted with
+QED64 uploads only its `.snapz`, from a promote of the same staging, with
+`scripts/upload-artifacts.sh` (`rclone copy`/`copyto`, never `sync`), and
+the commit of the record and the two indexes, deployed together, pairs
+them, exactly like the local promote. A toolchain release is adopted with
 `pipeline/release/adopt-release.sh` (docs/REBUILD.md §3), which bakes against
 the release's runtime, stages the pairing under `work/staging/<buildId>/`
 and promotes it into an ISOLATED served tree (`--public`; never this
@@ -245,119 +259,166 @@ or promote the same staging into the uploading checkout's real `public/`
 first (`promote-staging.mjs --staging work/staging/<buildId> --public
 <checkout>/public`) and upload there. The digest-named chunk files make mixed CDN caches
 harmless; the mutable files (`runtime-manifest.json`, `snapshots/index.json`,
-`profiles/index.json`) and their per-build copies are served
-`must-revalidate`.
+`profiles/index.json`) are served `must-revalidate`.
 
-## Atomic promotes (shell ↔ runtime pairing)
+## Atomic deploys (shell, Worker and indexes)
 
-The shell and the runtime deploy through different channels (git push vs
-the release owner's upload and `upload-artifacts.sh`), so a promote that changes both used to have a
-broken window whichever went first. The pinning scheme closes it:
+One `wrangler deploy` carries everything a boot reads that is not
+digest-named: the shell (`dist/`), the Worker with the release record it
+bundles (`toolchain/lean4-wasm64-release.json`, "The toolchain release
+prefix" below), and QED64's two site indexes, `/snapshots/index.json` and
+`/profiles/index.json`. The indexes are static assets of the deploy since
+2026-11 (architecture review D2):
 
-- The pinned manifest `runtime/runtime-manifest.<buildId>.json` sits beside
-  the mutable one. Under decision 3 both are the toolchain release's
-  (`lean4-wasm64/<id>/runtime/`, uploaded by its owner), and the Worker
-  reads `/runtime/*` only from the release its record pins (no fallback to
-  the bucket root since 2026-10-25). So the scheme covers the window
-  between the upload and the deploy, not a tab left open across a deploy:
-  see "Old shells" under "The toolchain release prefix".
-- The shell build injects the `buildId` of the manifest committed in
-  `public/runtime/runtime-manifest.json` and asks for the PINNED manifest
-  first, falling back to the mutable path (dev, pre-scheme shells).
-- The two site-owned indexes are pinned the same way (HARDENING #64). They
-  are QED64's own, so `upload-artifacts.sh` writes their per-build copies:
-  `snapshots/index.<buildId>.json` and `snapshots/profiles-index.<buildId>.json`
-  (both under `/snapshots/`, which every Worker and record leaves to the
-  site; a `/profiles/index.<buildId>.json` would be routed to the toolchain
-  release, which does not carry it). The shell reads the mutable
-  `snapshots/index.json` and `profiles/index.json` as before; when one names
-  another runtime than the one it pins, it reads its own runtime's copy and
-  uses it when that is an index (a 404 or an HTML answer keeps the mutable
-  one). A paired index costs no extra request, so a site or a local tree
-  without copies never sees a 404 for one. Before this, the mutable
-  indexes were the hole in the scheme: the upload replaced them while the deployed shell still booted
-  the previous runtime, which then read snapshot entries baked for the next
-  one and failed `SNAPSHOT_UNPAIRED` on every new visit until the deploy
-  (2026-10-08, ~10 min). The copies are served `must-revalidate`, like the
-  per-build runtime manifest: a rebake for the same runtime rewrites them
-  under the same name. Locally they are gitignored files beside the tracked
-  indexes, written by `promote-staging.mjs` and `fetch-artifacts` from those
-  indexes' bytes, as `runtime-manifest.<buildId>.json` is; the upload sends
-  them to R2 straight from the mutable files and never sends a local copy.
-- `rclone copy` (never `sync`): the upload never deletes, so the deployed
-  shell's snapshots and index copies stay in R2 through the promote, and
-  the previous pairing's stay for a rollback. Garbage-collect superseded
-  snapshots deliberately, by exact keys, once no rollback needs them (the
-  2026-10-23 sweep kept the live and the previous pairing:
-  `work/r2-gc-2026-10-23/README.md` in the main checkout, not tracked).
+- `npm run build:site` copies the tracked `public/snapshots/index.json` and
+  `public/profiles/index.json` into `dist/` byte for byte (a build-only
+  `viteStaticCopy` target in `frontend/vite.config.ts`; dev keeps reading
+  them through `publicDir`). The copy runs before `dist/qed64-build.json` is
+  written, so the two count in the shell id, and `release-manifest --dist`
+  refuses them when they differ from the tracked files.
+- `scripts/deploy-app.sh` refuses a build without them or with other bytes
+  ("The deploy script" above).
+- `infra/worker.js` answers a GET or HEAD of exactly those two paths from
+  `ASSETS` (one `extraRoutes` entry: "Serving a site's own indexes from the
+  deploy" below). An overlay's own `index.json` and the frozen per-build
+  copies are not those paths and stay in R2.
+
+Workers static assets are versioned with the Worker, so a deploy switches
+the shell, the record and the indexes in one step, `npx wrangler rollback`
+restores all three of an earlier version together, and a revert-and-push
+redeploys an earlier commit's three. The pointer and its reader always
+switch together (the rule of HARDENING #64), and an upload changes nothing
+a deployed shell reads.
+
+What R2 holds for QED64:
+
+- the toolchain release's prefix `lean4-wasm64/<id>/` (the runtime and the
+  packs), uploaded by the release's owner, never by QED64;
+- QED64's digest-named `.snapz` at `snapshots/<file>`, and any overlay
+  directory at `snapshots/<overlay>/` (opt-in, with its own index),
+  uploaded by `scripts/upload-artifacts.sh` before the push;
+- frozen since 2026-11: the bucket-root `snapshots/index.json`,
+  `profiles/index.json` and the per-build copies
+  `snapshots/index.wasm64-*.json` and `snapshots/profiles-index.wasm64-*.json`.
+  Only a Worker version from before 2026-11 reads them (it served both
+  indexes from R2). Nothing writes them any more, and they stay while such
+  a version is a rollback target ("R2 clean-up" below).
+
+The pinned runtime manifest is unchanged: the shell build injects the
+`buildId` of the committed `public/runtime/runtime-manifest.json` and asks
+for `runtime/runtime-manifest.<buildId>.json` first, falling back to the
+mutable path (dev, an embedder without the define). Both are the toolchain
+release's (`lean4-wasm64/<id>/runtime/`), and the Worker reads `/runtime/*`
+only from the release its record pins (no fallback to the bucket root since
+2026-10-25), so the runtime pairing was already atomic; D2 makes the
+indexes so too. A tab left open across a deploy is another matter: see "Old
+shells" under "The toolchain release prefix".
+
+The reader rule of HARDENING #64 stays in the library: when the mutable
+snapshot index names another runtime than the one the shell pins, the shell
+reads that runtime's per-build copy `snapshots/index.<buildId>.json` and
+uses it when it is an index paired with that runtime (`pairedBuildId`,
+docs/EMBEDDING.md §4). lean4game's and the showcase's sites still publish
+copies. On QED64's own site the index always pairs with the shell deployed
+with it, so the stock page never asks for one.
+
+A same-runtime rebake is visible at its deploy, no longer at its upload:
+the new `.snapz` are inert in R2 until the push deploys the index that
+names them.
 
 Promote checklist, in order:
 
-0. For a new toolchain release: `pipeline/release/adopt-release.sh … --public
-   <isolated tree>` (run `--dry-run` first), then its printed landing steps:
-   `toolchain/lean4-wasm64-release.json` ← the adopted `release.json`
-   (release-manifest checks its `kernel.commit` against the runtime's
+0. Adoption: `pipeline/release/adopt-release.sh … --public <isolated tree>`
+   (run `--dry-run` first), then its printed landing steps.
+1. Make one commit with the record (`toolchain/lean4-wasm64-release.json`;
+   release-manifest checks its `kernel.commit` against the runtime's
    `sourceRevision`, and its `runtime.buildId` and files against the served
-   manifests), `embedding/base-tree.json` ← `work/adopt/<id>/base-tree.json`,
-   and, when the umbrella was rebuilt, `embedding/umbrella/QED64/` ←
-   `work/adopt/<id>/umbrella/Essential.olean*`,
-   the three tracked manifests from the isolated tree,
-   and the devDependency re-pinned to the release's tgz once published.
-1. Commit the new `public/runtime/runtime-manifest.json` (paired with the
-   rebaked snapshots) together with the release record it belongs to
-   (`toolchain/lean4-wasm64-release.json`) — the shell build reads its
-   `buildId`, the Worker its release id.
-2. The release's owner has uploaded `lean4-wasm64/<id>/`; then
-   `scripts/upload-artifacts.sh` — additive, and invisible to every deployed
-   shell that reads the per-build index copies (any shell built from
-   HARDENING #64 on) until a shell that pins the new buildId ships. In
-   order, it (a) pins what R2 serves now: when R2's mutable
-   `snapshots/index.json` or `profiles/index.json` names another runtime
-   and that runtime has no copy in R2 yet, it copies the mutable file to
-   that runtime's per-build name inside R2 (a server-side `rclone copyto`;
-   an existing copy is never overwritten). (a) fails closed: only an index
-   `rclone lsf` does not list counts as absent; a listed index must be
-   read (`rclone cat` exit 0), and an `lsf` or `cat` that fails (an R2
-   5xx, throttling, a dropped connection) refuses with `cannot check R2
-   (…)`, exit 3, before any write, since an unreadable index taken for an
-   absent one would leave the deployed pairing unpinned; every read comes
-   before the first copy. (b) uploads the `.snapz` files of
-   `public/snapshots/` (one parallel `rclone copy` without the top-level
-   `index.json` or any local per-build copy; an overlay directory travels
-   whole); (c) then, each a single `copyto` once the transfer before it has
-   exited 0, this runtime's two per-build copies from the mutable files,
-   `snapshots/index.json`, and `profiles/index.json` last. A failed
-   transfer stops the upload there: no index, copy or mutable, is written
-   before the snapshots it names, and the indexes after the failed one stay
-   as they were. An index is never in the same transfer as the snapshots it
-   names: a ~300 MB `.snapz` takes far longer than the small index, so R2
-   would serve an index naming a snapshot still uploading until it landed.
-   It uploads its own checkout's `public/`: after an adoption, the checkout
-   whose `public/` is the isolated tree, or one the staging was promoted
-   into (above). A rebake for the SAME runtime is visible at once, as
-   before, from the moment its mutable index lands (after its snapshots):
-   its copies are rewritten in (c), and the deployed shell, paired with
-   that runtime, boots the new entries.
-3. Push `main` — CI deploys the shell and the Worker together; the shell
-   asks for the runtime and the indexes it was built against and finds them
-   already in R2. No window. (The full order: "The toolchain release
-   prefix" below.)
+   manifests), `embedding/base-tree.json` and, when the umbrella was
+   rebuilt, `embedding/umbrella/QED64/Essential.olean*`,
+   `public/runtime/runtime-manifest.json`, the profile manifests, and both
+   indexes. Do not push yet.
+2. For a new release: its owner has uploaded `lean4-wasm64/<id>/`.
+3. Run `DRY_RUN=1 scripts/upload-artifacts.sh`, then
+   `scripts/upload-artifacts.sh`, from a checkout whose `public/` holds the
+   new `.snapz` (after an adoption, the checkout whose `public/` is the
+   isolated tree, or one the staging was promoted into: "Consistency rule"
+   above). It refuses (exit 3) unless the release's `release.json` is in R2
+   and the pairing is that release's runtime. It sends only the `.snapz` the
+   index names (each a `rclone copyto`; a failed one stops the upload) and
+   each overlay directory whole, and no index. Nothing a visitor sees
+   changes.
+4. Optional: `node scripts/deploy-guard.mjs`, the deploy's guard by hand.
+5. Push `main`. CI runs the tests, the head check, the build and its
+   refusals, the guard and `wrangler deploy`: one Worker version with the
+   shell, the record and the indexes. If the guard refuses, nothing
+   deployed: upload, then 'Run workflow' on `main`. A re-run of an older run
+   refuses once `main` has moved.
+6. Check: `curl -s https://qed64.fawadworkaddress.workers.dev/qed64-build.json`
+   names the pushed commit, and the page boots.
 
-**Once, for the shell deployed before HARDENING #64.** A shell older than
-the change reads only the mutable indexes, so the first landing that
-uploads while such a shell is live still has the window above (until its
-deploy). Upload-then-deploy (not the reverse) remains the order: a shell
-deployed before its upload finds neither its snapshots nor its copies.
-The way out of that window, and QED64's own order: first deploy a shell built
-from #64 on the pairing that is already served (same runtime, nothing new to
-upload, so no window), and land the next runtime only after that shell is live.
-A site that must change runtime while an older shell is live uploads in two
-parts instead: the `.snapz` files and the per-build copies before the deploy,
-the mutable `index.json` files right after it.
-From the first deploy of a shell that reads the copies on, step 2 (a)
-makes sure the copies of the pairing it pins exist before the mutable files
-change, whether or not anyone uploaded them earlier, or the upload refuses
-(exit 3) without writing anything when R2 cannot be read: rerun it.
+A same-runtime rebake is steps 1, 3 and 5. A change that touches no index
+is step 5 alone.
+
+**Rollback.**
+- Revert and push. Nothing is uploaded: the old `.snapz` are never deleted
+  (`rclone copy`/`copyto`, never `sync`; "R2 clean-up" below), and the
+  release's owner keeps its prefix.
+- In an emergency, `npx wrangler rollback` restores a version's own
+  assets, record and indexes in seconds. Then revert and push, so `main` is
+  what is live.
+- A version from before 2026-11 serves the frozen R2 indexes, which still
+  name its pairing.
+- Revert D2's commits together (the deploy change and the two clean-ups of
+  the per-build copies after it). Reverting the Worker change alone after
+  an upload of a new pairing would put the legacy Worker in front of
+  indexes frozen at the old pairing.
+
+**R2 clean-up.**
+- Delete by exact keys only: `rclone delete --files-from-raw <list>
+  --dry-run` first.
+- Delete only keys that no rollback-target version names. A version from
+  2026-11 on names its `.snapz` in `git show <commit>:public/snapshots/index.json`;
+  a version from before names them through R2's frozen `snapshots/index.json`.
+- The Worker version that was live when D2 was first pushed stays a
+  rollback target until the next runtime adoption after D2 is live and
+  stable (the default chosen 2026-11-01). Then delete, at the bucket root,
+  `snapshots/index.json`, `profiles/index.json`, `snapshots/index.wasm64-*.json`
+  and `snapshots/profiles-index.wasm64-*.json`, plus the 5650321f grace
+  keys (`work/r2-gc-2026-10-23/` in the main checkout, not tracked), and
+  remove `serve-dist.mjs`'s `legacy` mode in the same change. QED64's root
+  then holds only `.snapz`. Superseded `.snapz` are garbage-collected the
+  same way, deliberately, once no rollback needs them (the 2026-10-23 sweep
+  kept the live and the previous pairing: `work/r2-gc-2026-10-23/README.md`).
+
+**The first deploy of this scheme** (the live Worker is the pre-change one):
+1. Before pushing, both commands must print nothing:
+   - `curl -s https://qed64.fawadworkaddress.workers.dev/snapshots/index.json | cmp - public/snapshots/index.json`
+   - `curl -s https://qed64.fawadworkaddress.workers.dev/profiles/index.json | cmp - public/profiles/index.json`
+
+   If one differs, R2 serves an uncommitted pairing: resolve it before
+   pushing. Note the live commit (`/qed64-build.json`): it is the
+   pre-change rollback target.
+2. No upload is needed (the same pairing).
+3. Push the guard (`deploy: a guard before every deploy …`), the
+   `deploy.yml` fixes and this change in one push, the clean-ups after it
+   too if they are ready. The guard checks `init.81276a747b990f32.snapz` and
+   `mathlib.79936198cd60caf2.snapz` through the old Worker (the status only:
+   it sends no length on HEAD); the key is the same under both Workers.
+4. Run the live checks below.
+5. From then on, upload only with an `upload-artifacts.sh` from this change
+   on. An older one still writes R2's frozen indexes, which the pre-change
+   rollback target reads.
+
+**Live checks** (`…` is `https://qed64.fawadworkaddress.workers.dev`):
+- `curl -sI …/snapshots/index.json`: 200, `public, max-age=0,
+  must-revalidate`, `application/json`, COOP/COEP/CORP.
+- `curl -sI …/snapshots/init.81276a747b990f32.snapz`: 200, immutable,
+  `content-length: 31719003`.
+- `curl -sI …/snapshots/x.0123456789abcdef.snapz`: 404 `no-store`.
+- `curl -sI …/runtime/chunks/x.part-000`: 404 `no-store`.
+- `curl -s -o /dev/null -w '%{http_code}\n' -r 0-9 …/snapshots/init.81276a747b990f32.snapz`: 206.
+- `curl -s -o /dev/null -w '%{http_code}\n' -X POST …/snapshots/index.json`: 405.
+- The page boots, and DevTools shows `/snapshots/index.json` served.
 
 Optional, after step 1: `node pipeline/release/release-manifest.mjs --commit
 HEAD --out release.json` writes the `qed64.release/v1` manifest of the
@@ -377,14 +438,14 @@ served by every site that uses that release (QED64, lean4game, the widgets
 showcase), each under its own origin; the browser is never pointed at R2 or
 at another site (the fork's `formats/HOSTING.md`, rules 3 and 4). QED64's
 Worker routes by the release record (`infra/worker.js`:
-`createWorker({...QED64_LEGACY, release})`):
+`createWorker({ release, extraRoutes })`, its two indexes from the deploy):
 
-| Request | R2 key | Owner |
+| Request | Served from | Owner |
 |---|---|---|
-| `/runtime/*` (manifests, per-build manifests, chunks) | `lean4-wasm64/<id>/runtime/*` | the release's owner |
-| `/profiles/*` except `/profiles/index.json` (pack manifests, parts) | `lean4-wasm64/<id>/profiles/*` | the release's owner |
-| `/profiles/index.json` | `profiles/index.json` (bucket root) | QED64 (`upload-artifacts.sh`) |
-| `/snapshots/*`, the per-build index copies `/snapshots/index.<buildId>.json` and `/snapshots/profiles-index.<buildId>.json` included | `snapshots/*` (bucket root) | QED64 (`upload-artifacts.sh`) |
+| `/runtime/*` | R2 `lean4-wasm64/<id>/runtime/*` | the release's owner |
+| `/profiles/*` except `/profiles/index.json` | R2 `lean4-wasm64/<id>/profiles/*` | the release's owner |
+| `/profiles/index.json` and `/snapshots/index.json` (GET, HEAD) | the deploy's static assets (`dist/`, from the tracked files) | QED64, by the push |
+| every other `/snapshots/*` (`.snapz`, an overlay, the frozen per-build copies) | R2 `snapshots/*` | QED64, `upload-artifacts.sh` |
 
 - **The record is the single source of the id.**
   `toolchain/lean4-wasm64-release.json` (a byte copy of the published
@@ -410,12 +471,12 @@ Worker routes by the release record (`infra/worker.js`:
   could no longer reboot; with nothing left for it to find, the option is
   off. The library keeps it for other sites ("Reusing the edge worker": the
   options table and the `release` paragraph).
-- **Misses are never cached.** Every status ≥ 400 on a release-mapped path
-  is `Cache-Control: no-store`, so a 404 during a deploy-before-upload
-  window is not cached for a year under a digest-named URL. (QED64_LEGACY
-  keeps `errorCacheControl: null` on its own paths, so a missing snapshot
-  still gets the path rule; adopting `errorCacheControl: "no-store"` is
-  part of the hardened decision, A4, and recommended.)
+- **Misses are never cached.** Every status ≥ 400 is `Cache-Control:
+  no-store` on every path since 2026-11 (the hardened `errorCacheControl`,
+  review R18 inside D2), so a 404 during a deploy-before-upload window is
+  not cached for a year under a digest-named URL. Before that, only
+  release-mapped paths were no-store, and a missing snapshot got the path
+  rule (`immutable`).
 - **The fork's cache rule is stale (relay, HARDENING #64).** The fork's
   `formats/HOSTING.md` rule 8 calls QED64's `isImmutable` the rule every
   consumer shares and quotes it, but quotes the version before #64
@@ -423,7 +484,9 @@ Worker routes by the release record (`infra/worker.js`:
   the same gap. A site that copies either serves the per-build index copies
   `immutable` for a year (their names carry 16 hex), so a shared cache can
   keep a copy a same-runtime rebake rewrote (browsers revalidate anyway: the
-  shell fetches indexes with `cache: "no-cache"`). The fork is not QED64's
+  shell fetches indexes with `cache: "no-cache"`). The copies now exist on
+  the showcase's and lean4game's sites, and as QED64's frozen ones (QED64
+  publishes none since 2026-11). The fork is not QED64's
   to edit: its owner, with the next release-format change, makes rule 8's
   mutable test
   `/\/runtime-manifest(\.[^/]*)?\.json$/.test(p) || /\/(?:profiles-)?index(\.[^/]*)?\.json$/.test(p)`
@@ -433,29 +496,23 @@ Worker routes by the release record (`infra/worker.js`:
   showcase does) rather than copy the snippet.
 - **Adoption order.** (1) The release's owner uploads
   `lean4-wasm64/<id>/` (HOSTING.md's three rclone passes) and confirms it
-  complete. (2) QED64 runs `scripts/upload-artifacts.sh`: it refuses unless
-  `rclone lsf` lists `lean4-wasm64/<id>/release.json` and the shell's
-  manifest and every snapshot are that release's runtime (an `lsf` that
-  fails for a local reason, such as no `qed64-r2` remote, expired
-  credentials or no network, prints `cannot check R2 (rclone lsf exit N)`
-  instead of the not-in-R2 refusal; both exit 3) and unless the profile
-  index is that runtime's too, pins R2's current pairing (a read of R2's
-  mutable indexes that fails is the same `cannot check R2`, exit 3, before
-  any write), then uploads the `.snapz` files of `public/snapshots/`, then
-  this runtime's per-build index copies ("Atomic promotes"), then
-  `snapshots/index.json`, then `public/profiles/index.json` (each after the
-  one before it has landed).
-  (3) One deploy of
-  the shell and the Worker together: the user pushes `main` (CI runs
-  `scripts/deploy-app.sh`). The shell and the Worker always ship in the same
-  deploy, so the Worker never routes to a release the shell does not pin.
-- **Rollback.** Revert the commit that changed the record and the manifests
-  and push: the reverted record routes the Worker to the previous release's
-  prefix (`lean4-wasm64/<previous id>/`, which its owner keeps), and the
-  previous pairing's snapshots and per-build index copies are still at the
-  bucket root as long as nobody deleted them (the `rclone copy` rule above).
-  Re-run `scripts/upload-artifacts.sh` from the reverted checkout so the
-  mutable indexes name that pairing again. Reverting decision 3's Worker
+  complete. (2) QED64 runs `scripts/upload-artifacts.sh`, `.snapz` only: it
+  refuses unless `rclone lsf` lists `lean4-wasm64/<id>/release.json` and
+  the shell's manifest, every snapshot and the profile index are that
+  release's runtime (an `lsf` that fails for a local reason, such as no
+  `qed64-r2` remote, expired credentials or no network, prints `cannot
+  check R2 (rclone lsf exit N)` instead of the not-in-R2 refusal; both exit
+  3), then uploads each `.snapz` the index names. (3) The push: one deploy
+  of the shell, the Worker and the two indexes together (CI runs
+  `scripts/deploy-app.sh`), refused by its guard if it comes before (2). The
+  shell and the Worker always ship in the same deploy, so the Worker never
+  routes to a release the shell does not pin.
+- **Rollback.** "Atomic deploys" above. Revert the commit that changed the
+  record and the manifests and push: the reverted record routes the Worker
+  to the previous release's prefix (`lean4-wasm64/<previous id>/`, which its
+  owner keeps), the reverted indexes ship in the same deploy, and the
+  previous pairing's snapshots are still at the bucket root as long as
+  nobody deleted them. No upload is needed. Reverting decision 3's Worker
   change itself would need the root `runtime/` and `profiles/` copies,
   which are gone.
 - **Old shells.** The Worker routes by the record it was deployed with, so
@@ -474,16 +531,18 @@ Worker routes by the release record (`infra/worker.js`:
   asks for `/runtime/runtime-manifest.<its buildId>.json`: a 404
   (no-store), then the mutable `/runtime/runtime-manifest.json`, the new
   runtime. No page installs a pack at boot since D1, so it gets as far as
-  its pinned snapshot index copy, which refuses the new runtime
-  (`unpaired`; the boot card names the runtimes, with Reload beside it),
-  or, once the copies are gone, pairs with the new snapshots under the old
-  page. Snapshots and
-  `profiles/index.json` never moved.
+  the snapshot index: it reads the deploy's, which names the new runtime,
+  and asks for its own runtime's per-build copy. That copy exists only for
+  a runtime QED64 served before 2026-11 (frozen in R2; QED64 publishes none
+  since): it refuses the new runtime (`unpaired`; the boot card names the
+  runtimes, with Reload beside it). Otherwise the copy is a 404 (no-store),
+  the page keeps the deploy's index and pairs with the new snapshots under
+  the old page. The snapshots' and the two indexes' URLs never moved.
 
 ## Security model: who can write what
 
 R2 buckets are **private by default** and this deployment never changes
-that: the Worker's only bucket operation is `get` (read) through a binding,
+that: the Worker's only bucket operations are `get` and `head` (reads) through a binding,
 there is no public-write path, and no code path uploads. "Nobody else can
 upload" therefore reduces to credential hygiene:
 
@@ -523,7 +582,7 @@ Required wrangler settings (same as QED64's `wrangler.toml`):
 ```toml
 main = "infra/worker.js"
 [assets]
-directory = "dist"          # the shell, MINUS runtime/ profiles/ snapshots/ (25 MiB/file cap; they come from R2)
+directory = "dist"          # the shell, never the runtime, packs or .snapz (25 MiB/file cap; R2 serves them)
 binding = "ASSETS"
 run_worker_first = true     # REQUIRED: without it assets bypass the worker and ship without COOP/COEP
 [[r2_buckets]]
@@ -601,6 +660,43 @@ A route's own responses get the headers too unless it sets
 `rawHeaders: true`. The library also exports `isImmutable`,
 `artifactKey`, `parseRange`, `resolveRange` and `withIsolationHeaders`.
 
+### Serving a site's own indexes from the deploy
+
+A site whose mutable indexes live in R2 has a window between their upload
+and its deploy, which HARDENING #64's per-build copies paper over. Serving
+them from the deploy instead closes it: copy each index into the assets
+directory at its own URL path, and route exactly those paths to the assets
+before the artifact prefixes. QED64's `infra/worker.js`:
+
+```js
+import { createWorker } from "./edge-worker.js";
+import release from "../toolchain/lean4-wasm64-release.json" with { type: "json" };
+
+// Exact paths, GET and HEAD only: an overlay's /snapshots/<dir>/index.json, the frozen per-build
+// copies and any other method fall through to the artifact route (R2; 405 for other methods).
+const DEPLOYED_INDEXES = new Set(["/snapshots/index.json", "/profiles/index.json"]);
+
+export default createWorker({
+  release,
+  extraRoutes: [{
+    match: (url, request) => DEPLOYED_INDEXES.has(url.pathname) && (request.method === "GET" || request.method === "HEAD"),
+    handle: (request, env, ctx, kit) => kit.serveAsset(request),
+  }],
+});
+```
+
+- `kit.serveAsset` returns the assets binding's answer with the isolation
+  headers and the cache rule already on it (`must-revalidate` for an
+  `index.json`), and, under the defaults, a HEAD carries the GET's
+  `Content-Length` (`assetHeadLength`).
+- A file missing from the assets is a 404, `no-store` under the default
+  `errorCacheControl`, so a browser asks again after the next deploy.
+- Any other method falls through to the artifact route, which answers 405
+  with `Allow: GET, HEAD` without asking R2.
+- The deploy must refuse a build without the files (QED64's
+  `scripts/deploy-app.sh` refuses a missing one and one that is not
+  byte-identical to the tracked file): without them every boot fails.
+
 ### Legacy vs hardened
 
 The behaviour switches default to the hardened forks' behaviour;
@@ -609,9 +705,9 @@ is byte-identical to the pre-library worker (status, headers, body and every
 binding call, pinned by `tests/unit/edge-worker.test.ts` against the original
 source in `tests/fixtures/edge-worker/worker-47f50e8.js`; the one deliberate
 difference is a throw, now a 500 with the isolation headers instead of the
-runtime's error page). QED64 deploys `QED64_LEGACY` plus its toolchain
-release (`release`, "The toolchain release prefix" above): identical to the
-pre-library worker on site-owned paths and assets.
+runtime's error page). QED64 deployed `QED64_LEGACY` plus its release until
+2026-11; it now takes the defaults (with `release` and one extra route,
+"Serving a site's own indexes from the deploy" above).
 
 | Switch | Hardened (default) | `QED64_LEGACY` |
 |---|---|---|
@@ -625,8 +721,9 @@ pre-library worker on site-owned paths and assets.
 
 New consumers take the defaults. Adopt switches one at a time with
 `createWorker({ ...QED64_LEGACY, errorCacheControl: "no-store" })`.
-`QED64_EDGE=hardened npm run preview:prod` serves a local build through the
-hardened defaults ("Local preview: the Worker's own code" above). Under
+`npm run preview:prod` serves a local build through them (it runs
+`infra/worker.js`); `QED64_EDGE=legacy` through `QED64_LEGACY` with the
+release ("Local preview: the Worker's own code" above). Under
 the hardened switches the worker's bucket operations are still reads only
 (`get` and `head`). Neither mode sets a `Content-Encoding` (the runtime
 worker refuses transformed chunks) or carries an upstream `statusText`.
@@ -722,9 +819,8 @@ two workers apart there.
 options") runs this exact configuration against fake bindings, and pins each
 of the five differences.
 
-QED64's own `infra/worker.js` is `createWorker({...QED64_LEGACY, release})`.
-Moving the live site to the hardened defaults is a
-separate decision (plan step A4). A site that shares the bucket passes its
+QED64's own `infra/worker.js` is `createWorker({ release, extraRoutes: [its
+two indexes from ASSETS] })`. A site that shares the bucket passes its
 own prefix and the same record shape:
 `createWorker({ r2Prefix: "<site>/", release })` reads `/runtime/*` and
 `/profiles/*` from `lean4-wasm64/<id>/`, and its `profiles/index.json` and

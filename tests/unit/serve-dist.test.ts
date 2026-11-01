@@ -1,6 +1,7 @@
 // scripts/serve-dist.mjs: the local production preview is a Node adapter over
-// the live Worker's own code (infra/worker.js, or createWorker({}) with
-// QED64_EDGE=hardened). In-process servers on 127.0.0.1:0 over a scratch
+// the live Worker's own code (infra/worker.js, the default QED64_EDGE=hardened,
+// or with QED64_EDGE=legacy createWorker({...QED64_LEGACY, release}), the Worker
+// deployed before 2026-11). In-process servers on 127.0.0.1:0 over a scratch
 // dist/ and public/ under the OS temp dir (tiny files, a digest-named chunk
 // behind a symlinked directory, symlinks in and out of dist/), closed after.
 //
@@ -17,7 +18,7 @@ import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import shipped from "../../infra/worker.js";
-import { createWorker, isImmutable, parseRange, resolveRange } from "../../infra/edge-worker.js";
+import { createWorker, isImmutable, parseRange, QED64_LEGACY, resolveRange } from "../../infra/edge-worker.js";
 import type { EdgeWorker } from "../../infra/edge-worker.js";
 import { createArtifactsBinding, createDistServer, RELEASE_ID, releaseDirProblem, startupLine, USAGE } from "../../scripts/serve-dist.mjs";
 import type { EdgeMode } from "../../scripts/serve-dist.mjs";
@@ -43,6 +44,10 @@ const DIST: Record<string, { body: string; type: string }> = {
   "/assets/frame-AbCd1234.html": { body: "<!doctype html>frame", type: "text/html" },
   "/qed64-build.json": { body: '{"schema":"qed64.build/v1"}', type: "application/json" },
   "/sub/index.html": { body: "<!doctype html>sub", type: "text/html" },
+  // QED64's two indexes, which the build copies into dist/ (D2): other bytes than ARTIFACTS' (public/), so a
+  // test can tell which one answered (hardened: the deploy's; legacy: R2's, here public/)
+  "/snapshots/index.json": { body: '{"snapshots":[],"from":"dist"}', type: "application/json" },
+  "/profiles/index.json": { body: '{"profiles":[],"from":"dist"}', type: "application/json" },
 };
 // public/ artifacts (R2 key → bytes, the content type rclone stores)
 const ARTIFACTS: Record<string, { bytes: Uint8Array; type: string }> = {
@@ -168,7 +173,7 @@ describe.each(["legacy", "hardened"] as const)("serve-dist, edge=%s", (edge) => 
     expect(isImmutable(MANIFEST)).toBe(false);
     expect(isImmutable(PINNED)).toBe(false);
     await withServer(edge, async (port) => {
-      for (const p of [CHUNK, SNAPZ, MANIFEST, PINNED, "/snapshots/index.json", "/profiles/index.json"]) {
+      for (const p of [CHUNK, SNAPZ, MANIFEST, PINNED]) {
         const a = await ask(port, "GET", p);
         const want = ARTIFACTS[p.slice(1)]!;
         expect(a.status, p).toBe(200);
@@ -179,6 +184,18 @@ describe.each(["legacy", "hardened"] as const)("serve-dist, edge=%s", (edge) => 
         // live R2 bodies carry their length, legacy mode included
         expect(a.headers["content-length"], p).toBe(String(want.bytes.length));
         expect(Buffer.compare(a.body, Buffer.from(want.bytes)), p).toBe(0);
+      }
+      // the two indexes: the deploy's dist/ copies when hardened (D2), R2's (public/) when legacy
+      for (const p of ["/snapshots/index.json", "/profiles/index.json"]) {
+        const a = await ask(port, "GET", p);
+        const body = edge === "hardened" ? Buffer.from(DIST[p]!.body) : Buffer.from(ARTIFACTS[p.slice(1)]!.bytes);
+        expect(a.status, p).toBe(200);
+        isolated(a);
+        expect(a.headers["cache-control"], p).toBe(REVALIDATE);
+        expect(a.headers["content-type"], p).toBe("application/json");
+        expect(a.headers["etag"], p).toMatch(/^"[0-9a-f]{32}"$/);
+        expect(a.headers["content-length"], p).toBe(String(body.length));
+        expect(a.body.toString(), p).toBe(body.toString());
       }
       // the chunk came through public/runtime/chunks, a symlink out of public/
       expect(fs.lstatSync(path.join(publicDir, "runtime/chunks")).isSymbolicLink()).toBe(true);
@@ -199,7 +216,8 @@ describe.each(["legacy", "hardened"] as const)("serve-dist, edge=%s", (edge) => 
       expect(artifact.headers["content-length"]).toBe("9");
       // a release-mapped miss is never cached, in either mode (the shipped worker's toolchain release)
       expect(artifact.headers["cache-control"]).toBe("no-store");
-      // a site-owned miss keeps legacy's path rule (errorCacheControl null), no-store when hardened
+      // a site-owned miss: no-store under hardened, the shipped Worker; the path rule (errorCacheControl
+      // null) under legacy, the Worker deployed before 2026-11
       const snapshot = await ask(port, "GET", "/snapshots/missing.dca2763359db27e7.snapz");
       expect([snapshot.status, snapshot.headers["cache-control"]]).toEqual([404, edge === "legacy" ? IMMUTABLE : "no-store"]);
       expect((await ask(port, "GET", "/runtime/")).status).toBe(404);
@@ -449,8 +467,8 @@ describe("ARTIFACTS: lean4-wasm64/<id>/ keys", () => {
       expect([chunk.status, chunk.headers["cache-control"], chunk.body.length]).toEqual([200, IMMUTABLE, CHUNK_BYTES.length]);
       const pinned = await ask(port, "GET", PINNED); // not in the release dir, only in public/: not found
       expect([pinned.status, pinned.headers["cache-control"]]).toEqual([404, "no-store"]);
-      const index = await ask(port, "GET", "/profiles/index.json"); // site-owned: public/
-      expect([index.status, index.body.toString()]).toEqual([200, '{"profiles":[]}']);
+      const index = await ask(port, "GET", "/profiles/index.json"); // site-owned: dist/ (hardened, D2) or public/ (legacy)
+      expect([index.status, index.body.toString()]).toEqual([200, edge === "hardened" ? DIST["/profiles/index.json"]!.body : '{"profiles":[]}']);
       const miss = await ask(port, "GET", "/runtime/chunks/missing.0123456789abcdef0123.part-000");
       expect([miss.status, miss.headers["cache-control"]]).toEqual([404, "no-store"]);
     } finally {
@@ -569,7 +587,8 @@ const MATRIX: Case[] = [
 
 describe.each(["legacy", "hardened"] as const)("parity with the worker's own fetch, edge=%s", (edge) => {
   test(`${MATRIX.length} requests: the same status, headers and body`, async () => {
-    const worker: EdgeWorker = edge === "legacy" ? (shipped as EdgeWorker) : createWorker({});
+    const pinned = JSON.parse(fs.readFileSync(path.join(root, "toolchain/lean4-wasm64-release.json"), "utf8"));
+    const worker: EdgeWorker = edge === "hardened" ? (shipped as EdgeWorker) : createWorker({ ...QED64_LEGACY, release: pinned });
     await withServer(edge, async (port) => {
       for (const c of MATRIX) {
         const label = `${c.method} ${c.path} ${JSON.stringify(c.headers ?? {})}`;

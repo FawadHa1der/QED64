@@ -210,8 +210,8 @@ fetching and writing nothing):
     served runtime and kernel, that it lists every runtime/profile file the
     hosting rule stores under its prefix, and that the base tree came from
     the served packs); `npm install
-    --package-lock-only -D <release tgz URL>` once published; the wrangler
-    variable (plan B2b); the user uploads, then pushes and deploys.
+    --package-lock-only -D <release tgz URL>` once published; the user
+    uploads the new `.snapz` (the indexes ship with the deploy), then pushes.
     `scripts/upload-artifacts.sh` takes no tree argument and reads only its
     own checkout's `public/`, so it runs either in the checkout whose own
     `public/` IS the isolated tree (`cd <that worktree> &&

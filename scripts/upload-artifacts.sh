@@ -7,40 +7,28 @@
 # runtime and the library packs are the lean4-wasm64 release's, uploaded once
 # by its owner under lean4-wasm64/<release id>/ (the fork's formats/HOSTING.md),
 # and the Worker reads /runtime/* and /profiles/* from there. QED64 uploads
-# only what is its own — the site-owned paths of the release's hosting rules:
-#   public/snapshots/        → snapshots/            (the snapshots + their index)
-#   public/profiles/index.json → profiles/index.json (which packs the page offers)
-# The release id is toolchain/lean4-wasm64-release.json's; the upload is
-# refused unless the shell's runtime manifest, every snapshot and the profile
-# index are that release's runtime (buildId) and the release is already in R2.
+# only its snapshots, all digest-named:
+#   each .snapz the tracked public/snapshots/index.json names → snapshots/<file>
+#   each overlay directory public/snapshots/<overlay>/        → snapshots/<overlay>/
+# (an overlay is opt-in, ?snapshots=snapshots/<overlay>, and goes whole, its
+# own index.json travelling with it as before). The release id is
+# toolchain/lean4-wasm64-release.json's; the upload is refused unless the
+# shell's runtime manifest, every snapshot and the profile index are that
+# release's runtime (buildId) and the release is already in R2.
 #
-# PINNED INDEXES (HARDENING #64). snapshots/index.json and profiles/index.json
-# are MUTABLE: this upload replaces them while the deployed shell is still
-# paired with the previous runtime, until the push deploys the new one. So it
-# also uploads, FIRST, the per-build copies a shell reads instead of them
-# when they name another runtime (lib/qed64-boot.ts), straight from the two
-# mutable files:
-#   public/snapshots/index.json  → snapshots/index.<buildId>.json
-#   public/profiles/index.json   → snapshots/profiles-index.<buildId>.json
-# (both under snapshots/, which every Worker leaves to the site). A shell
-# pinned to another runtime reads that runtime's copies, which this upload
-# never writes: local copies in public/snapshots/ (the promote's,
-# fetch-artifacts') are excluded from the directory copy. And before anything
-# else it pins what R2 serves NOW: when R2's mutable index names another
-# runtime and that runtime has no copy in R2 yet (the first upload after this
-# change, or a copy lost), it is copied there inside R2 first, so the shell
-# deployed with it keeps its pairing through this upload. That pin fails
-# closed: an R2 read that fails (not an absent index: an error) refuses, exit
-# 3, before any write, rather than replace an unpinned pairing. Upload-then-deploy
-# is therefore invisible to every deployed shell that reads the copies: one
-# built from this change on. A shell deployed BEFORE this change reads only
-# the mutable files and still sees the new pairing until the deploy (once).
+# The two indexes are NOT uploaded: /snapshots/index.json and
+# /profiles/index.json ship in the deploy (dist/, served from the Worker's
+# static assets: docs/DEPLOY.md "Atomic deploys"), so this upload changes
+# nothing a deployed shell reads. Run it BEFORE the push: the push's guard
+# (scripts/deploy-guard.mjs) refuses the deploy until every .snapz the
+# committed index names answers on the live origin.
 #
-# ORDER. (1) the pin of R2's current pairing, (2) every .snapz, (3) this
-# runtime's per-build copies, then snapshots/index.json, then
-# profiles/index.json: no index, copy or mutable, is written before the
-# snapshots it names are in R2, so not even a same-runtime rebake (served at
-# once, no deploy) can name a .snapz that is still uploading.
+# R2's own snapshots/index.json, profiles/index.json and the per-build copies
+# (snapshots/index.<buildId>.json, snapshots/profiles-index.<buildId>.json)
+# date from before 2026-11. They are never written again, and stay frozen
+# while a pre-change Worker version (which reads them) is a rollback target:
+# never run an upload-artifacts.sh from before this change, which would
+# rewrite them.
 #
 # The root runtime/ and profiles/ copies (all but profiles/index.json) are
 # gone: the Worker reads /runtime/* and /profiles/<not index.json> only from
@@ -52,11 +40,10 @@
 #   DRY_RUN=1      print the plan (every rclone write it would run) and write
 #                  nothing; the preflight and the R2 check still run.
 #
-# `rclone copy` (NOT sync): a promote must never delete the artifacts the
-# currently-deployed manifest still points at — clients mid-session and the
-# window between this upload and the app deploy both depend on them. Old
-# digest-named files are harmless; garbage-collect them deliberately, later,
-# once no deployed manifest references them.
+# `rclone copy`/`copyto`, never sync, never delete: open tabs and every
+# rollback target read older .snapz. Old digest-named files are harmless;
+# garbage-collect them deliberately, later, by exact keys, once no
+# rollback-target version names them (docs/DEPLOY.md "Atomic deploys").
 #
 # One-time rclone remote setup (credentials from an R2 API token, see
 # docs/DEPLOY.md — never commit them):
@@ -79,7 +66,7 @@ command -v rclone >/dev/null || { echo "rclone required: brew install rclone" >&
 # Preflight: the files being uploaded must reference files that exist locally
 # (a partial tree would strand the site), and the shell and the snapshots must
 # be paired with the release the Worker routes to.
-RELEASE_ID=$(node -e '
+PLAN=$(node -e '
   const fs = require("fs");
   let bad = 0;
   const fail = (m) => { console.error("upload-artifacts: " + m); bad = 1; };
@@ -89,26 +76,32 @@ RELEASE_ID=$(node -e '
   const rt = JSON.parse(fs.readFileSync("public/runtime/runtime-manifest.json", "utf8"));
   if (rt.buildId !== buildId) fail("public/runtime/runtime-manifest.json is runtime " + rt.buildId + ", the toolchain release " + rec.id + " is " + buildId);
   const sn = JSON.parse(fs.readFileSync("public/snapshots/index.json", "utf8"));
+  const files = [];
   for (const s of sn.snapshots ?? []) {
+    const m = /^\/snapshots\/([A-Za-z0-9][A-Za-z0-9._-]*\.snapz)$/.exec(typeof s.url === "string" ? s.url : "");
+    if (!m) { fail("snapshot " + s.name + " names " + JSON.stringify(s.url) + ", not a .snapz directly under /snapshots/"); continue; }
+    files.push(m[1]);
     need("public" + s.url);
     if (s.runtime !== buildId) fail("snapshot " + s.name + " is for runtime " + s.runtime + ", the toolchain release " + rec.id + " is " + buildId);
   }
   need("public/profiles/index.json");
-  // The per-build copy of the profile index is named by this runtime, so it must pair with it.
+  // The deploy serves this index with the record: it must pair with the release.
   const pi = JSON.parse(fs.readFileSync("public/profiles/index.json", "utf8"));
   const piRuntime = pi.runtime && pi.runtime.buildId;
   if (piRuntime !== buildId) fail("public/profiles/index.json is for runtime " + (piRuntime || "(none recorded)") + ", the toolchain release " + rec.id + " is " + buildId);
   if (bad) process.exit(3);
   console.error("preflight ok: release " + rec.id + ", runtime " + buildId + ", " + (sn.snapshots ?? []).length + " snapshots");
-  console.log(rec.id);
+  console.log([rec.id, ...files].join("\n"));
 ')
+RELEASE_ID=$(printf '%s\n' "$PLAN" | head -n 1)
+SNAPZ_FILES=$(printf '%s\n' "$PLAN" | tail -n +2)
 
 # The release must already be in R2: its owner uploads it (a read; DRY_RUN too).
 # "Not in R2" is said only when rclone could look: lsf listed nothing, or
 # exited 3/4 (rclone's directory/file not found). Any other failure (no
 # qed64-r2 remote, expired credentials, no network, an R2 5xx) is not an
-# answer, and is reported as such, before any write; step (1) below reads R2
-# the same way, so it never mistakes "unreadable" for "absent".
+# answer, and is reported as such, before any write: "unreadable" is never
+# taken for "absent".
 r2_err=$(mktemp "${TMPDIR:-/tmp}/upload-artifacts-lsf.XXXXXX")
 trap 'rm -f "$r2_err"' EXIT
 # Sets LISTED to what `rclone lsf` lists for the R2 key $1 (empty: absent), or
@@ -135,93 +128,24 @@ run() {
   if [ "${DRY_RUN:-}" = 1 ]; then echo "would run: $*"; else "$@"; fi
 }
 
-# The preflight checked it is the release's runtime.
-BUILD_ID=$(node -p 'JSON.parse(require("fs").readFileSync("public/runtime/runtime-manifest.json","utf8")).buildId')
-
-# The one runtime the index JSON on stdin names (a snapshot index's entries,
-# or a profile index's runtime.buildId), or nothing (unparseable, mixed, none).
-index_runtime() {
-  node -e '
-    let s = "";
-    process.stdin.on("data", (d) => (s += d)).on("end", () => {
-      try {
-        const j = JSON.parse(s);
-        const ids = new Set(Array.isArray(j.snapshots) ? j.snapshots.map((e) => e && e.runtime) : [j.runtime && j.runtime.buildId]);
-        const [id] = ids;
-        if (ids.size === 1 && /^wasm64-[0-9a-f]{16}$/.test(String(id))) console.log(id);
-      } catch {}
-    });'
-}
-
-# 1. Pin what R2 serves now (reads, then a copy inside R2 only when needed;
-# DRY_RUN reads and prints the copy). Never overwrites an existing copy.
-# Fails CLOSED: this is the only step that makes the deployed pairing's copies
-# when they are absent (the first upload after HARDENING #64), so a read that
-# fails (lsf or cat: a 5xx, throttling, a dropped connection) refuses, exit 3,
-# and every read comes before the first write, so a refusal writes nothing.
-# Only an index R2 does not list is "absent"; one it lists must be read. A
-# body read in full that names no single runtime (unparseable, mixed, none)
-# pins nothing, as there is nothing to pin.
-pins=()
-for pair in snapshots/index.json:snapshots/index profiles/index.json:snapshots/profiles-index; do
-  src=${pair%%:*}
-  r2_lsf "$src"
-  [ "$LISTED" = "$(basename "$src")" ] || continue
-  cat_rc=0
-  body=$(rclone cat "qed64-r2:$BUCKET/$src" 2>"$r2_err") || cat_rc=$?
-  if [ "$cat_rc" -ne 0 ]; then
-    first=$(grep -m1 . "$r2_err" | tr -d '\r' || true)
-    echo "upload-artifacts: cannot check R2 (rclone cat $src exit $cat_rc): ${first:-no error output}" >&2
-    exit 3
-  fi
-  live=$(printf '%s' "$body" | index_runtime)
-  [ -n "$live" ] && [ "$live" != "$BUILD_ID" ] || continue
-  dst="${pair#*:}.$live.json"
-  r2_lsf "$dst"
-  [ "$LISTED" = "$(basename "$dst")" ] && continue
-  echo "upload-artifacts: R2's $src is runtime $live, which has no $dst yet: copying it there first (HARDENING #64)" >&2
-  pins+=("$src:$dst")
+# The snapshots: each .snapz the index names, then each overlay directory whole (its own index.json
+# with it, as before; local per-build copies are never sent). Nothing else: a .snapz in
+# public/snapshots/ that the index does not name (an older bake) is not sent. set -e: a failed copy
+# stops the upload there. --s3-no-check-bucket: an object-scoped R2 token may not create buckets,
+# and a single-file copyto otherwise tries to (403 AccessDenied on CreateBucket).
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  run rclone copyto "public/snapshots/$f" "qed64-r2:$BUCKET/snapshots/$f" --checksum --s3-chunk-size 64M --s3-no-check-bucket --progress
+done <<< "$SNAPZ_FILES"
+for d in public/snapshots/*/; do
+  [ -d "$d" ] || continue
+  o=$(basename "$d")
+  run rclone copy "public/snapshots/$o" "qed64-r2:$BUCKET/snapshots/$o" --exclude 'index.*.json' --exclude 'profiles-index.*.json' --checksum --transfers 4 --s3-chunk-size 64M --progress
 done
-for pin in ${pins[@]+"${pins[@]}"}; do
-  run rclone copyto "qed64-r2:$BUCKET/${pin%%:*}" "qed64-r2:$BUCKET/${pin#*:}" --s3-no-check-bucket
-done
-
-# 2. The snapshots: every .snapz (and anything else in public/snapshots/ but
-# the top-level index.json and the local per-build copies) in one parallel
-# copy, BEFORE any index that names them is written, the per-build copies of
-# step 3 included. Not one copy with the index in it: a ~300 MB mathlib .snapz
-# takes far longer than the small index, so a same-runtime rebake would serve
-# an index naming a snapshot still uploading (new visitors' snapshot fetch
-# fails, a 404, until it lands). `/index.json` is anchored to public/snapshots/:
-# an overlay's own <overlay>/index.json travels with its snapshots, as before.
-# No local per-build copy is sent: R2's are written by step 3 (this runtime)
-# and step 1 (absent ones) only. (A local copy would add nothing here: step 3
-# already sends this runtime's bytes, and an older runtime's local copy must
-# never overwrite R2's. bake-snapshot still
-# writes index.<buildId>.json into its --out, which suits only a consumer
-# that serves its staging dir unmerged (uploads the baked dir as it is); a
-# consumer that merges staged entries into its served index, like lean4game's
-# stage-snapshots.py, must derive its copy from the merged index the way this
-# script does, HARDENING #64.)
-run rclone copy public/snapshots "qed64-r2:$BUCKET/snapshots" --exclude /index.json --exclude 'index.*.json' --exclude 'profiles-index.*.json' --checksum --transfers 4 --s3-chunk-size 64M --progress
-
-# 3. The indexes, each a single copyto once the transfer before it has exited
-# 0 (set -e: a failed transfer stops the upload there, so no index is written
-# before the snapshots it names, and the indexes after a failed one stay as
-# they were): this runtime's per-build copies, from the mutable files' own
-# bytes, before the mutable files change (HARDENING #64), then
-# snapshots/index.json, then profiles/index.json, the commit record, as
-# promote-staging writes it. --s3-no-check-bucket: an
-# object-scoped R2 token may not create buckets, and a single-file copyto
-# otherwise tries to (403 AccessDenied on CreateBucket).
-run rclone copyto public/snapshots/index.json "qed64-r2:$BUCKET/snapshots/index.$BUILD_ID.json" --checksum --s3-no-check-bucket
-run rclone copyto public/profiles/index.json "qed64-r2:$BUCKET/snapshots/profiles-index.$BUILD_ID.json" --checksum --s3-no-check-bucket
-run rclone copyto public/snapshots/index.json "qed64-r2:$BUCKET/snapshots/index.json" --checksum --s3-no-check-bucket
-run rclone copyto public/profiles/index.json "qed64-r2:$BUCKET/profiles/index.json" --checksum --s3-no-check-bucket
 
 if [ "${DRY_RUN:-}" = 1 ]; then
   echo "dry run: nothing uploaded"
   exit 0
 fi
-echo "artifact upload complete — verify a sample:"
+echo "snapshot upload complete; nothing a visitor sees has changed. Next: push main (one deploy switches the shell, the record and both indexes; its guard checks these .snapz on the live origin). A sample:"
 rclone ls "qed64-r2:$BUCKET/snapshots" | head -3 || true

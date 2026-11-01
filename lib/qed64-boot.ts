@@ -75,7 +75,9 @@ function shellBuildId(): string | null {
  * buildId is passed as is: a missing or malformed one reads no copy. So a
  * paired site costs no request, and one that does not publish the copies
  * (an embedder's own origin) never sees one unless its mutable index is
- * mispaired. */
+ * mispaired. (QED64's own site has no such window since 2026-11: its indexes
+ * ship in its deploy, docs/DEPLOY.md "Atomic deploys", so they always pair
+ * with its shell, and a paired index costs no request.) */
 const pairedBuildId = (): string | undefined => shellBuildId() ?? undefined;
 
 export interface InstallOptions {
@@ -118,9 +120,10 @@ async function pinnedRuntimeManifest(id: string): Promise<RuntimeManifest | null
 }
 
 /** The runtime manifest a boot uses (docs/EMBEDDING.md §7.6): the immutable
- * manifest of the runtime this shell was built against first (uploaded by
- * scripts/upload-artifacts.sh, so a shell deploy never races the mutable
- * manifest switch), `?runtime=` (an unpromoted runtime chunked into
+ * manifest of the runtime this shell was built against first (the toolchain
+ * release's, uploaded by its owner under lean4-wasm64/<id>/ before any shell
+ * pins it, so a shell deploy never races the mutable manifest switch),
+ * `?runtime=` (an unpromoted runtime chunked into
  * public/runtime), else the mutable path. */
 export async function resolveRuntimeManifest(overrides: BootOverrides, opts: { pinnedBuildId?: string | null } = {}): Promise<RuntimeManifest> {
   const pinnedId = opts.pinnedBuildId !== undefined ? opts.pinnedBuildId : shellBuildId();
