@@ -571,7 +571,12 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
 - `bake-snapshot.mjs` checks the target index BEFORE launching the runner:
   siblings paired with another runtime, or with none (pre-field bakes), are
   refused with the `--name`s to rebake. It always passes its resolved
-  `--artifact` to the runner so the stamped `runtime` is the binary that baked.
+  `--artifact` to the runner so the stamped `runtime` is the binary that baked;
+  an unreadable or corrupt `index.json` is refused, never replaced (it would
+  drop every sibling), and the pairing is re-checked under the index lock
+  (`tests/unit/bake-snapshot.test.ts`, which also pins the runner's stripped
+  environment, its unbuffered output, a runner killed by a signal or exiting
+  non-zero, and the bake's signals, HARDENING #83).
 - `infra/worker.js` serves `runtime-manifest*.json` and every `index.json`
   with `must-revalidate`; only digest-named chunks/`.snapz`/`.part-*` files
   are `immutable` (the per-build manifest's NAME is sha256(lean.wasm) but

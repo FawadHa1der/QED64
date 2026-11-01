@@ -339,9 +339,14 @@ usage: bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <di
 | `--runner <script>` | `$QED64_RUNNER`, else QED64's own `pipeline/snapshot/node-runner.mjs` (not deprecated, no WARNING) | The runner script (contract 3, additive). It is spawned as `<this node> --stack-size=8192 <script> --work … --artifact … [--lib …] -- …`, so it must take node-runner's flags. Resolves against the cwd; a script that does not exist refuses (`no-runner`, exit 2) before `<work>` is created. The default stays QED64's runner: a bake through the package's `node-runner.mjs` (which pins `LEAN_PATH=/lib/lean`, mirrors only `bin/` and shadows `<artifact>/lib/lean` with `--lib`) was shown byte-identical on Lean 4.34 (2026-10-08), not yet on 4.35. |
 
 - **Environment:** `QED64_LEAN_ARTIFACT`, `QED64_WORK`, `QED64_STAGING` (the
-  path rule), `QED64_RUNNER`. `LEAN_COMPACTOR_RESERVE` is set for the runner.
-  `QED64_ALLOW_LEGACY_IMPORTS` (or `--allow-legacy-imports`) and
-  `QED64_PROFILE_INIT` are inherited by the runner.
+  path rule), `QED64_RUNNER`. The runner gets exactly `PATH`, `HOME`,
+  `TMPDIR`, `LEAN_COMPACTOR_RESERVE` (from `--reserve`),
+  `QED64_ALLOW_LEGACY_IMPORTS=1` (with `--allow-legacy-imports` or an
+  inherited non-empty one) and `QED64_PROFILE_INIT` (when non-empty): nothing
+  else. A host `LEAN_PATH` would replace `--lib` inside the runtime
+  (lean_main's prologue copies it after preRun). Since 2026-11-01 (the
+  kernel copy's rule, architecture review D4 a); before, the runner inherited
+  the bake's whole environment.
 - **Inputs:** `<artifact>/bin/lean.wasm` (whose sha256 gives the buildId),
   `<out>/index.json` if present, and the `--lib` tree.
 - **Outputs:**
@@ -379,6 +384,10 @@ usage: bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <di
 | refuse-public | stderr | `^(bake-snapshot\|chunk-runtime): refusing --out (.+): it resolves inside public\/\. ` |
 | refuse-foreign | stderr | `^bake-snapshot: (.+) already holds entries for runtime (\S+) \((.*)\) — refusing to mix pairings$` |
 | refuse-unpaired | stderr | `^bake-snapshot: (.+) holds entries with no runtime pairing \((.*)\) — rebake ` |
+| refuse-index-unreadable | stderr | `^bake-snapshot: cannot read (.+) \((\S+)\) — refusing to replace it$` (exit 2 before the runner; exit 1 under the index lock) |
+| refuse-index-corrupt | stderr | `^bake-snapshot: (.+) is not a snapshot index: (.+) — refusing to replace it$` (not JSON, not an object, another `schema`, no `snapshots` array, or an entry without a string `name`; exit 2 before the runner, exit 1 under the lock) |
+| runner-signal | stderr | `^bake-snapshot: the runner was killed by (SIG[A-Z0-9]+), a signal this bake did not send — nothing compressed, the index is not written$` (exit 1) |
+| runner-exit | stderr | `^bake-snapshot: runner exited (\d+)$` (exit 1; before 2026-11-01 an unhandled rejection with a stack trace) |
 | deprecated-default | stderr | `^(\S+): WARNING — the default --(\S+) (.+) \((.+)\) is deprecated; use --\S+ \S+ or set (\w+) \(docs\/CLI-CONTRACT\.md\)$` (once per deprecated default used: `--artifact`, `--out`, `--work`) |
 | no-path | stderr | `^(\S+): no --(\S+) given and (\w+) is unset(; the deprecated default (.+) (has no \S+\|is absent))? — pass --\S+ \S+ or set \w+$` (then `usage: …`, exit 2) |
 
@@ -387,23 +396,33 @@ The runner's output (node-runner and Lean) is interleaved on both streams.
 | Exit | Meaning |
 |---|---|
 | 0 | Baked and the index upserted. This includes the case where the wedged runner was reaped. **It is not a verdict on the probe's Lean messages:** the header snapshot is saved before Lean returns on errors. Judge the log, as the showcase's `judge-bake.mjs` does. |
-| 1 | The runner exited non-zero (an unhandled `runner exited N`), or no `.snap` was produced. |
-| 2 | Refused before the runner started: no `--artifact`, `QED64_LEAN_ARTIFACT` or deprecated default (`no-path`), no `lean.wasm` under the artifact, `--out` inside `public/`, an index paired with another runtime or with none, a malformed `--roots` / `--initial-bytes`, or a `--runner` / `QED64_RUNNER` script that does not exist (`no-runner`). |
+| 1 | After the bake started: the runner exited non-zero (`runner-exit`), was killed by a signal this bake did not send (`runner-signal`) or could not start; no `.snap` was produced (`no-snap`); compressing failed; or the index could not be written (unreadable, corrupt, foreign or unpaired under the lock, its lock held past the wait, or a failed write). A written `.snapz` is kept and its entry printed (`unindexed entry <json>` on stderr). |
+| 2 | Refused before the runner started: no `--artifact`, `QED64_LEAN_ARTIFACT` or deprecated default (`no-path`), no `lean.wasm` under the artifact, `--out` inside `public/`, an index paired with another runtime or with none, a malformed `--roots` / `--initial-bytes`, a `--runner` / `QED64_RUNNER` script that does not exist (`no-runner`), or an unreadable or corrupt `index.json` (`refuse-index-unreadable`, `refuse-index-corrupt`: only a missing one is a new index). |
+| 129 | SIGHUP received before the index was written: forwarded to the runner (SIGKILL 10 s later); no index write. A `.snapz` already in place is kept and its entry printed. |
+| 130 | SIGINT (Ctrl-C), likewise. |
+| 143 | SIGTERM, likewise. |
 
 **Side effects, in order:**
 
 1. Reads and hashes `<artifact>/bin/lean.wasm`.
-2. Reads `<out>/index.json`, then checks the runner script exists. All
-   refusals happen here, before anything is written.
+2. Reads `<out>/index.json`: a missing one is a new index; an unreadable or
+   corrupt one is refused (`refuse-index-*`, exit 2) and never replaced, since
+   rewriting it would drop every sibling entry. Then checks the runner script
+   exists. All refusals happen here, before anything is written.
 3. Creates `<work>` (`mkdir -p`) and writes `<work>/probe.lean`.
 4. **Unlinks `<work>/<name>.snap`.**
 5. Spawns `<process.execPath> --stack-size=8192 <runner> --work <work> --artifact <artifact> [--lib <lib>] -- --incr-header-save=/work/<name>.snap /work/probe.lean`
-   (the Node running the bake, not PATH's `node`, since contract 3; `<runner>` is `--runner`, `QED64_RUNNER` or `pipeline/snapshot/node-runner.mjs`).
+   (the Node running the bake, not PATH's `node`, since contract 3; `<runner>` is `--runner`, `QED64_RUNNER` or `pipeline/snapshot/node-runner.mjs`)
+   with the environment above (`spawn`, no output buffer: execFile's 64 MiB
+   `maxBuffer` killed a runner that printed more, before 2026-11-01).
    For the Mathlib umbrella this runs about 20 minutes and needs about 11 GB.
 6. Polls the `.snap` every 5 s. Once the output has been quiet for more than
-   300 s and the `.snap` stable for more than 120 s, SIGKILLs the runner.
+   300 s and the `.snap` stable for more than 120 s, SIGKILLs the runner. It
+   judges the run only once the runner has exited and both its pipes have
+   closed.
 7. Creates `<out>` (`mkdir -p`), unlinks `<work>/<name>.snap.deps`, writes
-   `<name>.snapz.tmp` and renames it to the final name.
+   `<name>.snapz.<pid>.tmp` and renames it to the final name. A failure is one
+   line and exit 1; the temp is removed.
 8. Takes the index's lock `<out>/index.json.lock` (created by an exclusive
    open, `O_CREAT|O_EXCL`, holding the bake's pid; no hard link, so an
    exFAT/FAT, FUSE or SMB `<out>` works). A lock is never taken over, whatever
@@ -413,8 +432,9 @@ The runner's output (node-runner and Lean) is interleaved on both streams.
    lock path is named as such, never followed), and one `unindexed entry <json>`
    line, without touching either index (its `.snapz` is already in place;
    once no bake writes `<out>`, removing the lock and rerunning redoes the
-   upsert). With the lock it re-reads
-   `index.json`, writes `index.<buildId>.json.<pid>.tmp` and
+   upsert). With the lock it re-reads `index.json` under the same rules and
+   re-checks the pairing (a refusal: exit 1, nothing written, the entry
+   printed), writes `index.<buildId>.json.<pid>.tmp` and
    `index.json.<pid>.tmp` with the same bytes, renames the COPY first and
    `index.json` last, and releases the lock. Every version of either file is
    paired with this runtime only, so the order cannot show a mispaired
@@ -422,8 +442,17 @@ The runner's output (node-runner and Lean) is interleaved on both streams.
    between the renames leaves it one version ahead, and the next bake
    rewrites both), and `index.json` stays the commit record, as in
    `promote-staging`. A sibling bake into the same `<out>` no longer loses
-   an entry to an interleaved write. A refusal (exit 2) and a failed run
-   (exit 1) write neither file.
+   an entry to an interleaved write. A refusal (exit 2) and a run that fails
+   before the upsert (exit 1) write neither file; a failed write under the
+   lock (`writing the index failed (<code>)`, exit 1, the entry printed) may
+   leave the copy one version ahead, as above.
+9. Signals: SIGINT, SIGTERM and SIGHUP are forwarded to the runner (SIGKILL
+   10 s later, so no runner outlives its bake); the bake writes no index and
+   exits 128+n, printing `unindexed entry <json>` if its `.snapz` is already
+   in place. A signal after the index is written changes nothing. An exit
+   with the runner still running (a crash, or a second signal) SIGKILLs it.
+   A closed stdout or stderr (`bake | head`) never ends a bake: the runner's
+   output is drained instead.
 
 Older `.snapz` files are never deleted.
 
@@ -1319,6 +1348,7 @@ as QED64's own gate did.
 | 3 | 2026-11-01 | Architecture review D2, **fetch-artifacts** no longer writes the per-build index copies `snapshots/index.<buildId>.json` (group `snapshots`) and `snapshots/profiles-index.<buildId>.json` (group `profiles`) that the 2026-10-08 row (HARDENING #64) added. QED64's site serves its two indexes from each deploy (docs/DEPLOY.md "Atomic deploys"), and nothing reads a local copy: a dev server or a served build answers the tracked, paired indexes, so a shell never asks for one. That is one `wrote`/`present` line fewer for each of the two groups, and `FETCH OK`'s totals no longer count those files (a full run is two files smaller). The digest-named `runtime/runtime-manifest.<buildId>.json` is still written. Copies an earlier run left under `--out` are left alone (never touched or deleted, like any file no manifest names). Flags, markers, defaults and exits are unchanged; neither downstream runs the tool. Also recorded, no tool change: `scripts/deploy-app.sh` (not a contract tool) keeps `dist/{profiles,snapshots}/index.json` and runs `scripts/deploy-guard.mjs` before `wrangler deploy`; `scripts/upload-artifacts.sh` uploads only the `.snapz` the index names and overlay directories. | removed output (no consumer); ops |
 | 3 | 2026-11-01 | Architecture review D2, tier 3: **release-manifest** no longer refuses a present per-build index copy (`public/snapshots/index.<buildId>.json`, `public/snapshots/profiles-index.<buildId>.json`) that is not byte-identical to the index it copies, the refusal the 2026-10-08 row (HARDENING #64) added. No shell reads a copy of QED64's indexes any more (they ship in each deploy, docs/DEPLOY.md "Atomic deploys"), so a stale local copy is ignored like any untracked file. Flags, output fields, the manifest's format and `artifactSetId` are unchanged. Also recorded, not a contract tool: `promote-staging.mjs` writes neither copy (copies an earlier promote left are left alone) and still ignores the bake's staged copy; bake-snapshot's `index-copy` (tier 1) is unchanged. | a refusal removed (tier 3); ops |
 | 3 | 2026-11-01 | Architecture review R11a (QED64 half), **deprecated, one cycle:** snapshot-probe's path loader `lean_wasm_load_snapshot`. Without `--via-mem` (the default) or with `--via-memfs`: one stderr WARNING (new marker `deprecated-loader`) after the path rule, before any side effect; the run is otherwise unchanged. Flags, the other markers and exits are unchanged; every executed caller already passes `--via-mem` (the compiler battery, the showcase's `exact-header.mjs`, lean4game's `--verify-snapshots`). Removal (the two branches deleted, `--via-mem` the only loader, a contract bump) after both lean4game and the showcase re-pin past this row. Also: TESTING.md's probe row and adopt-release's printed slim-bake recipe pass `--via-mem`, and the help and the script's comments name `lean_wasm_load_snapshot_mem` as the browser's path (they called the path loader, and `--via-memfs`, the worker's). | deprecation (WARNING) |
+| 3 | 2026-11-01 | Review fixes, **bake-snapshot** (the kernel copy's rules, architecture review D4 a): an unreadable or corrupt `index.json` is refused (exit 2 before the runner; exit 1 under the lock, the entry printed) instead of being read as empty and rewritten without its siblings; the pairing is re-checked under the lock; the runner is spawned with no output buffer (execFile's 64 MiB `maxBuffer` killed it) and an environment of exactly `PATH`, `HOME`, `TMPDIR` and the bake's variables (a host `LEAN_PATH` replaced `--lib`); a runner killed by a signal the bake did not send, or exiting non-zero, is exit 1 with one line (before: success for a signal, an unhandled rejection otherwise); SIGINT/SIGTERM/SIGHUP are forwarded and the bake exits 130/143/129 without an index write (before: the runner was orphaned); the `.snapz` temp is `<name>.snapz.<pid>.tmp`; a failed compression or index write is one line and exit 1. New markers `refuse-index-unreadable`, `refuse-index-corrupt`, `runner-signal`, `runner-exit`; the `baked`, `index-copy`, `reaped` and refusal lines are unchanged. | fix; additive (exit codes, markers) |
 
 ## Open decisions
 

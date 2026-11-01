@@ -697,7 +697,7 @@ import path from "node:path";
 const a = process.argv.slice(2);
 const work = a[a.indexOf("--work") + 1];
 const save = a.find((x) => x.startsWith("--incr-header-save=")).split("=")[1].replace(/^\\/work\\//, "");
-if (!process.env.FAKE_NO_SNAP) fs.writeFileSync(path.join(work, save), "a raw region " + save);
+if (!fs.existsSync(path.join(work, "FAKE_NO_SNAP"))) fs.writeFileSync(path.join(work, save), "a raw region " + save);
 `;
   const OTHER = "wasm64-0000000000000000";
   function bakeCheckout() {
@@ -746,8 +746,9 @@ if (!process.env.FAKE_NO_SNAP) fs.writeFileSync(path.join(work, save), "a raw re
     fs.mkdirSync(out2);
     fs.mkdirSync(path.join(s, "w"), { recursive: true });
     fs.writeFileSync(path.join(s, "w/probe.lean"), "#check (2 + 2 : Nat)\n"); // what the bake writes, so the tree compares
+    fs.writeFileSync(path.join(s, "w/FAKE_NO_SNAP"), ""); // the fake's switch: the runner's environment is the bake's own, not the test's
     before = tree(s);
-    const failed = bake(s, art, out2, "init", { FAKE_NO_SNAP: "1" });
+    const failed = bake(s, art, out2, "init");
     expect(failed.status).toBe(1);
     expect(failed.lines).toContain("FAIL: snapshot file was not produced");
     expect(tree(s)).toEqual(before);
@@ -756,14 +757,20 @@ if (!process.env.FAKE_NO_SNAP) fs.writeFileSync(path.join(work, save), "a raw re
 
   test("the copy is switched FIRST: when index.json's rename fails, the copy already holds the new index (never behind it); no temp file or lock is left", () => {
     const { s, art, id, out } = bakeCheckout();
-    fs.mkdirSync(path.join(out, "index.json", "blocker"), { recursive: true }); // a directory: rename(2) over it fails
-    const r = bake(s, art, out, "init");
+    // rename(2) onto index.json fails (EIO) in the bake's process; an index.json that is a directory is refused before the runner
+    const noIndexRename = path.join(s, "no-index-rename.mjs");
+    fs.writeFileSync(noIndexRename, `import fs from "node:fs";
+const rename = fs.renameSync;
+fs.renameSync = (from, to) => { if (String(to).endsWith(${JSON.stringify(`${path.sep}index.json`)})) { const e = new Error("EIO: i/o error, rename"); e.code = "EIO"; throw e; } return rename(from, to); };
+`);
+    const r = bake(s, art, out, "init", { NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import ${pathToFileURL(noIndexRename).href}`.trim() });
     expect(r.status).toBe(1);
     expect(r.stdout).not.toMatch(/^baked /m);
+    expect(r.stderr).toContain("bake-snapshot: writing the index failed (EIO)");
     const copy = JSON.parse(fs.readFileSync(path.join(out, `index.${id}.json`), "utf8"));
     expect(copy.snapshots.map((e: { name: string; runtime: string }) => [e.name, e.runtime])).toEqual([["init", id]]);
-    expect(fs.statSync(path.join(out, "index.json")).isDirectory()).toBe(true);
-    expect(indexFiles(out)).toEqual([`index.${id}.json`, "index.json"].sort());
+    expect(fs.existsSync(path.join(out, "index.json"))).toBe(false);
+    expect(indexFiles(out)).toEqual([`index.${id}.json`]);
   });
 
   test("the lock needs no hard link: an --out whose filesystem refuses link(2) (exFAT/FAT, some FUSE/SMB) still gets both files", () => {

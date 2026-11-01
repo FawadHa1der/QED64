@@ -12,13 +12,17 @@
 // the pairing is a datum rather than prose (review C6). `--out` inside
 // public/ is refused before the runner starts; promotion is a separate step.
 //
+// Stop it with SIGTERM, SIGINT or SIGHUP: it forwards the signal to its runner,
+// writes no index and exits 128+n. The runner gets only PATH, HOME, TMPDIR and
+// the bake's own variables (runnerEnv below).
+//
 // Usage: node pipeline/snapshot/bake-snapshot.mjs [--name init] [--probe '#check 2+2'] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--allow-legacy-imports] [--runner <script>]
 // Paths: each flag, else its variable (QED64_LEAN_ARTIFACT, QED64_WORK,
 // QED64_STAGING), else the deprecated repo-relative default with one WARNING
 // (docs/CLI-CONTRACT.md "Path resolution").
 // (--help; the contract — flags, exit codes, stable output — is docs/CLI-CONTRACT.md)
 
-import { execFileSync, execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -67,9 +71,12 @@ import { buildIdOfArtifact, refuseInsidePublic, resolveToolPath, stagingDir, too
     "  QED64_PROFILE_INIT        when set, forwarded into the wasm environment to profile the [init] replay",
     "",
     "exit codes:",
-    "  0  baked and the index upserted (also when the wedged runner was reaped); NOT a verdict on the probe's Lean messages",
-    "  1  the runner exited non-zero, or no .snap was produced",
-    "  2  refused before the runner: no --artifact, QED64_LEAN_ARTIFACT or deprecated default; no lean.wasm under the artifact, --out inside public/, an index paired with another runtime or with none, a malformed --roots or --initial-bytes, a --runner (or QED64_RUNNER) script that does not exist",
+    "  0    baked and the index upserted (also when the wedged runner was reaped); NOT a verdict on the probe's Lean messages",
+    "  1    after the bake started: the runner exited non-zero, was killed by a signal this bake did not send or could not start; no .snap was produced; compressing failed; or the index could not be written (unreadable, corrupt, foreign or unpaired under the lock, its lock held past the wait, or a failed write): a written .snapz is kept and its entry printed (unindexed entry <json>)",
+    "  2    refused before the runner: no --artifact, QED64_LEAN_ARTIFACT or deprecated default; no lean.wasm under the artifact, --out inside public/, an index paired with another runtime or with none, a malformed --roots or --initial-bytes, a --runner (or QED64_RUNNER) script that does not exist, an unreadable or corrupt index.json (only a missing one is a new index)",
+    "  129  SIGHUP received before the index was written: forwarded to the runner (SIGKILL 10 s later), no index write",
+    "  130  SIGINT, likewise",
+    "  143  SIGTERM, likewise",
     "",
     "tier 1 (downstream-stable). Contract: docs/CLI-CONTRACT.md",
   ].join("\n");
@@ -117,329 +124,491 @@ import { buildIdOfArtifact, refuseInsidePublic, resolveToolPath, stagingDir, too
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "../..");
+
+// ---------- process state: signals, the runner, temp files ----------
+// The kernel copy's rules, ported as behaviour (architecture review D4 a): no runner outlives
+// its bake, a signal writes no index, and a .snapz in place but not indexed gets its entry printed.
+const TOOL = "bake-snapshot";
+const SIGNAL_EXIT = { SIGHUP: 129, SIGINT: 130, SIGTERM: 143 };
+const state = {
+  signal: null, // the first SIGINT/SIGTERM/SIGHUP this bake received
+  child: null, // the runner until it has closed
+  snapzTmp: null, // the .snapz temp while it is written
+  unindexed: null, // the entry of a .snapz in place but not (yet) in the index
+  indexed: false, // index.json and its copy written: a later signal changes nothing
+};
+/**
+ * One whole line on stderr from the 'exit' handler, where a stream write may never be flushed:
+ * fd 2 is made blocking (libuv makes a pipe non-blocking), every byte written, EAGAIN retried for
+ * about 2 s. Only a stderr that is gone loses it.
+ */
+function lastWords(line) {
+  try { process.stderr._handle?.setBlocking?.(true); } catch { /* not a pipe or TTY */ }
+  const bytes = Buffer.from(`${line}\n`);
+  const pause = new Int32Array(new SharedArrayBuffer(4));
+  for (let at = 0, tries = 0; at < bytes.length;) {
+    try {
+      at += fs.writeSync(2, bytes, at);
+    } catch (e) {
+      if (e?.code !== "EAGAIN" || (tries += 1) > 200) return;
+      Atomics.wait(pause, 0, 0, 10);
+    }
+  }
+}
+for (const sig of Object.keys(SIGNAL_EXIT)) {
+  process.on(sig, () => {
+    if (state.indexed) return; // the index is written: finish as planned
+    // A second signal, or no runner to wait for: exit now (the 'exit' handler cleans up).
+    if (state.signal || !state.child) process.exit(SIGNAL_EXIT[state.signal ?? sig]);
+    state.signal = sig;
+    process.exitCode = SIGNAL_EXIT[sig];
+    const child = state.child;
+    child.kill(sig);
+    // a runner that ignores it is SIGKILLed: no runner outlives its bake
+    setTimeout(() => { if (state.child === child) child.kill("SIGKILL"); }, 10_000).unref();
+  });
+}
+// Every exit ends here. A runner still running (a crash mid-bake, or a second signal) is killed;
+// a .snapz temp is removed; a .snapz in place but not indexed gets its entry printed.
+process.on("exit", () => {
+  if (state.child) {
+    try { state.child.kill("SIGKILL"); } catch { /* gone */ }
+    lastWords(`${TOOL}: the bake ended with its runner (pid ${state.child.pid}) still running: killed`);
+  }
+  if (state.snapzTmp) try { fs.rmSync(state.snapzTmp, { force: true }); } catch { /* left behind */ }
+  if (state.unindexed) lastWords(`${TOOL}: unindexed entry ${JSON.stringify(state.unindexed)}`);
+});
+// The bake's own output is best effort once its reader is gone (`bake | head`, a dead log
+// consumer): a closed stdout or stderr never ends a bake, whose runner would be left behind.
+for (const s of [process.stdout, process.stderr]) s.on("error", () => {});
+
 function arg(name, fallback) {
   const i = process.argv.indexOf(`--${name}`);
   return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : fallback;
 }
-const name = arg("name", "init");
-const probe = arg("probe", "#check (2 + 2 : Nat)");
+const USAGE = "bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--roots <A,B,…>] [--label <text>] [--initial-bytes <bytes>] [--allow-legacy-imports] [--runner <script>]";
 // Overlay metadata (docs/EMBEDDING.md §8), written into the entry only when
 // given: the module roots the environment serves, a label, an initial commit.
 const ROOT = /^[A-Za-z_][\w']*(?:\.[A-Za-z_][\w']*)*$/;
-const rootsArg = arg("roots", null);
-const roots = rootsArg === null ? null : rootsArg.split(",").map((r) => r.trim()).filter(Boolean);
-if (roots !== null && (roots.length === 0 || !roots.every((r) => ROOT.test(r)))) {
-  console.error(`bake-snapshot: refusing --roots ${JSON.stringify(rootsArg)}: expected comma-separated module roots (e.g. Mathlib,ProofWidgets)`);
-  process.exit(2);
-}
-const label = arg("label", null);
-const initialBytesArg = arg("initial-bytes", null);
-const initialBytes = initialBytesArg === null ? null : Number(initialBytesArg);
-if (initialBytes !== null && !(Number.isSafeInteger(initialBytes) && initialBytes > 0)) {
-  console.error(`bake-snapshot: refusing --initial-bytes ${JSON.stringify(initialBytesArg)}: expected a positive whole number of bytes`);
-  process.exit(2);
-}
-const USAGE = "bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--roots <A,B,…>] [--label <text>] [--initial-bytes <bytes>] [--allow-legacy-imports] [--runner <script>]";
-// The runtime identity comes from the artifact that will do the baking,
-// never from a manifest in public/ — a bake must not inherit whatever the
-// served tree happens to say.
-const artifactDir = resolveToolPath({
-  tool: "bake-snapshot", flag: "artifact", placeholder: "<dir>", value: arg("artifact", null), env: "QED64_LEAN_ARTIFACT",
-  legacy: path.join(root, "pipeline/toolchain/work/build/stage1"), legacyLabel: "pipeline/toolchain/work/build/stage1 under the repo root",
-  holds: (dir) => fs.existsSync(path.join(dir, "bin/lean.wasm")) || fs.existsSync(path.join(dir, "lean.wasm")), needs: "bin/lean.wasm", usage: USAGE,
-}).path;
-const buildId = buildIdOfArtifact(artifactDir);
-if (!buildId) {
-  console.error(`bake-snapshot: no lean.wasm under ${artifactDir} — pass --artifact <stage1 dir>`);
-  process.exit(2);
-}
-const out = resolveToolPath({
-  tool: "bake-snapshot", flag: "out", placeholder: "<dir>", value: arg("out", null), base: root,
-  env: "QED64_STAGING", envTo: (staging) => path.join(staging, buildId, "snapshots"),
-  legacy: stagingDir(root, buildId, "snapshots"), legacyLabel: "work/staging/<buildId>/snapshots under the repo root", usage: USAGE,
-}).path;
-refuseInsidePublic(root, out, "bake-snapshot");
 
-// The index this bake will upsert into is ONE pairing, checked before the
-// runner starts (a refusal after a 20-minute bake is the expensive kind):
-// entries baked by another runtime must not survive next to this one (they
-// would be served under this manifest and trap in the browser), and entries
-// with no `runtime` at all (pre-field bakes) would leave promote refusing
-// with "none recorded" and the user guessing which names to rebake.
-const indexPath = path.join(out, "index.json");
-let index = { schema: "qed64.snapshot-index/v1", snapshots: [] };
-try { index = JSON.parse(fs.readFileSync(indexPath, "utf8")); } catch {}
-const siblings = index.snapshots.filter((s) => s.name !== name);
-const foreign = siblings.filter((s) => s.runtime && s.runtime !== buildId);
-if (foreign.length) {
-  console.error(`bake-snapshot: ${indexPath} already holds entries for runtime ${foreign[0].runtime} (${foreign.map((s) => s.name).join(", ")}) — refusing to mix pairings`);
-  process.exit(2);
-}
-const unpaired = siblings.filter((s) => !s.runtime);
-if (unpaired.length) {
-  console.error(`bake-snapshot: ${indexPath} holds entries with no runtime pairing (${unpaired.map((s) => s.name).join(", ")}) — rebake ${unpaired.map((s) => `--name ${s.name}`).join(", ")} against this runtime first, or bake into an empty --out (promote refuses an unpaired index)`);
-  process.exit(2);
-}
-
-// The runner: --runner, else QED64_RUNNER, else QED64's own node-runner (the
-// default, not deprecated). Checked before --work is created or the paired
-// .snap unlinked.
-const runner = toolPath({ value: arg("runner", null), env: "QED64_RUNNER", legacy: path.join(root, "pipeline/snapshot/node-runner.mjs") }).path;
-if (!fs.existsSync(runner)) {
-  console.error(`bake-snapshot: no runner script ${runner} — pass --runner <script> or set QED64_RUNNER`);
-  process.exit(2);
-}
-
-// The raw .snap lands here. The default, work/snapshot, is the PAIRED set the
-// Node probes and the compiler battery load against the served binary — a
-// bake for any other runtime (a version import, an experiment) must pass
-// --work <dir> or it silently unpairs them (the binary-pairing invariant, docs/REBUILD.md §3).
-const work = resolveToolPath({
-  tool: "bake-snapshot", flag: "work", placeholder: "<dir>", value: arg("work", null), base: root, env: "QED64_WORK",
-  legacy: path.join(root, "work/snapshot"), legacyLabel: "work/snapshot under the repo root", usage: USAGE,
-}).path;
-fs.mkdirSync(work, { recursive: true });
-fs.writeFileSync(path.join(work, "probe.lean"), `${probe}\n`);
-
-const runnerArgs = [
-  runner,
-  "--work", work,
-];
-// Always the RESOLVED artifact: the `runtime` stamped below (from
-// artifactDir's lean.wasm) must name the binary that baked, whatever the
-// runner's own resolution would have picked.
-runnerArgs.push("--artifact", artifactDir);
-const lib = arg("lib", null);
-if (lib) runnerArgs.push("--lib", lib);
-runnerArgs.push("--", `--incr-header-save=/work/${name}.snap`, "/work/probe.lean");
-
-// Reserve the compactor's output buffer in one allocation: a whole-Mathlib
-// environment compacts to >2 GiB, and growth-by-doubling would need the old
-// and new buffers to coexist — more than the 16 GiB wasm64 space holds next
-// to the environment itself (toolchain patch 0011).
-const reserve = arg("reserve", String(3.5 * 1024 ** 3));
-// Legacy non-module packages (the lean4game games) need patch 0030's gate in
-// the runner; the flag is the documented form, the inherited variable its
-// equivalent (node-runner forwards either into the wasm environment).
-const allowLegacyImports = process.argv.includes("--allow-legacy-imports");
-console.log(`baking ${name}.snap for runtime ${buildId} (probe: ${JSON.stringify(probe)}; compactor reserve ${(Number(reserve) / 1024 ** 3).toFixed(1)} GiB) → ${out}`);
-// Patch 0031 (PROXY_TO_PTHREAD): the runner's process EXIT wedges — the
-// proxied exit is swallowed by the 0020 mailbox keepalive — while the actual
-// bake (save + probe) completes fine. Supervise: once the target .snap has
-// been stable for a while after the runner goes quiet, reap the child.
-// The bake must start CLEAN: a stale target satisfies the stability check
-// before the new save even begins (it cost two silently-skipped bakes).
-try { fs.rmSync(path.join(work, `${name}.snap`)); } catch { /* absent */ }
-await new Promise((resolve, reject) => {
-  const child = execFile(process.execPath, ["--stack-size=8192", ...runnerArgs], {
-    env: { ...process.env, LEAN_COMPACTOR_RESERVE: reserve, ...(allowLegacyImports ? { QED64_ALLOW_LEGACY_IMPORTS: "1" } : {}) },
-    maxBuffer: 64 * 1024 * 1024,
-  }, () => {});
-  child.stdout.pipe(process.stdout);
-  child.stderr.pipe(process.stderr);
-  let lastActivity = Date.now();
-  child.stdout.on("data", () => { lastActivity = Date.now(); });
-  child.stderr.on("data", () => { lastActivity = Date.now(); });
-  const target = path.join(work, `${name}.snap`);
-  let lastSize = -1;
-  let stableSince = 0;
-  const watch = setInterval(() => {
-    const size = fs.existsSync(target) ? fs.statSync(target).size : -1;
-    if (size !== lastSize) { lastSize = size; stableSince = Date.now(); }
-    // The compactor is CPU-silent for many minutes between the last import
-    // line and the finished save — quiet alone means nothing, and stability
-    // only counts because the target was unlinked at bake start.
-    const quiet = Date.now() - lastActivity > 300000;
-    const stable = size > 0 && Date.now() - stableSince > 120000;
-    if (quiet && stable) {
-      clearInterval(watch);
-      console.log(`bake output stable (${size} bytes) with runner quiet — reaping the wedged exit`);
-      child.kill("SIGKILL");
-      resolve();
+/** Only ENOENT is a new index; anything else is refused, never replaced (it would drop every sibling entry). */
+function readIndex(indexPath) {
+  let text;
+  try { text = fs.readFileSync(indexPath, "utf8"); }
+  catch (e) {
+    if (e?.code === "ENOENT") return { index: { schema: "qed64.snapshot-index/v1", snapshots: [] } };
+    return { refusal: `bake-snapshot: cannot read ${indexPath} (${e?.code ?? e?.message}) — refusing to replace it` };
+  }
+  let index, problem = null;
+  try { index = JSON.parse(text); } catch { problem = "it is not JSON"; }
+  if (!problem) {
+    if (!index || typeof index !== "object" || Array.isArray(index)) problem = "it is not a JSON object";
+    else if (index.schema !== "qed64.snapshot-index/v1") problem = `its schema is ${JSON.stringify(index.schema)}, not qed64.snapshot-index/v1`;
+    else if (!Array.isArray(index.snapshots)) problem = "it has no snapshots array";
+    else {
+      const bad = index.snapshots.findIndex((s) => !s || typeof s !== "object" || Array.isArray(s) || typeof s.name !== "string");
+      if (bad >= 0) problem = `snapshots[${bad}] is not an entry with a string name`;
     }
-  }, 5000);
-  child.on("exit", (code) => {
-    clearInterval(watch);
-    if (code === 0 || code === null) resolve();
-    else reject(new Error(`runner exited ${code}`));
-  });
-});
-
-const snap = path.join(work, `${name}.snap`);
-if (!fs.existsSync(snap)) {
-  console.error("FAIL: snapshot file was not produced");
-  process.exit(1);
+  }
+  return problem ? { refusal: `bake-snapshot: ${indexPath} is not a snapshot index: ${problem} — refusing to replace it` } : { index };
 }
-fs.mkdirSync(out, { recursive: true });
-try { fs.rmSync(`${snap}.deps`); } catch {}
-const snapBytes = fs.statSync(snap).size;
 
-// Serve gzip: region dumps compress ~2×, and the worker inflates through
-// DecompressionStream. Only the .gz is published.
-console.log(`compressing ${name}.snapz …`);
-// `.snapz`, not `.gz`: a recognised gzip extension makes servers add Content-Encoding
-// and the browser pre-inflates, defeating the worker's compressed OPFS cache.
-// The published name is CONTENT-ADDRESSED (`<name>.<digest16>.snapz`):
-// snapshots are binary-paired to the runtime, and a rebuilt runtime produces
-// a region of the *identical raw size* (same env content, different
-// relocation values) — so a fixed name behind immutable HTTP caching let a
-// stale snapshot pass every size check and trap "memory access out of
-// bounds" against the new binary. The digest in the URL makes immutable
-// caching correct.
-const tmpPath = path.join(out, `${name}.snapz.tmp`);
-const hasher = createHash("sha256");
-await pipeline(
-  fs.createReadStream(snap),
-  createGzip({ level: 6 }),
-  async function* (chunks) { for await (const c of chunks) { hasher.update(c); yield c; } },
-  fs.createWriteStream(tmpPath),
-);
-const digest = hasher.digest("hex");
-const gzName = `${name}.${digest.slice(0, 16)}.snapz`;
-const gzPath = path.join(out, gzName);
-fs.renameSync(tmpPath, gzPath);
-// Older bakes of the same logical name are LEFT IN PLACE: content-addressed
-// files never collide, and a producer that unlinks is how the served tree was
-// lost (review C6: additive only; garbage-collect deliberately, later).
-const transferBytes = fs.statSync(gzPath).size;
+/**
+ * The index this bake upserts into is ONE pairing: entries baked by another runtime must not
+ * survive next to this one (they would be served under this manifest and trap in the browser),
+ * and entries with no `runtime` at all (pre-field bakes) would leave promote refusing with "none
+ * recorded" and the user guessing which names to rebake. The refusal line, or null.
+ */
+function pairingRefusal(index, name, buildId, indexPath) {
+  const siblings = index.snapshots.filter((s) => s.name !== name);
+  const foreign = siblings.filter((s) => s.runtime && s.runtime !== buildId);
+  if (foreign.length) return `bake-snapshot: ${indexPath} already holds entries for runtime ${foreign[0].runtime} (${foreign.map((s) => s.name).join(", ")}) — refusing to mix pairings`;
+  const unpaired = siblings.filter((s) => !s.runtime);
+  if (unpaired.length) return `bake-snapshot: ${indexPath} holds entries with no runtime pairing (${unpaired.map((s) => s.name).join(", ")}) — rebake ${unpaired.map((s) => `--name ${s.name}`).join(", ")} against this runtime first, or bake into an empty --out (promote refuses an unpaired index)`;
+  return null;
+}
 
-// Upsert the snapshot index the app consumes: each entry records the ORDERED
-// header imports its environment was baked for (the runtime keys its env
-// cache by exactly that list; empty = the default no-import header) and the
-// `runtime` it is binary-paired with.
-const importsOf = (source) => {
+/** The ORDERED header imports of a probe (the runtime keys its env cache by exactly that list). */
+function importsOf(source) {
   const found = [];
   for (const line of source.split("\n")) {
     const m = /^(?:public\s+|private\s+)?(?:meta\s+)?import\s+([A-Za-z_][\w.«»]*)/.exec(line.trim());
     if (m) found.push(m[1]);
   }
   return found;
-};
-const entry = {
-  name,
-  url: `/snapshots/${gzName}`,
-  digest: `sha256:${digest}`,
-  bytes: snapBytes,
-  transfer: transferBytes,
-  imports: importsOf(probe),
-  runtime: buildId,
-  ...(roots ? { roots } : {}),
-  ...(label ? { label } : {}),
-  ...(initialBytes ? { initialBytes } : {}),
-};
-// THE PER-BUILD COPY (HARDENING #64). Beside index.json the bake writes
-// index.<buildId>.json, the same bytes, named by the runtime this index is
-// paired with (the refusals above keep one --out to one pairing): the copy a
-// page pinned to that runtime reads when the mutable index.json beside it
-// names another runtime (loadSnapshotIndex's `pairedBuildId`,
-// lib/snapshots.ts). Another runtime's copy in --out is never touched.
-// QED64's own path does not need it: promote-staging derives public/'s copy
-// from the staged index.json and ignores this one, and upload-artifacts.sh
-// sends no copy at all (since D2 QED64's indexes ship in its deploy). It suits only
-// a consumer that serves its staging dir UNMERGED (uploads --out as baked):
-// the copy arrives with the index, so a page pinned to this runtime keeps
-// reading its pairing when that consumer's next pairing is uploaded ahead of
-// its deploy. This file is the STAGING index (only this --out's bakes); a
-// consumer that merges staged entries into its served index (lean4game's
-// scripts/stage-snapshots.py keeps other names) must derive its copy from
-// that merged index instead, or a pinned page would miss every entry not
-// rebaked here (HARDENING #64, the relay to lean4game).
-//
-// The upsert runs under the index's lock (index.json.lock, created by an
-// exclusive open, O_CREAT|O_EXCL, which every local filesystem the staging
-// dir may sit on supports: link(2) is refused by exFAT/FAT and some FUSE or
-// SMB mounts, and its failure came AFTER the runner. The lock holds its
-// holder's pid. A lock is never taken over: without link(2) no takeover is
-// race-free (two waiters that judge one dead lock can both remove it, the
-// second removing the lock the first has just created), a pid means
-// nothing on an --out shared between hosts, and another tool's lock may
-// not be in this format. A bake waits for the lock at most LOCK_WAIT_MS,
-// then fails (exit 1): one line names the lock, its holder and whether
-// that pid runs on this host, one prints the entry it could not index; its
-// .snapz is in place and neither index is touched, so once no bake writes
-// this --out, removing the lock and rerunning finishes the upsert): a concurrent
-// bake of a sibling name re-reads, merges and writes after this one, never
-// interleaved with it, so its entry is not lost and the two files are never
-// written by different bakes. Both files go through temp file + rename
-// (both temps written first: a full disk fails before either switches),
-// the COPY FIRST and index.json LAST, as promote-staging switches public/:
-// index.json is the commit record. Every version of either file names this
-// runtime only, so no order can show a reader a mispaired index. Copy-first
-// means the copy is never OLDER than index.json: at every instant it holds
-// index.json's bytes or the next version's (whose .snapz is already in
-// place), so a reader that falls back to it never loses an entry the index
-// has committed; a crash between the renames leaves the copy one version
-// ahead, never behind, and the next bake of this --out rewrites both.
-const copyPath = path.join(out, `index.${buildId}.json`);
-const lockPath = `${indexPath}.lock`;
-// The wait bound; QED64_BAKE_LOCK_WAIT_MS overrides it for tests only (not a contract variable).
-const LOCK_WAIT_MS = Number(process.env.QED64_BAKE_LOCK_WAIT_MS) > 0 ? Number(process.env.QED64_BAKE_LOCK_WAIT_MS) : 120000;
+}
+
 /** true when `pid` is a process on this host (EPERM: alive, another user's); only reported, never acted on. */
 const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; } };
-const lockWaitStart = Date.now();
-let lockVanished = 0;
-for (;;) {
-  let fd;
-  try {
-    fd = fs.openSync(lockPath, "wx");
-  } catch (e) {
-    if (e.code !== "EEXIST") throw e;
-    if (Date.now() - lockWaitStart > LOCK_WAIT_MS) {
-      // Read without following a link. An exclusive create never makes a symlink, so one at the lock path (dangling or
-      // not) is no bake's lock, and neither is a directory: each is named at once, never retried, since open() keeps
-      // answering EEXIST for them while no read succeeds (a retry there spun at 100% CPU). A lock released between the
-      // open and the read (ENOENT) sends the bake back to open(), at most 100 times.
-      let text = null;
-      let unreadable = null;
-      try {
-        const st = fs.lstatSync(lockPath);
-        if (st.isSymbolicLink()) unreadable = "a symlink";
-        else if (st.isDirectory()) unreadable = "a directory";
-        else if (!st.isFile()) unreadable = "not a regular file";
-        else text = fs.readFileSync(lockPath, "utf8");
-      } catch (e) {
-        if (e.code === "ENOENT" && ++lockVanished <= 100) continue; // released meanwhile
-        unreadable = `unreadable: ${e.code ?? e.message}`;
-      }
-      const holder = text === null ? null : /^(\d+)\n$/.exec(text);
-      const who = holder
-        ? `pid ${holder[1]} (${pidAlive(Number(holder[1])) ? "running" : "not running"} on this host)`
-        : `a holder it cannot read (${unreadable ?? JSON.stringify(text.slice(0, 200))})`;
-      console.error(`bake-snapshot: index lock ${lockPath} is held by ${who} for over ${LOCK_WAIT_MS} ms; a lock is never taken over: once no bake writes ${out}, remove it and rerun (the .snapz is in place, the index is not updated)`);
-      console.error(`bake-snapshot: unindexed entry ${JSON.stringify(entry)}`);
-      process.exit(1);
+
+/**
+ * Run the runner and supervise it. spawn, not execFile: no output buffer whose limit kills the
+ * runner (execFile's 64 MiB maxBuffer did). Patch 0031 (PROXY_TO_PTHREAD): the runner's process
+ * EXIT wedges (the proxied exit is swallowed by the 0020 mailbox keepalive) while the actual bake
+ * (save + probe) completes fine, so once the target .snap has been stable for a while after the
+ * runner goes quiet, the bake SIGKILLs it. Resolves once, on 'close' (the process exited and both
+ * pipes closed): { code, signal, reaped }, or { error } when it could not start.
+ */
+function supervise(runnerArgs, runnerEnv, target) {
+  return new Promise((resolve) => {
+    let done = false;
+    let watch = null;
+    const finish = (result) => {
+      if (done) return;
+      done = true;
+      clearInterval(watch);
+      state.child = null;
+      resolve(result);
+    };
+    const child = spawn(process.execPath, ["--stack-size=8192", ...runnerArgs], { env: runnerEnv, stdio: ["ignore", "pipe", "pipe"] });
+    state.child = child;
+    child.on("error", (error) => finish({ error }));
+    // The runner's output goes to the bake's; if that reader is gone the runner is drained instead.
+    for (const [from, to] of [[child.stdout, process.stdout], [child.stderr, process.stderr]]) {
+      from.pipe(to);
+      to.once("error", () => { from.unpipe(to); from.resume(); });
     }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    continue;
+    let lastActivity = Date.now();
+    child.stdout.on("data", () => { lastActivity = Date.now(); });
+    child.stderr.on("data", () => { lastActivity = Date.now(); });
+    let lastSize = -1;
+    let stableSince = 0;
+    let reaped = false;
+    watch = setInterval(() => {
+      if (reaped || state.signal) return;
+      let size = -1;
+      try { size = fs.statSync(target).size; } catch { /* not yet */ }
+      if (size !== lastSize) { lastSize = size; stableSince = Date.now(); }
+      // The compactor is CPU-silent for many minutes between the last import
+      // line and the finished save — quiet alone means nothing, and stability
+      // only counts because the target was unlinked at bake start.
+      const quiet = Date.now() - lastActivity > 300000;
+      const stable = size > 0 && Date.now() - stableSince > 120000;
+      if (quiet && stable) {
+        reaped = true;
+        console.log(`bake output stable (${size} bytes) with runner quiet — reaping the wedged exit`);
+        child.kill("SIGKILL");
+      }
+    }, 5000);
+    child.on("close", (code, signal) => finish({ code, signal, reaped }));
+  });
+}
+
+async function main() {
+  const name = arg("name", "init");
+  const probe = arg("probe", "#check (2 + 2 : Nat)");
+  const rootsArg = arg("roots", null);
+  const roots = rootsArg === null ? null : rootsArg.split(",").map((r) => r.trim()).filter(Boolean);
+  if (roots !== null && (roots.length === 0 || !roots.every((r) => ROOT.test(r)))) {
+    console.error(`bake-snapshot: refusing --roots ${JSON.stringify(rootsArg)}: expected comma-separated module roots (e.g. Mathlib,ProofWidgets)`);
+    return 2;
   }
+  const label = arg("label", null);
+  const initialBytesArg = arg("initial-bytes", null);
+  const initialBytes = initialBytesArg === null ? null : Number(initialBytesArg);
+  if (initialBytes !== null && !(Number.isSafeInteger(initialBytes) && initialBytes > 0)) {
+    console.error(`bake-snapshot: refusing --initial-bytes ${JSON.stringify(initialBytesArg)}: expected a positive whole number of bytes`);
+    return 2;
+  }
+  // The runtime identity comes from the artifact that will do the baking,
+  // never from a manifest in public/ — a bake must not inherit whatever the
+  // served tree happens to say.
+  const artifactDir = resolveToolPath({
+    tool: "bake-snapshot", flag: "artifact", placeholder: "<dir>", value: arg("artifact", null), env: "QED64_LEAN_ARTIFACT",
+    legacy: path.join(root, "pipeline/toolchain/work/build/stage1"), legacyLabel: "pipeline/toolchain/work/build/stage1 under the repo root",
+    holds: (dir) => fs.existsSync(path.join(dir, "bin/lean.wasm")) || fs.existsSync(path.join(dir, "lean.wasm")), needs: "bin/lean.wasm", usage: USAGE,
+  }).path;
+  const buildId = buildIdOfArtifact(artifactDir);
+  if (!buildId) {
+    console.error(`bake-snapshot: no lean.wasm under ${artifactDir} — pass --artifact <stage1 dir>`);
+    return 2;
+  }
+  const out = resolveToolPath({
+    tool: "bake-snapshot", flag: "out", placeholder: "<dir>", value: arg("out", null), base: root,
+    env: "QED64_STAGING", envTo: (staging) => path.join(staging, buildId, "snapshots"),
+    legacy: stagingDir(root, buildId, "snapshots"), legacyLabel: "work/staging/<buildId>/snapshots under the repo root", usage: USAGE,
+  }).path;
+  refuseInsidePublic(root, out, "bake-snapshot");
+
+  // The index this bake will upsert into is read and its pairing checked before the runner
+  // starts (a refusal after a 20-minute bake is the expensive kind). A missing index is a new
+  // one; an unreadable or corrupt one is refused, never replaced.
+  const indexPath = path.join(out, "index.json");
+  const read = readIndex(indexPath);
+  const refusal = read.refusal ?? pairingRefusal(read.index, name, buildId, indexPath);
+  if (refusal) {
+    console.error(refusal);
+    return 2;
+  }
+
+  // The runner: --runner, else QED64_RUNNER, else QED64's own node-runner (the
+  // default, not deprecated). Checked before --work is created or the paired
+  // .snap unlinked.
+  const runner = toolPath({ value: arg("runner", null), env: "QED64_RUNNER", legacy: path.join(root, "pipeline/snapshot/node-runner.mjs") }).path;
+  if (!fs.existsSync(runner)) {
+    console.error(`bake-snapshot: no runner script ${runner} — pass --runner <script> or set QED64_RUNNER`);
+    return 2;
+  }
+
+  // The raw .snap lands here. The default, work/snapshot, is the PAIRED set the
+  // Node probes and the compiler battery load against the served binary — a
+  // bake for any other runtime (a version import, an experiment) must pass
+  // --work <dir> or it silently unpairs them (the binary-pairing invariant, docs/REBUILD.md §3).
+  const work = resolveToolPath({
+    tool: "bake-snapshot", flag: "work", placeholder: "<dir>", value: arg("work", null), base: root, env: "QED64_WORK",
+    legacy: path.join(root, "work/snapshot"), legacyLabel: "work/snapshot under the repo root", usage: USAGE,
+  }).path;
+  fs.mkdirSync(work, { recursive: true });
+  fs.writeFileSync(path.join(work, "probe.lean"), `${probe}\n`);
+
+  const runnerArgs = [
+    runner,
+    "--work", work,
+  ];
+  // Always the RESOLVED artifact: the `runtime` stamped below (from
+  // artifactDir's lean.wasm) must name the binary that baked, whatever the
+  // runner's own resolution would have picked.
+  runnerArgs.push("--artifact", artifactDir);
+  const lib = arg("lib", null);
+  if (lib) runnerArgs.push("--lib", lib);
+  runnerArgs.push("--", `--incr-header-save=/work/${name}.snap`, "/work/probe.lean");
+
+  // Reserve the compactor's output buffer in one allocation: a whole-Mathlib
+  // environment compacts to >2 GiB, and growth-by-doubling would need the old
+  // and new buffers to coexist — more than the 16 GiB wasm64 space holds next
+  // to the environment itself (toolchain patch 0011).
+  const reserve = arg("reserve", String(3.5 * 1024 ** 3));
+  // Legacy non-module packages (the lean4game games) need patch 0030's gate in
+  // the runner; the flag is the documented form, the inherited variable its
+  // equivalent (either reaches the runner as 1).
+  const allowLegacyImports = process.argv.includes("--allow-legacy-imports") || !!process.env.QED64_ALLOW_LEGACY_IMPORTS;
+  // The runner's environment is exactly these (the kernel copy's rule): a host LEAN_PATH reaches
+  // the VFS through lean_main's prologue after preRun and would replace --lib; NODE_OPTIONS and
+  // the rest never reach the runner.
+  const runnerEnv = {};
+  for (const key of ["PATH", "HOME", "TMPDIR"]) if (process.env[key] !== undefined) runnerEnv[key] = process.env[key];
+  runnerEnv.LEAN_COMPACTOR_RESERVE = reserve;
+  if (allowLegacyImports) runnerEnv.QED64_ALLOW_LEGACY_IMPORTS = "1";
+  if (process.env.QED64_PROFILE_INIT) runnerEnv.QED64_PROFILE_INIT = process.env.QED64_PROFILE_INIT;
+  console.log(`baking ${name}.snap for runtime ${buildId} (probe: ${JSON.stringify(probe)}; compactor reserve ${(Number(reserve) / 1024 ** 3).toFixed(1)} GiB) → ${out}`);
+  // The bake must start CLEAN: a stale target satisfies the stability check
+  // before the new save even begins (it cost two silently-skipped bakes).
+  const snap = path.join(work, `${name}.snap`);
+  try { fs.rmSync(snap); } catch { /* absent */ }
+  const run = await supervise(runnerArgs, runnerEnv, snap);
+  if (state.signal) return SIGNAL_EXIT[state.signal];
+  if (run.error) {
+    console.error(`${TOOL}: cannot start the runner (${run.error.code ?? run.error.message})`);
+    return 1;
+  }
+  const { code, signal, reaped } = run;
+  if (code === null && !reaped) {
+    // A terminal's Ctrl-C reaches the runner and the bake together: the bake's own handler may still be queued.
+    await new Promise((resolve) => setImmediate(resolve));
+    if (state.signal) return SIGNAL_EXIT[state.signal];
+    console.error(`${TOOL}: the runner was killed by ${signal}, a signal this bake did not send — nothing compressed, the index is not written`);
+    return 1;
+  }
+  if (code !== 0 && code !== null && !reaped) {
+    console.error(`${TOOL}: runner exited ${code}`);
+    return 1;
+  }
+
+  if (!fs.existsSync(snap)) {
+    console.error("FAIL: snapshot file was not produced");
+    return 1;
+  }
+  fs.mkdirSync(out, { recursive: true });
+  try { fs.rmSync(`${snap}.deps`); } catch {}
+  const snapBytes = fs.statSync(snap).size;
+
+  // Serve gzip: region dumps compress ~2×, and the worker inflates through
+  // DecompressionStream. Only the .gz is published.
+  console.log(`compressing ${name}.snapz …`);
+  // `.snapz`, not `.gz`: a recognised gzip extension makes servers add Content-Encoding
+  // and the browser pre-inflates, defeating the worker's compressed OPFS cache.
+  // The published name is CONTENT-ADDRESSED (`<name>.<digest16>.snapz`):
+  // snapshots are binary-paired to the runtime, and a rebuilt runtime produces
+  // a region of the *identical raw size* (same env content, different
+  // relocation values) — so a fixed name behind immutable HTTP caching let a
+  // stale snapshot pass every size check and trap "memory access out of
+  // bounds" against the new binary. The digest in the URL makes immutable
+  // caching correct. The temp is per process, so two bakes of one name never share it.
+  const tmpPath = path.join(out, `${name}.snapz.${process.pid}.tmp`);
+  state.snapzTmp = tmpPath;
+  const hasher = createHash("sha256");
   try {
-    fs.writeSync(fd, `${process.pid}\n`);
+    await pipeline(
+      fs.createReadStream(snap),
+      createGzip({ level: 6 }),
+      async function* (chunks) { for await (const c of chunks) { hasher.update(c); yield c; } },
+      fs.createWriteStream(tmpPath),
+    );
   } catch (e) {
-    fs.rmSync(lockPath, { force: true }); // ours, just created: never left behind for the next bake to wait out
-    throw e;
-  } finally {
-    fs.closeSync(fd);
+    fs.rmSync(tmpPath, { force: true });
+    state.snapzTmp = null;
+    if (state.signal) return SIGNAL_EXIT[state.signal];
+    console.error(`${TOOL}: compressing ${snap} failed (${e?.code ?? e?.message})`);
+    return 1;
   }
-  break;
-}
-try {
-  // Re-read: a concurrent bake of a sibling name may have upserted meanwhile.
-  try { index = JSON.parse(fs.readFileSync(indexPath, "utf8")); } catch {}
-  index.snapshots = index.snapshots.filter((s) => s.name !== name).concat([entry]);
-  const indexText = JSON.stringify(index, null, 2);
-  const writes = [copyPath, indexPath].map((to) => ({ to, tmp: `${to}.${process.pid}.tmp` }));
+  const digest = hasher.digest("hex");
+  const gzName = `${name}.${digest.slice(0, 16)}.snapz`;
+  const gzPath = path.join(out, gzName);
+  fs.renameSync(tmpPath, gzPath);
+  state.snapzTmp = null;
+  // Older bakes of the same logical name are LEFT IN PLACE: content-addressed
+  // files never collide, and a producer that unlinks is how the served tree was
+  // lost (review C6: additive only; garbage-collect deliberately, later).
+  const transferBytes = fs.statSync(gzPath).size;
+
+  // Upsert the snapshot index the app consumes: each entry records the ORDERED
+  // header imports its environment was baked for (the runtime keys its env
+  // cache by exactly that list; empty = the default no-import header) and the
+  // `runtime` it is binary-paired with.
+  const entry = {
+    name,
+    url: `/snapshots/${gzName}`,
+    digest: `sha256:${digest}`,
+    bytes: snapBytes,
+    transfer: transferBytes,
+    imports: importsOf(probe),
+    runtime: buildId,
+    ...(roots ? { roots } : {}),
+    ...(label ? { label } : {}),
+    ...(initialBytes ? { initialBytes } : {}),
+  };
+  state.unindexed = entry; // printed by the 'exit' handler on any exit before the index has it
+  // THE PER-BUILD COPY (HARDENING #64). Beside index.json the bake writes
+  // index.<buildId>.json, the same bytes, named by the runtime this index is
+  // paired with (the refusals above keep one --out to one pairing): the copy a
+  // page pinned to that runtime reads when the mutable index.json beside it
+  // names another runtime (loadSnapshotIndex's `pairedBuildId`,
+  // lib/snapshots.ts). Another runtime's copy in --out is never touched.
+  // QED64's own path does not need it: promote-staging derives public/'s copy
+  // from the staged index.json and ignores this one, and upload-artifacts.sh
+  // sends no copy at all (since D2 QED64's indexes ship in its deploy). It suits only
+  // a consumer that serves its staging dir UNMERGED (uploads --out as baked):
+  // the copy arrives with the index, so a page pinned to this runtime keeps
+  // reading its pairing when that consumer's next pairing is uploaded ahead of
+  // its deploy. This file is the STAGING index (only this --out's bakes); a
+  // consumer that merges staged entries into its served index (lean4game's
+  // scripts/stage-snapshots.py keeps other names) must derive its copy from
+  // that merged index instead, or a pinned page would miss every entry not
+  // rebaked here (HARDENING #64, the relay to lean4game).
+  //
+  // The upsert runs under the index's lock (index.json.lock, created by an
+  // exclusive open, O_CREAT|O_EXCL, which every local filesystem the staging
+  // dir may sit on supports: link(2) is refused by exFAT/FAT and some FUSE or
+  // SMB mounts, and its failure came AFTER the runner. The lock holds its
+  // holder's pid. A lock is never taken over: without link(2) no takeover is
+  // race-free (two waiters that judge one dead lock can both remove it, the
+  // second removing the lock the first has just created), a pid means
+  // nothing on an --out shared between hosts, and another tool's lock may
+  // not be in this format. A bake waits for the lock at most LOCK_WAIT_MS,
+  // then fails (exit 1): one line names the lock, its holder and whether
+  // that pid runs on this host, and the 'exit' handler prints the entry it could
+  // not index; its .snapz is in place and neither index is touched, so once no
+  // bake writes this --out, removing the lock and rerunning finishes the upsert.
+  // With the lock, the index is re-read under readIndex's rules and its pairing
+  // re-checked (a refusal is exit 1, nothing written): a concurrent bake of a
+  // sibling name re-reads, merges and writes after this one, never
+  // interleaved with it, so its entry is not lost and the two files are never
+  // written by different bakes; a sibling bake of another runtime that upserted
+  // meanwhile is refused, never mixed in. Both files go through temp file + rename
+  // (both temps written first: a full disk fails before either switches),
+  // the COPY FIRST and index.json LAST, as promote-staging switches public/:
+  // index.json is the commit record. Every version of either file names this
+  // runtime only, so no order can show a reader a mispaired index. Copy-first
+  // means the copy is never OLDER than index.json: at every instant it holds
+  // index.json's bytes or the next version's (whose .snapz is already in
+  // place), so a reader that falls back to it never loses an entry the index
+  // has committed; a crash between the renames leaves the copy one version
+  // ahead, never behind, and the next bake of this --out rewrites both.
+  const copyPath = path.join(out, `index.${buildId}.json`);
+  const lockPath = `${indexPath}.lock`;
+  // The wait bound; QED64_BAKE_LOCK_WAIT_MS overrides it for tests only (not a contract variable).
+  const LOCK_WAIT_MS = Number(process.env.QED64_BAKE_LOCK_WAIT_MS) > 0 ? Number(process.env.QED64_BAKE_LOCK_WAIT_MS) : 120000;
+  const lockWaitStart = Date.now();
+  let lockVanished = 0;
+  for (;;) {
+    let fd;
+    try {
+      fd = fs.openSync(lockPath, "wx");
+    } catch (e) {
+      if (e.code !== "EEXIST") throw e;
+      if (Date.now() - lockWaitStart > LOCK_WAIT_MS) {
+        // Read without following a link. An exclusive create never makes a symlink, so one at the lock path (dangling or
+        // not) is no bake's lock, and neither is a directory: each is named at once, never retried, since open() keeps
+        // answering EEXIST for them while no read succeeds (a retry there spun at 100% CPU). A lock released between the
+        // open and the read (ENOENT) sends the bake back to open(), at most 100 times.
+        let text = null;
+        let unreadable = null;
+        try {
+          const st = fs.lstatSync(lockPath);
+          if (st.isSymbolicLink()) unreadable = "a symlink";
+          else if (st.isDirectory()) unreadable = "a directory";
+          else if (!st.isFile()) unreadable = "not a regular file";
+          else text = fs.readFileSync(lockPath, "utf8");
+        } catch (e) {
+          if (e.code === "ENOENT" && ++lockVanished <= 100) continue; // released meanwhile
+          unreadable = `unreadable: ${e.code ?? e.message}`;
+        }
+        const holder = text === null ? null : /^(\d+)\n$/.exec(text);
+        const who = holder
+          ? `pid ${holder[1]} (${pidAlive(Number(holder[1])) ? "running" : "not running"} on this host)`
+          : `a holder it cannot read (${unreadable ?? JSON.stringify(text.slice(0, 200))})`;
+        console.error(`bake-snapshot: index lock ${lockPath} is held by ${who} for over ${LOCK_WAIT_MS} ms; a lock is never taken over: once no bake writes ${out}, remove it and rerun (the .snapz is in place, the index is not updated)`);
+        return 1; // the 'exit' handler prints the entry
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      continue;
+    }
+    try {
+      fs.writeSync(fd, `${process.pid}\n`);
+    } catch (e) {
+      fs.rmSync(lockPath, { force: true }); // ours, just created: never left behind for the next bake to wait out
+      throw e;
+    } finally {
+      fs.closeSync(fd);
+    }
+    break;
+  }
   try {
-    for (const { tmp } of writes) fs.writeFileSync(tmp, indexText);
-    for (const { to, tmp } of writes) fs.renameSync(tmp, to);
+    // Re-read under the same rules and re-check the pairing: a concurrent bake may have upserted meanwhile.
+    const reread = readIndex(indexPath);
+    const refusal = reread.refusal ?? pairingRefusal(reread.index, name, buildId, indexPath);
+    if (refusal) {
+      console.error(refusal);
+      return 1; // nothing written; the lock is released below and the 'exit' handler prints the entry
+    }
+    const index = reread.index;
+    index.snapshots = index.snapshots.filter((s) => s.name !== name).concat([entry]);
+    const indexText = JSON.stringify(index, null, 2);
+    const writes = [copyPath, indexPath].map((to) => ({ to, tmp: `${to}.${process.pid}.tmp` }));
+    try {
+      for (const { tmp } of writes) fs.writeFileSync(tmp, indexText);
+      for (const { to, tmp } of writes) fs.renameSync(tmp, to);
+    } catch (e) {
+      console.error(`${TOOL}: writing the index failed (${e?.code ?? e?.message}): the .snapz is in place, index.json is not updated (its copy may be)`);
+      return 1;
+    } finally {
+      for (const { tmp } of writes) fs.rmSync(tmp, { force: true });
+    }
+    state.indexed = true;
+    state.unindexed = null;
   } finally {
-    for (const { tmp } of writes) fs.rmSync(tmp, { force: true });
+    // Released only while it is still this bake's.
+    try { if (fs.readFileSync(lockPath, "utf8") === `${process.pid}\n`) fs.rmSync(lockPath, { force: true }); } catch { /* gone */ }
   }
-} finally {
-  // Released only while it is still this bake's.
-  try { if (fs.readFileSync(lockPath, "utf8") === `${process.pid}\n`) fs.rmSync(lockPath, { force: true }); } catch { /* gone */ }
+  console.log(
+    `baked ${gzPath} (${transferBytes} bytes transfer, ${snapBytes} raw); ` +
+      `index updated (imports: [${entry.imports.join(", ")}], runtime ${buildId})`,
+  );
+  console.log(`index copy ${copyPath} written (runtime ${buildId})`);
+  return 0;
 }
-console.log(
-  `baked ${gzPath} (${transferBytes} bytes transfer, ${snapBytes} raw); ` +
-    `index updated (imports: [${entry.imports.join(", ")}], runtime ${buildId})`,
-);
-console.log(`index copy ${copyPath} written (runtime ${buildId})`);
+
+let code;
+try { code = await main(); } catch (e) { if (!state.signal) console.error(`${TOOL}: the bake crashed: ${e?.stack ?? e}`); code = 1; }
+// exitCode, not process.exit: the stdout lines (`baked`) flush to a pipe.
+process.exitCode = state.signal && !state.indexed ? SIGNAL_EXIT[state.signal] : code;
