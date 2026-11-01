@@ -260,9 +260,10 @@ async function record(name, category, outcome, detail, extra = {}) {
 }
 const panicsInConsole = () => consoleLog.filter((l) => /PANIC|assertion violation|Maximum call stack|too much recursion/.test(l)).length;
 /** The in-kernel resolver's refusal note (patch 0032, FileWorker.setupImports):
- * `modules [...] are not loaded in this session — use "Load exact imports"`.
- * Pinned in ONE place so a kernel wording change fails import-composition
- * loudly instead of letting its note checks pass on a string nobody emits
+ * `modules [...] are not loaded in this session — use "Load exact imports"`
+ * (its 'use "Load exact imports"' tail goes with the kernel's K3; only the
+ * substring is pinned). Pinned in ONE place so a kernel wording change fails
+ * import-composition loudly instead of letting its note checks pass on a string nobody emits
  * (the pump-era check matched "do not resolve", a shim-only text, and was
  * vacuous on this transport). */
 const REFUSED_NOTE = "are not loaded in this session";
@@ -416,8 +417,6 @@ for (const item of actionItems) {
         case "typeAt": await page.evaluate(({ t, l, c }) => { const m = globalThis.qed64.editor.getModel(); const ln = Math.min(l || 1, m.getLineCount()); const col = Math.min(c || 1, m.getLineMaxColumn(ln)); m.applyEdits([{ range: { startLineNumber: ln, startColumn: col, endLineNumber: ln, endColumn: col }, text: t }]); }, { t: a.text ?? "", l: a.line, c: a.col }); break;
         case "deleteRange": await page.evaluate(({ l, c, el, ec }) => { const m = globalThis.qed64.editor.getModel(); m.applyEdits([{ range: { startLineNumber: l, startColumn: c, endLineNumber: el, endColumn: ec }, text: "" }]); }, { l: a.line ?? 1, c: a.col ?? 1, el: a.endLine ?? 1, ec: a.endCol ?? 1 }).catch(() => {}); break;
         case "switchExample": await page.selectOption("#examples", a.value ?? "mathlib"); break;
-        case "clickAction": await page.waitForSelector("#action", { timeout: a.ms ?? 60000 }); await page.click("#action"); break;
-        case "waitAction": await page.waitForSelector("#action", { timeout: a.ms ?? 60000 }).catch(() => {}); break;
         case "undo": await page.evaluate(() => globalThis.qed64.editor.trigger("t", "undo")); break;
         case "redo": await page.evaluate(() => globalThis.qed64.editor.trigger("t", "redo")); break;
         case "setCursor": await page.evaluate(({ l, c }) => globalThis.qed64.editor.setPosition({ lineNumber: l || 1, column: c || 1 }), { l: a.line, c: a.col }); break;
@@ -430,16 +429,15 @@ for (const item of actionItems) {
     const panics = panicsInConsole();
     // zeroErrors: the InfoView's All Messages badge must reach zero errors
     // (innerText renders "All Messages ( <errs> <warns>)"). Transient error
-    // states are allowed on the way — e.g. the covering env's collision
-    // errors before the faithful reboot lands — so poll until the badge is
-    // clean WITH the pill at ready, up to the scenario's settle budget.
+    // states are allowed on the way — e.g. transient errors before a reboot
+    // lands — so poll until the badge is clean WITH the pill at ready, up to
+    // the scenario's settle budget.
     let errCount = null;
-    // actionOffered / noteContains: the explain-and-offer contract for umbrella
-    // name collisions (an explicit "Load exact imports" beside the pill and an
-    // information diagnostic naming the collision and the alternatives).
+    // actionOffered / noteContains (HARDENING #43): the note names the collision and the way out; actionOffered false pins
+    // that no "#action" button beside the pill comes back (D1 retired "Load exact imports"), true that one is shown.
     let actionOk = true, noteOk = true;
-    if (item.expect.actionOffered) actionOk = await page.$("#action").then((h) => !!h).catch(() => false);
-    if (item.expect.noteContains) noteOk = (await ivText()).includes(item.expect.noteContains);
+    if (typeof item.expect.actionOffered === "boolean") actionOk = (await page.$("#action").then((h) => !!h).catch(() => false)) === item.expect.actionOffered;
+    if (item.expect.noteContains) noteOk = await (async () => { const t0 = Date.now(); for (;;) { if ((await ivText()).includes(item.expect.noteContains)) return true; if (Date.now() - t0 > 15000) return false; await page.waitForTimeout(250); } })();
     if (item.expect.zeroErrors) {
       const deadlineAt = Date.now() + (item.expect.settleMs ?? 120000);
       for (;;) {
@@ -468,7 +466,7 @@ for (const item of actionItems) {
       && actionOk && noteOk
       && statsBad.length === 0;
     await record(item.name, `editor/${item.category}`, pass,
-      `alive=${alive} settled='${settle.s.slice(0, 40)}'@${settle.ms}ms terminal=${terminal}${wantTerminal ? `/${wantTerminal}` : ""} panics=${panics}${errCount !== null ? ` errBadge=${errCount}` : ""}${item.expect.actionOffered ? ` action=${actionOk}` : ""}${item.expect.noteContains ? ` note=${noteOk}` : ""}${statsBad.length ? ` stats:${statsBad.join(",")}` : ""}`,
+      `alive=${alive} settled='${settle.s.slice(0, 40)}'@${settle.ms}ms terminal=${terminal}${wantTerminal ? `/${wantTerminal}` : ""} panics=${panics}${errCount !== null ? ` errBadge=${errCount}` : ""}${typeof item.expect.actionOffered === "boolean" ? ` action=${actionOk}` : ""}${item.expect.noteContains ? ` note=${noteOk}` : ""}${statsBad.length ? ` stats:${statsBad.join(",")}` : ""}`,
       { terminal, stats: delta ? { before: statsBefore, after: statsAfter, delta } : undefined });
     })()]);
   } catch (e) {

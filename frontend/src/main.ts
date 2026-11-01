@@ -30,7 +30,8 @@ import { STALE_NOTICE, bootFailLabel, createStaleWatch } from "./stale-notice";
 // relay exists; it is internal (docs/EMBEDDING.md §9).
 const pageApi = createPageApi({
   editorRpc: true, documents: true, events: true, restart: true, embedMode: true, snapshotRoots: true, postMessage: false,
-  liveness: true, memory: true, widgetSourceCache: true, offers: true,
+  // offers: false since D1 (2026-11): the page offers no action; status().offer stays null, acceptOffer() false.
+  liveness: true, memory: true, widgetSourceCache: true, offers: false,
 });
 const qed64Global = ((globalThis as unknown as { qed64?: Record<string, unknown> }).qed64 ??= {});
 qed64Global.api = pageApi.api;
@@ -56,23 +57,7 @@ const editorEl = document.getElementById("editor")! as HTMLElement;
 const infoviewEl = document.getElementById("infoview")! as HTMLElement;
 const pill = document.getElementById("pill")!;
 const ptext = document.getElementById("ptext")!;
-// One explicit action beside the pill (StatusSink.action): created lazily so
-// the markup stays a plain pill when nothing is offered.
 const pillEl = document.getElementById("pill")!;
-let actionBtn: HTMLButtonElement | null = null;
-function renderAction(label: string | null, run?: () => void): void {
-  if (!label) { if (actionBtn) { actionBtn.remove(); actionBtn = null; } return; }
-  if (!actionBtn) {
-    actionBtn = document.createElement("button");
-    actionBtn.id = "action";
-    actionBtn.type = "button";
-    actionBtn.style.cssText = "margin-left:.6em;padding:.15em .6em;font:inherit;font-size:.9em;cursor:pointer;border-radius:.4em;border:1px solid currentColor;background:transparent;color:inherit";
-    pillEl.insertAdjacentElement("afterend", actionBtn);
-  }
-  actionBtn.textContent = label;
-  actionBtn.title = label;
-  actionBtn.onclick = () => { renderAction(null); run?.(); };
-}
 // The stale-page prompt (stale-notice.ts; docs/EMBEDDING.md §7.2 `stale`):
 // the site was deployed under this page. The relay heals by itself, so the
 // prompt is a standing Reload button beside the pill, never a card over the
@@ -167,7 +152,7 @@ function bootProgress(label: string, info?: ProgressInfo) {
 // the card while it does; the pill keeps the phase and its elapsed time.
 // It sees every status renderStatus does (check-fallback.ts decides): armed by
 // the first serving status, never earlier; disarmed by a final verdict or a
-// deliberate replacement (self-widen, restart, exact imports), whose own
+// deliberate replacement (self-widen, api.restart), whose own
 // serve re-arms it; left armed by crash reboots and a halt.
 const CHECK_FALLBACK_MS = 30000;
 const checkFallback = createCheckFallback(() => bootFinish(), CHECK_FALLBACK_MS);
@@ -247,8 +232,6 @@ const ui: StatusSink = {
     else if (label === PHASE_LABEL.headerRefused) bootFinish();
     console.log(`[qed64] ${label}`);
   },
-  action(label, run) { renderAction(label, run); },
-  clearAction() { renderAction(null); },
 };
 
 // ---- Status: the relay's datum rendered, nothing regexed -------------------
@@ -363,11 +346,6 @@ function renderStatus(s: PageStatus) {
   if (s.phase === "ready" || s.phase === "headerRefused") bootFinish();
 }
 
-/** The worker's collision fact (front door `statusOf().collision`, carried
- * on WorkerStatus; §3 row 8): set while its last publish reported names
- * already declared under a COVERED header, null after a clean burst. */
-const collisionOf = (s: RelayStatus) => s.collision ?? null;
-
 // ---- Examples -------------------------------------------------------------
 const EXAMPLES: Record<string, string> = {
   mathlib: `import Mathlib.Basic.Real.Basic
@@ -477,35 +455,9 @@ async function main() {
   };
   let relay: LspRelay; // assigned below; the closures here run only from the relay's status sink or a click
 
-  // EXPLAIN AND OFFER, never reboot on the user's behalf (§3 row 8;
-  // HARDENING #43): the worker's publish already carries the note; the page
-  // only shows ONE action while the worker reports a collision and
-  // withdraws it when the fact clears (a clean burst, a header edit, a
-  // replacement session — its first status carries no collision). The
-  // click is the deliberate restart: boot-only snapshots + the header's
-  // exact imports from the olean pack (relay.restart, counted as a user
-  // restart, never a death).
-  let offered = false;
-  const offerExactImports = (s: RelayStatus) => {
-    const c = collisionOf(s);
-    if (c && !offered) {
-      offered = true;
-      const label = "Load exact imports (about 1 min; first time downloads 1 GB)";
-      const run = () => {
-        ui.clearAction?.();
-        // The collision happens under a covered header, so this session holds the
-        // environment that covers it: keep its snapshot list (an overlay entry
-        // need not be named "mathlib").
-        relay.restart({ snapshots: [...(relay.session as ResidentSession).snapshots], warmHeader: relay.lastText, packs: ["essential"] });
-      };
-      ui.action?.(label, run);
-      pageApi.setOffer({ kind: "exactImports", label }, run);
-    } else if (!c && offered) {
-      offered = false;
-      ui.clearAction?.();
-      pageApi.setOffer(null);
-    }
-  };
+  // A name collision under a covered header is explained by the worker's own note (lsp-front-door.js collisionNote);
+  // the page offers nothing (D1, 2026-11: "Load exact imports" retired) and never reboots for it (HARDENING #43).
+
   // GAP 3, the other half of the light boot: a header the kernel refuses for
   // modules one index entry not yet loaded covers widens the session to that
   // entry, once (self-widen.ts; stateless, so a reboot that dropped the entry
@@ -526,7 +478,7 @@ async function main() {
   // a header change between sessions changes the boot inputs with it.
   relay = new LspRelay(
     (opts) => new ResidentSession({ artifacts, ui, policy, headerText: relay?.lastText || initialText, ...(editHold === null ? {} : { editBackPressure: { minFreeWorkers: editHold } }) }, opts ?? {}),
-    { status: pageStatusSink(() => relay.session.id, widenForRoots, renderStatus, offerExactImports, (s) => pageApi.relayStatus(s)) },
+    { status: pageStatusSink(() => relay.session.id, widenForRoots, renderStatus, (s) => pageApi.relayStatus(s)) },
     () => new Promise((r) => window.setTimeout(r, 1500)),
   );
   const clientPort: MessagePort = relay.clientPort;

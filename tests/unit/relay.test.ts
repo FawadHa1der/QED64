@@ -193,7 +193,7 @@ describe("relay: serving", () => {
     expect(relay.status()).toMatchObject({ phase: "ready", relay: "serving", session: current().id, pool: { running: 2 } });
     expect(statuses.at(-1)).toMatchObject({ phase: "ready" });
   });
-  it("passes the worker's collision fact through untouched — the page's exact-imports offer keys on it (§3 row 8)", async () => {
+  it("passes the worker's collision fact through untouched — the page API's status().collision reads it (§3 row 8)", async () => {
     await bootCurrent();
     const collision = { names: ["Nat.add_comm"], version: 1 };
     const base: WorkerStatus = { phase: "ready", version: 1, header: null, ring: { bytesQueued: 0, refused: 0 }, pool: { unused: 3, running: 2 }, dropped: 0 };

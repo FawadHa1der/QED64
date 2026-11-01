@@ -293,12 +293,10 @@ describe("front door: umbrella collisions (§3 row 8; HARDENING #42/#43)", () =>
     expect(note.severity).toBe(3);
     expect(note.source).toBe("QED64");
     expect(note.range).toEqual({ start: { line: 1, character: 0 }, end: { line: 1, character: "import Mathlib.Algebra.Algebra.Basic".length } }); // the header line, not line 0
-    expect(note.message).toMatch(/^Tree, Tree\.size collides with Mathlib/);
-    expect(note.message).toContain("preloads all of Mathlib");
-    expect(note.message).toContain("live.lean-lang.org");
+    expect(note.message).toMatch(/^Already declared in the preloaded environment: Tree, Tree\.size\. /);
     expect(note.message).toContain("MyTree");
-    expect(note.message).toContain('"Load exact imports"');
-    expect(note.message).toContain("1 GB");
+    // Neutral (D1): lean4game and the proof sheets run this front door, and nothing is offered.
+    expect(note.message).not.toMatch(/Mathlib|live\.lean-lang\.org|exact imports|GB|status pill/);
     expect(JSON.stringify(burst)).toBe(before); // the input frame is not mutated (step is pure)
   });
   it("a later clean burst clears the fact and carries no note; a repeated collision burst re-appends it", () => {
@@ -331,9 +329,8 @@ describe("front door: umbrella collisions (§3 row 8; HARDENING #42/#43)", () =>
   });
 
   // Pump-removal assessment gap 1: `import Mathlib` resolves as COVERED (an
-  // umbrella alias), but its exact environment IS the umbrella — "Load exact
-  // imports" would rebuild the same Mathlib and collide again. The gate is
-  // the kernel's normalized key, not the header text.
+  // umbrella alias), but an alias-only header's preloaded environment is what
+  // it names. The gate is the kernel's normalized key, not the header text.
   const ALIAS_TEXT = "import Mathlib\n\ninductive Tree (α : Type) where\n  | leaf : Tree α\n";
   const withKey = (key: string[], text = ALIAS_TEXT) => run([{ kind: "booted" }, { kind: "client", msg: initialize(1) }, { kind: "client", msg: didOpen(1, text) }, { kind: "server", msg: headerStatus(1, "covered", key) }]);
   it("an alias-only header (Init + any of the four umbrella aliases) sets NO collision fact and rides NO note: the duplicate is the user's own", () => {
@@ -357,7 +354,7 @@ describe("front door: umbrella collisions (§3 row 8; HARDENING #42/#43)", () =>
       const diags = (r.replies[0]!.params as { diagnostics: Diag[] }).diagnostics;
       expect(diags, key.join(",")).toHaveLength(2);
       expect(diags[1]!.source).toBe("QED64");
-      expect(diags[1]!.message).toMatch(/^Tree collides with Mathlib/);
+      expect(diags[1]!.message).toMatch(/^Already declared in the preloaded environment: Tree\. /);
     }
   });
   it("the gate follows the LATEST header verdict: an alias header edited to a specific module surfaces the collision, and back again hides it", () => {

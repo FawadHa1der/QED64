@@ -7,7 +7,7 @@
 //     next one's download follows the previous one's load and must show as the
 //     active step, not as done.
 //   * A deliberate replacement while the card is up (the relay rebooting for
-//     reason "user": the self-widen, api.restart, "Load exact imports", a
+//     reason "user": the self-widen, api.restart, a
 //     re-arm) downloads and loads its own environment, and the check fallback
 //     keeps the card up for it (check-fallback.ts). So its first status
 //     rewinds the checklist to the runtime step, once per replacement session:

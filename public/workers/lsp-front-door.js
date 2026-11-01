@@ -88,12 +88,13 @@
   // this much of the text is inspected.
   const IMPORT_LINE = /^\s*(?:public\s+|private\s+)?(?:meta\s+)?import\s+/;
   // The four umbrella aliases the kernel's resolver (patch 0032
-  // lookupPrebuiltEnv) serves as "covered" by the QED64.Essential umbrella.
-  // For a header made ONLY of these (plus `Init`, which the normalized key
-  // always leads with) the exact environment IS the umbrella: "Load exact
-  // imports" would rebuild the same Mathlib and collide again, so the offer
-  // is pointless and an "already declared" there is simply the user's own
-  // duplicate — no fact, no note (pump-removal assessment, gap 1).
+  // lookupPrebuiltEnv) serves as "covered" by the QED64.Essential umbrella:
+  // a copy of lib/snapshots.ts UMBRELLA_ALIASES (a classic script cannot
+  // import it; tests/unit/front-door.test.ts holds them equal). For a header
+  // made only of these (plus `Init`, which the normalized key always leads
+  // with) the preloaded environment IS what the header names, so an "already
+  // declared" there is the user's own duplicate — no fact, no note
+  // (pump-removal assessment, gap 1).
   const UMBRELLA_ALIASES = new Set(["Mathlib", "Mathlib.Tactic", "Batteries", "MIL.Common"]);
 
   /** True when the normalized header key names nothing but `Init` and
@@ -139,10 +140,10 @@
     return names;
   }
 
-  /** The collision note (severity 3 = information): what collided, why
-   * (this playground, not Lean), and the two ways out — rename, or the
-   * explicit "Load exact imports" action the page offers while
-   * `status.collision` is set. */
+  /** The collision note (severity 3): what collided, why (a preloaded
+   * environment larger than the header), and the way out (rename). Neutral on
+   * purpose: lean4game and the proof sheets run this front door, and nothing
+   * is offered (D1). */
   function collisionNote(headerLine, names) {
     const shown = names.slice(0, 3).join(", ");
     const first = names[0].replace(/^.*\./, "");
@@ -151,9 +152,9 @@
       severity: 3,
       source: "QED64",
       message:
-        `${shown} collides with Mathlib: this playground preloads all of Mathlib for speed, so names Mathlib defines are already taken. ` +
-        `live.lean-lang.org imports only your header's closure and would not collide. ` +
-        `Rename it (e.g. My${first}), or use "Load exact imports" beside the status pill (about a minute; the first time downloads the 1 GB Mathlib library).`,
+        `Already declared in the preloaded environment: ${shown}. ` +
+        `This session serves your header from an environment that can contain more modules than the header imports, so a name one of those modules declares is taken here even if your imports would not bring it in. ` +
+        `Rename yours (e.g. My${first}).`,
     };
   }
 

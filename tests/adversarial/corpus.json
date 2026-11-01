@@ -2023,7 +2023,7 @@
         "panicFree": true,
         "budgetMs": 110000
       },
-      "notes": "User-reported genre: defining a name (Tree) that full Mathlib already has, under a specific import that does NOT bring it in. Faithful import semantics must be clean (live parity); the covering env used to leak all Mathlib names into scope."
+      "notes": "User-reported genre: defining a name (Tree) that full Mathlib already has, under a specific import that does NOT bring it in. Faithful import semantics must be clean (live parity); the covering env used to leak all Mathlib names into scope. Since D1 the browser offers no exact import; this Node-battery item is the one pin of the exact olean path."
     },
     {
       "name": "mathlib-name-shadow-explains",
@@ -2045,10 +2045,6 @@
           "ms": 100
         },
         {
-          "op": "waitAction",
-          "ms": 90000
-        },
-        {
           "op": "pause",
           "ms": 1500
         }
@@ -2057,51 +2053,10 @@
         "terminal": "ready",
         "panicFree": true,
         "settleMs": 120000,
-        "actionOffered": true,
-        "noteContains": "preloads all of Mathlib"
+        "actionOffered": false,
+        "noteContains": "Already declared in the preloaded environment"
       },
-      "rationale": "The umbrella collision is an artifact of this playground (live.lean-lang.org imports only the header's closure and would not collide). The user must be told immediately — an information diagnostic naming the colliding name and the two ways out — and offered exact imports explicitly; nothing is rebooted for them (second review C4, UX row 8). Runs BEFORE the click-through scenario: on the same page a header already loaded exactly cannot collide, so this must observe the first paste."
-    },
-    {
-      "name": "mathlib-name-shadow-faithful-switch",
-      "category": "editor-actions",
-      "source": "",
-      "actions": [
-        {
-          "op": "switchExample",
-          "value": "init",
-          "ms": 300
-        },
-        {
-          "op": "pause",
-          "ms": 2000
-        },
-        {
-          "op": "setValue",
-          "text": "import Mathlib.Algebra.Algebra.Basic\n\ninductive Tree (α : Type) where\n  | leaf : Tree α\n  | node : Tree α → α → Tree α → Tree α\n\ndef Tree.size : Tree α → Nat\n  | .leaf => 0  \n  | .node l _ r => l.size + r.size + 1\n\ndef Tree.mirror : Tree α → Tree α\n  | .leaf => .leaf\n  | .node l x r => .node r.mirror x l.mirror\n\ntheorem Tree.mirror_size (t : Tree α) : t.mirror.size = t.size := by\n  induction t with\n  | leaf => rfl\n  | node l x r ihl ihr => simp [mirror, size, ihl, ihr]; omega\n",
-          "ms": 100
-        },
-        {
-          "op": "pause",
-          "ms": 1500
-        },
-        {
-          "op": "clickAction",
-          "ms": 90000
-        },
-        {
-          "op": "pause",
-          "ms": 2000
-        }
-      ],
-      "expect": {
-        "mustSucceed": true,
-        "panicFree": true,
-        "settleMs": 420000,
-        "zeroErrors": true
-      },
-      "notes": "Same genre in the live pane: paste into the init tab. The covering env first produces 'Tree has already been declared'; nothing reboots on its own — the page offers 'Load exact imports', the scenario's clickAction drives `relay.restart` once into exact imports, and the file settles ready with ZERO errors.",
-      "rationale": "A pasted file whose names collide with the preloaded Mathlib umbrella must NOT reboot on its own: the page explains the collision and offers 'Load exact imports'; clicking it reboots into faithful mode (pack install once + exact olean import) and the file then checks clean."
+      "rationale": "A header served covered by a larger preloaded environment can collide with a name it declares. The note names the names, why, and the way out (rename). Nothing is offered or rebooted: \"Load exact imports\" was retired with the browser's library packs (D1, 2026-11); actionOffered false pins that no #action button comes back."
     },
     {
       "name": "msg-deriving-fintype-4.34-default",

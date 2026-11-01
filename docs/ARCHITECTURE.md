@@ -119,12 +119,12 @@ did this itself by rewriting the header text to `import QED64.Essential` —
 Playground semantics caveat: under a covered header everything in the
 essential profile is in scope regardless of which subset the header names
 (code may elaborate here that would need more imports in a real project), and
-a user's `inductive Tree` collides with Mathlib's — the collision note and the
-"Load exact imports" offer below are the answer. Four whole-library aliases
-the curation drops — `Mathlib`, `Mathlib.Tactic`, `Batteries` — and
-Mathematics in Lean's prelude `MIL.Common` count as covered by the umbrella
-(one list, `UMBRELLA_ALIASES` in lib/snapshots.ts; the kernel's resolver and
-the front door hold copies). They serve the curated essential set (4,438
+a user's `inductive Tree` collides with Mathlib's — the collision note below
+explains it. Four whole-library aliases the curation drops — `Mathlib`,
+`Mathlib.Tactic`, `Batteries` — and Mathematics in Lean's prelude
+`MIL.Common` count as covered by the umbrella (one list, `UMBRELLA_ALIASES`
+in lib/snapshots.ts; the kernel's resolver, the front door and the compiler
+battery hold copies). They serve the curated essential set (4,438
 modules at Lean 4.35), not the whole library: tutorial code that imports a
 module outside it is refused, and code that needs a tactic outside it
 (`induction'`, a `have` with no proof) does not parse; docs/PROVENANCE.md
@@ -439,19 +439,16 @@ refused, key, moduleCount, missing, ms}` on the document's own channel
 later setups `version` is stamped with the initial document version (a
 closure binding in the FileWorker); nothing user-visible keys on it.
 
-**Collision, explain and offer** (HARDENING #43): a covered header plus an
-"already declared" error sets the collision fact; the page
-(`offerExactImports` in main.ts) shows *one* action, "Load exact imports",
-while the fact is set and withdraws it when the fact clears (a clean burst,
-a header edit, a replacement session). The click is
-`relay.restart({snapshots: ["init", "mathlib"], warmHeader: relay.lastText,
-packs: ["essential"]})`: the essential olean pack is installed *before* boot
-(mounts are boot inputs), the header is warm-imported, and — the lookup being
-exact-first — the FileWorker then serves this header `exact` (no umbrella
-names, no collision) while every other header stays covered. For a header
-that is only one of the four aliases the exact environment *is* the
-umbrella, so no offer is useful there — the assessment's gap 1, closed on
-2026-09-07: the front door's publish branch gates the fact on
+**Collision, explained** (HARDENING #43): a covered header plus an
+"already declared" error sets the collision fact and appends one information
+note to that publish: the names, why (the preloaded environment can hold more
+modules than the header imports), and the way out (rename). The page offers
+nothing since D1 (2026-11): the exact-olean restart ("Load exact imports")
+was retired with the browser's library packs, and the Node compiler battery
+keeps the exact path (`mathlib-name-shadow-faithful-compile`). For a header
+that is only one of the four aliases the preloaded environment *is* what the
+header names, so there is no collision to explain — the assessment's gap 1,
+closed on 2026-09-07: the front door's publish branch gates the fact on
 `header.mode === "covered"` AND on the normalized `key` the header status
 carries — a key that is `Init` plus only umbrella aliases
 (`UMBRELLA_ALIASES`, exported by the front door) produces no collision fact

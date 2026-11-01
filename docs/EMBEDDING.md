@@ -102,7 +102,7 @@ interface Capabilities {
   snapshotRoots: boolean;      // overlay indexes may declare roots; the page boots and widens by itself (§8)
   liveness: boolean;           // status().liveness and the liveness event
   memory: boolean;             // ?memory=, restart({initialBytes}), status().memory
-  offers: boolean;             // status().offer, the offer event, acceptOffer()
+  offers: boolean;             // status().offer, the offer event, acceptOffer(); false on the stock page since D1 (it offers nothing)
   postMessage: boolean;        // false in v1 (§5)
 }
 
@@ -209,8 +209,8 @@ interface LivenessInfo {              // the worker's liveness machine (HARDENIN
     `timeoutMs`.
 * **`restart({snapshots, initialBytes})`**
   * With no `snapshots`, it reuses **the current session's boot inputs** under
-    the relay's own rule: the remembered "Load exact imports" options
-    (warmHeader, packs) while the import lines still match, otherwise the
+    the relay's own rule: the remembered restart options (a self-widen's
+    snapshots, a commit) while the import lines still match, otherwise the
     snapshot list the session loaded.
   * `initialBytes` is normalized: rounded to 256 MiB and clamped to
     [1, 6] GiB. It sticks for every later session (crash reboots, widens,
@@ -229,8 +229,9 @@ interface LivenessInfo {              // the worker's liveness machine (HARDENIN
   * It throws `TypeError` for a snapshot name the served index lacks.
 * **`setCursor`** clamps the line to `[1, lineCount]` and the column to
   `[1, lineLength + 1]`. It returns false only before the editor mounts.
-* **`acceptOffer()`** runs the page's current offer (today: "Load exact
-  imports") as its button would. It returns false when nothing is offered.
+* **`acceptOffer()`** runs the page's current offer as its button would. It
+  returns false when nothing is offered, always on a page whose
+  `capabilities.offers` is false (the stock page since D1).
 
 ### 2.4 Events
 
@@ -250,7 +251,7 @@ editing one in place changes neither what the editor receives nor
 | `death` | `{session, kind, reason, message, cause, seq, exitCode, willReboot, halted}` | a session died (once per session); `cause.kind` `"stale"`: the site was updated under the page, offer a reload (§7.2) |
 | `reboot` | `{reason, fromSession, toSession}` | the relay replaced the session |
 | `liveness` | `{session, kind: "answered" \| "stall" \| "resumed" \| "rescue"}` | each step of the worker's liveness counters (`rescue` is no longer emitted since 2026-11: the worker stopped counting rescues, R7a; the kind stays in the type) |
-| `offer` | `{kind, label} \| null` | the page's offer appears or is withdrawn |
+| `offer` | `{kind, label} \| null` | the page's offer appears or is withdrawn (never on the stock page since D1) |
 
 ### 2.5 Widget sources
 
@@ -1444,8 +1445,8 @@ header also names, say, `Aesop` never widens to it (the umbrella claims
 header). An index without `roots` therefore decides exactly as the editor's
 policy does; the unit tests pin this parity on the stock index and drive the
 page's self-widen (`frontend/src/self-widen.ts`) over the real relay. The
-exact-imports restart keeps the session's own snapshot list. The roots are
-claims, not membership: the kernel's header verdict stays authoritative.
+roots are claims, not membership: the kernel's header verdict stays
+authoritative.
 
 ---
 
@@ -1492,7 +1493,7 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
 | `relay.restart(relay.restartOpts)` | `api.restart()` (the relay's header rule included) |
 | liveness probe through `relay.fromClient` | `status().liveness`, the `liveness` event |
 | the `?mem` session wrap | `?memory=<GiB>`, `restart({initialBytes})`, `status().memory` |
-| button-text matching for "Load exact imports" | `status().offer`, `acceptOffer()` |
+| button-text matching for "Load exact imports" | `status().offer`, `acceptOffer()` (retired: `capabilities.offers` is false since 2026-11, review D1) |
 | D1/D2 bridge | stand down completely on `capabilities.editorRpc` |
 | D3 bridge (getWidgetSource) | stand down on `capabilities.widgetSourceCache` |
 | scraping `wasm64-<hex>` from bundles | `dist/qed64-build.json` |
@@ -2237,3 +2238,12 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   a site's first region download; the boot never waits for the answer. No
   export, type or message change: `EMBED_API_REVISION` and the worker
   `REVISION` are unchanged.
+- **The stock page offers no action (D1, 2026-11):** `capabilities.offers`
+  is false; `status().offer` is null, no `offer` event fires and
+  `acceptOffer()` returns false. `status().collision` and the front door's
+  note stay; the note is reworded neutrally ("Already declared in the
+  preloaded environment: …", then why and "Rename yours"), because lean4game
+  and the proof sheets run the same front door. The library is untouched by
+  this change. The page API's `api.version` (1) and `API_REVISION` (`1.0.0`)
+  are unchanged: a false capability is v1's way to say absent (§1, item 2);
+  `EMBED_API_REVISION` is unchanged.

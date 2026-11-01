@@ -9,7 +9,7 @@
 //   * a final verdict (ready, headerRefused) cancels it — the boot finishes by
 //     the verdict;
 //   * a DELIBERATE replacement (the relay rebooting for reason "user": the
-//     page's self-widen, api.restart, "Load exact imports") cancels it — the
+//     page's self-widen, api.restart) cancels it — the
 //     replacement still downloads and loads its environment, and its own first
 //     serving status arms the timer again;
 //   * a crash reboot (crash, heartbeat, wedged, bootFailed) and a halt leave it

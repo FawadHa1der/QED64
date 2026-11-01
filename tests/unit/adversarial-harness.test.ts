@@ -149,6 +149,9 @@ describe("corpus", () => {
     for (const it of actionItems) {
       for (const dead of ["containsMsgs", "budgetMs", "mustError"]) expect(it.expect, it.name).not.toHaveProperty(dead);
       if (it.expect.terminal) expect(["ready", "headerUnresolvable", "halted"]).toContain(it.expect.terminal);
+      // D1 retired "Load exact imports": no op drives the #action button, and actionOffered pins its presence or absence.
+      for (const a of it.actions) expect(["clickAction", "waitAction"], it.name).not.toContain(a.op);
+      if ("actionOffered" in it.expect) expect(typeof it.expect.actionOffered).toBe("boolean");
     }
     expect(actionItems.find((it: { name: string }) => it.name === "unresolvable-import-composition").expect.terminal).toBe("headerUnresolvable");
   });

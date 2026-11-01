@@ -6,7 +6,7 @@
 // main() then feeds it: `bind()` when the relay exists, `editorReady()` once
 // the editor is mounted, `relayStatus()` from the relay's status sink,
 // `bootStep()` / `bootFinished()` / `bootFailed()` from its StatusSink, and
-// `memory()` / `setOffer()` from its meter and its exact-imports offer;
+// `memory()` / `setOffer()` from its meter (the page sets no offer since D1);
 // `pageStatusSink()` orders the relay's sink so a self-widen comes first.
 // Everything the API reports is a projection of what the page already has —
 // the relay's status and the LSP traffic on the relay's taps
@@ -206,7 +206,7 @@ export interface PageApi {
   bootFailed(message: string, cause?: FailureCause): void;
   /** The memory meter's reading (the wasm heap now and its cap). */
   memory(currentBytes: number, maximumBytes: number): void;
-  /** The page's one explicit action ("Load exact imports"), or null when withdrawn. */
+  /** The page's one explicit action, or null (the stock page offers none since D1). */
   setOffer(offer: OfferInfo | null, run?: () => void): void;
   /** The text `setDocument` set before boot read its document, if any. */
   takeBootDocument(): string | null;
