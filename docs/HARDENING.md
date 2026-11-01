@@ -939,9 +939,12 @@ Cost: an `import Lean` page downloads the umbrella instead of only init (31.7 MB
 
 Not fixed: a header naming only a module the umbrella holds under an unclaimed root (`ProofWidgets.Component.Basic`) is covered on a session that holds the umbrella and refused on a fresh one; only served roots can fix that.
 
+The pill for a refused header read "imports incomplete — finish the import line to continue", which is wrong for a typo or a module outside the curated set. It now reads "this import is not available here — check the module name (this playground serves a curated Mathlib)" in every case; telling a half-typed name from a complete one would need a module list. The kernel's in-document note still recommends "Load exact imports" until its next runtime release (kernel K3). The harness reads the pill only as a fallback to the phase tap (`settleClass`, tests/adversarial/harness.mjs) and now matches "import is not available"; its old "imports failed" alternation had no emitter and is gone, as is main.ts's label regex that dismissed the boot overlay (it compares with `PHASE_LABEL.headerRefused`; `renderStatus` also dismisses on the phase).
+
 No export or type change; `EMBED_API_REVISION` is unchanged.
 
 Tests:
 - tests/unit/resident-session.test.ts ("umbrella roots", the editor's policy);
 - tests/unit/overlay-environments.test.ts (the stock entry's claims; the superset rule; over the real relay, `import Lean` from a light session, a reload, and a crash after a switch, with the stock index and without one: the light and crash legs fail on the old list);
-- tests/unit/umbrella-lists.test.ts (the list, and each package root's module in the tracked essential manifest).
+- tests/unit/umbrella-lists.test.ts (the list, and each package root's module in the tracked essential manifest);
+- tests/unit/adversarial-harness.test.ts (`settleClass` reads the new pill as `headerUnresolvable`).

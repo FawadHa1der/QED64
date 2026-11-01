@@ -43,8 +43,7 @@ describe("settleClass", () => {
   test("maps the page's pill labels (main.ts PHASE_LABEL) onto the terminal enum", () => {
     expect(settleClass("ready")).toBe("ready");
     expect(settleClass("ready — 3 s")).toBeNull();
-    expect(settleClass("imports incomplete — finish the import line to continue")).toBe("headerUnresolvable");
-    expect(settleClass("imports failed")).toBe("headerUnresolvable");
+    expect(settleClass("this import is not available here — check the module name (this playground serves a curated Mathlib)")).toBe("headerUnresolvable");
     expect(settleClass("the checker keeps crashing on this content — edit the file to retry")).toBe("halted");
     // The breaker on a session that had reached ready: "halted — <reason>".
     expect(settleClass("halted — heartbeat")).toBe("halted");

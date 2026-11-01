@@ -360,7 +360,7 @@ if (runs("import-composition")) {
   await setBuffer("");
   await page.waitForTimeout(5000);
   await page.evaluate(() => globalThis.qed64.editor.getModel().applyEdits([{ range: { startLineNumber: 1, startColumn: 1, endLineNumber: 1, endColumn: 1 }, text: "import Mathlib.Da" }]));
-  const incomplete = await (async () => { const t0 = Date.now(); for (;;) { const ph = await phaseNow(); const s = await pill(); if (ph === "headerRefused" || /imports incomplete/.test(s)) return { ok: true, ms: Date.now() - t0, s }; if (Date.now() - t0 > 30000) return { ok: false, ms: Date.now() - t0, s }; await page.waitForTimeout(100); } })();
+  const incomplete = await (async () => { const t0 = Date.now(); for (;;) { const ph = await phaseNow(); const s = await pill(); if (ph === "headerRefused" || /import is not available/.test(s)) return { ok: true, ms: Date.now() - t0, s }; if (Date.now() - t0 > 30000) return { ok: false, ms: Date.now() - t0, s }; await page.waitForTimeout(100); } })();
   const modeDuring = await headerModeNow();
   // The InfoView paints the publish a beat after the phase flips — poll for
   // the note rather than read it once.

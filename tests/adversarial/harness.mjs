@@ -74,7 +74,7 @@ export function settleClassFromPhase(phase) {
  * that had been ready) — the fallback for a page that exposes no status tap,
  * and what the gauntlet's console/pill watch reads. */
 export function settleClass(pill) {
-  return /^ready$/.test(pill) ? "ready" : /imports (incomplete|failed)/.test(pill) ? "headerUnresolvable" : /keeps crashing|^halted/.test(pill) ? "halted" : null;
+  return /^ready$/.test(pill) ? "ready" : /import is not available/.test(pill) ? "headerUnresolvable" : /keeps crashing|^halted/.test(pill) ? "halted" : null;
 }
 
 export const stamp = () => new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");

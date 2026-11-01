@@ -241,10 +241,10 @@ const ui: StatusSink = {
     renderTime();
     if (/^FAILED|failed — reload|restart failed/.test(label)) bootFail(label);
     else if (/^ready$/.test(label)) bootFinish();
-    // A restored buffer can boot straight into an actionable state (e.g. a
-    // half-typed import that needs editing) — the workspace must be visible
-    // for the user to act, so these dismiss the overlay too.
-    else if (/^imports (incomplete|failed)/.test(label)) bootFinish();
+    // A restored buffer can boot straight into an actionable state (a refused
+    // import that needs editing) — the workspace must be visible for the user
+    // to act, so this dismisses the overlay too (renderStatus also does, by phase).
+    else if (label === PHASE_LABEL.headerRefused) bootFinish();
     console.log(`[qed64] ${label}`);
   },
   action(label, run) { renderAction(label, run); },
@@ -261,7 +261,7 @@ const PHASE_LABEL: Record<RelayStatus["phase"], string> = {
   starting: "starting the Lean checker",
   elaborating: "elaborating",
   ready: "ready",
-  headerRefused: "imports incomplete — finish the import line to continue",
+  headerRefused: "this import is not available here — check the module name (this playground serves a curated Mathlib)",
   dead: "the checker crashed — restarting (~15 s)",
   halted: "the checker keeps crashing on this content — edit the file to retry",
 };
