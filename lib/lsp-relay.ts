@@ -125,7 +125,7 @@ export class LspRelay {
     if (this.state.kind !== "serving") return;
     this.stats.userRestarts += 1;
     this.restartOpts = opts; this.restartHeader = headerOf(this.lastText);
-    this.failInFlight("restarting with exact imports", "restart", "user");
+    this.failInFlight("restarting the checker", "restart", "user");
     this.session.dispose();
     this.reboot("user", true, opts, false);
   }

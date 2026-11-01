@@ -962,7 +962,11 @@ Errors the relay invents carry
 halted relay answers every request -32603 with `reason: "repeated crashes"`
 (the breaker) or `reason: "stack limit"` (the stack pause: "QED64: checking
 paused: Lean ran out of the browser's stack; edit the file to check it
-again"). The message prefix `QED64:` stays as a fallback. `LspRelay.rearm()` re-arms a
+again"). A deliberate restart (`LspRelay.restart`: a self-widen, the page
+API's `restart()`) answers each in-flight request with `kind: "restart"` and
+`reason: "restarting the checker"` ("restarting with exact imports" before
+D1, for every restart): match on `kind`, not on the words. The message
+prefix `QED64:` stays as a fallback. `LspRelay.rearm()` re-arms a
 halted relay without an edit; it returns false unless the relay is halted.
 
 ### 7.3 Session files and the pre-arm hook
@@ -2276,3 +2280,13 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   - Who is affected: a consumer booting with `profiles: "none"` changes
     nothing; a fixture building `Qed64Artifacts` drops `index`/`installed`.
   - `EMBED_API_REVISION` → `1.0.0-pre.10`.
+- **A restart's in-flight replies say "restarting the checker" (D1,
+  2026-11):** `LspRelay.restart` answered each request still in flight with
+  `reason: "restarting with exact imports"` (and the message
+  "QED64: restarting with exact imports"), false for every restart once the
+  offer was retired. The reason and message now read "restarting the
+  checker" (§7.2); `error.data.qed64.kind` (`"restart"`), the error codes
+  and the `QED64:` prefix are unchanged. What to do: a consumer that
+  matched the old words matches `kind === "restart"` (or the prefix)
+  instead. No export, type or message-shape change: `EMBED_API_REVISION` is
+  unchanged.

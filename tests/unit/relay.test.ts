@@ -327,7 +327,7 @@ describe("relay: RestartRequested (§2.3; §3 row 8)", () => {
     relay.restart({ snapshots: ["init", "mathlib"], initialBytes: 2147483648 });
     await settle();
     expect(old.disposed).toBe(true);
-    expect(errorsToClient()).toEqual([{ jsonrpc: "2.0", id: 3, error: { code: -32900, message: expect.stringContaining("exact imports"), data: { qed64: { kind: "restart", reason: "restarting with exact imports" } } } }]);
+    expect(errorsToClient()).toEqual([{ jsonrpc: "2.0", id: 3, error: { code: -32900, message: "QED64: restarting the checker", data: { qed64: { kind: "restart", reason: "restarting the checker" } } } }]);
     expect(relay.state).toEqual({ kind: "rebooting", reason: "user" });
     expect(current().opts).toEqual({ snapshots: ["init", "mathlib"], initialBytes: 2147483648 });
     expect(relay.stats).toMatchObject({ userRestarts: 1, workerDeaths: 0, reboots: 0 });
