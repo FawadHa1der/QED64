@@ -123,9 +123,26 @@ The landing of lean-v4.35.0-b081e7c serves Lean `4.35.0` and Mathlib at tag
 - **Unchanged from 4.34:** `deriving Fintype` on an enum still needs
   `set_option backward.isDefEq.respectTransparency false in` (Mathlib
   v4.35.0's handler is not adapted; the compiler battery pins both cases),
-  `norm_num` for primality still needs a module outside the preloaded
-  environment, and `decide` still cannot unfold a definition whose body a
-  `module` file keeps private (`Nat.toDigits`; docs/SERVER-SLIM-REBAKE.md).
+  and `decide` still cannot unfold a definition whose body a `module` file
+  keeps private (`Nat.toDigits`; docs/SERVER-SLIM-REBAKE.md).
+- **Mathematics in Lean** (checked 2026-11-01 by module lists; nothing
+  elaborated): `import MIL.Common`, `import Mathlib` and
+  `import Mathlib.Tactic` serve the curated essential set (4,438 modules),
+  not all of Mathlib.
+  - It lacks `Mathlib.Tactic.Cases` (`cases'`, `induction'`),
+    `Mathlib.Tactic.Have` (a `have h : t` with no proof),
+    `Mathlib.Tactic.NormNum.Prime` (`norm_num` proving `Nat.Prime 17`;
+    unchanged from 4.34), `Mathlib.Tactic.Polyrith` and
+    `Mathlib.Tactic.Generalize`.
+  - Against the book's checkout 2bf0e10 (Lean v4.21, older than the current
+    book), a static scan finds 39 of the 58 files of chapters 1-8 clean, but
+    only 3 of the 14 in chapters 5-6.
+  - C05 S04, C06 S02 and C08 S02 import a module outside the set
+    (`Mathlib.Analysis.Calculus.Taylor`, `Mathlib.Combinatorics.Pigeonhole`,
+    `Mathlib.Topology.Instances.Real.Lemmas`) and are refused, as are all of
+    chapters 9-13.
+  - `tests/unit/mil-coverage.test.ts` keeps the 16 served modules that
+    chapters 1-8 import in the manifest.
 - **Deep but legal proofs go a little further**: `∀ n m : Fin 18, n * m = m * n
   := by decide` now checks (it ended in Lean's "stack is exhausted" on the 4.34
   runtimes); `Fin 20` still does, with no crash (HARDENING #71).

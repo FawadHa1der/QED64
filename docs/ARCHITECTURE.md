@@ -120,11 +120,16 @@ essential profile is in scope regardless of which subset the header names
 a user's `inductive Tree` collides with Mathlib's — the collision note and the
 "Load exact imports" offer below are the answer. Four whole-library aliases
 the curation drops — `Mathlib`, `Mathlib.Tactic`, `Batteries` — and
-Mathematics in Lean's pure re-export prelude `MIL.Common` count as covered by
-the umbrella, so pasted tutorial code compiles unchanged. A header naming a
-module in no registered closure (a typo, a module outside the essential
-profile) is **refused** by the resolver with one diagnostic on the import line
-and no allocation; there is no on-thread olean import in a resident session.
+Mathematics in Lean's prelude `MIL.Common` count as covered by the umbrella
+(one list, `UMBRELLA_ALIASES` in lib/snapshots.ts; the kernel's resolver and
+the front door hold copies). They serve the curated essential set (4,438
+modules at Lean 4.35), not the whole library: tutorial code that imports a
+module outside it is refused, and code that needs a tactic outside it
+(`induction'`, a `have` with no proof) does not parse; docs/PROVENANCE.md
+lists the gaps. A header naming a module in no registered closure (a typo, a
+module outside the essential profile) is **refused** by the resolver with one
+diagnostic on the import line and no allocation; there is no on-thread olean
+import in a resident session.
 
 Snapshots are binary-paired: bake them with the *shipped* runtime via `npm run
 bake:snapshot` (the bake script gzips and upserts `index.json`);
