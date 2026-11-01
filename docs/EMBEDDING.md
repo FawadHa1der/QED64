@@ -1307,8 +1307,12 @@ frame at once). Embedders do not need their own throttle.
 - What it does not do: it keys on the pool and on the requests, not on the
   work. Threads taken before the pool was pressured run to their end, and a
   single command that spawns more threads than the pool has free is out of
-  its reach. The root fix is a cap on concurrently live dedicated threads
-  in the runtime's task manager (#55), the kernel's.
+  its reach. That gap is accepted: no kernel cap on live threads is coming,
+  since no safe one exists (docs/HARDENING.md #55, the note of 2026-11-01).
+  The worker's thread budget (#69) and synchronous elaboration (#70) limit
+  the other known sources of threads. A document or an embedder that turns
+  `Elab.async` back on gives up the second, and should measure its own
+  thread growth.
 
 ### 7.9 The relay: the members an embedder uses
 
