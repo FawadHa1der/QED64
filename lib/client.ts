@@ -179,10 +179,11 @@ export interface WorkerStatus {
   /** The worker's Lean-side liveness counters (HARDENING #52), present (all
    * zero) from the moment the resident loop opens: probes sent while the
    * FileWorker was silent with work owed, probes answered, stalls (a probe
-   * unanswered for 12 s: the grace window before a "wedged" death), stalls
-   * that ended because output resumed, and rescues (the periodic mailbox
-   * kick served a proxied call whose wakeup never arrived — a lost wakeup
-   * healed; a notification merely in flight is not counted). */
+   * unanswered for 12 s: the grace window before a "wedged" death), and
+   * stalls that ended because output resumed. `rescues` is always 0 since
+   * 2026-11 (architecture review R7a): the worker still serves its mailbox
+   * every tick, which heals a lost wakeup, but no longer counts one. The
+   * field stays for v1 readers. */
   liveness?: { probes: number; answered: number; stalls: number; resumed: number; rescues: number };
 }
 

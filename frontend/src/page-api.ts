@@ -71,6 +71,7 @@ export interface Events {
   fileProgress: { uri: string; version: number | null; processing: Array<{ range: unknown; kind?: number }> };
   death: { session: string; kind: DeathKind; reason: string; message: string; cause: FailureCause | null; seq: number; exitCode: number | null; willReboot: boolean; halted: boolean };
   reboot: { reason: string | null; fromSession: string; toSession: string };
+  // "rescue": never emitted since R7a (2026-11); kept so v1 listeners still type-check
   liveness: { session: string; kind: "answered" | "stall" | "resumed" | "rescue" };
   offer: OfferInfo | null;
 }
@@ -453,7 +454,7 @@ export function createPageApi(
     if (!c) return;
     const prev = liveCounters ?? { probes: 0, answered: 0, stalls: 0, resumed: 0, rescues: 0 };
     liveCounters = { ...c };
-    const kinds: Array<[keyof typeof c, Events["liveness"]["kind"]]> = [["answered", "answered"], ["stalls", "stall"], ["resumed", "resumed"], ["rescues", "rescue"]];
+    const kinds: Array<[keyof typeof c, Events["liveness"]["kind"]]> = [["answered", "answered"], ["stalls", "stall"], ["resumed", "resumed"]];
     for (const [k, kind] of kinds) {
       if (c[k] > prev[k]) {
         if (kind === "answered") lastAnswerAt = timers.now();

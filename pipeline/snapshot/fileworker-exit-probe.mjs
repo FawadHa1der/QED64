@@ -202,7 +202,7 @@ function prepareGlue() {
     harness.hookInstalled = T[0] !== originals[0] && T[1] !== originals[1];
     for (const i of [0, 1]) {
       // The control: the glue's own entries, i.e. no exit hook (the rest of
-      // the worker's instrumentation — message mailbox, counting — stays).
+      // the worker's instrumentation, message mode, stays).
       const inner = HOOK ? T[i] : originals[i];
       T[i] = function exitObserved(code) {
         harness.proxiedExits.push({ t: Date.now(), index: i, code: Number(code) });

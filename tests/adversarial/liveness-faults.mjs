@@ -9,22 +9,21 @@
 //
 //   mailbox-mode          the worker booted with message notifications: the
 //                         glue's waitAsync flag is off, the main pthread's
-//                         `waiting_async` word was never set, the glue's
-//                         `checkMailbox` is the counting wrapper, proxied calls
-//                         are counted, the exit hook is installed, and
-//                         `status().liveness` exists from loop open.
+//                         `waiting_async` word was never set, the exit hook is
+//                         installed, and `status().liveness` exists from loop
+//                         open.
 //   idle-no-probes        a ready, idle session is never probed (25 s).
 //   long-silent-command   a ~40 s CPU-bound `#eval` that prints nothing: the
 //                         probe is answered while it runs (≥ 3 answers), no
-//                         stall, no death, no rescue, and the right value
+//                         stall, no death, and the right value
 //                         (Σ i % 7 over [0, n) = 3n) at the end — the
 //                         negative control: a busy session is not a wedge.
 //   lost-wakeups-healed   10% of the runtime thread's mailbox notifications
 //                         are dropped (the lost wakeup that froze the C20
 //                         session) for three edits: each settles with the
-//                         right messages, the kick serves the stranded work,
-//                         rescues are confirmed, nobody dies; the fault is
-//                         then removed and an edit settles normally.
+//                         right messages, the per-tick kick serves the
+//                         stranded work, nobody dies; the fault is then
+//                         removed and an edit settles normally.
 //   wedge-recovery        the runtime thread's mailbox is disabled outright (a
 //                         total freeze of every Lean thread) and an edit adds
 //                         a message: the probe goes unanswered, the worker
@@ -208,18 +207,14 @@ try {
         const t = g.__qed64TestExports.liveness;
         return {
           polyfilled: g.waitAsyncPolyfilled,
-          wrapper: typeof g.checkMailbox === "function" ? g.checkMailbox.name : null,
           waitingAsync: H ? H[(ptr + 204) / 4] : null,
           mailbox: { ...t.runtimeMailbox },
           livenessArmed: !!t.state(),
         };
       });
       const st = (await status())?.liveness ?? null;
-      const word = await inWorker(() => globalThis.__qed64TestExports.liveness.readMailboxWord());
-      const ok = m.polyfilled === true && m.wrapper === "checkMailboxCounted" && m.waitingAsync === 0 && m.livenessArmed
-        && m.mailbox.mode === "message" && m.mailbox.counting && m.mailbox.exitHooked && m.mailbox.notified > 0 && m.mailbox.served > 0
-        && m.mailbox.mailboxPtr !== null && [0, 1, 2].includes(word) && st !== null;
-      record("mailbox-mode", ok, `${JSON.stringify(m)} word=${word} status.liveness=${JSON.stringify(st)}`);
+      const ok = m.polyfilled === true && m.waitingAsync === 0 && m.livenessArmed && m.mailbox.mode === "message" && m.mailbox.exitHooked && st !== null;
+      record("mailbox-mode", ok, `${JSON.stringify(m)} status.liveness=${JSON.stringify(st)}`);
     }
 
     // ---------- idle-no-probes ----------
@@ -228,7 +223,7 @@ try {
       await page.waitForTimeout(25000);
       const after = await counters();
       const d = delta(before?.liveness, after?.liveness);
-      const ok = !!d && d.probes === 0 && d.stalls === 0 && d.rescues === 0 && (await status())?.phase === "ready";
+      const ok = !!d && d.probes === 0 && d.stalls === 0 && (await status())?.phase === "ready";
       record("idle-no-probes", ok, `liveness delta over 25 s idle ${JSON.stringify(d)}`);
     }
 
@@ -277,7 +272,7 @@ try {
       const k1 = await counters();
       const d = delta(s0, await stats());
       const lv = delta(k0?.liveness, k1?.liveness);
-      const ok = c1.ok && c2.ok && longRun.ok && longRun.ms >= 25000 && d?.workerDeaths === 0 && lv?.stalls === 0 && lv?.rescues === 0 && lv?.answered >= 2 && lv?.answered === lv?.probes;
+      const ok = c1.ok && c2.ok && longRun.ok && longRun.ms >= 25000 && d?.workerDeaths === 0 && lv?.stalls === 0 && lv?.answered >= 2 && lv?.answered === lv?.probes;
       record("long-silent-command", ok,
         `calibration ${c1.ms}/${c2.ms} ms → n=${n}; command settled=${longRun.ok} in ${longRun.ms} ms (value ${3 * n}); ${forced} forced silences ${JSON.stringify(forcedPhases.slice(0, 4))}; liveness ${JSON.stringify(lv)}; deaths +${d?.workerDeaths}`,
         { n, commandMs: longRun.ms, liveness: lv });
@@ -303,13 +298,11 @@ try {
         rounds.push({ ok: r.ok, ms: r.ms });
       }
       const dropped = await inWorker(() => { const g = globalThis; const n = g.__qed64Fault.dropped; g.checkMailbox = g.__qed64Fault.restore; return n; });
-      await page.waitForTimeout(2500); // let the last candidate rescue be confirmed by the next kicks
       const k1 = await counters();
       const after = await edit(withEvals(1, 500), 3, 120000, ["501"]);
       const d = delta(s0, await stats());
       const lv = delta(k0?.liveness, k1?.liveness);
-      // Every confirmed rescue is a dropped notification (several drops can share one stall, so ≤).
-      const ok = rounds.every((r) => r.ok) && after.ok && d?.workerDeaths === 0 && dropped > 0 && lv?.rescues > 0 && lv?.rescues <= dropped;
+      const ok = rounds.every((r) => r.ok) && after.ok && d?.workerDeaths === 0 && dropped > 0;
       record("lost-wakeups-healed", ok,
         `rounds ${rounds.map((r) => `${r.ok ? "ok" : "STUCK"}@${r.ms}ms`).join(", ")}; dropped ${dropped} notifications, liveness ${JSON.stringify(lv)}, deaths +${d?.workerDeaths}; fault removed → settled ${after.ok} in ${after.ms} ms`,
         { rounds, dropped, liveness: lv });

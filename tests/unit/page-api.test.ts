@@ -874,7 +874,7 @@ describe("events", () => {
 });
 
 describe("liveness", () => {
-  it("projects the worker's counters: stalled while a stall is open; answer and frame clocks; events per counter step", () => {
+  it("projects the worker's counters: stalled while a stall is open; answer and frame clocks; events per counter step (a `rescues` step emits nothing since R7a)", () => {
     const t = setup();
     boot(t);
     const kinds: string[] = [];
@@ -893,7 +893,7 @@ describe("liveness", () => {
     expect(t.api.status().liveness?.stalled).toBe(true);
     t.page.relayStatus(live({ probes: 2, answered: 2, stalls: 1, resumed: 1, rescues: 1 }));
     expect(t.api.status().liveness?.stalled).toBe(false);
-    expect(kinds).toEqual(["s1 answered", "s1 stall", "s1 answered", "s1 resumed", "s1 rescue"]);
+    expect(kinds).toEqual(["s1 answered", "s1 stall", "s1 answered", "s1 resumed"]);
   });
   it("tells the relay's own frames from the Lean side's", () => {
     expect(isSyntheticFrame({ id: 1, error: { code: -32900, message: "QED64: restarting" } })).toBe(true);

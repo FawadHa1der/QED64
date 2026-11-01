@@ -340,8 +340,9 @@ function kick() {
     st.kicksServing += 1;
     // No notification-driven check since the previous kick, yet work was
     // waiting: a stalled notification path — or, rarely, a notification still
-    // in flight (lean.worker.js confirms its rescues; this probe only counts
-    // candidates, which is exact under --drop-notify where the drops dominate).
+    // in flight (lean.worker.js no longer counts rescues since R7a; this probe
+    // only counts candidates, which is exact under --drop-notify where the drops
+    // dominate).
     if (st.checkMailboxCalls === st.checksAtLastKick) st.rescues += 1;
   }
   st.checksAtLastKick = st.checkMailboxCalls;

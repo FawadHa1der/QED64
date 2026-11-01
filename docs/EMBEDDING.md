@@ -249,7 +249,7 @@ editing one in place changes neither what the editor receives nor
 | `fileProgress` | `{uri, version, processing}` | `$/lean/fileProgress`, coalesced to at most one per 100 ms on a timer (rAF does not run in hidden frames), and flushed before the next `status` |
 | `death` | `{session, kind, reason, message, cause, seq, exitCode, willReboot, halted}` | a session died (once per session); `cause.kind` `"stale"`: the site was updated under the page, offer a reload (§7.2) |
 | `reboot` | `{reason, fromSession, toSession}` | the relay replaced the session |
-| `liveness` | `{session, kind: "answered" \| "stall" \| "resumed" \| "rescue"}` | each step of the worker's liveness counters |
+| `liveness` | `{session, kind: "answered" \| "stall" \| "resumed" \| "rescue"}` | each step of the worker's liveness counters (`rescue` is no longer emitted since 2026-11: the worker stopped counting rescues, R7a; the kind stays in the type) |
 | `offer` | `{kind, label} \| null` | the page's offer appears or is withdrawn |
 
 ### 2.5 Widget sources
@@ -2043,6 +2043,13 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
     each difference.
   - The worker scripts keep `REVISION` "1", and `EMBED_API_REVISION` is
     unchanged.
+- **The worker no longer counts rescues (architecture review R7a,
+  2026-11):** the runtime mailbox is served on every liveness tick, which
+  heals a lost wakeup, and no longer counted. `WorkerStatus.liveness.rescues`
+  stays and is always 0, and the page API's `liveness` event no longer fires
+  with kind `rescue`. No export, type, message or revision change:
+  `EMBED_API_REVISION`, `API_REVISION` and the worker `REVISION` are
+  unchanged.
 - **`qed64/edge` routes a toolchain release (plan step B2b, 2026-10-06):**
   additive options, every default unchanged (`QED64_LEGACY` and the hardened
   defaults keep `release: null`). `release` takes a `lean4-wasm64.release/v1`

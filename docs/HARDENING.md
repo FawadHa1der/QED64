@@ -269,6 +269,14 @@ Rules: a liveness signal must come from the component whose liveness you need â€
 - Pyramid on the staged pairing: e2e 23/23; editing latency unchanged (header switch 333 ms, completion 279 ms, error clear 9 ms); crash gauntlets mixed (226 steps) and imports (73), both alive and `ready`; the four #51 kernel probes; the compiler battery 54/54; `verify:release` after the promote.
 - Open follow-up: a batch compile, which runs on the runtime thread, that calls `exit` ends as a recoverable `COMPILE_CRASHED` after unwinding the C++ stack. It is unreachable today, since the only batch compile is the import-only warm header.
 
+**Addendum 2026-11 (architecture review R7a): the rescue accounting is gone; the kick stays.**
+- Layer 3 counted a rescue when the main thread's mailbox notification word stayed PENDING 250 ms with no notification-driven check. The word was located by a regex over the glue's source text (`pthread_ptr + N` in `_emscripten_thread_mailbox_await`).
+- In the field it never fired: 0 rescues in 4,122 showcase status records, and every "wedged" capture was the synthetic C23 fixture.
+- The worker now kicks on every liveness tick unconditionally (what it already did when the word could not be located). It wraps only the two exit entries of the proxied-function table and counts neither notifications nor served calls.
+- `status().liveness.rescues` stays and is 0, and the `liveness` event of kind `rescue` is gone.
+- Trade-off: about 4,320 field edits against the original ~1 freeze per 4,400 is too small a sample to prove lost wakeups gone, and this deletes the only field signal for them. The kick still heals one invisibly, and a `wedged` death remains the signal.
+- `liveness-faults.mjs` lost-wakeups-healed now passes on: notifications dropped, every round settles, no death.
+
 
 ### 53. A thread parked inside wasm is a Worker that outlives its page by two seconds
 
