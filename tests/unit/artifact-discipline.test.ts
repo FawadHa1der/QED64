@@ -250,17 +250,11 @@ describe("promote-staging.mjs", () => {
     const idx = JSON.parse(fs.readFileSync(path.join(pub, "snapshots/index.json"), "utf8"));
     expect(idx.snapshots[0].runtime).toBe(neu.manifest.buildId);
     expect(fs.readdirSync(path.join(pub, "runtime")).filter((f) => f.endsWith(".tmp"))).toEqual([]);
-    // HARDENING #64: each promote writes its snapshot index's per-build copy (the same bytes), and
-    // never touches another runtime's: a shell pinned to the old runtime keeps reading its pairing.
-    const copy = (id: string) => path.join(pub, `snapshots/index.${id}.json`);
-    expect(fs.readFileSync(copy(neu.manifest.buildId), "utf8")).toBe(fs.readFileSync(path.join(pub, "snapshots/index.json"), "utf8"));
-    expect(JSON.parse(fs.readFileSync(copy(old.manifest.buildId), "utf8")).snapshots[0].runtime).toBe(old.manifest.buildId);
-    expect(JSON.parse(fs.readFileSync(copy(old.manifest.buildId), "utf8")).snapshots[0].url).toBe(`/snapshots/${old.snapshotFile}`);
-    // no profile index published here: no profile-index copy invented
-    expect(fs.readdirSync(path.join(pub, "snapshots")).filter((f) => f.startsWith("profiles-index."))).toEqual([]);
+    // D2: no per-build index copy is written (QED64's indexes ship in each deploy), for either runtime
+    expect(fs.readdirSync(path.join(pub, "snapshots")).filter((f) => /^(profiles-)?index\..+\.json$/.test(f))).toEqual([]);
   });
 
-  test("a staged per-build copy written by the bake: the promote's copy has its bytes; the promote neither copies, refuses nor double-writes it", () => {
+  test("a staged per-build copy written by the bake is neither copied nor checked (D2)", () => {
     // A real bake (FAKE runner, no wasm) into the staged snapshots dir of a staged runtime of the same lean.wasm.
     const stage = path.join(tmp, "stage-baked-copy");
     const bin = fakeBin("p-baked");
@@ -282,16 +276,17 @@ fs.writeFileSync(path.join(work, a.find((x) => x.startsWith("--incr-header-save=
     const pub = path.join(tmp, "public-baked-copy");
     const r = run(promote, ["--staging", stage, "--public", pub]);
     expect(r.status, r.stderr).toBe(0);
-    expect(fs.readFileSync(path.join(pub, `snapshots/index.${id}.json`))).toEqual(stagedCopy);
     expect(fs.readFileSync(path.join(pub, "snapshots/index.json"))).toEqual(stagedCopy);
-    // written once, as a switch from the index's bytes; the staged copy itself is not copied in
-    expect(planLines(r.stdout).filter((l) => l.includes(`index.${id}.json`))).toEqual([`swap  ${path.relative(root, path.join(pub, `snapshots/index.${id}.json`))}`]);
+    // the staged copy is not copied in, and no copy is switched in its place
+    expect(fs.existsSync(path.join(pub, `snapshots/index.${id}.json`))).toBe(false);
+    expect(planLines(r.stdout).filter((l) => l.includes(`index.${id}.json`))).toEqual([]);
     // a stale staged copy (hand-edited, or a crash between the bake's renames) is neither used nor refused
     fs.writeFileSync(path.join(snapshots, `index.${id}.json`), "{\"stale\": true}");
     const pub2 = path.join(tmp, "public-baked-stale");
     const r2 = run(promote, ["--staging", stage, "--public", pub2]);
     expect(r2.status, r2.stderr).toBe(0);
-    expect(fs.readFileSync(path.join(pub2, `snapshots/index.${id}.json`))).toEqual(stagedCopy);
+    expect(fs.readFileSync(path.join(pub2, "snapshots/index.json"))).toEqual(stagedCopy);
+    expect(fs.existsSync(path.join(pub2, `snapshots/index.${id}.json`))).toBe(false);
   });
 
   test("refuses a staged chunk or snapshot whose bytes do not match its recorded digest", () => {
@@ -417,9 +412,8 @@ fs.writeFileSync(path.join(work, a.find((x) => x.startsWith("--incr-header-save=
     const swapOf = (suffix: string) => plan.findIndex((l) => l.startsWith("swap ") && l.endsWith(suffix));
     expect(swapOf("profiles/lean-core.manifest.json")).toBeLessThan(swapOf("runtime/runtime-manifest.json"));
     expect(swapOf("snapshots/index.json")).toBeLessThan(swapOf("runtime/runtime-manifest.json"));
-    // HARDENING #64: each per-build index copy switches just before its mutable index
-    expect(swapOf(`snapshots/index.${neu.manifest.buildId}.json`)).toBe(swapOf("snapshots/index.json") - 1);
-    expect(plan.at(-2)).toMatch(new RegExp(`^swap .*snapshots/profiles-index\\.${neu.manifest.buildId}\\.json$`));
+    // D2: no per-build index copy among the switches; the default runtime manifest is the last before the record
+    expect(plan.at(-2)).toMatch(/^swap .*runtime\/runtime-manifest\.json$/);
 
     const after = treeState(pub);
     for (const [file, digest] of Object.entries(before)) {
@@ -433,9 +427,8 @@ fs.writeFileSync(path.join(work, a.find((x) => x.startsWith("--incr-header-save=
     expect(after["profiles/mathlib-essential.manifest.json"]).toBe(sha(fs.readFileSync(neu.essentialManifest)));
     const idx = JSON.parse(fs.readFileSync(path.join(pub, "profiles/index.json"), "utf8"));
     expect(idx.runtime).toEqual({ buildId: neu.manifest.buildId, leanVersion: LEAN });
-    // the profile index's per-build copy: the staged index's bytes, under snapshots/ (site-owned); the old one stays
-    expect(after[`snapshots/profiles-index.${neu.manifest.buildId}.json`]).toBe(after["profiles/index.json"]);
-    expect(after[`snapshots/profiles-index.${old.manifest.buildId}.json`]).toBe(before["profiles/index.json"]);
+    // D2: no profile index copy under snapshots/, for either runtime
+    expect(Object.keys(after).filter((f) => f.startsWith("snapshots/profiles-index."))).toEqual([]);
     expect(JSON.parse(fs.readFileSync(path.join(pub, "runtime/runtime-manifest.json"), "utf8")).buildId).toBe(neu.manifest.buildId);
     expect(Object.keys(after).filter((f) => f.endsWith(".tmp"))).toEqual([]);
     // the raw .pack that pack.mjs leaves beside the parts is staging-only
@@ -554,10 +547,9 @@ fs.writeFileSync(path.join(work, a.find((x) => x.startsWith("--incr-header-save=
     for (const f of Object.keys(before)) if (f.startsWith("profiles/") && f !== "profiles/index.json") expect(after[f]).toBe(before[f]);
     const idx = JSON.parse(fs.readFileSync(path.join(pub, "profiles/index.json"), "utf8"));
     expect(idx).toEqual({ ...servedIndex, runtime: { buildId: bump.manifest.buildId, leanVersion: LEAN } });
-    // the re-pointed index gets its per-build copy too; the base runtime's copy keeps the base pairing
-    expect(after[`snapshots/profiles-index.${bump.manifest.buildId}.json`]).toBe(after["profiles/index.json"]);
-    expect(JSON.parse(fs.readFileSync(path.join(pub, `snapshots/profiles-index.${base.manifest.buildId}.json`), "utf8"))).toEqual(servedIndex);
-    expect(planLines(real.stdout).at(-2)).toMatch(new RegExp(`^swap .*snapshots/profiles-index\\.${bump.manifest.buildId}\\.json$`));
+    // D2: the re-pointed index gets no per-build copy; the default runtime manifest switches just before it
+    expect(Object.keys(after).filter((f) => /^snapshots\/(profiles-)?index\..+\.json$/.test(f))).toEqual([]);
+    expect(planLines(real.stdout).at(-2)).toMatch(/^swap .*runtime\/runtime-manifest\.json$/);
     expect(servedIndex.runtime.buildId).toBe(base.manifest.buildId);
     expect(run(verifyRelease, ["--public", pub]).status).toBe(0);
 
@@ -594,7 +586,7 @@ fs.writeFileSync(path.join(work, a.find((x) => x.startsWith("--incr-header-save=
 
   test("refuses any target a symlink sends outside --public (a directory or a file), before writing anything", () => {
     const stage = path.join(tmp, "stage-escape");
-    const esc = stageRuntime(stage, "esc");
+    stageRuntime(stage, "esc");
     // runtime/chunks as a DIRECTORY symlink into another tree: this worktree's public/ has exactly that shape
     const pub = path.join(tmp, "public-escape-dir");
     const elsewhere = path.join(tmp, "elsewhere-chunks");
@@ -619,68 +611,6 @@ fs.writeFileSync(path.join(work, a.find((x) => x.startsWith("--incr-header-save=
     expect(f.stderr).toMatch(/refusing .*runtime\/runtime-manifest\.json: it resolves to .*elsewhere-manifest\.json, outside --public/);
     expect(fs.readFileSync(outsideFile, "utf8")).toBe("the other checkout's manifest");
     expect(fs.readdirSync(path.join(pub2, "runtime"))).toEqual(["runtime-manifest.json"]);
-    // HARDENING #64: the per-build index copies are confined up front too, so a symlinked copy refuses
-    // before the chunks, the .snapz or a pack part is copied (switchFile's own confine comes too late)
-    const escapes = (pubDir: string, copy: string, outside: string) => {
-      const target = path.join(pubDir, "snapshots", copy);
-      fs.mkdirSync(path.dirname(target), { recursive: true });
-      fs.writeFileSync(outside, `the other checkout's ${copy}`);
-      fs.symlinkSync(outside, target);
-      return target;
-    };
-    const copyRefusal = (copy: string, outside: string) =>
-      new RegExp(`^promote: refusing .*snapshots/${copy.replace(/\./g, "\\.")}: it resolves to .*${path.basename(outside).replace(/\./g, "\\.")}, outside --public .* — nothing was written\n$`);
-    // the one refusal line names the copy (and only it), whichever index it is
-    const COPY_REFUSAL = /^promote: refusing .*snapshots\/(profiles-)?index\.wasm64-[0-9a-f]{16}\.json: it resolves to .*, outside --public .* — nothing was written\n$/;
-    {
-      // the snapshot index's copy: nothing written (no runtime/, no .snapz)
-      const pub3 = path.join(tmp, "public-escape-snapshot-copy");
-      const copy = `index.${esc.manifest.buildId}.json`;
-      const outside = path.join(tmp, "elsewhere-snapshot-index.json");
-      escapes(pub3, copy, outside);
-      for (const extra of [["--dry-run"], []]) {
-        const r = run(promote, ["--staging", stage, "--public", pub3, ...extra]);
-        expect(r.status, r.stderr).toBe(2);
-        expect(r.stderr).toMatch(copyRefusal(copy, outside));
-        expect(r.stderr).toMatch(COPY_REFUSAL);
-        expect(fs.readFileSync(outside, "utf8")).toBe(`the other checkout's ${copy}`);
-        expect(fs.readdirSync(pub3)).toEqual(["snapshots"]);
-        expect(fs.readdirSync(path.join(pub3, "snapshots"))).toEqual([copy]);
-      }
-    }
-    {
-      // the profile index's copy on a staged-packs promote: no runtime/, no .snapz, no pack part
-      const packStage = path.join(tmp, "stage-escape-packs");
-      const pk = stagePairing(packStage, "esc-pk");
-      const pub4 = path.join(tmp, "public-escape-profile-copy");
-      const copy = `profiles-index.${pk.manifest.buildId}.json`;
-      const outside = path.join(tmp, "elsewhere-profile-index.json");
-      escapes(pub4, copy, outside);
-      const r = run(promote, ["--staging", packStage, "--public", pub4]);
-      expect(r.status, r.stderr).toBe(2);
-      expect(r.stderr).toMatch(copyRefusal(copy, outside));
-      expect(r.stderr).toMatch(COPY_REFUSAL);
-      expect(fs.readFileSync(outside, "utf8")).toBe(`the other checkout's ${copy}`);
-      expect(fs.readdirSync(pub4)).toEqual(["snapshots"]);
-      expect(fs.readdirSync(path.join(pub4, "snapshots"))).toEqual([copy]);
-    }
-    {
-      // ... and on a kernel-only re-point of a served profile index: the tree exactly as it was
-      const pub5 = path.join(tmp, "public-escape-repoint-copy");
-      expect(run(promote, ["--staging", path.join(tmp, "stage-escape-packs"), "--public", pub5]).status).toBe(0);
-      const bumpStage = path.join(tmp, "stage-escape-repoint");
-      const bump = stageRuntime(bumpStage, "esc-bump", { leanVersion: LEAN });
-      const copy = `profiles-index.${bump.manifest.buildId}.json`;
-      const outside = path.join(tmp, "elsewhere-repoint-index.json");
-      escapes(pub5, copy, outside);
-      const before = treeState(pub5);
-      const r = run(promote, ["--staging", bumpStage, "--public", pub5]);
-      expect(r.status, r.stderr).toBe(2);
-      expect(r.stderr).toMatch(copyRefusal(copy, outside));
-      expect(r.stderr).toMatch(COPY_REFUSAL);
-      expect(fs.readFileSync(outside, "utf8")).toBe(`the other checkout's ${copy}`);
-      expect(treeState(pub5)).toEqual(before);
-    }
     // a --public that is itself a symlink, and a symlink that stays inside the tree, are fine
     const realPub = path.join(tmp, "public-real-target");
     fs.mkdirSync(path.join(realPub, "snapshots-real"), { recursive: true });
@@ -689,7 +619,7 @@ fs.writeFileSync(path.join(work, a.find((x) => x.startsWith("--incr-header-save=
     fs.symlinkSync(realPub, linkPub);
     const ok = run(promote, ["--staging", stage, "--public", linkPub]);
     expect(ok.status, ok.stderr).toBe(0);
-    expect(fs.readdirSync(path.join(realPub, "snapshots-real")).sort()).toEqual(["index.json", expect.stringMatching(/^index\.wasm64-[0-9a-f]{16}\.json$/), expect.stringMatching(/^init\.[0-9a-f]{16}\.snapz$/)]);
+    expect(fs.readdirSync(path.join(realPub, "snapshots-real")).sort()).toEqual(["index.json", expect.stringMatching(/^init\.[0-9a-f]{16}\.snapz$/)]);
   });
 
   test("a kernel-only re-point keeps the served profile index's trailing newline (and adds none it lacked)", () => {

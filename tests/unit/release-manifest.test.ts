@@ -569,7 +569,9 @@ describe.skipIf(!hasGit)("cross-checks refuse doctored inputs", () => {
     }
   });
 
-  test("a per-build index copy (HARDENING #64) that is not byte-identical to the index it copies", () => {
+  test("a stale local per-build index copy is ignored (D2)", () => {
+    // QED64's indexes ship in each deploy, so no shell reads a copy of them: a copy an
+    // earlier promote left behind (gitignored) is neither an input nor checked.
     for (const [copyPath, of] of [
       [`public/snapshots/index.${buildId}.json`, "public/snapshots/index.json"],
       [`public/snapshots/profiles-index.${buildId}.json`, "public/profiles/index.json"],
@@ -578,12 +580,10 @@ describe.skipIf(!hasGit)("cross-checks refuse doctored inputs", () => {
       const original = fs.readFileSync(path.join(tree, of));
       const before = build();
       try {
-        fs.writeFileSync(copy, original);
-        const m = build();
-        expect(m.qed64.dirty).toBe(false); // identical: fine, and neither an input nor listed
-        expect(m.artifactSetId).toBe(before.artifactSetId);
         fs.writeFileSync(copy, `${original.toString()} `);
-        expect(refusal(build)).toBe(`${copyPath} is not byte-identical to ${of} — the pinned shell would read another pairing's index; rerun the promote (or delete the copy: the upload sends ${of}'s bytes under that name)`);
+        const m = build();
+        expect(m.qed64.dirty).toBe(false);
+        expect(m.artifactSetId).toBe(before.artifactSetId);
       } finally {
         fs.rmSync(copy, { force: true });
       }
