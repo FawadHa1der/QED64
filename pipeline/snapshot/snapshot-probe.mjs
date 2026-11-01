@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 // Validate a baked snapshot end to end with the exact shipped runtime: load
-// it via lean_wasm_load_snapshot (the same export the worker calls), then
-// compile a probe whose header imports match the snapshot's — which must be
-// FAST (env-cache hit) and error-free. Guards against a snapshot that bakes
-// fine but loads into the wrong cache key, which would silently degrade the
-// app to the minutes-long import path.
+// it via lean_wasm_load_snapshot_mem with --via-mem (the export the browser
+// worker calls; the default path loader lean_wasm_load_snapshot and
+// --via-memfs are deprecated, docs/CLI-CONTRACT.md), then compile a probe
+// whose header imports match the snapshot's — which must be FAST (env-cache
+// hit) and error-free. Guards against a snapshot that bakes fine but loads
+// into the wrong cache key, which would silently degrade the app to the
+// minutes-long import path.
 //
 // Usage: node --stack-size=8192 pipeline/snapshot/snapshot-probe.mjs \
-//          --snap public/snapshots/mathlib-reals.snap \
+//          --via-mem --snap <work>/mathlib.snap \
 //          --probe-file <lean file with the matching imports> \
 //          [--lib <olean tree>] [--artifact <dir>] [--budget-ms 90000]
 // --artifact / --lib: else $QED64_LEAN_ARTIFACT / $QED64_LIB_TREE, else the
@@ -42,7 +44,7 @@ ensureStackSize("snapshot-probe");
   const spec = {"tool":"snapshot-probe","usage":"snapshot-probe.mjs (--snap <file> | --fresh-import --lib <tree>) (--probe-file <file> | --probe <source>)","flags":{"snap":1,"fresh-import":0,"probe-file":1,"probe":1,"lib":1,"artifact":1,"budget-ms":1,"via-mem":0,"via-memfs":0,"init-flags":1,"workspace":1,"dump-messages":0,"watchdog-ms":1},"required":[["snap","fresh-import"],["probe-file","probe"]],"passthrough":null,"passthroughRequired":false};
   spec.help = [
     "usage: snapshot-probe.mjs (--snap <file> | --fresh-import --lib <tree>) (--probe-file <file> | --probe <source>)",
-    "Load a baked snapshot through the worker's exact export (lean_wasm_load_snapshot, or _mem with --via-mem), then compile a probe whose header matches it: it must be error-free and within the budget (an env-cache hit).",
+    "Load a baked snapshot through the browser worker's export lean_wasm_load_snapshot_mem (--via-mem; without it the deprecated path loader lean_wasm_load_snapshot), then compile a probe whose header matches it: it must be error-free and within the budget (an env-cache hit).",
     "run as: node --stack-size=8192 pipeline/snapshot/snapshot-probe.mjs",
     "",
     "flags:",
@@ -53,8 +55,8 @@ ensureStackSize("snapshot-probe");
     "  --lib <tree>         olean tree mounted at /lib/lean (default: $QED64_LIB_TREE, else (deprecated, one WARNING) work/lib-tree under the repo root when it exists; nothing else: exit 2)",
     "  --artifact <dir>     stage1 dir holding bin/lean.js + bin/lean.wasm (default: $QED64_LEAN_ARTIFACT, else (deprecated, one WARNING) pipeline/toolchain/work/build/stage1 under the repo root when it has bin/lean.js; nothing else: exit 2)",
     "  --budget-ms <ms>     compile budget; slower means the load seeded the wrong env-cache key (default: 90000)",
-    "  --via-mem            stream the snapshot into a wasm-malloc'd buffer (lean_wasm_load_snapshot_mem, the browser's path)",
-    "  --via-memfs          copy the snapshot into MEMFS in 64 MiB chunks before loading",
+    "  --via-mem            stream the snapshot into a wasm-malloc'd buffer (lean_wasm_load_snapshot_mem, the browser's path); pass it: without it the deprecated path loader runs, with one WARNING",
+    "  --via-memfs          deprecated (one WARNING): copy the snapshot into MEMFS in 64 MiB chunks, then load it with the path loader",
     "  --init-flags <n>     replay-control flags passed with --via-mem (patch 0016) (default: 1)",
     "  --workspace <dir>    host dir mounted at /workspace, the compile's cwd (game probes need .lake/gamedata)",
     "  --dump-messages      echo every line Lean prints on stdout as `[lean:stdout] <line>`",
@@ -129,8 +131,8 @@ const budgetMs = Number(arg("budget-ms", "90000"));
 // Optional host dir NODEFS-mounted at /workspace (the worker cwd) — game
 // probes need `.lake/gamedata/*.json` visible to GameServer's Runner.
 const workspaceDir = arg("workspace", "") ? path.resolve(arg("workspace", "")) : "";
-// --via-memfs copies the snapshot into MEMFS in bounded chunks before loading —
-// the worker's exact path — instead of reading it through a NODEFS mount (a
+// --via-memfs (deprecated) copies the snapshot into MEMFS in bounded chunks, then
+// loads it with the path loader (instead of reading it through a NODEFS mount: a
 // single read() of a >2 GiB file trips Node's per-call I/O limits).
 const viaMemfs = process.argv.includes("--via-memfs");
 // --via-mem streams the snapshot into a wasm-malloc'd buffer and loads through
@@ -207,6 +209,11 @@ const libDir = resolveToolPath({
   legacy: path.join(repoRoot, "work/lib-tree"), legacyLabel: "work/lib-tree under the repo root", holds: fs.existsSync, usage: USAGE,
 }).path;
 const leanJs = path.join(artifactDir, "bin/lean.js");
+// The path loader (lean_wasm_load_snapshot: the default, and --via-memfs) is deprecated (R11a, docs/CLI-CONTRACT.md):
+// every executed caller passes --via-mem, the browser worker's export. Its branches go after both consumers re-pin.
+const loaderWarning = viaMemfs ? "--via-memfs (a MEMFS copy, then the path loader lean_wasm_load_snapshot)"
+  : !freshImport && !viaMem ? "loading without --via-mem (the path loader lean_wasm_load_snapshot)" : null;
+if (loaderWarning) console.error(`snapshot-probe: WARNING — ${loaderWarning} is deprecated; pass --via-mem (lean_wasm_load_snapshot_mem, the browser's path) (docs/CLI-CONTRACT.md)`);
 
 // The runtime expects a .deps sidecar next to the snapshot (the worker writes
 // "[]"); stage both into a scratch dir so the real snapshot dir stays clean.

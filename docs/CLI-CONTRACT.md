@@ -463,8 +463,8 @@ usage: snapshot-probe.mjs (--snap <file> | --fresh-import --lib <tree>) (--probe
 | `--lib <tree>` | `$QED64_LIB_TREE`, else (deprecated) `work/lib-tree` under the repo root when it exists, else exit 2 | The tree mounted at `/lib/lean`. |
 | `--artifact <dir>` | `$QED64_LEAN_ARTIFACT`, else (deprecated) `pipeline/toolchain/work/build/stage1` under the repo root when it has `bin/lean.js`, else exit 2 | The dir holding `bin/lean.js` and `bin/lean.wasm`. |
 | `--budget-ms <ms>` | `90000` | The compile budget. A slower compile means the load seeded the wrong env-cache key. |
-| `--via-mem` | off | Streams the snapshot into a wasm-malloc'd buffer and loads it with `lean_wasm_load_snapshot_mem`: the browser's path. |
-| `--via-memfs` | off | Copies the snapshot into MEMFS in 64 MiB chunks first. |
+| `--via-mem` | off | Streams the snapshot into a wasm-malloc'd buffer and loads it with `lean_wasm_load_snapshot_mem`: the browser's path. **Pass it**: without it the probe loads through the deprecated path loader (one WARNING, below). |
+| `--via-memfs` | off | **Deprecated** (one WARNING, below): copies the snapshot into MEMFS in 64 MiB chunks first, then loads it with the path loader `lean_wasm_load_snapshot`. |
 | `--init-flags <n>` | `1` | Replay-control flags for `--via-mem` (patch 0016). |
 | `--workspace <dir>` | — | Mounted at `/workspace`, the compile's cwd. Game probes need `.lake/gamedata`. |
 | `--dump-messages` | off | Echoes every line Lean prints on stdout as `[lean:stdout] <line>`. |
@@ -474,6 +474,18 @@ usage: snapshot-probe.mjs (--snap <file> | --fresh-import --lib <tree>) (--probe
   `QED64_PROFILE_INIT`.
 - **Inputs:** the `.snap`, the probe, the `--lib` tree and the artifact.
 - **Outputs:** stdout and stderr only.
+
+**The path loader is deprecated (R11a, 2026-11).**
+
+- Without `--via-mem` (the default) or with `--via-memfs`, the probe prints
+  one `deprecated-loader` WARNING after the path rule, before any side
+  effect. It then runs as before.
+- Every executed caller passes `--via-mem` (the compiler battery, the
+  showcase's `exact-header.mjs`, lean4game's `--verify-snapshots`).
+- After both lean4game and the showcase re-pin past this commit, the two
+  branches are deleted, `--via-mem` becomes the only loader and
+  `CONTRACT_VERSION` is bumped. The kernel may then delete
+  `lean_wasm_load_snapshot` (kernel §5 #4b).
 
 **The watchdog.** From the kernel's patch 0037 on, `lean_wasm_compile`
 returns only after every task still recorded for a command has finished, so
@@ -521,6 +533,7 @@ a larger one.
 | watchdog | stderr | `^SNAPSHOT PROBE FAIL: watchdog: no verdict within (\d+) ms \(lean_wasm_compile did not return; a task that never finishes hangs it from kernel 0037 on\)$` (the watchdog thread's; a `fail` line too; the process then dies of SIGKILL) |
 | lean-stdout | stdout | `^\[lean:stdout\] (.*)$` (with `--dump-messages`; Lean's JSON messages) |
 | abort | stderr | `^ABORT: (.*)$` |
+| deprecated-loader | stderr | `^snapshot-probe: WARNING — (.+) is deprecated; pass --via-mem \(lean_wasm_load_snapshot_mem, the browser's path\) \(docs\/CLI-CONTRACT\.md\)$` (without `--via-mem`, or with `--via-memfs`; group 1 names the loader) |
 | deprecated-default | stderr | `^(\S+): WARNING — the default --(\S+) (.+) \((.+)\) is deprecated; use --\S+ \S+ or set (\w+) \(docs\/CLI-CONTRACT\.md\)$` (`--artifact`, `--lib`) |
 | no-path | stderr | `^(\S+): no --(\S+) given and (\w+) is unset(; the deprecated default (.+) (has no \S+\|is absent))? — pass --\S+ \S+ or set \w+$` |
 
@@ -1305,6 +1318,7 @@ as QED64's own gate did.
 | 3 | 2026-11-01 | Architecture review R4, tier 3: `resident-probe.mjs --probe-file <file>` runs one document as the page does (act 1 only, no EXPERIMENT requests; `--snapshots` defaults to `init,mathlib`; the page's argv, so `--lean-option` applies), prints `resident: reached elaboration` at the first non-empty fileProgress and, once progress has stayed drained for `--settle-ms` (default 5000; a kind-2 `fatalError` entry, which a refused header leaves standing, counts as drained, as in the page's front door), the final diagnostics (with `--dump-messages`, one `{"caption":"",…}` JSON line each: severity by name, 1-based lines, LSP's UTF-16 columns) and `compile: tag=0 elapsed=<ms> errors=<n>`, then exits 0 whatever the document's errors; the budget, an abort or an exit before the settle is `RESIDENT PROBE FAIL {…}`, exit 1. Refused with `--mathlib`, `--act2`, `--act4` or `--option-check`, a missing file or a bad `--settle-ms` (exit 2); the usage line gains the three flags. The compiler battery gains `--transport compile\|fileworker` (default `compile`, unchanged): `fileworker` spawns resident-probe with `--snap-dir` = `--snap`'s directory and `--snapshots init,<--snap's name>`, writes each item without the alias rewrite, skips `COMPILE_ONLY` (`mathlib-name-shadow-faithful-compile`, logged `skip <name> (compile path only)`), refuses `--probe` (exit 2) and treats a missing `init.snap` beside `--snap` as the all-infra refusal (exit 3); its report gains `transport` and its pass line reads `compiler battery (fileworker): N/M passed` (the compile lane's line is unchanged). | tier 3, no promise |
 | 3 | 2026-11-01 | Architecture review D2, **fetch-artifacts** no longer writes the per-build index copies `snapshots/index.<buildId>.json` (group `snapshots`) and `snapshots/profiles-index.<buildId>.json` (group `profiles`) that the 2026-10-08 row (HARDENING #64) added. QED64's site serves its two indexes from each deploy (docs/DEPLOY.md "Atomic deploys"), and nothing reads a local copy: a dev server or a served build answers the tracked, paired indexes, so a shell never asks for one. That is one `wrote`/`present` line fewer for each of the two groups, and `FETCH OK`'s totals no longer count those files (a full run is two files smaller). The digest-named `runtime/runtime-manifest.<buildId>.json` is still written. Copies an earlier run left under `--out` are left alone (never touched or deleted, like any file no manifest names). Flags, markers, defaults and exits are unchanged; neither downstream runs the tool. Also recorded, no tool change: `scripts/deploy-app.sh` (not a contract tool) keeps `dist/{profiles,snapshots}/index.json` and runs `scripts/deploy-guard.mjs` before `wrangler deploy`; `scripts/upload-artifacts.sh` uploads only the `.snapz` the index names and overlay directories. | removed output (no consumer); ops |
 | 3 | 2026-11-01 | Architecture review D2, tier 3: **release-manifest** no longer refuses a present per-build index copy (`public/snapshots/index.<buildId>.json`, `public/snapshots/profiles-index.<buildId>.json`) that is not byte-identical to the index it copies, the refusal the 2026-10-08 row (HARDENING #64) added. No shell reads a copy of QED64's indexes any more (they ship in each deploy, docs/DEPLOY.md "Atomic deploys"), so a stale local copy is ignored like any untracked file. Flags, output fields, the manifest's format and `artifactSetId` are unchanged. Also recorded, not a contract tool: `promote-staging.mjs` writes neither copy (copies an earlier promote left are left alone) and still ignores the bake's staged copy; bake-snapshot's `index-copy` (tier 1) is unchanged. | a refusal removed (tier 3); ops |
+| 3 | 2026-11-01 | Architecture review R11a (QED64 half), **deprecated, one cycle:** snapshot-probe's path loader `lean_wasm_load_snapshot`. Without `--via-mem` (the default) or with `--via-memfs`: one stderr WARNING (new marker `deprecated-loader`) after the path rule, before any side effect; the run is otherwise unchanged. Flags, the other markers and exits are unchanged; every executed caller already passes `--via-mem` (the compiler battery, the showcase's `exact-header.mjs`, lean4game's `--verify-snapshots`). Removal (the two branches deleted, `--via-mem` the only loader, a contract bump) after both lean4game and the showcase re-pin past this row. Also: TESTING.md's probe row and adopt-release's printed slim-bake recipe pass `--via-mem`, and the help and the script's comments name `lean_wasm_load_snapshot_mem` as the browser's path (they called the path loader, and `--via-memfs`, the worker's). | deprecation (WARNING) |
 
 ## Open decisions
 

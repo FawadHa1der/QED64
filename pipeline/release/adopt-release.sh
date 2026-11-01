@@ -220,8 +220,8 @@ EOF
     c. Differential (kernel reduction, rfl / decide / simp unfolding a non-@[expose] def, is where slim and fat disagree: "unknown
        constant"): bake a FAT umbrella and compare messages byte for byte on the battery's Mathlib cases and a stress file:
          node --stack-size=8192 pipeline/snapshot/bake-snapshot.mjs --name mathlib --lib $W/lib-tree --reserve 4294967296 --probe 'import QED64.Essential' --artifact $W/artifact --work $W/snapshot-fat --out $W/fat-snapshots
-         node --stack-size=8192 pipeline/snapshot/snapshot-probe.mjs --artifact $W/artifact --lib $W/lib-tree-slim --snap $W/snapshot/mathlib.snap --probe-file <stress.lean>
-         node --stack-size=8192 pipeline/snapshot/snapshot-probe.mjs --artifact $W/artifact --lib $W/lib-tree --snap $W/snapshot-fat/mathlib.snap --probe-file <stress.lean>
+         node --stack-size=8192 pipeline/snapshot/snapshot-probe.mjs --via-mem --artifact $W/artifact --lib $W/lib-tree-slim --snap $W/snapshot/mathlib.snap --probe-file <stress.lean>
+         node --stack-size=8192 pipeline/snapshot/snapshot-probe.mjs --via-mem --artifact $W/artifact --lib $W/lib-tree --snap $W/snapshot-fat/mathlib.snap --probe-file <stress.lean>
        Identical: ship slim and record the audit (pin, date, counts) in docs/SERVER-SLIM-REBAKE.md. Different: ship the fat bake
        (copy $W/fat-snapshots over $STAGING/snapshots and promote again; 2.5x the download, resize the page's pre-commit).
 EOF

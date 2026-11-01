@@ -37,6 +37,7 @@ Object.assign(M, {
   _lean_initialize_runtime_module() {}, _lean_initialize() {}, _lean_io_mark_end_initialization() {},
   _lean_init_search_path: () => 32,
   _lean_wasm_load_snapshot: () => 48,
+  _lean_wasm_load_snapshot_mem: () => 48,
   _lean_wasm_compile: () => {
     if (mode === "hang") for (;;) {}
     if (mode === "abort") M.onAbort("fake abort");
@@ -89,7 +90,7 @@ function envFor(c: ReturnType<typeof caseDir>, extra: Record<string, string> = {
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !CLEARED.includes(k)) env[k] = v;
   return { ...env, TMPDIR: c.tmpdir, PROBE_PID_LOG: c.log, NODE_OPTIONS: `--require ${preload}`, ...extra };
 }
-const baseArgs = () => ["--snap", snap, "--probe", "#check 1", "--artifact", art, "--lib", lib];
+const baseArgs = () => ["--snap", snap, "--probe", "#check 1", "--artifact", art, "--lib", lib, "--via-mem"];
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; } };
 
 function run(args: string[], c: ReturnType<typeof caseDir>, extra: Record<string, string> = {}, nodeArgs = ["--stack-size=8192"]) {
@@ -116,6 +117,7 @@ describe("snapshot-probe watchdog", () => {
     // the probe printed its lines up to the hung call
     expect(r.stdout.split("\n").filter(Boolean)).toEqual([
       "== load snapshot: probe-input.snap (19 bytes) ==",
+      "staged 19 bytes into the wasm heap",
       expect.stringMatching(/^load: tag=0 scalar=0 elapsed=\d+ms$/),
       "== compile the probe against the seeded environment ==",
     ]);
@@ -217,6 +219,47 @@ describe("snapshot-probe watchdog", () => {
     expect(r.stderr).toBe("");
     oneProcess(r);
     expect(r.procs[0]!.execArgv).toEqual(["--stack-size=8192"]);
+  });
+});
+
+describe("snapshot-probe: the path loader is deprecated (R11a)", () => {
+  const loader = SPECS["snapshot-probe"]!.markers.find((m) => m.id === "deprecated-loader")!;
+  const common = () => ["--probe", "#check 1", "--artifact", art, "--lib", lib, "--watchdog-ms", "0"];
+  const warnings = (stderr: string) => stderr.split("\n").filter((l) => loader.regex.test(l));
+
+  test("without --via-mem: one deprecated-loader WARNING first on stderr, then the run as before", () => {
+    const c = caseDir();
+    const r = run(["--snap", snap, ...common()], c);
+    expect(r.status, r.stderr).toBe(0);
+    const lines = r.stderr.split("\n").filter(Boolean);
+    expect(lines[0]).toBe("snapshot-probe: WARNING — loading without --via-mem (the path loader lean_wasm_load_snapshot) is deprecated; pass --via-mem (lean_wasm_load_snapshot_mem, the browser's path) (docs/CLI-CONTRACT.md)");
+    expect(warnings(r.stderr)).toEqual([lines[0]]);
+    expect(reservedHit(lines[0]!)).toBeNull();
+    expect(r.stdout).toMatch(/\nSNAPSHOT PROBE PASS\n$/);
+    oneProcess(r);
+    expect(fs.readdirSync(c.tmpdir)).toEqual([]);
+  });
+
+  test("with --via-memfs: the memfs variant of the WARNING (the fake glue has no FS, so the load then fails)", () => {
+    const c = caseDir();
+    const r = run(["--snap", snap, ...common(), "--via-memfs"], c);
+    expect(r.status, r.stderr).toBe(1);
+    const lines = r.stderr.split("\n").filter(Boolean);
+    expect(lines[0]).toBe("snapshot-probe: WARNING — --via-memfs (a MEMFS copy, then the path loader lean_wasm_load_snapshot) is deprecated; pass --via-mem (lean_wasm_load_snapshot_mem, the browser's path) (docs/CLI-CONTRACT.md)");
+    expect(warnings(r.stderr)).toEqual([lines[0]]);
+    expect(reservedHit(lines[0]!)).toBeNull();
+  });
+
+  test("with --via-mem, and with --fresh-import (no snapshot to load): no WARNING", () => {
+    for (const args of [["--snap", snap, ...common(), "--via-mem"], ["--fresh-import", ...common()]]) {
+      const c = caseDir();
+      const r = run(args, c);
+      expect(r.status, `${args.join(" ")}: ${r.stderr}`).toBe(0);
+      expect(r.stderr, args.join(" ")).toBe("");
+      oneProcess(r);
+    }
+    // A path-rule refusal exits before the WARNING (the "no artifact" case above passes no --via-mem
+    // and its stderr is exactly the rule's two lines).
   });
 });
 

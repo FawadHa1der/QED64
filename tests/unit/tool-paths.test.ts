@@ -235,7 +235,7 @@ describe("the tools in a scratch checkout: the variable is honoured", () => {
 
   test("snapshot-probe: QED64_LEAN_ARTIFACT and QED64_LIB_TREE resolve silently; a missing --snap then fails the link (exit 1) and the scratch dir is still removed", () => {
     const s = toolCheckout("snapshot-probe");
-    const r = run(s, "pipeline/snapshot/snapshot-probe.mjs", ["--snap", path.join(s, "missing.snap"), "--probe", "#check 1"],
+    const r = run(s, "pipeline/snapshot/snapshot-probe.mjs", ["--snap", path.join(s, "missing.snap"), "--probe", "#check 1", "--via-mem"],
       { QED64_LEAN_ARTIFACT: path.join(s, "env-artifact"), QED64_LIB_TREE: path.join(s, "env-lib") });
     expect(r.status).toBe(1);
     expect(r.stderr).toContain("missing.snap");
@@ -307,7 +307,7 @@ describe("the tools in a scratch checkout: a deprecated default prints exactly o
     const s = toolCheckout("snapshot-probe");
     const legacy = fakeStage1(legacyStage1(s));
     fs.mkdirSync(path.join(s, "work/lib-tree"), { recursive: true });
-    const r = run(s, "pipeline/snapshot/snapshot-probe.mjs", ["--snap", path.join(s, "missing.snap"), "--probe", "#check 1"]);
+    const r = run(s, "pipeline/snapshot/snapshot-probe.mjs", ["--snap", path.join(s, "missing.snap"), "--probe", "#check 1", "--via-mem"]);
     expect(r.status).toBe(1);
     const warnings = r.lines.filter((l) => l.includes("WARNING"));
     expect(warnings).toEqual([
