@@ -49,13 +49,25 @@ Object.assign(M, {
 M.onRuntimeInitialized();
 `;
 
+/** The files the probe loads from the repository: itself and its one relative import. */
+const PROBE_FILES = ["pipeline/snapshot/snapshot-probe.mjs", "pipeline/toolchain/artifact-paths.mjs"];
+
 let tmp: string;
 let art: string;
 let lib: string;
 let snap: string;
 let preload: string;
+let probeCopy: string;
 beforeAll(() => {
   tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "qed64-probe-watchdog-")));
+  // A byte-for-byte copy of the probe in a repository of its own, <tmp>/repo (the "no artifact"
+  // case). Copied, never symlinked: Node resolves an ESM symlink to its real path, so a symlinked
+  // probe's repoRoot would be this checkout's again.
+  for (const rel of PROBE_FILES) {
+    fs.mkdirSync(path.dirname(path.join(tmp, "repo", rel)), { recursive: true });
+    fs.copyFileSync(path.join(root, rel), path.join(tmp, "repo", rel));
+  }
+  probeCopy = path.join(tmp, "repo", PROBE_FILES[0]!);
   art = path.join(tmp, "artifact");
   fs.mkdirSync(path.join(art, "bin"), { recursive: true });
   fs.writeFileSync(path.join(art, "bin/lean.js"), FAKE_GLUE);
@@ -93,8 +105,8 @@ function envFor(c: ReturnType<typeof caseDir>, extra: Record<string, string> = {
 const baseArgs = () => ["--snap", snap, "--probe", "#check 1", "--artifact", art, "--lib", lib, "--via-mem"];
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; } };
 
-function run(args: string[], c: ReturnType<typeof caseDir>, extra: Record<string, string> = {}, nodeArgs = ["--stack-size=8192"]) {
-  const r = spawnSync(process.execPath, [...nodeArgs, probe, ...args], { cwd: c.d, encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL", env: envFor(c, extra) });
+function run(args: string[], c: ReturnType<typeof caseDir>, extra: Record<string, string> = {}, nodeArgs = ["--stack-size=8192"], script = probe) {
+  const r = spawnSync(process.execPath, [...nodeArgs, script, ...args], { cwd: c.d, encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL", env: envFor(c, extra) });
   return { status: r.status, signal: r.signal, pid: r.pid!, stdout: r.stdout ?? "", stderr: r.stderr ?? "", procs: processes(c.log) };
 }
 /** The run was one process: the PID the caller spawned (the --stack-size re-exec keeps it). */
@@ -137,18 +149,22 @@ describe("snapshot-probe watchdog", () => {
   });
 
   test("exit codes are the probe's, in one process: 0 PASS, 1 FAIL, 2 a path-rule refusal, 3 an abort", () => {
-    const cases: [string, string[], number, Record<string, string>][] = [
+    const cases: [string, string[], number, Record<string, string>, string?][] = [
       ["pass", baseArgs(), 0, { FAKE_LEAN_MODE: "pass" }],
       ["error", baseArgs(), 1, { FAKE_LEAN_MODE: "error" }],
       ["abort", baseArgs(), 3, { FAKE_LEAN_MODE: "abort" }],
-      ["no artifact", ["--snap", snap, "--probe", "#check 1", "--lib", lib], 2, {}],
+      // On the copy under <tmp>/repo: its deprecated default artifact,
+      // <tmp>/repo/pipeline/toolchain/work/build/stage1, never exists, while this checkout's may
+      // (a host with a local toolchain build), and then the rule resolves it instead of refusing.
+      ["no artifact", ["--snap", snap, "--probe", "#check 1", "--lib", lib], 2, {}, probeCopy],
     ];
-    for (const [name, args, code, extra] of cases) {
+    for (const [name, args, code, extra, script] of cases) {
       const c = caseDir();
-      const r = run(args, c, extra);
+      const r = run(args, c, extra, undefined, script);
       expect([name, r.status], r.stderr).toEqual([name, code]);
       oneProcess(r);
-      expect(r.stderr, name).not.toMatch(/watchdog/);
+      // The temp dir's own name says "watchdog", and the "no artifact" refusal prints a path inside it.
+      expect(r.stderr.replaceAll(tmp, "<tmp>"), name).not.toMatch(/watchdog/);
       expect(fs.readdirSync(c.tmpdir), name).toEqual([]);
       if (name === "no artifact") {
         expect(r.stderr.split("\n").filter(Boolean)).toEqual([

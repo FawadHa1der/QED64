@@ -1,5 +1,8 @@
 // The docs' links resolve (plan step A5). Two checks, both against the files
-// in this checkout:
+// in this checkout. Both read the checkout's tracked and unignored files
+// (`git ls-files --cached --others --exclude-standard`), so an ignored tree
+// such as pipeline/toolchain/work/ (another repository's checkout) is never
+// read; outside a git checkout they walk the directories instead:
 // - every relative Markdown link `[text](target)` in README.md and in
 //   docs/**/*.md (docs/history/ included) names a file or directory that exists,
 //   resolved against the linking file's directory (an `#anchor` is dropped;
@@ -12,6 +15,7 @@
 //   (`qed64-showcase/docs/…`, the fork's `wasm64-build/…`) is another
 //   repository's and is not checked.
 // A moved or deleted document therefore fails here, not in a reader's browser.
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,6 +23,7 @@ import { describe, expect, test } from "vitest";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
+/** The fallback outside a git checkout: every file under `dir`, skipping node_modules and dot-named entries. */
 function walk(dir: string, keep: (file: string) => boolean): string[] {
   const out: string[] = [];
   const abs = path.join(root, dir);
@@ -32,9 +37,30 @@ function walk(dir: string, keep: (file: string) => boolean): string[] {
   return out;
 }
 
-const markdownFiles = ["README.md", ...walk("docs", (f) => f.endsWith(".md"))].sort();
+/**
+ * The checkout's tracked and unignored files under `dir` (paths relative to the root), with the
+ * walk's skips (node_modules, a dot-named segment) and only what is still a file on disk (a tracked
+ * file deleted in the working tree is dropped). Not a checkout (git fails): the walk.
+ */
+function checkoutFiles(dir: string, keep: (file: string) => boolean): string[] {
+  let listed: string;
+  try {
+    listed = execFileSync("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", dir], {
+      cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024,
+    });
+  } catch {
+    return walk(dir, keep);
+  }
+  return listed.split("\0").filter((rel) =>
+    rel !== "" &&
+    !rel.split("/").some((s) => s === "node_modules" || s.startsWith(".")) &&
+    keep(rel) &&
+    fs.lstatSync(path.join(root, rel), { throwIfNoEntry: false })?.isFile() === true);
+}
+
+const markdownFiles = ["README.md", ...checkoutFiles("docs", (f) => f.endsWith(".md"))].sort();
 const CODE_DIRS = ["lib", "frontend/src", "pipeline", "scripts", "infra", "public/workers"];
-const codeFiles = CODE_DIRS.flatMap((d) => walk(d, (f) => /\.(?:ts|mts|cts|js|mjs|cjs|sh|py)$/.test(f))).sort();
+const codeFiles = CODE_DIRS.flatMap((d) => checkoutFiles(d, (f) => /\.(?:ts|mts|cts|js|mjs|cjs|sh|py)$/.test(f))).sort();
 
 /** Relative Markdown link targets of one file, outside fenced code blocks and inline code spans. */
 function relativeLinks(text: string): string[] {
