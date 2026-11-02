@@ -214,8 +214,13 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   inside the probe's budget (the item's plus 30 s). A value that is
   not a number of milliseconds >= 0, and `--settle-ms` under
   `--transport compile` (which has no settle), are refused (exit 2, a fresh
-  all-infra report). A lane that ran and wrote no report at all is a `REFUSED` /
-  `NO REPORT` line, never silently left out (tests/unit/tool-paths.test.ts,
+  all-infra report). Measured 2026-11-02 against the compile lane (review R4,
+  QED64 9a9b052, runtime wasm64-36d7f415): 60/61 verdicts equal (the one
+  difference was a battery `classify()` defect, fixed in 57f1f96), wall 1.60×
+  at `--settle-ms 1000` (about 3.7× at the default 5 s, estimated), peak summed
+  RSS 1.03×; the lane stays opt-in (tier 3). A lane that ran and wrote no
+  report at all is a `REFUSED` / `NO REPORT` line, never silently left out
+  (tests/unit/tool-paths.test.ts,
   tests/unit/adversarial-harness.test.ts).
   In e2e, `infra` means the page never became interactive within
   `--boot-budget-ms`; a page that is interactive but slow to settle under

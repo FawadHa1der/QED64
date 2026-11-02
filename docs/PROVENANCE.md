@@ -127,18 +127,22 @@ The landing of lean-v4.35.0-b081e7c serves Lean `4.35.0` and Mathlib at tag
   v4.35.0's handler is not adapted; the compiler battery pins both cases),
   and `decide` still cannot unfold a definition whose body a `module` file
   keeps private (`Nat.toDigits`; docs/SERVER-SLIM-REBAKE.md).
-- **Mathematics in Lean** (checked 2026-11-01 by module lists; nothing
-  elaborated): `import MIL.Common`, `import Mathlib` and
-  `import Mathlib.Tactic` serve the curated essential set (4,438 modules),
-  not all of Mathlib.
+- **Mathematics in Lean** (checked 2026-11-01 by module lists; elaborated
+  2026-11-02 through the compile path, arch review M1): `import MIL.Common`,
+  `import Mathlib` and `import Mathlib.Tactic` serve the curated essential
+  set (4,438 modules), not all of Mathlib.
   - It lacks `Mathlib.Tactic.Cases` (`cases'`, `induction'`),
     `Mathlib.Tactic.Have` (a `have h : t` with no proof),
     `Mathlib.Tactic.NormNum.Prime` (`norm_num` proving `Nat.Prime 17`;
     unchanged from 4.34), `Mathlib.Tactic.Polyrith` and
     `Mathlib.Tactic.Generalize`.
   - Against the book's checkout 2bf0e10 (Lean v4.21, older than the current
-    book), a static scan finds 39 of the 58 files of chapters 1-8 clean, but
-    only 3 of the 14 in chapters 5-6.
+    book), 38 of the 58 files of chapters 1-8 avoid these gaps, but only 3 of
+    the 14 in chapters 5-6. Elaborated, 26 of the 58 compile with no error.
+    Most of the others also trip Mathlib names that changed after v4.21
+    (`abs_add`, `pow_eq_zero`, `Int.ediv_add_emod`, the orientation of
+    `add_le_add_left`/`right`, …), which are not QED64 gaps; one proof (C07
+    S01's `field_simp`) leaves `1 + 1 = 2`, unverified against stock.
   - C05 S04, C06 S02 and C08 S02 import a module outside the set
     (`Mathlib.Analysis.Calculus.Taylor`, `Mathlib.Combinatorics.Pigeonhole`,
     `Mathlib.Topology.Instances.Real.Lemmas`) and are refused, as are all of

@@ -21,9 +21,10 @@ Live: **https://qed64.fawadworkaddress.workers.dev/**
   `Cross-Origin-Embedder-Policy: require-corp`, or Memory64 shared memory
   does not exist. The live site, `npm run dev` and `npm run preview:prod` all
   send these headers.
-- **Memory.** A tab takes about 8 to 9 GB once the Mathlib environment is
-  loaded ([docs/HARDENING.md](docs/HARDENING.md) #44). Only one QED64 runs per
-  top-level page. On a 16 GB machine, close other heavy tabs first.
+- **Memory.** A tab takes about 2.5 GB once the Mathlib environment is
+  loaded (measured 2026-11-02 on runtime wasm64-36d7f415,
+  [docs/HARDENING.md](docs/HARDENING.md) #55). Only one QED64 runs per
+  top-level page. On an 8 GB machine, close other heavy tabs first.
 - **Browser storage.** About 1.5 GB free in the browser profile (OPFS) for
   the Mathlib environment's cached region.
 
