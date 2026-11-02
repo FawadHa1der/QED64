@@ -127,6 +127,24 @@ describe("compiler-battery classify", () => {
     expect(died.failures).toEqual([`infra: RESIDENT PROBE FAIL {"ok":false,"why":"ABORT: Aborted(OOM)"}`]);
   });
 
+  // R4 (L4): resident-probe prints a message only as a JSON line, where a fragment's `"` is escaped; snapshot-probe's plain `  error:` echo hid this on the compile lane.
+  test("containsMsgs also matches a message's decoded data: a quote that exists only JSON-escaped in the output", () => {
+    const line = JSON.stringify({ caption: "", severity: "error", pos: { line: 3, column: 20 }, endPos: { line: 3, column: 31 }, data: 'Type mismatch\n  "forty-two"\nhas type\n  String' });
+    const out = `[0.8s] resident: reached elaboration\n${line}\ncompile: tag=0 elapsed=1210ms errors=1\nRESIDENT PROBE PASS {"ok":true}\n`;
+    const run = { out, code: 0, wallMs: 3000, budget: 20000 };
+    expect(out).not.toContain('"forty-two"'); // the case's point: the plain quoted text is nowhere in the raw output
+    const quoted = classify(item({ mustError: true, containsMsgs: ["Type mismatch", '"forty-two"'] }), run);
+    expect([quoted.outcome, quoted.failures]).toEqual(["pass", []]);
+    // The raw match stays: the escaped spelling and a line that is not a message still match.
+    const raw = classify(item({ mustError: true, containsMsgs: ['\\"forty-two\\"', "RESIDENT PROBE PASS"] }), run);
+    expect([raw.outcome, raw.failures]).toEqual(["pass", []]);
+    const absent = classify(item({ mustError: true, containsMsgs: ['"sixty-one"'] }), run);
+    expect([absent.outcome, absent.failures]).toEqual(["fail", ['missing message fragment: "\\"sixty-one\\""']]);
+    // A message line cut off mid-JSON decodes to nothing: a missing fragment, not a throw.
+    const cut = classify(item({ mustError: true, containsMsgs: ['"forty-two"'] }), { ...run, out: out.replace(line, line.slice(0, -20)) });
+    expect([cut.outcome, cut.failures]).toEqual(["fail", ['missing message fragment: "\\"forty-two\\""']]);
+  });
+
   test("COMPILE_ONLY names corpus items (a renamed item would silently run on the FileWorker lane)", () => {
     const names = new Set(JSON.parse(fs.readFileSync(path.resolve(__dirname, "../adversarial/corpus.json"), "utf8")).items.map((it: { name: string }) => it.name));
     expect(COMPILE_ONLY.size).toBeGreaterThan(0);

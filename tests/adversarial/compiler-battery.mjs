@@ -4,7 +4,7 @@
 // --via-mem), in a bounded parallel pool. Checks per item:
 //   - no PANIC / assertion violation anywhere in the run's output
 //   - mustError / mustSucceed expectations
-//   - containsMsgs substrings appear in compiler messages
+//   - containsMsgs substrings appear in compiler messages (the raw output or a message's decoded data)
 //   - wall-clock budget
 // Each row carries an outcome ∈ {pass, fail, infra}. `infra` is decided from
 // the HARNESS'S OWN inputs and lines (review C7), never from the compiler's
@@ -50,6 +50,11 @@ export const COMPILE_ONLY = new Set(["mathlib-name-shadow-faithful-compile"]);
 /** The message JSON lines a probe run printed (`--dump-messages`), in order. */
 export const messageLines = (out) => [...out.matchAll(/\{"caption":.*/g)].map((m) => m[0]);
 
+/** A message JSON line's decoded `data`, the text as Lean wrote it ("" for a line that does not parse). */
+const messageData = (line) => {
+  try { const { data } = JSON.parse(line); return typeof data === "string" ? data : ""; } catch { return ""; }
+};
+
 /** The battery's pairing (snapshot, runtime, olean tree) by the one path
  * rule; `io` and `base` are the tests' (a scratch checkout root). */
 export function batteryInputs(get = arg, base = root, io = undefined) {
@@ -81,6 +86,7 @@ export function classify(item, { out, code, wallMs, budget, spawnError = null })
   });
   const msgs = messageLines(out);
   const msgText = msgs.join("\n");
+  const msgData = msgs.map(messageData);
   const panic = /PANIC at|assertion violation|Maximum call stack|INTERNAL PANIC/.test(out);
   if (spawnError) return row("infra", [`infra: spawn failed (${spawnError.code ?? spawnError.message})`]);
   // Died before the probe reached its compile step (snapshot load failed,
@@ -101,8 +107,10 @@ export function classify(item, { out, code, wallMs, budget, spawnError = null })
   const knownPanicNote = panic && item.expect.knownPanic ? "known-panic (tracked upstream)" : undefined;
   if (item.expect.mustError && !hasError) failures.push("expected errors, saw none");
   if (item.expect.mustSucceed && hasError) failures.push("expected success, saw errors");
+  // A raw JSON line escapes a fragment's `"`, so each line's decoded data is matched too (R4, L4): only
+  // snapshot-probe also echoes messages in plain text (`  error: <data>`, errors only); resident-probe has no echo.
   for (const frag of item.expect.containsMsgs ?? []) {
-    if (!msgText.includes(frag) && !out.includes(frag)) failures.push(`missing message fragment: ${JSON.stringify(frag)}`);
+    if (!msgText.includes(frag) && !out.includes(frag) && !msgData.some((d) => d.includes(frag))) failures.push(`missing message fragment: ${JSON.stringify(frag)}`);
   }
   // Snapshot load adds ~10-15 s of fixed overhead per probe process; the
   // budget applies to the whole run minus that allowance.
