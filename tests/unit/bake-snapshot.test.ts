@@ -7,7 +7,9 @@
 // (<work>/.bake.lock, never taken over), stale runtime temps removed, the --name, --lib and
 // --entry-fields refusals, --entry-fields in the entry, and the build environment line. And R5a:
 // the bake finishes when its .snap is complete (two equal polls), stops its never-exiting runner,
-// and ends a run that cannot finish (a failure line, no save, quiet; or the give-up deadline).
+// and ends a run that cannot finish (a failure line, no save, quiet; or the give-up deadline). And
+// D6's notice: a failure line in a run whose .snap is complete prints one WARNING and one verdict
+// line, and the bake still indexes and exits 0 (until the flip).
 //
 // Safety: no test here loads a lean.js or a lean.wasm. Each bake runs from a SCRATCH CHECKOUT
 // (bake-snapshot.mjs and pipeline/toolchain/artifact-paths.mjs copied into a temp dir) with a
@@ -488,7 +490,9 @@ describe("bake-snapshot finishes when its .snap is complete, and ends a run that
   test("a save in progress (<name>.snap.tmp.* present) exempts the failure guard: the probe that reports an error and then saves completes, exit 0", () => {
     const { s, out, work, args } = bakeCheckout({ print: [["stdout", LEAN_ERROR]], saveDelayMs: 1200, hang: true });
     const r = run(s, [...args, "--stable-ms", "100", "--quiet-ms", "300", "--give-up-ms", "10000"]);
-    expect([r.status, r.stderr]).toEqual([0, ""]);
+    expect(r.status, r.stderr).toBe(0);
+    // the failure line still counts for D6: the notice and the verdict, and the bake indexes (the notice window)
+    expect(r.lines.map((l) => [marker("notice").test(l), marker("verdict").test(l)])).toEqual([[true, false], [false, true]]);
     expect(stdoutMatching(r.stdout, "completed")).toHaveLength(1);
     expect(stdoutMatching(r.stdout, "baked")).toHaveLength(1);
     expect(JSON.parse(fs.readFileSync(path.join(out, "index.json"), "utf8")).snapshots.map((e: { name: string }) => e.name)).toEqual(["init"]);
@@ -520,5 +524,47 @@ describe("bake-snapshot finishes when its .snap is complete, and ends a run that
     }
     expect(fs.readFileSync(path.join(work, "init.snap"), "utf8")).toBe("the paired raw snapshot");
     expect(fs.existsSync(path.join(work, "runner.json"))).toBe(false);
+  }, 30_000);
+});
+
+describe("bake-snapshot announces failing on a Lean failure line (D6, the notice)", () => {
+  const notice = (kind: string, stream: string, line: number) =>
+    `bake-snapshot: WARNING — the runner printed a failure line (${kind}, ${stream} line ${line}); for one downstream re-pin this bake still indexes init.snap and exits 0, then it exits 1 without indexing (docs/CLI-CONTRACT.md, bake-snapshot, Lean failure lines)`;
+  const verdictOf = (line: string) => JSON.parse(marker("verdict").exec(line)![1]!);
+
+  test("a probe.lean error and a complete .snap: the notice and one verdict line on stderr, then compressed, indexed, exit 0", () => {
+    const LEAN_ERROR = "/work/probe.lean:2:7: error: unknown identifier 'foo'";
+    const { s, out, work, args } = bakeCheckout({ print: [["stdout", LEAN_ERROR]] });
+    const r = run(s, args);
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).toContain(`${LEAN_ERROR}\n`); // the runner's line still reaches the bake's stdout
+    expect(r.stdout.split("\n").filter((l) => marker("baked").test(l))).toHaveLength(1);
+    expect(r.lines).toHaveLength(2);
+    expect(r.lines[0]).toBe(notice("lean-error", "stdout", 1));
+    expect(marker("notice").exec(r.lines[0]!)?.slice(1)).toEqual(["lean-error", "stdout", "1", "init"]);
+    expect(r.lines[1]).toMatch(marker("verdict"));
+    for (const line of r.lines) expect(reservedHit(line), line).toBeNull();
+    const raw = fs.statSync(path.join(work, "init.snap")).size;
+    const verdict = verdictOf(r.lines[1]!);
+    expect(verdict).toEqual({ verdict: "failed", kind: "lean-error", stream: "stdout", line: 1, name: "init", bytes: raw });
+    expect(Object.keys(verdict)).toEqual(["verdict", "kind", "stream", "line", "name", "bytes"]);
+    // the notice window: the entry is indexed as before
+    const index = JSON.parse(fs.readFileSync(path.join(out, "index.json"), "utf8"));
+    expect(index.snapshots.map((e: { name: string; bytes: number }) => [e.name, e.bytes])).toEqual([["init", raw]]);
+  }, 30_000);
+
+  test("a runtime failure line on stderr (PANIC): kind panic, stream stderr; still exit 0", () => {
+    const { s, work, args } = bakeCheckout({ print: [["stderr", "PANIC at X"]] });
+    const r = run(s, args);
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.lines).toEqual(["PANIC at X", notice("panic", "stderr", 1), r.lines[2]]);
+    expect(verdictOf(r.lines[2]!)).toEqual({ verdict: "failed", kind: "panic", stream: "stderr", line: 1, name: "init", bytes: fs.statSync(path.join(work, "init.snap")).size });
+  }, 30_000);
+
+  test("out of scope: another file's error and probe.lean's warnings print no notice and no verdict", () => {
+    const { s, args } = bakeCheckout({ print: [["stdout", "/work/Other.lean:1:0: error: x"], ["stdout", "/work/probe.lean:1:0: warning: w"]] });
+    const r = run(s, args);
+    expect([r.status, r.stderr]).toEqual([0, ""]);
+    expect(r.stdout.split("\n").filter((l) => marker("baked").test(l))).toHaveLength(1);
   }, 30_000);
 });

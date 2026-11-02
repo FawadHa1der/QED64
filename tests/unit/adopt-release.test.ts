@@ -599,4 +599,16 @@ describe("adopt-helper.mjs: the tree digest and base-tree.json", () => {
     expect(text).not.toMatch(/KERNEL-PIN|kernel-pin/);
     expect(fs.existsSync(path.join(root, "pipeline/toolchain/KERNEL-PIN"))).toBe(false);
   });
+
+  test("a bake's verdict line fails the adoption right after the two bakes (D6, the notice); the slim audit asks for no manual zero-errors check", () => {
+    const text = fs.readFileSync(script, "utf8");
+    const bakes = text.indexOf("say bake-mathlib; step bake-mathlib");
+    const guard = text.indexOf(`if grep -h '^bake-snapshot: verdict ' "$L/bake-init.log" "$L/bake-mathlib.log"; then fail `);
+    expect(bakes).toBeGreaterThan(0);
+    expect(guard).toBeGreaterThan(bakes);
+    expect(guard).toBeLessThan(text.indexOf("say stage-runtime"));
+    const landing = text.slice(text.indexOf("Landing, by the operator"));
+    expect(landing).toContain("a. $L/bake-mathlib.log: every module of the umbrella imported (a Lean failure line already failed the bake step).");
+    expect(landing).not.toContain("zero errors");
+  });
 });

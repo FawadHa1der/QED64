@@ -183,6 +183,8 @@ rm -rf "$STAGING"; mkdir -p "$STAGING/runtime" || fail "cannot create $STAGING"
 say bake-init; step bake-init "${BAKE[@]}" --name init --lib "$W/core-lib-slim" --reserve 1073741824
 say bake-mathlib; step bake-mathlib "${BAKE[@]}" --name mathlib --lib "$W/lib-tree-slim" --reserve 3221225472 --probe 'import QED64.Essential'
 grep -hE '^baked' "$L/bake-init.log" "$L/bake-mathlib.log" | cut -c1-200
+# D6 notice: a Lean failure line fails QED64's own adoption now (the bake itself exits 1 on one after one downstream re-pin)
+if grep -h '^bake-snapshot: verdict ' "$L/bake-init.log" "$L/bake-mathlib.log"; then fail "a bake printed a Lean failure line (docs/CLI-CONTRACT.md, bake-snapshot): $L/bake-init.log, $L/bake-mathlib.log"; fi
 say stage-runtime; cp "$W/release/runtime/runtime-manifest.json" "$STAGING/runtime/" && cp -R "$W/release/runtime/chunks" "$STAGING/runtime/" || fail "stage-runtime"
 [ "$MODE" = runtime-only ] || { say stage-profiles; step stage-profiles node pipeline/release/stage-profiles.mjs --packs "$R" --build-id "$BID" --lean-version "$LEANVER" --expect-modules "$W/release/lists/essential-modules.txt" --out "$STAGING/profiles"; tail -1 "$L/stage-profiles.log"; }
 say pairing
@@ -215,7 +217,7 @@ Landing, by the operator (NOT performed here):
 EOF
 [ "$MODE" = runtime-only ] || cat <<EOF
  0. SLIM-BAKE AUDIT, required at every Mathlib pin (docs/SERVER-SLIM-REBAKE.md): both snapshots were baked from trees WITHOUT *.olean.private.
-    a. $L/bake-mathlib.log: every module of the umbrella imported, zero errors.
+    a. $L/bake-mathlib.log: every module of the umbrella imported (a Lean failure line already failed the bake step).
     b. $L/audit.log: the \`import all\` edges; new ones outside Init/Std/Lean reach into private facets (\`import all M\` fails on slim).
     c. Differential (kernel reduction, rfl / decide / simp unfolding a non-@[expose] def, is where slim and fat disagree: "unknown
        constant"): bake a FAT umbrella and compare messages byte for byte on the battery's Mathlib cases and a stress file:

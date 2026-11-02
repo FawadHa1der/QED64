@@ -17,7 +17,10 @@
 // (the runtime writes <name>.snap.tmp.<pid> and renames it, after probe.lean's
 // whole log), and then stops it (architecture review R5a). A failure line with
 // no .snap and no save in progress, then --quiet-ms without output, or no
-// complete .snap within --give-up-ms: exit 1.
+// complete .snap within --give-up-ms: exit 1. A failure line and a complete
+// .snap: one WARNING and one `verdict <json>` line on stderr before compressing
+// (D6's notice); for one downstream re-pin the bake still indexes and exits 0,
+// then such a bake exits 1 without indexing.
 //
 // Stop it with SIGTERM, SIGINT or SIGHUP: it forwards the signal to its runner,
 // writes no index and exits 128+n. The runner gets only PATH, HOME, TMPDIR and
@@ -90,7 +93,7 @@ import { buildIdOfArtifact, refuseInsidePublic, resolveToolPath, stagingDir, too
     "  QED64_PROFILE_INIT        when set, forwarded into the wasm environment to profile the [init] replay",
     "",
     "exit codes:",
-    "  0    baked: the .snap complete, compressed, and the index upserted (the runner is stopped once its .snap is complete); NOT a verdict on the probe's Lean messages",
+    "  0    baked: the .snap complete, compressed, and the index upserted (the runner is stopped once its .snap is complete); NOT yet a verdict on Lean messages: a failure line adds the notice WARNING and a verdict line, and exits 1 after one downstream re-pin (D6)",
     "  1    after the bake started: the runner exited non-zero, was killed by a signal this bake did not send or could not start; no .snap was produced (a failure line and then --quiet-ms of quiet, or nothing complete within --give-up-ms); compressing failed; or the index could not be written (unreadable, corrupt, foreign or unpaired under the lock, its lock held past the wait, or a failed write): a written .snapz is kept and its entry printed (unindexed entry <json>)",
     "  2    refused before the runner: no --artifact, QED64_LEAN_ARTIFACT or deprecated default; no lean.wasm under the artifact, --out inside public/, an index paired with another runtime or with none, a malformed --roots, --initial-bytes, --stable-ms, --quiet-ms or --give-up-ms, a --runner (or QED64_RUNNER) script that does not exist, an unreadable or corrupt index.json (only a missing one is a new index), a bad --name or --entry-fields, a --lib that is not a directory, or a <work>/.bake.lock that is held or cannot be created",
     "  129  SIGHUP received before the index was written: forwarded to the runner (SIGKILL 10 s later), no index write",
@@ -658,16 +661,24 @@ async function main() {
     console.error(`${TOOL}: runner exited ${code}`);
     return 1;
   }
-  // Completed, or the runner exited 0 by itself. run.failure (the first failure line) is not a
-  // verdict yet: exit 0 still means "baked" (docs/CLI-CONTRACT.md, bake-snapshot).
-
+  // Completed, or the runner exited 0 by itself.
   if (!fs.existsSync(snap)) {
     console.error("FAIL: snapshot file was not produced");
     return 1;
   }
+  const snapBytes = fs.statSync(snap).size;
+  // D6, the notice (decided 2026-11-01): a failure line in the run (every probe.lean message is
+  // printed before the save) is decided here, before anything is compressed or indexed. For one
+  // downstream re-pin the bake still indexes and exits 0, with one WARNING and one machine-readable
+  // verdict line; then such a bake exits 1 without indexing, and the verdict line tells a Lean
+  // failure from a runner crash (docs/CLI-CONTRACT.md, bake-snapshot, "Lean failure lines").
+  if (run.failure) {
+    const { kind, stream, line } = run.failure;
+    console.error(`${TOOL}: WARNING — the runner printed a failure line (${kind}, ${stream} line ${line}); for one downstream re-pin this bake still indexes ${name}.snap and exits 0, then it exits 1 without indexing (docs/CLI-CONTRACT.md, bake-snapshot, Lean failure lines)`);
+    console.error(`${TOOL}: verdict ${JSON.stringify({ verdict: "failed", kind, stream, line, name, bytes: snapBytes })}`);
+  }
   fs.mkdirSync(out, { recursive: true });
   try { fs.rmSync(`${snap}.deps`); } catch {}
-  const snapBytes = fs.statSync(snap).size;
 
   // Serve gzip: region dumps compress ~2×, and the worker inflates through
   // DecompressionStream. Only the .gz is published.

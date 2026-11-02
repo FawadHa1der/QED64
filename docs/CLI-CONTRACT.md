@@ -309,7 +309,8 @@ through bake-snapshot and supervised-run (which pipe their runner), unchanged
 and interleaved.
 
 Downstream log judges grep whole logs for failure text: supervised-run's own
-`FAILURE` classifier, the showcase's `judge-bake.mjs` (J1) and `run-e2.sh`.
+`FAILURE` classifier, bake-snapshot's own classifier (D6), the showcase's
+`judge-bake.mjs` (J1) and `run-e2.sh`.
 So **new output must not contain** any of these substrings (case-sensitive):
 
 | Substring | Where |
@@ -380,9 +381,27 @@ usage: bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <di
   save surfaces as `uncaught exception` or `object compactor:`). Warnings and
   other files' diagnostics never count. Its kind is the first that matches, in
   this order: `lean-error` (the probe.lean alternative), `compactor`, `abort`,
-  `panic`, `runtime-trap`, `exception`. Since 2026-11-01 it decides only the
-  failure guard (side effect 6); exit 0 is still not a verdict on Lean's
-  messages (open decision 3).
+  `panic`, `runtime-trap`, `exception`. Since 2026-11-01 it decides the
+  failure guard (side effect 6) and D6's notice (next bullet).
+- **Lean failure lines (D6, decided 2026-11-01).**
+  - Now (contract 4, the notice): when the run printed a failure line and its
+    `.snap` is complete (every probe.lean message is printed before the
+    save), the bake prints the `notice` WARNING and one `verdict <json>` line
+    on stderr before compressing, then compresses, indexes and exits 0 as
+    before. The verdict is
+    `{"verdict":"failed","kind":…,"stream":…,"line":…,"name":…,"bytes":…}`:
+    the first failure line's kind, its stream and its line number in that
+    stream, the snapshot name and the raw `.snap` size.
+  - After lean4game and the showcase have re-pinned past the notice, at the
+    next runtime release (contract 5, the flip): a failure line and then
+    `--quiet-ms` of quiet stop the runner; the bake prints the verdict, exits
+    **1**, compresses and indexes nothing, and keeps the raw `.snap`. Exit 1,
+    not a new code: 3 stays the infrastructure refusal ("Exit codes"), and
+    the `verdict` line tells a Lean failure from a runner crash (both are
+    class 1).
+  - Only probe.lean's own error diagnostics and the runtime's failure lines
+    count; warnings and other files' diagnostics never do.
+  - Read the `verdict` line rather than grepping the log for failure text.
 - **Inputs:** `<artifact>/bin/lean.wasm` (whose sha256 gives the buildId),
   `<out>/index.json` if present, and the `--lib` tree.
 - **Outputs:**
@@ -424,6 +443,8 @@ usage: bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <di
 | no-snap | stderr | `^FAIL: snapshot file was not produced$` |
 | failed-quiet | stderr | `^bake-snapshot: the runner printed a failure line \(([a-z-]+), (stdout\|stderr) line (\d+)\) and, after (\d+) ms of quiet, wrote no (\S+)\.snap and began no save \(--quiet-ms\) — stopping it$` (then `no-snap`, exit 1; since 2026-11-01; the groups are the kind, the stream, the line number in that stream, `--quiet-ms` and the name) |
 | gave-up | stderr | `^bake-snapshot: no complete (\S+)\.snap within (\d+) ms \(--give-up-ms\) — the runner is stopped, nothing compressed, the index is not written$` (exit 1, since 2026-11-01) |
+| notice | stderr | `^bake-snapshot: WARNING — the runner printed a failure line \(([a-z-]+), (stdout\|stderr) line (\d+)\); for one downstream re-pin this bake still indexes (\S+)\.snap and exits 0, then it exits 1 without indexing \(docs\/CLI-CONTRACT\.md, bake-snapshot, Lean failure lines\)$` (D6's notice, before `compressing`; the groups are the kind, the stream, the line number in that stream and the name; since 2026-11-01, until the flip) |
+| verdict | stderr | `^bake-snapshot: verdict (\{.*\})$` (right after `notice`; group 1 is one JSON object, `verdict` `"failed"`, then `kind`, `stream`, `line`, `name` and `bytes`; since 2026-11-01, and kept at the flip) |
 | no-artifact | stderr | `^bake-snapshot: no lean\.wasm under (.+) — pass --artifact <stage1 dir>$` |
 | no-runner | stderr | `^bake-snapshot: no runner script (.+) — pass --runner <script> or set QED64_RUNNER$` |
 | refuse-public | stderr | `^(bake-snapshot\|chunk-runtime): refusing --out (.+): it resolves inside public\/\. ` |
@@ -444,7 +465,7 @@ The runner's output (node-runner and Lean) is interleaved on both streams.
 
 | Exit | Meaning |
 |---|---|
-| 0 | Baked: the `.snap` complete, compressed, and the index upserted (the runner is stopped once its `.snap` is complete, `completed`). **It is not a verdict on the probe's Lean messages:** the header snapshot is saved before Lean returns on errors. Judge the log, as the showcase's `judge-bake.mjs` does. |
+| 0 | Baked: the `.snap` complete, compressed, and the index upserted (the runner is stopped once its `.snap` is complete, `completed`). **It is not yet a verdict on the probe's Lean messages:** the header snapshot is saved before Lean returns on errors. A failure line adds the `notice` WARNING and a `verdict` line (stderr); after one downstream re-pin such a bake exits 1 without indexing ("Lean failure lines", D6). Read the `verdict` line; the showcase's `judge-bake.mjs` judges the log. |
 | 1 | After the bake started: the runner exited non-zero (`runner-exit`), was killed by a signal this bake did not send (`runner-signal`) or could not start; no `.snap` was produced (`no-snap`: a failure line and then `--quiet-ms` of quiet, `failed-quiet`, or nothing complete within `--give-up-ms`, `gave-up`); compressing failed; or the index could not be written (unreadable, corrupt, foreign or unpaired under the lock, its lock held past the wait, or a failed write). A written `.snapz` is kept and its entry printed (`unindexed entry <json>` on stderr). |
 | 2 | Refused before the runner started: no `--artifact`, `QED64_LEAN_ARTIFACT` or deprecated default (`no-path`), no `lean.wasm` under the artifact, `--out` inside `public/`, an index paired with another runtime or with none, a malformed `--roots` / `--initial-bytes` / `--stable-ms` / `--quiet-ms` / `--give-up-ms` (a positive whole number of milliseconds), a `--runner` / `QED64_RUNNER` script that does not exist (`no-runner`), an unreadable or corrupt `index.json` (`refuse-index-unreadable`, `refuse-index-corrupt`: only a missing one is a new index), a bad `--name` (`refuse-name`) or `--entry-fields`, an explicit `--lib` that is not a directory (`no-lib`), or a `<work>/.bake.lock` that is held (`work-locked`) or cannot be created. |
 | 129 | SIGHUP received before the index was written: forwarded to the runner (SIGKILL 10 s later); no index write. A `.snapz` already in place is kept and its entry printed. |
@@ -549,7 +570,8 @@ Older `.snapz` files are never deleted.
   entry also with `--roots --label --allow-legacy-imports`, and the default
   runner; it greps `^baked ` from each overlay entry's bake log (under
   `set -euo pipefail`, so the line is required) and dies on a non-zero exit.
-- In QED64: `pipeline/release/adopt-release.sh` (it greps `^baked`), and
+- In QED64: `pipeline/release/adopt-release.sh` (it greps `^baked`, and
+  fails on a `verdict` line since 2026-11-01), and
   `tests/unit/artifact-discipline.test.ts`.
 
 ### snapshot-probe
@@ -1316,7 +1338,7 @@ script by `tests/unit/cli-contract.test.ts`); each flag is in its SPEC.
 |---|---|---|
 | `--name --artifact --lib --reserve --work --out --probe`, and `--roots --label --initial-bytes --allow-legacy-imports` | bake-snapshot | the showcase's `scripts/bake.sh` (the first seven, absolute paths); lean4game's `build-from-source.sh` bake lane (`--name --probe --roots --artifact --lib --reserve --work --out`); the proof sheets' `website/build.sh` (`--name --probe --artifact --lib --work --out`, and `--roots --label --allow-legacy-imports` for each overlay entry) |
 | `QED64_ALLOW_LEGACY_IMPORTS=1`, the equivalent of `--allow-legacy-imports` | bake-snapshot (inherited by its runner), node-runner | the showcase's `scripts/bake.sh` sets it (the proof sheets pass the flag, row above); lean4game stopped on 2026-10-08 (its adoption of the lean4-wasm64 release lean-v4.34.0-41ec565), because patch 0030 admits legacy oleans |
-| the `baked` line, and exit 0 meaning "baked" (not a Lean verdict) | bake-snapshot | the showcase's `scripts/judge-bake.mjs` J3; QED64's `adopt-release.sh` (`^baked`); the proof sheets' `website/build.sh` (`grep -E '^baked '` under pipefail, and `\|\| die` on the exit) |
+| the `baked` line, and exit 0 meaning "baked" (not yet a Lean verdict: the `notice` and `verdict` lines announce D6's exit 1 at the next re-pin) | bake-snapshot | the showcase's `scripts/judge-bake.mjs` J3; QED64's `adopt-release.sh` (`^baked`); the proof sheets' `website/build.sh` (`grep -E '^baked '` under pipefail, and `\|\| die` on the exit) |
 | `--snap --fresh-import --probe-file --probe --lib --artifact --budget-ms --via-mem --init-flags --workspace --dump-messages`, and `--watchdog-ms` | snapshot-probe | the showcase's `scripts/headless/exact-header.mjs`; lean4game `--verify-snapshots`; the compiler battery (the first eleven; none passes `--watchdog-ms` yet) |
 | `SNAPSHOT PROBE PASS` (exit 0), `SNAPSHOT PROBE FAIL: …`, `load:`, `compile:`, `[lean:stdout] …`, `ABORT: …` | snapshot-probe | `exact-header.mjs` (verdict, fail reason, load and compile times, the JSON messages, the abort); the compiler battery; lean4game |
 | `--target --quiet-ms --stable-ms --give-up-ms --`, and the runner arguments after `--` verbatim | supervised-run | the showcase's `scripts/headless/run-e2.sh`; `adopt-release.sh --rebuild-umbrella`; `runtime-smoke.test.ts` |
@@ -1428,6 +1450,7 @@ as QED64's own gate did.
 | 3 | 2026-11-01 | Review fixes, **bake-snapshot** (the kernel copy's rules, architecture review D4 a): an unreadable or corrupt `index.json` is refused (exit 2 before the runner; exit 1 under the lock, the entry printed) instead of being read as empty and rewritten without its siblings; the pairing is re-checked under the lock; the runner is spawned with no output buffer (execFile's 64 MiB `maxBuffer` killed it) and an environment of exactly `PATH`, `HOME`, `TMPDIR` and the bake's variables (a host `LEAN_PATH` replaced `--lib`); a runner killed by a signal the bake did not send, or exiting non-zero, is exit 1 with one line (before: success for a signal, an unhandled rejection otherwise); SIGINT/SIGTERM/SIGHUP are forwarded and the bake exits 130/143/129 without an index write (before: the runner was orphaned); the `.snapz` temp is `<name>.snapz.<pid>.tmp`; a failed compression or index write is one line and exit 1. New markers `refuse-index-unreadable`, `refuse-index-corrupt`, `runner-signal`, `runner-exit`; the `baked`, `index-copy`, `reaped` and refusal lines are unchanged. | fix; additive (exit codes, markers) |
 | 3 | 2026-11-01 | Architecture review D4, option (a): **QED64 owns the bake** (the kernel copy's extras, ported as behaviour). **bake-snapshot** takes `<work>/.bake.lock` (one bake per `--work`: two bakes sharing it baked each other's `probe.lean` and the runtime's `<name>.snap.tmp.<pid>` and could exit 0 with a wrong snapshot), holding the bake's pid and then its runner's; a held lock is exit 2 (`work-locked`, naming both pids), never taken over; it is released at exit and kept when the runner is still running. It removes stale `<name>.snap.tmp.*` files under the lock (one `removed the stale …` line each), refuses a `--name` outside `[A-Za-z0-9][A-Za-z0-9._-]*` (`refuse-name`) and an explicit `--lib` that is not a directory (`no-lib`; before, the runner failed on it after the paired `.snap` was unlinked), both exit 2 before any side effect, gains `--entry-fields <json object>` (more entry keys after the page fields; a core key, a page field or a reserved `raw`/`lib`/`bakedBy` refuses, exit 2), and prints a `build environment: node …, zlib …, shared zlib …` line (`build-env`) after `baking`. The index's writer rules move from the fork's `formats/snapshot-index.md` to [SNAPSHOT-INDEX.md](SNAPSHOT-INDEX.md); the Ownership paragraph under Tiers names the owners. The `baked`, `index-copy`, `reaped` and refusal lines are unchanged. | fix; additive (a flag, markers, exit-2 refusals) |
 | 4 | 2026-11-01 | Architecture review R5a, **bake-snapshot finishes when its `.snap` is complete**: it polls every `--stable-ms` (new, default 5000) and stops the runner once `<work>/<name>.snap` has the same size at two polls (before: 300 s without output and 120 s of a stable size, about 4.5 min of every bake). **Breaking, so contract 4:** the stdout marker `reaped` (`bake output stable … — reaping the wedged exit`) becomes `completed` (`bake output complete … — stopping the runner`). The rename follows the report's approved R5a without a deprecation window (stability policy): no consumer parses it (lean4game `wasm64-port`, the proof sheets `website-v4.35` and the showcase `port-lean-4.35` grepped). New guards: a failure line (the new classifier, SPEC `classifier`) with no `.snap` and no save in progress for `--quiet-ms` (new, default 120000) ends the bake with `failed-quiet` and `no-snap`, exit 1 (before: a header Lean rejects waited forever); `--give-up-ms` (new, default 21600000) ends any bake with `gave-up`, exit 1; a malformed value of the three is exit 2 before any side effect. The `baked`, `index-copy` and refusal lines, exit 0's meaning (not a Lean verdict) and the runner's argv are unchanged. | breaking (a marker renamed); additive (flags, markers); fix |
+| 4 | 2026-11-01 | Architecture review D6, the notice (decided 2026-11-01), **bake-snapshot**: a failure line in a run whose `.snap` is complete prints the `notice` WARNING and one `verdict <json>` line on stderr before `compressing` (new markers `notice` and `verdict`; the verdict is `{"verdict":"failed","kind":…,"stream":…,"line":…,"name":…,"bytes":…}`); the bake still compresses, indexes and exits 0. After lean4game and the showcase re-pin past this row, at the next runtime release, such a bake exits **1** without compressing or indexing and keeps the raw `.snap` (contract 5). Exit 1 by the user's decision, not the report's new code 3: 3 stays the infrastructure refusal, and the `verdict` line tells a Lean failure from a runner crash. Open decision 3 is decided. QED64's `adopt-release.sh` fails on a `verdict` line now (its slim audit's manual "zero errors" check goes). No other line, flag or exit changes; a bake without a failure line prints nothing new. | deprecation (notice) |
 
 ## Open decisions
 
@@ -1440,9 +1463,13 @@ These are recorded here, not decided:
    persistent-probe, so that 3 means only "infrastructure refusal". The
    compiler battery and the showcase's exact-header read the text, not the
    code, but it is still a breaking change.
-3. **Make bake-snapshot exit 1 when the runner printed a Lean failure line**,
-   using supervised-run's classifier. The showcase's `judge-bake.mjs` exists
-   because it does not.
+3. **Decided 2026-11-01 (D6): bake-snapshot exits 1 when the runner printed
+   a Lean failure line**, using its own classifier (supervised-run's rule
+   scoped to probe.lean). A notice now (the `notice` and `verdict` lines),
+   exit 1 after one re-pin cycle, at the next runtime release; see
+   bake-snapshot, "Lean failure lines". The showcase's `judge-bake.mjs`
+   exists because it does not yet (its J1 regex and J3's exit half can go at
+   the flip).
 4. **Moot since 2026-10-05.** lean4game runs the installed package instead
    of vendoring the tools, so the inline preludes can become imports of
    `cli.mjs`; that is batched with the next runtime adoption ("How the tools
