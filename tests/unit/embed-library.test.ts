@@ -5,7 +5,7 @@
 // prefetch as a function, and the offline URL list. Over a fake Worker, a
 // spied LeanSession and an OPFS stub — no wasm.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { deathCause, failureCauseOf, failureKindOf, stageOfWorkerPhase, ENGINE_STACK_OVERFLOW } from "../../lib/failure";
+import { deathCause, failureCauseOf, failureKindOf, stageOfWorkerPhase, ENGINE_STACK_OVERFLOW, WORKER_DEP_MISMATCH } from "../../lib/failure";
 import { runtimeUrls } from "../../lib/urls";
 import { PREFETCH_SILENCE_MS, prefetchRaw, type ProgressInfo, type Qed64Artifacts, type StatusSink } from "../../lib/qed64-boot";
 import { LspRelay, type RestartOptions } from "../../lib/lsp-relay";
@@ -439,7 +439,7 @@ describe("ResidentSession.start(): stages, files, beforeArm, causes", () => {
     await vi.waitFor(() => expect(relay.state.kind).toBe("serving"));
     const message = "lsp-front-door.js is revision \"2\", lean.worker.js needs 1 (a deploy mixed versions; reload)";
     sessions[0]!.lean.onDied(null, "WORKER_DEP_MISMATCH", message, { errorCode: "WORKER_DEP_MISMATCH" });
-    expect(relay.lastDeath).toMatchObject({ reason: "WORKER_DEP_MISMATCH", cause: { kind: "stale", code: embed.WORKER_DEP_MISMATCH, message } });
+    expect(relay.lastDeath).toMatchObject({ reason: "WORKER_DEP_MISMATCH", cause: { kind: "stale", code: WORKER_DEP_MISMATCH, message } });
     expect(relay.status()).toMatchObject({ relay: "rebooting", rebootReason: "crash" }); // the relay heals: a replacement loads the new scripts
     expect(sessions).toHaveLength(2);
     relay.clientPort.close();

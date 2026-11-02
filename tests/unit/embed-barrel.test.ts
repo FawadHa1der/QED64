@@ -1,7 +1,8 @@
-// The `qed64/embed` barrel's shape (docs/EMBEDDING.md §7.0): what the two
+// The `qed64/embed` barrel's shape (docs/EMBEDDING.md §7.0): what the
 // consumers and the stock page import through it stays exported; the
-// re-exports with no consumer are gone; the `@internal` block is exactly the
-// names neither consumer uses (still exported, outside the contract).
+// re-exports with no consumer are gone (REMOVED); the `@internal` block is
+// exactly INTERNAL (still exported, outside the contract), empty since the
+// 2026-10-28 review's prune (R9a).
 import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
@@ -10,7 +11,7 @@ import * as embed from "../../lib/index";
 const root = path.resolve(__dirname, "../..");
 const barrelSource = fs.readFileSync(path.join(root, "lib/index.ts"), "utf8");
 
-/** Runtime names lean4game imports through `qed64/embed` (its qed64-dep branch, app code and tests). */
+/** Runtime names lean4game imports through `qed64/embed` (branch wasm64-port, app code and tests). */
 const LEAN4GAME = [
   "LspRelay", "ResidentSession", "WORKER_URLS", "installArtifacts", "isRawCached", "PREFETCH_SILENCE_MS", "SNAPSHOT_CACHE_DIR",
   "isCacheKeyOf", "prefetchRaw", "removeRawRegion", "runtimeUrls", "snapshotCacheKey", "fetchSnapshotIndexFor", "loadSnapshotIndex",
@@ -19,9 +20,17 @@ const LEAN4GAME = [
 ];
 /** Runtime names frontend/src/main.ts (the stock page) imports from the barrel ("../../lib"). */
 const STOCK_PAGE = ["ENGINE_STACK_OVERFLOW", "LspRelay", "ResidentSession", "entryLabel", "failureCauseOf", "installArtifacts", "makeEditorPolicy"];
-const INTERNAL = [
-  "parseBootParams", "overridesOf", "NO_OVERRIDES",
-  "memoryCandidates", "rawRegionName", "httpStatusOf", "failureKindOf", "isImport",
+const INTERNAL: string[] = []; // empty since the 2026-10-28 review's prune (R9a)
+/** Names the barrel exported once and no longer does. The R9a ones still live in their lib/ files, where the page and the tests import them. */
+const REMOVED = [
+  // plan step A2c (1.0.0-pre.5)
+  "storageEstimate", "UMBRELLA_ROOTS",
+  // the 11 `@internal` re-exports: the library-pack installer left with D1 (1.0.0-pre.10), the rest with R9a (1.0.0-pre.11)
+  "installProfile", "ensureProfile", "fetchProfileIndex",
+  "memoryCandidates", "overridesOf", "rawRegionName", "failureKindOf", "httpStatusOf", "NO_OVERRIDES", "parseBootParams", "isImport",
+  // 11 values no consumer imports through the barrel (R9a, 1.0.0-pre.11)
+  "PROTOCOL", "fetchSnapshotIndex", "entryRoots", "WORKER_DEP_MISMATCH", "EDITOR_POLICY", "importLinesOf",
+  "initialBytesForHeader", "initialBytesForSnapshots", "isUmbrellaModule", "needsMathlib", "snapshotsForHeader",
 ];
 
 /** The names of every `export { … }` statement directly preceded by a `/** @internal *\/` line. */
@@ -38,14 +47,14 @@ describe("qed64/embed barrel", () => {
     for (const name of [...LEAN4GAME, ...STOCK_PAGE]) expect(embed, name).toHaveProperty(name);
   });
 
-  it("no longer re-exports storageEstimate or UMBRELLA_ROOTS (no consumer anywhere)", () => {
-    expect(embed).not.toHaveProperty("storageEstimate");
-    expect(embed).not.toHaveProperty("UMBRELLA_ROOTS");
-    expect(embed.isUmbrellaModule("Mathlib.Tactic")).toBe(true); // the helper that reads the set stays
-  });
-
-  it("no longer exports the library-pack installer (D1: library packs left the browser)", () => {
-    for (const n of ["installProfile", "ensureProfile", "fetchProfileIndex"]) expect(embed).not.toHaveProperty(n);
+  it("no longer re-exports the 24 removed names, none of which a consumer or the stock page imports through it", () => {
+    expect(REMOVED).toHaveLength(24);
+    expect(new Set(REMOVED).size).toBe(REMOVED.length);
+    for (const name of REMOVED) {
+      expect(embed, name).not.toHaveProperty(name);
+      expect(LEAN4GAME, name).not.toContain(name);
+      expect(STOCK_PAGE, name).not.toContain(name);
+    }
   });
 
   it("the @internal block is exactly the names neither consumer uses, and each is still exported", () => {

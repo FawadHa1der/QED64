@@ -9,19 +9,16 @@
 // `node:` — so a consumer's bundler needs nothing but the files listed in the
 // closure.
 //
-// `@internal` re-exports stay exported (the stock page's own modules and the
-// unit tests reach them through their files; an embedder that imported one
-// keeps building) but are not part of the contract: no consumer uses them,
-// and they may change or leave in any revision (docs/EMBEDDING.md §7.0, §9).
+// A re-export marked `@internal` stays exported (the stock page's own
+// modules reach it) but is not part of the contract: it may change or leave
+// in any revision (docs/EMBEDDING.md §7.0, §9).
 
 /** Semver of the library contract (docs/EMBEDDING.md §7): minor = additive.
  * "-pre" until the contract's review is settled. */
-export const EMBED_API_REVISION = "1.0.0-pre.10";
+export const EMBED_API_REVISION = "1.0.0-pre.11";
 
 // runtime
-export { LeanSession, PROTOCOL, MEMORY64_PROBE, probeMemory64 } from "./client";
-/** @internal */
-export { memoryCandidates } from "./client";
+export { LeanSession, MEMORY64_PROBE, probeMemory64 } from "./client";
 export type {
   BootConfig, Capabilities, DeathFacts, HeaderStatus, JsonRpcMessage, LibraryPack, MemoryTelemetry,
   ProgressEvent, ReadyInfo, RuntimeManifest, WorkerError, WorkerPhase, WorkerStatus,
@@ -29,27 +26,21 @@ export type {
 
 // snapshots
 export {
-  fetchSnapshotIndex, loadSnapshotIndex, snapshotCacheKey,
-  BASE_SNAPSHOTS, LEGACY_UMBRELLA_ROOTS, chooseSnapshots, coversModule, entryLabel, entryRoots, initialBytesForEntries, widenTarget,
+  loadSnapshotIndex, snapshotCacheKey,
+  BASE_SNAPSHOTS, LEGACY_UMBRELLA_ROOTS, chooseSnapshots, coversModule, entryLabel, initialBytesForEntries, widenTarget,
 } from "./snapshots";
 export type { IndexOptions, SnapshotEntry, SnapshotIndex } from "./snapshots";
 
 // boot
 export { installArtifacts, loadSnapshotByName, resolveRuntimeManifest, fetchSnapshotIndexFor } from "./qed64-boot";
-/** @internal */
-export { overridesOf } from "./qed64-boot";
 export type { InstallOptions, LoadSnapshotOptions, ProgressInfo, Qed64Artifacts, Qed64Session, StatusSink } from "./qed64-boot";
 
 // the raw snapshot region cache (docs/EMBEDDING.md §7.4)
 export { PREFETCH_SILENCE_MS, SNAPSHOT_CACHE_DIR, isCacheKeyOf, isRawCached, prefetchRaw, removeRawRegion } from "./raw-cache";
-/** @internal */
-export { rawRegionName } from "./raw-cache";
 export type { PrefetchRawOptions, PrefetchRawResult } from "./raw-cache";
 
 // structured progress and failure causes (docs/EMBEDDING.md §7.1, §7.2)
-export { deathCause, failureCauseOf, ENGINE_STACK_OVERFLOW, WORKER_DEP_MISMATCH, WORKER_SCRIPT_LOAD_FAILED } from "./failure";
-/** @internal */
-export { failureKindOf, httpStatusOf } from "./failure";
+export { deathCause, failureCauseOf, ENGINE_STACK_OVERFLOW, WORKER_SCRIPT_LOAD_FAILED } from "./failure";
 export type { BootStage, BootStep, FailureCause, FailureKind } from "./failure";
 
 // offline URL list (docs/EMBEDDING.md §7.5)
@@ -57,19 +48,12 @@ export { runtimeUrls, WORKER_URLS } from "./urls";
 
 // boot parameters (docs/EMBEDDING.md §4, §7.6)
 export { BootParamError, validateBootOverrides } from "./params";
-/** @internal */
-export { NO_OVERRIDES, parseBootParams } from "./params";
 export type { BootOverrides } from "./params";
 
 // session
-export {
-  DEFAULT_MAXIMUM_BYTES, EDITOR_POLICY, ResidentSession, makeEditorPolicy,
-  importLinesOf, importedModulesOf, initialBytesForHeader, initialBytesForSnapshots, isUmbrellaModule, needsMathlib, snapshotsForHeader,
-} from "./resident-session";
+export { DEFAULT_MAXIMUM_BYTES, ResidentSession, importedModulesOf, makeEditorPolicy } from "./resident-session";
 export type { ResidentHost, ResidentPolicy, SessionFile } from "./resident-session";
 
 // relay
 export { LspRelay } from "./lsp-relay";
-/** @internal */
-export { isImport } from "./lsp-relay";
 export type { Death, RelaySession, RelayState, RelayStatus, RestartOptions } from "./lsp-relay";

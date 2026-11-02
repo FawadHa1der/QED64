@@ -377,9 +377,9 @@ Page-tier facts (stable, for preflights and deploy tools):
   a local tree) is never asked for a copy. `?snapshots=<dir>` reads only its
   own `index.json`. (No page reads the profile index's copy,
   `/snapshots/profiles-index.<buildId>.json`, since D1.) A page that reads the
-  snapshot index itself gets the same rule from `loadSnapshotIndex` /
-  `fetchSnapshotIndex` with `pairedBuildId` (§7.0): the copy is
-  `index.<buildId>.json` in the directory of the index it was given.
+  snapshot index itself gets the same rule from `loadSnapshotIndex` with
+  `pairedBuildId` (§7.0): the copy is `index.<buildId>.json` in the
+  directory of the index it was given.
   The option is only half of the protection: it reads a copy, and the site
   must publish one. Without it the copy request answers 404, the mutable
   index is kept and the page refuses its entries `SNAPSHOT_UNPAIRED`, as
@@ -765,7 +765,7 @@ library contract a dist was built from without opening the bundle.
 
 ### 7.0 Exports
 
-- **runtime:** `LeanSession`, `PROTOCOL`, `probeMemory64`, `MEMORY64_PROBE`
+- **runtime:** `LeanSession`, `probeMemory64`, `MEMORY64_PROBE`
   (the 13 probe bytes `probeMemory64` and the worker validate; a fixed-shape
   `Uint8Array`, read-only by convention: refuse an incapable browser before
   loading anything with `WebAssembly.validate(MEMORY64_PROBE)`), and the
@@ -776,11 +776,10 @@ library contract a dist was built from without opening the bundle.
   side effect and re-exports the two members, so a page's check is the
   worker's, byte for byte.
 - **snapshots:**
-  - the index: `loadSnapshotIndex` (throws, naming the fault),
-    `fetchSnapshotIndex` (null on any fault) and `snapshotCacheKey`;
+  - the index: `loadSnapshotIndex` (throws, naming the fault) and
+    `snapshotCacheKey`;
     ```ts
     loadSnapshotIndex(url = "/snapshots/index.json", opts?: IndexOptions): Promise<SnapshotIndex>;
-    fetchSnapshotIndex(url = "/snapshots/index.json", opts?: IndexOptions): Promise<SnapshotIndex | null>;
     interface IndexOptions {
       allowCrossOrigin?: boolean; // default false: the index and its entry URLs must be on `origin`
       origin?: string;            // default location.origin
@@ -795,17 +794,15 @@ library contract a dist was built from without opening the bundle.
     copy that is empty, mixed or of another runtime keeps the index at
     `url`, and the boot then refuses its unpaired entries as it always did
     (`SNAPSHOT_UNPAIRED`, §7.2). A paired index, an index without `runtime`
-    fields and a missing one (which still throws, or is null) cost no extra
+    fields and a missing one (which still throws) cost no extra
     request; without the option nothing changes. `installArtifacts` and
     `fetchSnapshotIndexFor` pass the shell's own `__QED64_BUILD_ID__`; a
     page that reads the index itself (lean4game's game boot) passes the
     buildId of the runtime it boots (the one it pins, or its runtime
-    manifest's `buildId` once resolved). A caller that relies on the throw
-    keeps `loadSnapshotIndex(url, { pairedBuildId })`: lean4game's boot
-    catches its off-site refusal (`SNAPSHOT_URL_REFUSED`) to raise its own
-    coded SEC1 refusal, and `fetchSnapshotIndex` would turn that refusal
-    into the "unreadable" null. The option reads a copy only where the site
-    publishes one (§4);
+    manifest's `buildId` once resolved). lean4game's boot catches the
+    off-site refusal (`SNAPSHOT_URL_REFUSED`) to raise its own coded SEC1
+    refusal. The option reads a copy only where the site publishes one
+    (§4);
   - the overlay helpers of §8.
 - **raw cache (§7.4):** `prefetchRaw`, `isRawCached`, `removeRawRegion`,
   `isCacheKeyOf`, `SNAPSHOT_CACHE_DIR` and `PREFETCH_SILENCE_MS`.
@@ -814,26 +811,18 @@ library contract a dist was built from without opening the bundle.
 - **parameters:** `validateBootOverrides` and `BootParamError` (`code:
   "BOOT_PARAM_REFUSED"`, `param`).
 - **session:** `ResidentSession`, `ResidentPolicy`, `ResidentHost`,
-  `SessionFile`, `EDITOR_POLICY`, `makeEditorPolicy(index)` and the header
-  helpers.
+  `SessionFile`, `makeEditorPolicy(index)` and `importedModulesOf`.
 - **relay:** `LspRelay` (its contract members in §7.9: `clientPort`,
   `unload()`, `status()`, `rearm()`, `restart()`), `RelaySession`,
   `RelayStatus`, `RestartOptions` and `Death`.
 - **causes (§7.2):** `failureCauseOf`, `deathCause`,
-  `WORKER_SCRIPT_LOAD_FAILED`, `WORKER_DEP_MISMATCH` and
-  `ENGINE_STACK_OVERFLOW`.
+  `WORKER_SCRIPT_LOAD_FAILED` and `ENGINE_STACK_OVERFLOW` (a stale cause's
+  code is the string `"WORKER_DEP_MISMATCH"`, §7.2: compare with the
+  literal).
 - **offline:** `runtimeUrls(manifest)` and `WORKER_URLS`.
-- **internal re-exports** (`/** @internal */` in the barrel): `memoryCandidates`,
-  `overridesOf`, `rawRegionName`, `failureKindOf`, `httpStatusOf`,
-  `parseBootParams`, `NO_OVERRIDES` and `isImport`. They stay exported, so an import of one
-  still builds, but they are outside the contract (§9): neither consumer
-  imports them, the stock page reaches them only through its own modules,
-  and a revision may change or remove them. Use the contract member that
-  wraps each one instead: `ResidentSession` (memory rungs),
-  `failureCauseOf` (kind and HTTP status),
-  `validateBootOverrides` (your own URL parsing, or `installArtifacts`'
-  `overrides: "url"`), `prefetchRaw`/`isRawCached`/`removeRawRegion` (the
-  region name), `LspRelay` (the header rule).
+- **internal re-exports** (`/** @internal */` in the barrel): none. The
+  eleven that `1.0.0-pre.5` marked left the barrel: three with D1 in
+  `1.0.0-pre.10`, the other eight in `1.0.0-pre.11` (§12).
 
 ### 7.1 Structured progress
 
@@ -871,7 +860,7 @@ interface FailureCause { kind: FailureKind; httpStatus?: number; stage?: BootSta
 | `unpaired` | a snapshot baked by another runtime build | `SNAPSHOT_UNPAIRED` |
 | `oom` | an allocation or reservation failed | `MEMORY_FAILED`, `could not allocate`, `Cannot enlarge memory` |
 | `storage` | OPFS or quota | `QuotaExceededError` |
-| `stale` | the site was deployed under this page: the worker scripts it loaded are of different revisions (§7.7), or a lazily imported chunk of the page's own bundle (`/assets/<name>-<hash>.js`) could not be fetched (the browser's `Failed to fetch dynamically imported module: …/assets/…`; a deploy that replaced the assets under the open page explains it, and a connection cut during that import reads the same; HARDENING #74). **Reload the page.** A lost chunk is a boot failure (`stage: "failed"`, `boot.failed`, every `settled()` waiter rejects): nothing serves until the reload. For the worker scripts, retrying in place does not help: the relay heals by itself (its replacement worker loads the new scripts, and the relay replays `initialize` and the document, so the language client never re-initializes), but it then serves under this page's older bundle, which holds only while the worker protocol changes additively | `WORKER_DEP_MISMATCH` (`code` is always `"WORKER_DEP_MISMATCH"`, exported as `WORKER_DEP_MISMATCH`) |
+| `stale` | the site was deployed under this page: the worker scripts it loaded are of different revisions (§7.7), or a lazily imported chunk of the page's own bundle (`/assets/<name>-<hash>.js`) could not be fetched (the browser's `Failed to fetch dynamically imported module: …/assets/…`; a deploy that replaced the assets under the open page explains it, and a connection cut during that import reads the same; HARDENING #74). **Reload the page.** A lost chunk is a boot failure (`stage: "failed"`, `boot.failed`, every `settled()` waiter rejects): nothing serves until the reload. For the worker scripts, retrying in place does not help: the relay heals by itself (its replacement worker loads the new scripts, and the relay replays `initialize` and the document, so the language client never re-initializes), but it then serves under this page's older bundle, which holds only while the worker protocol changes additively | `WORKER_DEP_MISMATCH` (`code` is always the string `"WORKER_DEP_MISMATCH"`: compare with the literal) |
 | `other` | the checker's own failure, with **one exception**: `code: "WORKER_SCRIPT_LOAD_FAILED"` means a worker script never ran, which looks the same offline as on a 404, so probe the link | `abort`, `wedged`, `SNAPSHOT_URL_REFUSED`, `ENGINE_STACK_OVERFLOW` |
 
 An `unpaired` failure is decided by the page wherever it holds both facts,
@@ -1095,8 +1084,7 @@ function prefetchRaw(entry, opts?: { onProgress?; signal?; silenceMs?; workerUrl
 
 Helpers: `isRawCached(entry)` (null when there is no OPFS),
 `removeRawRegion(entry)`, `isCacheKeyOf(fileName, index)` (for sweeping
-stale bakes) and `SNAPSHOT_CACHE_DIR`. (`rawRegionName(entry)` is an
-internal re-export, §7.0.)
+stale bakes) and `SNAPSHOT_CACHE_DIR`.
 
 **Integrity.**
 - A region is trusted by its cache key, and the key comes from the index.
@@ -1149,7 +1137,7 @@ and off the boot's path, the OPFS pack store (`qed64-packs/`) and
 
 A game page wants `{overrides: "none"}` (`profiles: "none"` is still accepted), or its own
 overrides routed through `validateBootOverrides` (lean4game parses its URL
-itself; `parseBootParams` is an internal re-export, §7.0).
+itself).
 
 ### 7.7 Workers: compatibility across deploys
 
@@ -2336,3 +2324,36 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   for this. `LEGACY_UMBRELLA_ROOTS` and the fallback stay (the list is also
   the editor's policy without an index). No library change:
   `EMBED_API_REVISION` is unchanged.
+- **The barrel loses what no consumer imports (architecture review R9a,
+  2026-11):**
+  - Removed from `qed64/embed`, the last eight `@internal` re-exports:
+    `memoryCandidates`, `overridesOf`, `rawRegionName`, `failureKindOf`,
+    `httpStatusOf`, `NO_OVERRIDES`, `parseBootParams` and `isImport` (the
+    other three that `1.0.0-pre.5` marked, `installProfile`,
+    `ensureProfile` and `fetchProfileIndex`, left with D1 in
+    `1.0.0-pre.10`). The barrel has no `@internal` re-export left.
+  - Removed, eleven values no consumer imports through the barrel:
+    `PROTOCOL`, `fetchSnapshotIndex`, `entryRoots`, `WORKER_DEP_MISMATCH`,
+    `EDITOR_POLICY`, `importLinesOf`, `initialBytesForHeader`,
+    `initialBytesForSnapshots`, `isUmbrellaModule`, `needsMathlib` and
+    `snapshotsForHeader`.
+  - Checked with grep over lean4game `wasm64-port` 1771ed3, the proof
+    sheets `website-v4.35` 5468694 and the showcase `port-lean-4.35`
+    079ef23: none imports any of them through the barrel (lean4game defines
+    its own `WORKER_DEP_MISMATCH` and `parseBootParams`).
+  - Each stays exported from its `lib/` file for the stock page and the
+    tests; no behaviour changes. `LEGACY_UMBRELLA_ROOTS` stays in the
+    barrel (it is also the editor's policy without an index, §8).
+  - Migration: catch `loadSnapshotIndex`'s throw where you used
+    `fetchSnapshotIndex`; compare a stale cause's code with the literal
+    `"WORKER_DEP_MISMATCH"`; use the contract member that wraps each
+    internal one: `ResidentSession` (memory rungs), `failureCauseOf` (kind
+    and HTTP status), `validateBootOverrides` (URL overrides, or
+    `installArtifacts`' `overrides: "url"`),
+    `prefetchRaw`/`isRawCached`/`removeRawRegion` (the region name),
+    `LspRelay` (the header rule), `makeEditorPolicy(index)` for the policy
+    (`makeEditorPolicy(null)` is what `EDITOR_POLICY` was) and
+    `importedModulesOf` with `chooseSnapshots` / `initialBytesForEntries`
+    for the header helpers.
+  - A removal under "-pre", like A2c's:
+    `EMBED_API_REVISION` → `1.0.0-pre.11`.
