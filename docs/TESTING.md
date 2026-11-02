@@ -48,7 +48,7 @@ paired build outputs of "Environment" below.
 | Liveness faults | `node tests/adversarial/liveness-faults.mjs --url <dev url> [--only <scenario>]` | HARDENING #52's mailbox, kick, liveness probe and exit hook, each by fault injection into the live worker: mailbox-mode, idle-no-probes, long-silent-command, lost-wakeups-healed, wedge-recovery, exit-detected; and #78's early-death-detected (a fresh session's Worker terminated at its first ready, before any heartbeat, is declared dead by the watchdog the arm starts) | dev | lock | `liveness-faults: 7/7 pass` |
 | Page API | `node tests/adversarial/page-api.mjs --url <dev url> [--only <scenario>]` | `qed64.api` as an embedder uses it (docs/EMBEDDING.md §2–§4): code-top-level, embed-code, embed-setdoc, memory (`status().memory` is numbers once settled, read on a later turn; HARDENING #76), events, restart, bad-param | dev or served build (both answer `/embed-host.html`) | lock | `page-api: 7/7 pass` |
 | InfoView actions | `node tests/adversarial/infoview-actions.mjs --url <dev url> [--only <scenario>]` | the InfoView's editor RPC on the real page (HARDENING #56): capability-flag, try-this-apply, conv-generate, foreign-show | dev | lock | `infoview-actions: 4/4 pass` |
-| Reload storm | `node tests/adversarial/reload-storm.mjs --url <url> [--runs 5] [--embed] [--ballast-mb N] [--headed] [--wait-ms N] [--boot-budget-ms 600000] [--hold-ms 0]` | five reloads 3 s apart per run, a fresh browser per run, `ready` again after them; a crash is classified by the V8 OOM line (HARDENING #53, #55); `--embed` reloads a same-origin host page around the frame; `--ballast-mb N` (with `--embed`) makes that host hold N MiB of live JS objects in the renderer's shared pointer cage, a heavy embedding page (#55 residual: 800 MiB crashes 8/8, 0 MiB 0/8); `--wait-ms 1` is the no-wait arm (R16 #55); each run also counts the `.snapz` requests after the first ready and the `[boot] raw cache busy` lines | dev or served build (stock and `--embed`) | lock | `RELOAD-STORM <tag>: 0/N crashed …` (1 = a crash, 2 = a bad `--wait-ms`/`--boot-budget-ms`/`--hold-ms`, 3 = nothing booted) |
+| Reload storm | `node tests/adversarial/reload-storm.mjs --url <url> [--runs 5] [--embed] [--ballast-mb N] [--headed] [--boot-budget-ms 600000] [--hold-ms 0]` | five reloads 3 s apart per run, a fresh browser per run, `ready` again after them; a crash is classified by the V8 OOM line (HARDENING #53, #55); `--embed` reloads a same-origin host page around the frame; `--ballast-mb N` (with `--embed`) makes that host hold N MiB of live JS objects in the renderer's shared pointer cage, a heavy embedding page (#55 residual: 800 MiB crashed 8/8 and 0 MiB 0/8 on 3ab1c6a9, every dose up to 2400 MiB 0/4 on 36d7f415); each run also counts the `.snapz` requests after the first ready and the `[boot] raw cache busy` lines | dev or served build (stock and `--embed`) | lock | `RELOAD-STORM <tag>: 0/N crashed …` (1 = a crash, 2 = an unknown flag or a bad `--boot-budget-ms`/`--hold-ms`, 3 = nothing booted) |
 | Edit storm | `node tests/adversarial/edit-storm.mjs --url <served url> [--reps 2] [--scenarios …] [--run-dir <dir>] [--tag <label>]` | an edit per keystroke over work that ignores cancellation: no crash, death or reboot, ready at the last version, the pool within tolerance (HARDENING #59; `?edithold=0` is the control arm); the opt-in `pagelong` is `pageslow` with a 133-character example, about 20 s of typing (R16 #59: growth must not trend with typing length); `--tag` names `edit-storm-<tag>.json`, its samples and its log, so interleaved arms share one `--run-dir` | served build | lock | `edit-storm: N/N pass` (1 = a run failed, 2 = a bad `--tag`, 3 = infrastructure) |
 | Boot card | `node tests/adversarial/boot-card.mjs --url <served url> [--scenario slow-link\|check-fallback\|all]` | a cold first visit over a shaped link: the boot card shows progress the whole way, and the check fallback appears while an Init-only buffer elaborates (HARDENING #54) | served build | lock | `boot-card: N/N passed` |
 | Unpaired snapshot | `node tests/adversarial/unpaired-snapshot.mjs --url <served url> [--scenario unpaired\|rescued]` | a snapshot of another runtime is refused before the runtime starts and before a byte of it downloads (HARDENING #62); `rescued`: a mispaired served index is replaced by the pinned runtime's per-build copy (HARDENING #64; a server without the copy gets the served index's own bytes for it) | served build | lock | `unpaired-snapshot: PASS (n/n checks, <scenario>)` |
@@ -326,12 +326,12 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   ready. `check-fallback` restores an Init-only buffer that elaborates for
   60 s and requires the card to go ~30 s after the relay serves, while the
   phase is still `elaborating`. Each scenario's `<name>-console.log` keeps
-  the page's `[qed64]`, raw-prefetch and `[boot] waited` lines. Serve
+  the page's `[qed64]` and raw-prefetch lines. Serve
   `dist/` (`npm run build:site`, then `PORT=… node scripts/serve-dist.mjs`),
   not the dev server: unbundled modules over a shaped link measure Vite,
   not the product.
 - **Reload storm** (`reload-storm.mjs --url <dev url> [--runs 5] [--headed]
-  [--embed] [--sample-ms 100] [--ready-each] [--console-log] [--wait-ms N]
+  [--embed] [--sample-ms 100] [--ready-each] [--console-log]
   [--boot-budget-ms 600000] [--hold-ms 0]`, HARDENING #53,
   #55; a release gate, the first lane of the pyramid): a fresh browser per
   run, boot to `ready`, five reloads 3 s apart (`waitUntil: "commit"`), then
@@ -350,11 +350,11 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   per-reload process facts); `reload-storm-timeline.py <report>` lines one
   run up against its samples. V2 is rare on the stock page: gate embedded
   AND stock, headed AND headless, with a release control arm in the same
-  window. R16's flags (review 2026-10-28): `--wait-ms N` rewrites every
-  boot message's `instance.waitMs` to N (1..60000) from an init script in
-  every frame; the worker reads 0 as unset, so `--wait-ms 1` is the no-wait
-  arm (one lock query, at most one 25 ms poll), and a run's `armOk` is false
-  unless each `[boot] waited` line shows ≤ 60 ms or "budget spent".
+  window. On wasm64-36d7f415 a 3 s reload already finds a ready predecessor;
+  a sub-boot `--interval-ms` (R16: 664 ms embedded, the warm boot's snapshot
+  step) is what catches a runtime mid-boot. An unknown flag exits 2, before
+  any browser. R16's `--wait-ms` arm and its arm check left with the wait
+  (HARDENING #55's R16 note; restore from git `b9a222c`).
   `--boot-budget-ms` bounds the first boot (default 600000).
   `--hold-ms N` idles N ms after the first ready; with `--reloads 0
   --sample-ms 500` it measures the renderer at ready and at steady state
@@ -365,8 +365,8 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   `.snapz after first ready N` (a warm reload refetching a snapshot) and
   `(COUNTER BLIND)` when the counter saw no `.snapz` before the first ready,
   which a fresh profile's cold boot always fetches. The summary's second
-  table gives these per arm, with arm-invalid runs and the main renderer's
-  peak footprint and footprint at ready and steady state.
+  table gives these per arm, with the main renderer's peak footprint and
+  footprint at ready and steady state.
 - **InfoView actions** (`infoview-actions.mjs --url <dev url> [--only <scenario>]`,
   HARDENING #56): the InfoView's editor RPC on the real page, each scenario on
   its own page (an `--only` that selects no scenario exits 3). `capability-flag`

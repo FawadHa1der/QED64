@@ -2542,3 +2542,16 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   them replaced by this page" suffix; its start and the " — budget spent"
   group are unchanged. No API change: `EMBED_API_REVISION` and the worker
   `REVISION` are unchanged.
+- **No boot waits for stopping runtimes (2026-11, HARDENING #55, R16):** a
+  runtime allocates beside whatever a reloaded or replaced runtime still has
+  alive. It used to wait, for up to 6 s, while more than 12 of their Workers
+  were alive. With no wait there was no crash in 20 mid-boot storms or in 16
+  frozen restarts beside all 25 Workers of the old runtime; the wait cost
+  228-490 ms on a mid-boot boot that waited. `LeanSession`'s boot sends
+  `instance: {id}`, newer workers ignore `instance.waitMs`, and an older
+  worker reads the missing field as its 6 s budget, so mixed caches still
+  boot. The `[boot] waited` line is gone. The `qed64-wanted:` and
+  `qed64-alive:` Web Locks stay, as lifetime signals nothing waits on. An
+  embedding page's own heap has at least 2400 MiB of headroom at a 3 s reload
+  cadence on wasm64-36d7f415; a heavy page reloaded mid-boot was not measured.
+  No API change: `EMBED_API_REVISION` and the worker `REVISION` are unchanged.

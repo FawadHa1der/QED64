@@ -23,10 +23,7 @@
 // Usage: node tests/adversarial/reload-storm.mjs [--url http://localhost:5198/] [--runs 5]
 //          [--reloads 5] [--interval-ms 3000] [--run-dir <dir>] [--tag <label>]
 //          [--headed] [--embed] [--embed-host /embed-host.html] [--ballast-mb 0] [--sample-ms 100] [--ready-each] [--console-log]
-//          [--wait-ms N] [--boot-budget-ms 600000] [--hold-ms 0]
-//   --wait-ms N  every boot message's instance.waitMs becomes N (1..60000), from an init script in every frame.
-//                The worker reads 0 as unset, so 1 is the no-wait arm (R16 #55); the run's armOk needs each
-//                `[boot] waited` line to show ≤ 60 ms or "budget spent"
+//          [--boot-budget-ms 600000] [--hold-ms 0]
 //   --boot-budget-ms N  how long the first boot may take to `ready` (default 600000)
 //   --hold-ms N  idle N ms after the first ready, before the first reload; with --reloads 0 it measures the
 //                memory at ready and at steady state (atSteady, steadyEpoch)
@@ -44,7 +41,7 @@
 // A/B: one invocation per run (--runs 1 --tag <arm>-r<n>, arms interleaved) into one --run-dir, then
 // tests/adversarial/reload-storm-summary.py <run-dir> (crash counts, Fisher tests, per-reload process facts).
 // Run it through the host's browser lock. Exit 0 = no crash in any run,
-// 1 = at least one crash, 2 = a bad --wait-ms / --boot-budget-ms / --hold-ms,
+// 1 = at least one crash, 2 = an unknown flag or a bad --boot-budget-ms / --hold-ms,
 // 3 = the page never booted.
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -62,11 +59,12 @@ const EMBED = has("--embed");
 const SAMPLE_MS = Number(arg("sample-ms", "0"));
 const READY_EACH = has("--ready-each");
 const CONSOLE_LOG = has("--console-log");
-// A flag given as the last argument (or with "") has no value: arg() would hand back the default arm.
-for (const f of ["wait-ms", "boot-budget-ms", "hold-ms"]) if (has(`--${f}`) && arg(f, "") === "") { console.error(`reload-storm: --${f} needs a value`); process.exit(2); }
-const WAIT_RAW = arg("wait-ms", "");
-const WAIT_MS = WAIT_RAW === "" ? null : Number(WAIT_RAW);
-if (WAIT_MS !== null && !(Number.isInteger(WAIT_MS) && WAIT_MS >= 1 && WAIT_MS <= 60000)) { console.error("reload-storm: --wait-ms must be an integer in [1, 60000] (the worker reads 0 as unset; 1 = no wait)"); process.exit(2); }
+// A flag this lane does not read stops it, as a bad value does: a left-over arm flag must not run as if it applied.
+const FLAGS = new Set(["--url", "--runs", "--reloads", "--interval-ms", "--run-dir", "--tag", "--headed", "--embed", "--embed-host", "--ballast-mb", "--sample-ms", "--ready-each", "--console-log", "--boot-budget-ms", "--hold-ms"]);
+const unknownFlags = process.argv.slice(2).filter((a) => a.startsWith("--") && !FLAGS.has(a));
+if (unknownFlags.length) { console.error(`reload-storm: unknown flag ${unknownFlags.join(", ")}`); process.exit(2); }
+// A flag given as the last argument (or with "") has no value: arg() would hand back the default.
+for (const f of ["boot-budget-ms", "hold-ms"]) if (has(`--${f}`) && arg(f, "") === "") { console.error(`reload-storm: --${f} needs a value`); process.exit(2); }
 const BOOT_BUDGET_MS = Number(arg("boot-budget-ms", "600000"));
 if (!(Number.isInteger(BOOT_BUDGET_MS) && BOOT_BUDGET_MS > 0)) { console.error("reload-storm: --boot-budget-ms must be a positive integer"); process.exit(2); }
 const HOLD_MS = Number(arg("hold-ms", "0"));
@@ -86,7 +84,7 @@ if (EMBED) {
 const dir = runDir(manifest.buildId ?? "unknown", target.mode);
 teeLog(dir, `reload-storm-${TAG}.log`);
 const browserMode = HEADED ? "headed" : "headless-shell";
-console.log(`reload-storm ${TAG}: ${pageUrl}${EMBED ? " (embedded)" : ""} → ${manifest.buildId}; ${browserMode}; ${RUNS} run(s) × ${RELOADS} reloads every ${INTERVAL} ms${HOLD_MS ? ` after a ${HOLD_MS} ms hold` : ""}${WAIT_MS !== null ? `; boot waitMs ${WAIT_MS}` : ""}; reports in ${path.relative(root, dir)}`);
+console.log(`reload-storm ${TAG}: ${pageUrl}${EMBED ? " (embedded)" : ""} → ${manifest.buildId}; ${browserMode}; ${RUNS} run(s) × ${RELOADS} reloads every ${INTERVAL} ms${HOLD_MS ? ` after a ${HOLD_MS} ms hold` : ""}; reports in ${path.relative(root, dir)}`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // The browser's stderr (the V8 OOM line) reaches us only through Playwright's
@@ -117,31 +115,6 @@ const hostState = () => ({
   wasmNode: sh("pgrep", ["-f", "node --stack-size=8192"]).split("\n").filter(Boolean).length,
 });
 
-/** Init script, every frame (--wait-ms): each `boot` the page posts to a Worker
- * goes out with instance.waitMs = ms, the same transfer list, and a record
- * {wall, from, to} in globalThis.__qed64StormBoots (at most 32). Serialized
- * into the page: it must be self-contained, and nothing in it may throw into
- * the page. */
-function bootWaitProbe(ms) {
-  try {
-    const W = globalThis.Worker;
-    const post = W && W.prototype && W.prototype.postMessage;
-    if (typeof post !== "function") return;
-    const boots = (globalThis.__qed64StormBoots = []);
-    W.prototype.postMessage = function postMessage(msg, ...rest) {
-      let out = msg;
-      try {
-        const inst = msg && typeof msg === "object" && msg.type === "boot" ? msg.instance : null;
-        if (inst && typeof inst === "object") {
-          out = { ...msg, instance: { ...inst, waitMs: ms } };
-          if (boots.length < 32) boots.push({ wall: Date.now(), from: inst.waitMs ?? null, to: ms });
-        }
-      } catch { out = msg; }
-      return post.call(this, out, ...rest);
-    };
-  } catch { /* no Worker to wrap: the run's armOk still judges the worker's own lines */ }
-}
-
 const runs = [];
 let booted = 0;
 for (let n = 1; n <= RUNS; n++) {
@@ -158,7 +131,6 @@ for (let n = 1; n <= RUNS; n++) {
   try {
     out.browserVersion = browser.version();
     const context = await browser.newContext(HEADED ? { viewport: { width: 1440, height: 900 } } : {});
-    if (WAIT_MS !== null) await context.addInitScript(bootWaitProbe, WAIT_MS);
     const page = await context.newPage();
     const t0 = Date.now();
     out.t0Epoch = t0;
@@ -171,14 +143,11 @@ for (let n = 1; n <= RUNS; n++) {
     page.on("worker", (w) => { const r = { t: Date.now() - t0, kind: workerKind(w.url()), url: w.url().replace(target.origin, "").slice(0, 80), closed: null }; workers.push(r); w.on("close", () => { r.closed = Date.now() - t0; }); });
     let crashed = null;
     page.on("crash", () => { crashed = Date.now() - t0; });
-    // The worker's boot notes (HARDENING #55: "[boot] waited N ms for M stopping runtime(s)").
-    const waits = [];
     // R2 part 1: the raw snapshot cache's handle was still held (by the previous page's runtime) and was retried.
     const rawBusy = [];
     const notes = [];
     page.on("console", (m) => {
       const s = m.text();
-      if (/\[boot\] waited/.test(s)) waits.push({ t: Date.now() - t0, text: s.replace(/^.*\[boot\] /, "").slice(0, 120) });
       if (/raw cache busy/.test(s)) rawBusy.push({ t: Date.now() - t0, text: s.slice(0, 160) });
       if (CONSOLE_LOG && /^\[lean:/.test(s) && notes.length < 400) notes.push({ t: Date.now() - t0, text: s.slice(0, 120) });
     });
@@ -233,25 +202,12 @@ for (let n = 1; n <= RUNS; n++) {
     }
     out.peakAlive = Math.max(0, ...samples);
     out.workers = workers;
-    out.predecessorWaits = waits;
     // A cold first boot always fetches .snapz before ready (the fresh profile has no raw cache): none seen
     // means the counter was blind, and its after-ready count means nothing.
     out.snapz = snapz.map((x) => x.t);
     out.rawCacheBusy = rawBusy;
     out.snapzAfterFirstReady = out.firstReadyT ? snapz.filter((x) => x.t > out.firstReadyT).length : null;
     out.snapzCounterBlind = out.firstReadyT ? snapz.filter((x) => x.t <= out.firstReadyT).length === 0 : null;
-    if (WAIT_MS !== null) {
-      out.armOk = waits.every((w) => /budget spent/.test(w.text) || Number((/waited (\d+) ms/.exec(w.text) || [])[1]) <= 60);
-      // The last document's rewritten boots (evidence that the init script reached the frame that boots).
-      out.waitProbe = await page.evaluate((embed) => {
-        try {
-          let w = globalThis;
-          if (embed) { const f = document.getElementById("qed64-frame"); w = f && f.contentWindow; }
-          const b = w && w.__qed64StormBoots;
-          return Array.isArray(b) ? b.map((x) => ({ from: x.from, to: x.to })) : null;
-        } catch { return null; }
-      }, EMBED).catch(() => null);
-    }
     if (CONSOLE_LOG) out.console = notes;
   } catch (e) {
     out.verdict = "harness-error";
@@ -264,9 +220,9 @@ for (let n = 1; n <= RUNS; n++) {
   out.oomKind = out.oom.length ? [...new Set(out.oom.map((o) => o.kind))].join("+") : null;
   runs.push(out);
   const ca = out.crashAfterReload;
-  console.log(`run ${n}: ${out.verdict}${out.crashedAtMs !== null && out.crashedAtMs !== undefined ? ` at ${out.crashedAtMs} ms${ca ? ` (${ca.ms} ms after reload ${ca.reload})` : ""}` : ""}${out.oomKind ? ` [${out.oomKind}, ${out.oom.length} OOM line(s)]` : ""}; first ready ${out.firstReadyMs} ms; at ready ${JSON.stringify(out.atReady ?? null)}; peak live workers ${out.peakAlive}${out.predecessorWaits?.length ? `; waited for predecessors ${out.predecessorWaits.length}× (${out.predecessorWaits.map((w) => (/waited (\d+) ms/.exec(w.text) || [])[1]).join("/")} ms)` : ""}; ready after storm ${out.readyAfterMs ?? null} ms${READY_EACH ? `; reload→ready ${(out.reloads || []).map((r) => r.readyMs ?? "-").join("/")} ms` : ""}; host ${out.host.reclaimableGB} GB reclaimable`
-    + `; .snapz after first ready ${out.snapzAfterFirstReady ?? null}${out.snapzCounterBlind ? " (COUNTER BLIND)" : ""}; raw cache busy ${out.rawCacheBusy?.length ?? 0}${WAIT_MS !== null ? `; wait-ms ${WAIT_MS}, arm ${out.armOk === undefined ? "-" : out.armOk ? "ok" : "INVALID"}` : ""}`);
-  fs.writeFileSync(path.join(dir, `reload-storm-${TAG}.json`), JSON.stringify({ url: pageUrl, qed64Url: url, embed: EMBED, ballastMb: BALLAST_MB, mode: browserMode, buildId: manifest.buildId, tag: TAG, waitMs: WAIT_MS, holdMs: HOLD_MS, bootBudgetMs: BOOT_BUDGET_MS, runs }, null, 1));
+  console.log(`run ${n}: ${out.verdict}${out.crashedAtMs !== null && out.crashedAtMs !== undefined ? ` at ${out.crashedAtMs} ms${ca ? ` (${ca.ms} ms after reload ${ca.reload})` : ""}` : ""}${out.oomKind ? ` [${out.oomKind}, ${out.oom.length} OOM line(s)]` : ""}; first ready ${out.firstReadyMs} ms; at ready ${JSON.stringify(out.atReady ?? null)}; peak live workers ${out.peakAlive}; ready after storm ${out.readyAfterMs ?? null} ms${READY_EACH ? `; reload→ready ${(out.reloads || []).map((r) => r.readyMs ?? "-").join("/")} ms` : ""}; host ${out.host.reclaimableGB} GB reclaimable`
+    + `; .snapz after first ready ${out.snapzAfterFirstReady ?? null}${out.snapzCounterBlind ? " (COUNTER BLIND)" : ""}; raw cache busy ${out.rawCacheBusy?.length ?? 0}`);
+  fs.writeFileSync(path.join(dir, `reload-storm-${TAG}.json`), JSON.stringify({ url: pageUrl, qed64Url: url, embed: EMBED, ballastMb: BALLAST_MB, mode: browserMode, buildId: manifest.buildId, tag: TAG, holdMs: HOLD_MS, bootBudgetMs: BOOT_BUDGET_MS, runs }, null, 1));
   await sleep(5000); // let the dead browser's memory drain before the next run
 }
 const crashedRuns = runs.filter((r) => r.verdict === "crashed" || r.verdict === "crashed-before-ready");

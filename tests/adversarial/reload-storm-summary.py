@@ -4,17 +4,16 @@
   reload-storm-summary.py <run-dir> [--pairs a:b,c:d] [--md out.md]
 
 Every reload-storm-<arm>-r<rep>.json in <run-dir> is one run of arm <arm>. Per arm: runs, crashes by OOM kind,
-where they hit (reload index, ms after it), first-ready and ready-after-storm medians, the predecessor waits the
-worker logged (#55), and per-reload process facts from the sampler (procs.tsv): whether the reload kept the
-renderer process, its footprint before the reload, how far its thread count fell after it and when (the old
-runtime's Worker threads exiting), and the highest memory-pressure level seen. --pairs: two-sided Fisher exact
-tests on crashed runs between arms (default: every pair).
+where they hit (reload index, ms after it), first-ready and ready-after-storm medians, and per-reload process facts
+from the sampler (procs.tsv): whether the reload kept the renderer process, its footprint before the reload, how far
+its thread count fell after it and when (the old runtime's Worker threads exiting), and the highest memory-pressure
+level seen. --pairs: two-sided Fisher exact tests on crashed runs between arms (default: every pair).
 
 A second table per arm (R16): the .snapz requests after the first ready (a warm reload refetching a snapshot) and
 the runs with any, runs whose counter saw no .snapz before the first ready (blind), the `[boot] raw cache busy`
-lines, the --wait-ms runs whose arm check failed, and the main renderer's footprint from the sampler: its peak per
-run, and its value at the first ready and at the end of --hold-ms (the first sample at or after readyEpoch, the
-last at or before steadyEpoch). Reports older than these fields still summarize: a missing field is '-'.
+lines, and the main renderer's footprint from the sampler: its peak per run, and its value at the first ready and at
+the end of --hold-ms (the first sample at or after readyEpoch, the last at or before steadyEpoch). Reports older than
+these fields still summarize: a missing field is '-'.
 """
 import argparse
 import collections
@@ -124,8 +123,8 @@ def p(s=""):
 
 p(f"# reload-storm summary: {a.dir}")
 p()
-p("| arm | runs | crashed | kinds | crash at (reload, ms after) | first ready (median ms) | ready after storm (median ms) | predecessor waits (median ms, n) |")
-p("|---|---|---|---|---|---|---|---|")
+p("| arm | runs | crashed | kinds | crash at (reload, ms after) | first ready (median ms) | ready after storm (median ms) |")
+p("|---|---|---|---|---|---|---|")
 crash = {}
 for arm, runs in arms.items():
     c = [r for r in runs if r["verdict"] in ("crashed", "crashed-before-ready")]
@@ -134,25 +133,23 @@ for arm, runs in arms.items():
     where = ", ".join(f"r{r['_rep']}:{(r.get('crashAfterReload') or {}).get('reload')}/{(r.get('crashAfterReload') or {}).get('ms')}" for r in c)
     fr = [r["firstReadyMs"] for r in runs if r.get("firstReadyMs")]
     ra = [r["readyAfterMs"] for r in runs if r.get("readyAfterMs")]
-    waits = [int(x) for r in runs for w in r.get("predecessorWaits", []) for x in re.findall(r"waited (\d+) ms", w["text"])]
     other = collections.Counter(r["verdict"] for r in runs if r["verdict"] not in ("crashed", "crashed-before-ready", "survived"))
     p(f"| {arm} | {len(runs)} | **{len(c)}/{len(runs)}**{(' + ' + str(dict(other))) if other else ''} | {dict(kinds) if kinds else '-'} | {where or '-'} | "
-      f"{st.median(fr) if fr else '-'} | {st.median(ra) if ra else '-'} | {(str(st.median(waits)) + ', ' + str(len(waits))) if waits else '-'} |")
+      f"{st.median(fr) if fr else '-'} | {st.median(ra) if ra else '-'} |")
 p()
 p("Per-run counts (R16; .snapz and raw cache busy since the first boot, footprints from the sampler):")
-p("| arm | .snapz after first ready (total, runs > 0) | counter blind | raw cache busy | arm invalid | peak renderer footprint (median MB over runs) | footprint at ready / steady (median MB) |")
-p("|---|---|---|---|---|---|---|")
+p("| arm | .snapz after first ready (total, runs > 0) | counter blind | raw cache busy | peak renderer footprint (median MB over runs) | footprint at ready / steady (median MB) |")
+p("|---|---|---|---|---|---|")
 for arm, runs in arms.items():
     sz = [r.get("snapzAfterFirstReady") for r in runs if r.get("snapzAfterFirstReady") is not None]
     blind = [r for r in runs if r.get("snapzCounterBlind") is not None]
     busy = [len(r.get("rawCacheBusy")) for r in runs if r.get("rawCacheBusy") is not None]
-    armed = [r for r in runs if r.get("armOk") is not None]
     peaks = [x for x in (peak_footprint(r["_procs"]) for r in runs) if x is not None]
     ready = [x for x in (footprint_at(r["_procs"], r.get("readyEpoch"), True) for r in runs) if x is not None]
     steady = [x for x in (footprint_at(r["_procs"], r.get("steadyEpoch"), False) for r in runs) if x is not None]
     p(f"| {arm} | {(str(sum(sz)) + ', ' + str(sum(1 for x in sz if x > 0)) + '/' + str(len(sz))) if sz else '-'} | "
       f"{(str(sum(1 for r in blind if r.get('snapzCounterBlind'))) + '/' + str(len(blind))) if blind else '-'} | "
-      f"{sum(busy) if busy else '-'} | {(str(sum(1 for r in armed if r.get('armOk') is False)) + '/' + str(len(armed))) if armed else '-'} | "
+      f"{sum(busy) if busy else '-'} | "
       f"{med(peaks)} | {med(ready)} / {med(steady)} |")
 p()
 names = list(arms)

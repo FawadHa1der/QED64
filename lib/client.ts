@@ -204,10 +204,8 @@ const HEARTBEAT_PROBE_MS = 2000;
 
 // Runtime lifetime locks (HARDENING #55; lean.worker.js has the other half):
 // the session holds `qed64-wanted:<runtime id>` from construction until
-// dispose()/terminate() (or the document's end), and its worker waits before
-// allocating — at most this long — while runtimes still alive but no longer
-// wanted keep more Workers alive than a ready runtime's busy threads.
-const PREDECESSOR_WAIT_MS = 6000;
+// dispose()/terminate() (or the document's end). A lifetime signal: nothing
+// waits on it since R16 (HARDENING #55 note).
 const newRuntimeId = (): string =>
   globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 
@@ -277,7 +275,7 @@ export class LeanSession {
         if (this.unwanted) resolve(); else this.releaseWanted = resolve;
       })).catch(() => {});
     } catch {
-      /* no Web Locks: the worker then waits for nothing */
+      /* no Web Locks: nothing to hold */
     }
   }
 
@@ -411,7 +409,8 @@ export class LeanSession {
         transfer.push(pack.bytes.buffer);
       }
     }
-    return this.request<ReadyInfo>("boot", { config, instance: { id: this.runtimeId, waitMs: PREDECESSOR_WAIT_MS } }, transfer);
+    // An older worker in a mixed cache reads the missing waitMs as its 6 s budget (HARDENING #55's R16 note).
+    return this.request<ReadyInfo>("boot", { config, instance: { id: this.runtimeId } }, transfer);
   }
 
   loadSnapshot(

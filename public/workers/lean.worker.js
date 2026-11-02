@@ -1308,12 +1308,9 @@ function makeOutputCollector(requestId, fallbackFile) {
 // `qed64-wanted:<id>` exactly while it wants that runtime (client.ts), and
 // every Worker of the runtime — this one and each pthread Worker, through
 // the prelude below — holds `qed64-alive:<id>` (shared) until Blink destroys
-// its context. Before a runtime allocates its memory and its pool it waits,
-// bounded, until the runtimes that are alive but no longer wanted — the
-// previous page of this tab, the runtime a relay restart or reboot replaced, a
-// stopping runtime of another tab or frame — keep at most
-// STOPPING_WORKERS_TOLERATED Workers alive. Live runtimes in other tabs or
-// frames are still wanted, so never waited for.
+// its context. The locks stay as lifetime signals; nothing waits on them since
+// R16 (HARDENING #55 note): a runtime allocates beside whatever a stopping one
+// still has alive.
 // ---------------------------------------------------------------------------
 
 const ALIVE_LOCK = "qed64-alive:";
@@ -1323,7 +1320,7 @@ function holdAliveLock(id) {
   try {
     navigator.locks.request(ALIVE_LOCK + id, { mode: "shared" }, () => new Promise(() => {})).catch(() => {});
   } catch {
-    /* no Web Locks here: nothing to hold, nobody can wait for us */
+    /* no Web Locks here: nothing to hold */
   }
 }
 
@@ -1332,48 +1329,6 @@ function holdAliveLock(id) {
 function pthreadPrelude(id, glueUrl) {
   const lock = JSON.stringify(ALIVE_LOCK + id);
   return `"use strict";try{navigator.locks.request(${lock},{mode:"shared"},()=>new Promise(()=>{})).catch(()=>{})}catch(e){}importScripts(${JSON.stringify(glueUrl)});\n`;
-}
-
-// How many Workers of stopping runtimes may still be alive when this one
-// allocates. A `ready` runtime's busy pthreads (10–11 on a 14-core host) wait
-// out the 2 s grace after every ordinary reload, and that overlap has never
-// crashed; what crashed is more — #53's 18–20 parked threads, or all 25
-// Workers of a runtime caught mid-boot. Waiting for those last busy threads
-// too would add ~1.9 s to every reload of a ready page. A host whose ready
-// runtime keeps more threads busy waits for them. A same-document restart
-// keeps the same tolerance (HARDENING #68, R16: 0/24 start-up crashes).
-const STOPPING_WORKERS_TOLERATED = 12;
-
-/** The boot's one line about the wait. Its start and the " — budget spent" group are parsed downstream (the widgets
- * showcase's BOOT_WAITED_RE, reload-storm.mjs; tests/unit/runtime-locks.test.ts). */
-function waitedLine(waited) {
-  return `[boot] waited ${waited.waitedMs} ms for ${waited.ids.length} stopping runtime(s) (${(waited.workers || []).join(" → ")} Workers alive)`
-    + `${waited.timedOut ? " — budget spent, booting anyway" : ""}${waited.error ? ` (lock query failed: ${waited.error})` : ""}`;
-}
-
-async function waitForUnwantedRuntimes(selfId, budgetMs) {
-  const t0 = performance.now();
-  const locks = typeof navigator !== "undefined" ? navigator.locks : undefined;
-  if (!locks || !selfId) return { ids: [], waitedMs: 0, timedOut: false, workers: [0, 0] };
-  // One held (or pending) alive lock per live Worker: count them per poll.
-  const stopping = async () => {
-    const { held = [], pending = [] } = await locks.query();
-    const wanted = new Set(held.filter((l) => l.name.startsWith(WANTED_LOCK)).map((l) => l.name.slice(WANTED_LOCK.length)));
-    return [...held, ...pending]
-      .filter((l) => l.name.startsWith(ALIVE_LOCK))
-      .map((l) => l.name.slice(ALIVE_LOCK.length))
-      .filter((id) => id !== selfId && !wanted.has(id));
-  };
-  let alive = await stopping();
-  const ids = [...new Set(alive)];
-  const first = alive.length;
-  let timedOut = false;
-  while (alive.length > STOPPING_WORKERS_TOLERATED) {
-    if (performance.now() - t0 > budgetMs) { timedOut = true; break; }
-    await new Promise((resolve) => setTimeout(resolve, 25));
-    alive = await stopping();
-  }
-  return { ids, waitedMs: Math.round(performance.now() - t0), timedOut, workers: [first, alive.length] };
 }
 
 // ---------------------------------------------------------------------------
@@ -1455,11 +1410,9 @@ async function boot(msg) {
     loaded: 0,
     total: wireBytes(files["lean.js"]) + wireBytes(files["lean.wasm"]),
   };
-  // HARDENING #55: measured while the chunks download and verify.
+  // HARDENING #55: this runtime's lifetime signal, from its first moment. An older page's instance.waitMs is ignored.
   const instanceId = msg.instance && typeof msg.instance.id === "string" ? msg.instance.id : null;
   if (instanceId) holdAliveLock(instanceId);
-  const predecessors = waitForUnwantedRuntimes(instanceId, Number(msg.instance && msg.instance.waitMs) || 6000)
-    .catch((error) => ({ ids: [], waitedMs: 0, timedOut: false, error: String(error) }));
 
   let scriptUrl;
   let wasmUrl;
@@ -1474,14 +1427,6 @@ async function boot(msg) {
   const pthreadUrl = instanceId
     ? URL.createObjectURL(new Blob([pthreadPrelude(instanceId, scriptUrl)], { type: "text/javascript" }))
     : scriptUrl;
-
-  // Nothing of this runtime's memory, glue or pool exists while a stopping
-  // predecessor keeps more Workers alive than tolerated (or until the wait's
-  // budget is spent). The widgets showcase's BOOT_WAITED_RE is anchored at the
-  // start, with "budget spent" right after "Workers alive)", and
-  // reload-storm.mjs slices the line.
-  const waited = await predecessors;
-  if (waited.ids.length || waited.error) event(null, "log", { stream: "stderr", text: waitedLine(waited) });
 
   let mem;
   try {
@@ -2151,8 +2096,8 @@ self.__qed64TestExports = {
   // and the live loop (start, one step, stop) with its state.
   liveness: { LIVENESS, LIVENESS_PROBE_PREFIX, createLiveness, livenessClientRequest, livenessServerFrame, livenessTick, kickMailbox, instrumentRuntimeMailbox, mailboxBootLine, EXIT_ENTRY_NAMES, runtimeMailbox, state: () => liveness, step: () => livenessStep(), start: () => startLiveness(), stop: () => stopLiveness() },
   // Runtime lifetime locks under test (tests/unit/runtime-locks.test.ts): the
-  // predecessor wait against a fake navigator.locks, and the pthread prelude.
-  lifetime: { ALIVE_LOCK, WANTED_LOCK, STOPPING_WORKERS_TOLERATED, waitForUnwantedRuntimes, waitedLine, pthreadPrelude },
+  // lock names and the pthread prelude.
+  lifetime: { ALIVE_LOCK, WANTED_LOCK, pthreadPrelude },
   // The raw snapshot cache's busy-handle retry under test (tests/unit/raw-cache-busy.test.ts, review R2): the
   // bound is mutable so a test shortens it in its own sandbox.
   rawCache: { RAW_BUSY, openRawSnapshot },

@@ -1,109 +1,54 @@
-// Runtime lifetime locks (public/workers/lean.worker.js, docs/HARDENING.md #55):
-// the predecessor wait a booting runtime runs before it allocates its memory
-// and its pool, against a fake `navigator.locks` whose lock table the test edits
-// while the wait polls, and the prelude every pthread Worker runs before the
-// glue — all loaded from the REAL worker script in a vm sandbox (the
-// front-door.test.ts pattern).
-import { describe, expect, it } from "vitest";
+// Runtime lifetime locks (public/workers/lean.worker.js, lib/client.ts, docs/HARDENING.md #55): lifetime signals that
+// nothing waits on since R16. The lock names and the prelude every pthread Worker runs before the glue, from the REAL
+// worker script in a vm sandbox (the front-door.test.ts pattern); the alive lock boot() takes, through the real worker's
+// message handler, against a lock table full of stopping Workers it must not look at; and the wanted lock the page
+// holds, on the real LeanSession over a fake Worker (the session-serialization.test.ts pattern).
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
+import { LeanSession, type BootConfig } from "../../lib/client";
 
-type Lock = { name: string; mode?: string };
-interface Table { held: Lock[]; pending: Lock[] }
-interface Waited { ids: string[]; waitedMs: number; timedOut: boolean; workers: [number, number] }
 interface Lifetime {
   ALIVE_LOCK: string;
   WANTED_LOCK: string;
-  STOPPING_WORKERS_TOLERATED: number;
-  waitForUnwantedRuntimes(selfId: string | null, budgetMs: number): Promise<Waited>;
-  waitedLine(waited: Partial<Waited> & { ids: string[]; waitedMs: number; error?: string }): string;
   pthreadPrelude(id: string, glueUrl: string): string;
 }
 
-function loadWorker(table: Table | null) {
-  const workers = path.resolve(__dirname, "../../public/workers");
+const workers = path.resolve(__dirname, "../../public/workers");
+
+/** The real worker script in a sandbox with this `navigator`. Its message handlers and every message it posts are
+ * returned for a test that drives it. */
+function loadWorker(navigator: unknown) {
+  const handlers: Array<(e: { data: unknown }) => void> = [];
+  const posted: Array<Record<string, unknown>> = [];
   const sandbox: Record<string, unknown> = {
     crypto, performance, Blob, URL, WebAssembly, SharedArrayBuffer, Atomics, TextEncoder, TextDecoder, BigInt, console,
-    setTimeout, clearTimeout, setInterval, clearInterval,
-    fetch: () => Promise.reject(new Error("no network in unit tests")),
-    navigator: table ? { locks: { query: async () => ({ held: [...table.held], pending: [...table.pending] }) } } : {},
+    setTimeout, clearTimeout, setInterval: (fn: () => void, t: number) => { const h = setInterval(fn, t); h.unref(); return h; }, clearInterval,
+    fetch: async () => ({ ok: false, status: 404, headers: new Headers() }), // a boot's chunk fetch fails: it ends there
+    navigator,
+    crossOriginIsolated: true,
   };
   sandbox.self = sandbox;
-  sandbox.postMessage = () => {};
-  sandbox.addEventListener = () => {};
-  sandbox.crossOriginIsolated = true;
+  sandbox.postMessage = (m: Record<string, unknown>) => { posted.push(m); };
+  sandbox.addEventListener = (type: string, fn: (e: { data: unknown }) => void) => { if (type === "message") handlers.push(fn); };
   sandbox.importScripts = (name: string) => vm.runInContext(readFileSync(path.join(workers, name), "utf8"), sandbox, { filename: name });
   vm.createContext(sandbox);
   vm.runInContext(readFileSync(path.join(workers, "lean.worker.js"), "utf8"), sandbox, { filename: "lean.worker.js" });
-  return (sandbox as { __qed64TestExports?: { lifetime: Lifetime } }).__qed64TestExports!.lifetime;
+  const lifetime = (sandbox as { __qed64TestExports?: { lifetime: Lifetime } }).__qed64TestExports!.lifetime;
+  return { lifetime, handlers, posted };
 }
 
-const alive = (id: string, n: number): Lock[] => Array.from({ length: n }, () => ({ name: `qed64-alive:${id}`, mode: "shared" }));
-const wanted = (id: string): Lock => ({ name: `qed64-wanted:${id}`, mode: "exclusive" });
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-describe("predecessor wait (HARDENING #55)", () => {
-  it("returns at once when no runtime is stopping, and when Web Locks are missing", async () => {
-    const L = loadWorker({ held: [], pending: [] });
-    const w = await L.waitForUnwantedRuntimes("me", 1000);
-    expect(w).toMatchObject({ ids: [], timedOut: false, workers: [0, 0] });
-    expect(w.waitedMs).toBeLessThan(100);
-    const none = loadWorker(null);
-    expect(await none.waitForUnwantedRuntimes("me", 1000)).toMatchObject({ ids: [], timedOut: false });
-    expect(await L.waitForUnwantedRuntimes(null, 1000)).toMatchObject({ ids: [], timedOut: false });
-  });
-
-  it("never waits for itself or for a runtime that is still wanted (another tab, another frame)", async () => {
-    const table: Table = { held: [...alive("me", 25), wanted("me"), ...alive("other-tab", 25), wanted("other-tab")], pending: [] };
-    const w = await loadWorker(table).waitForUnwantedRuntimes("me", 1000);
-    expect(w).toMatchObject({ ids: [], timedOut: false, workers: [0, 0] });
-  });
-
-  it("waits while a stopping runtime keeps more Workers alive than tolerated, counting pending requests too", async () => {
-    const table: Table = { held: [...alive("old", 20)], pending: alive("old", 5) };
-    const L = loadWorker(table);
-    expect(L.STOPPING_WORKERS_TOLERATED).toBe(12);
-    let settled = false;
-    const p = L.waitForUnwantedRuntimes("me", 5000).then((w) => { settled = true; return w; });
-    await new Promise((r) => setTimeout(r, 120));
-    expect(settled).toBe(false); // 25 alive
-    table.held = alive("old", 13); table.pending = []; // the idle Workers went
-    await new Promise((r) => setTimeout(r, 120));
-    expect(settled).toBe(false); // 13 > 12
-    table.held = alive("old", 11); // only busy pthreads in their 2 s grace remain
-    const w = await p;
-    expect(w).toMatchObject({ ids: ["old"], timedOut: false, workers: [25, 11] });
-    expect(w.waitedMs).toBeGreaterThanOrEqual(200);
-  });
-
-  it("exactly 12 returns at once (the tolerance's boundary)", async () => {
-    const w = await loadWorker({ held: alive("old", 12), pending: [] }).waitForUnwantedRuntimes("me", 5000);
-    expect(w).toMatchObject({ ids: ["old"], timedOut: false, workers: [12, 12] });
-    expect(w.waitedMs).toBeLessThan(100);
-  });
-
-  it("13 keeps waiting, and exactly 12 releases", async () => {
-    const table: Table = { held: alive("old", 13), pending: [] };
-    const L = loadWorker(table);
-    let settled = false;
-    const p = L.waitForUnwantedRuntimes("me", 5000).then((w) => { settled = true; return w; });
-    await sleep(120);
-    expect(settled).toBe(false); // 13 > 12
-    table.held = alive("old", 12);
-    const w = await p;
-    expect(w).toMatchObject({ ids: ["old"], timedOut: false, workers: [13, 12] });
-  });
-
-  it("gives up when the budget is spent, and says so", async () => {
-    const L = loadWorker({ held: alive("stuck", 25), pending: [] });
-    const w = await L.waitForUnwantedRuntimes("me", 150);
-    expect(w).toMatchObject({ ids: ["stuck"], timedOut: true, workers: [25, 25] });
-    expect(w.waitedMs).toBeGreaterThanOrEqual(150);
+describe("the alive lock (the worker's half)", () => {
+  it("the names stay, and the test surface is the names and the prelude: there is no wait left to test", () => {
+    const { lifetime } = loadWorker({});
+    expect(Object.keys(lifetime).sort()).toEqual(["ALIVE_LOCK", "WANTED_LOCK", "pthreadPrelude"]);
+    expect(lifetime.ALIVE_LOCK).toBe("qed64-alive:");
+    expect(lifetime.WANTED_LOCK).toBe("qed64-wanted:");
   });
 
   it("the pthread prelude takes the runtime's alive lock (shared, held for good) before it loads the glue", async () => {
-    const L = loadWorker({ held: [], pending: [] });
+    const L = loadWorker({}).lifetime;
     const calls: string[] = [];
     let held: Promise<unknown> | null = null;
     const pthread = vm.createContext({
@@ -119,21 +64,82 @@ describe("predecessor wait (HARDENING #55)", () => {
     vm.runInContext(L.pthreadPrelude("rt-2", "blob:http://x/glue"), vm.createContext({ navigator: {}, importScripts: (u: string) => bare.push(u) }));
     expect(bare).toEqual(["blob:http://x/glue"]);
   });
+
+  // boot() up to its chunk fetch, which fails here (RUNTIME_FETCH_FAILED, before the allocation).
+  const sha = "3ab1c6a9da03bc29" + "f".repeat(48);
+  const file = (bytes: number, sha256: string) => ({ bytes, sha256, chunks: [{ url: `/runtime/chunks/${sha256}.0`, bytes, sha256 }] });
+  const runtime = { buildId: `wasm64-${sha.slice(0, 16)}`, leanVersion: "4.34.0", files: { "lean.js": file(10, "a".repeat(64)), "lean.wasm": file(20, sha) } };
+  async function boot(instance: unknown) {
+    const requests: string[] = [];
+    let queries = 0;
+    const { handlers, posted } = loadWorker({ locks: {
+      request: (name: string, opts: { mode: string }, cb: () => Promise<unknown>) => { requests.push(`${name} ${opts.mode}`); return cb(); },
+      // 25 Workers of a stopping runtime: what a boot used to wait for.
+      query: async () => { queries += 1; return { held: Array.from({ length: 25 }, () => ({ name: "qed64-alive:old", mode: "shared" })), pending: [] }; },
+    } });
+    const msg = { protocol: 1, type: "boot", requestId: "r1", instance, config: { runtime, memory: { initialBytes: 256 * 1048576, maximumCandidates: [1073741824] }, leanPath: "/lib/lean" } };
+    for (const h of handlers) h({ data: msg });
+    await vi.waitFor(() => expect(JSON.stringify(posted)).toContain("RUNTIME_FETCH_FAILED"));
+    return { requests, queries, text: JSON.stringify(posted) };
+  }
+
+  it("boot() holds its alive lock and never looks at the lock table, whatever a stopping runtime has alive", async () => {
+    const b = await boot({ id: "me" });
+    expect(b.requests).toEqual(["qed64-alive:me shared"]);
+    expect(b.queries).toBe(0);
+    expect(b.text).not.toMatch(/\[boot\] waited/);
+  });
+
+  it("an older page's instance.waitMs and instance.predecessors are ignored; a boot with no id holds nothing", async () => {
+    const old = await boot({ id: "me", waitMs: 6000, predecessors: ["old"] });
+    expect(old.requests).toEqual(["qed64-alive:me shared"]);
+    expect(old.queries).toBe(0);
+    const none = await boot(undefined);
+    expect(none.requests).toEqual([]);
+    expect(none.queries).toBe(0);
+  });
 });
 
-describe("the [boot] waited line", () => {
-  // The widgets showcase's parser (qed64-showcase tests/ux/lib/qed64.mjs BOOT_WAITED_RE), applied to the worker's
-  // stderr as the page logs it ("[lean:stderr] " + line). Copied verbatim: a change here must be agreed with it.
-  const BOOT_WAITED_RE = /^\[lean:stderr\] \[boot\] waited (\d+) ms for (\d+) stopping runtime\(s\) \(([^)]*) Workers alive\)( — budget spent, booting anyway)?/;
-  const lt = loadWorker({ held: [], pending: [] });
-  const parse = (line: string) => BOOT_WAITED_RE.exec(`[lean:stderr] ${line}`);
+describe("the wanted lock (the page's half)", () => {
+  class FakeWorker {
+    static last: FakeWorker;
+    posted: Array<{ type: string; instance?: unknown }> = [];
+    constructor(_url: string) { FakeWorker.last = this; }
+    addEventListener() {}
+    removeEventListener() {}
+    postMessage(msg: { type: string; instance?: unknown }) { this.posted.push(msg); }
+    terminate() {}
+  }
+  const CONFIG: BootConfig = {
+    runtime: {} as BootConfig["runtime"],
+    memory: { initialBytes: 256 * 1024 * 1024, maximumCandidates: [4 * 1024 * 1024 * 1024] },
+    leanPath: "/lib/lean",
+    packs: [],
+  };
+  const stillHeld = (held: Promise<unknown>) => Promise.race([held.then(() => "released"), new Promise((r) => setTimeout(() => r("still held"), 20))]);
 
-  it("the start parses, with budget spent right after 'Workers alive)'; nothing follows it", () => {
-    const spent = lt.waitedLine({ ids: ["old"], waitedMs: 6001, timedOut: true, workers: [25, 13] });
-    expect(spent).toBe("[boot] waited 6001 ms for 1 stopping runtime(s) (25 → 13 Workers alive) — budget spent, booting anyway");
-    expect(parse(spent)?.slice(1)).toEqual(["6001", "1", "25 → 13", " — budget spent, booting anyway"]);
-    const quick = lt.waitedLine({ ids: ["prev-doc"], waitedMs: 412, timedOut: false, workers: [25, 11] });
-    expect(quick).toBe("[boot] waited 412 ms for 1 stopping runtime(s) (25 → 11 Workers alive)");
-    expect(parse(quick)?.slice(1)).toEqual(["412", "1", "25 → 11", undefined]);
+  beforeEach(() => { vi.stubGlobal("Worker", FakeWorker); });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it("a session holds qed64-wanted:<its runtime id> from construction until dispose(), and boots with just that id", async () => {
+    const requests: Array<{ name: string; held: Promise<unknown> }> = [];
+    vi.stubGlobal("navigator", { locks: { request: (name: string, cb: () => Promise<unknown>) => { const held = cb(); requests.push({ name, held }); return held; } } });
+    const session = new LeanSession("/fake.worker.js");
+    expect(requests.map((r) => r.name)).toEqual([expect.stringMatching(/^qed64-wanted:.+/)]);
+    const id = requests[0]!.name.slice("qed64-wanted:".length);
+    expect(await stillHeld(requests[0]!.held)).toBe("still held");
+    session.boot(CONFIG).catch(() => {}); // posted synchronously, never answered: the dispose rejects it
+    // An older worker in a mixed cache reads the missing waitMs as its 6 s budget.
+    expect(FakeWorker.last.posted.find((m) => m.type === "boot")?.instance).toEqual({ id });
+    session.dispose();
+    expect(await stillHeld(requests[0]!.held)).toBe("released");
+  });
+
+  it("a session without Web Locks still constructs and boots", () => {
+    vi.stubGlobal("navigator", {});
+    const session = new LeanSession("/fake.worker.js");
+    session.boot(CONFIG).catch(() => {});
+    expect(FakeWorker.last.posted.find((m) => m.type === "boot")?.instance).toEqual({ id: expect.any(String) });
+    session.dispose();
   });
 });
