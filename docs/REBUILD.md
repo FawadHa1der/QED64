@@ -61,12 +61,13 @@ follow `wasm64-build/` there; the gate it runs must print `GATE PASSED`. To
 use the published one, fetch the release (`npm run fetch:artifacts -- --release
 <dir|url>`, or `lean4-wasm64 fetch`); its `runtime/` is already chunked and
 its `buildId` (`wasm64-<sha256(lean.wasm)[:16]>`) is `release.json`
-`runtime.buildId`. QED64's own `pipeline/toolchain/gate.mjs` and
-`chunk-runtime.mjs` forward to the package's gate and chunker; a release's
-runtime is staged by `adopt-release.sh` (§3) from the release's own chunks,
-with no chunker and no restamp. (`setup-source.sh`, `build.sh`, `finish.sh`
-and the patch copies under `pipeline/toolchain/` are deleted;
-`gen-exports.py` is a stub that exits 2.)
+`runtime.buildId`. QED64 has no gate or chunker of its own: run the
+package's (`node <lean4-wasm64>/cli.mjs gate --artifact <dir>`, `… chunk …`;
+`adopt-release.sh --gate` runs the gate). A release's runtime is staged by
+`adopt-release.sh` (§3) from the release's own chunks, with no chunker and no
+restamp. (The in-repo build scripts, the patch copies, the `gen-exports.py`
+stub and the gate, chunk, unpack and inspect forwards are deleted;
+docs/CLI-CONTRACT.md's changelog has the dates.)
 
 The resulting `buildId` names the runtime; snapshots are only valid against
 the exact binary that baked them.
@@ -304,10 +305,10 @@ A version import is a pairing bump plus everything the library version
 touches, in this order:
 
 1. Kernel: merge the upstream tag on an import branch, build, gate; after the
-   merge run `gen-exports.py --check` — `emscripten-exports.wanted.txt` is a
-   historical list that can only shrink, so renamed specializations drop out
-   silently and new ones are never added; decide deliberately whether the
-   list needs regenerating for the new tree.
+   merge run the fork's `wasm64-build/gen-exports.py --check` —
+   `emscripten-exports.wanted.txt` is a historical list that can only shrink,
+   so renamed specializations drop out silently and new ones are never added;
+   decide deliberately whether the list needs regenerating for the new tree.
 2. Packs (section 2, full rebuild): `lean-core` from a native 64-bit build of
    the SAME fork commit, and `mathlib-essential` from Mathlib at the tag that
    matches the new Lean version, with the compat patch re-examined. New pack

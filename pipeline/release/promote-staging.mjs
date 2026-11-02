@@ -3,8 +3,9 @@
 // packs — into public/ in one step.
 //
 // Snapshots are binary-paired, so a runtime and its snapshots must never be
-// served in a mixed state: stage both (chunk-runtime, bake-snapshot — their
-// default --out is work/staging/<buildId>/{runtime,snapshots}), then promote
+// served in a mixed state: stage both (adopt-release.sh stages the runtime,
+// bake-snapshot the snapshots and stage-profiles the packs, under
+// work/staging/<buildId>/{runtime,snapshots,profiles}), then promote
 // together. The promote is ADDITIVE (review C6, HARDENING #32): chunks,
 // snapshot files and pack parts are content-addressed, so they are copied in
 // next to whatever is already there and nothing referenced by any manifest

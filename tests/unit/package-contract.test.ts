@@ -157,11 +157,6 @@ describe("embedding/closure.json", () => {
         expect(r !== null && listed.has(r), `${f}: ${s} → ${r}`).toBe(true);
       }
     }
-    // gate.mjs forwards to lean4-wasm64's gate (its own probes and runner, plan B1a): it spawns no
-    // pipeline script and reads no probe; the probes stay in pipelineData for browser-check.sh.
-    const gate = read("pipeline/toolchain/gate.mjs");
-    expect(gate).toContain('forwardToLean4Wasm64("gate", "gate.mjs", ["--artifact", artifact])');
-    expect(gate).not.toMatch(/node:child_process|"pipeline\/[\w/.-]+\.mjs"|kernel-probes/);
   });
 
   it("every export of a shipped pipeline .mjs with a .d.mts beside it is declared there", () => {
@@ -193,7 +188,7 @@ describe("embedding/closure.json", () => {
     const listed = new Set(closure.pipeline);
     const files = new Set(pkg.files as string[]);
     const tools = Object.entries(SPECS).filter(([, s]) => s.tier === 1 || s.tier === 2);
-    expect(tools.length).toBeGreaterThanOrEqual(10);
+    expect(tools.length).toBeGreaterThanOrEqual(9);
     for (const f of [...tools.map(([, s]) => s.script), "pipeline/snapshot/cli.mjs", "pipeline/snapshot/cli.d.mts", "pipeline/snapshot/supervised-run.mjs", "pipeline/snapshot/snapshot-probe.mjs"]) {
       expect(listed.has(f), `${f} is not in closure.pipeline`).toBe(true);
       expect(files.has(f), `${f} is not in package.json files`).toBe(true);

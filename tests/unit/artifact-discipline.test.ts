@@ -14,7 +14,6 @@ import { isImmutable } from "../../infra/worker.js";
 import { fetchSnapshotIndex } from "../../lib/snapshots";
 
 const root = path.resolve(__dirname, "../..");
-const chunker = path.join(root, "pipeline/toolchain/chunk-runtime.mjs");
 const baker = path.join(root, "pipeline/snapshot/bake-snapshot.mjs");
 const promote = path.join(root, "pipeline/release/promote-staging.mjs");
 const packer = path.join(root, "pipeline/artifacts/pack.mjs");
@@ -24,14 +23,8 @@ const run = (script: string, args: string[]) =>
 const sha = (b: Buffer) => createHash("sha256").update(b).digest("hex");
 
 let tmp: string;
-/** A FAKE lean4-wasm64 package: its chunk-runtime.mjs prints its argv as JSON and exits 7. */
-let fakePkg: string;
 beforeAll(() => {
   tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "qed64-artifacts-")));
-  fakePkg = path.join(tmp, "fake-lean4-wasm64");
-  fs.mkdirSync(fakePkg);
-  fs.writeFileSync(path.join(fakePkg, "package.json"), JSON.stringify({ name: "lean4-wasm64", version: "0.0.0-fake" }));
-  fs.writeFileSync(path.join(fakePkg, "chunk-runtime.mjs"), "console.log(JSON.stringify(process.argv.slice(2)));\nprocess.exit(7);\n");
 });
 afterAll(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
 
@@ -74,73 +67,6 @@ describe("isInsidePublic", () => {
     expect(isInsidePublic(root, path.join(root, "public/snapshots/../runtime"))).toBe(true);
     expect(isInsidePublic(root, "work/staging/x/runtime")).toBe(false);
     expect(isInsidePublic(root, "public-notreally")).toBe(false);
-  });
-});
-
-describe("chunk-runtime.mjs (a forward to lean4-wasm64 chunk: QED64 keeps the front half)", () => {
-  // The chunking itself is the fork's (its tests pin the manifest bytes); here the package is a
-  // FAKE whose chunk-runtime.mjs prints the argv it was handed and exits 7.
-  const forwarded = (r: { stdout: string }) => JSON.parse(r.stdout) as string[];
-  const DEPRECATED = "chunk-runtime: WARNING — pipeline/toolchain/chunk-runtime.mjs is deprecated; use lean4-wasm64 chunk --bin <dir> --out <dir> --lean-version <x.y.z> --revision <string> (the fork's package) (docs/CLI-CONTRACT.md)";
-  const chunk = (args: string[], env: Record<string, string> = {}) =>
-    spawnSync("node", [chunker, ...args], { cwd: root, encoding: "utf8", timeout: 60_000, env: { ...process.env, LEAN4_WASM64_DIR: fakePkg, QED64_STAGING: "", ...env } });
-
-  test("refuses --out inside public/ before writing anything (and before the forward)", () => {
-    const bin = fakeBin("refuse");
-    const before = fs.existsSync(path.join(root, "public/runtime/chunks")) ? fs.readdirSync(path.join(root, "public/runtime/chunks")).length : -1;
-    const r = chunk(["--bin", bin, "--out", "public/runtime"]);
-    expect(r.status).toBe(2);
-    expect(r.stderr).toMatch(/refusing --out .*public/);
-    expect(r.stdout).toBe("");
-    const after = fs.existsSync(path.join(root, "public/runtime/chunks")) ? fs.readdirSync(path.join(root, "public/runtime/chunks")).length : -1;
-    expect(after).toBe(before);
-  });
-
-  test("forwards --bin, an absolute --out, --lean-version and --revision; one deprecation WARNING; the package's exit code", () => {
-    const bin = fakeBin("fwd");
-    const r = chunk(["--bin", bin, "--out", path.join(tmp, "runtime-fwd"), "--revision", "test", "--lean-version", "9.9.9", "--upstream-base", "v9.9.9"]);
-    expect(r.status).toBe(7);
-    expect(forwarded(r)).toEqual(["--bin", bin, "--out", path.join(tmp, "runtime-fwd"), "--lean-version", "9.9.9", "--revision", "test"]);
-    expect(r.stderr.split("\n").filter(Boolean)).toEqual([DEPRECATED]);
-    expect(fs.existsSync(path.join(tmp, "runtime-fwd"))).toBe(false); // the fake writes nothing; neither does the front half
-  });
-
-  test("a missing --lean-version is a loud warning and forwards 4.33.0-pre; --upstream-base only feeds the default revision", () => {
-    const loud = chunk(["--bin", fakeBin("nover"), "--out", path.join(tmp, "runtime-nover"), "--upstream-base", "v9.9.9"]);
-    expect(loud.status).toBe(7);
-    expect(loud.stderr).toMatch(/WARNING — no --lean-version given; the manifest will say Lean 4\.33\.0-pre/);
-    // no --revision for a binary outside pipeline/toolchain/work: said out loud
-    expect(loud.stderr).toMatch(/WARNING — no --revision given for a binary outside pipeline\/toolchain\/work/);
-    const argv = forwarded(loud);
-    expect(argv.slice(0, 6)).toEqual(["--bin", path.join(tmp, "bin-nover"), "--out", path.join(tmp, "runtime-nover"), "--lean-version", "4.33.0-pre"]);
-    expect(argv[6]).toBe("--revision");
-    // The default revision needs the fork checkout; where it exists the base is the argument's.
-    expect(argv[7] === "unspecified" || /^qed64-wasm64@[0-9a-f]+ \(base v9\.9\.9\)$/.test(argv[7]!)).toBe(true);
-    expect(argv).not.toContain("--upstream-base");
-    expect(loud.stderr.split("\n").filter(Boolean).at(-1)).toBe(DEPRECATED);
-  });
-
-  test("default --out is work/staging/<buildId>/runtime (never public/), deprecated with one WARNING, forwarded absolute", () => {
-    const bin = fakeBin("default");
-    const r = chunk(["--bin", bin, "--revision", "test", "--lean-version", "9.9.9"]);
-    expect(r.status).toBe(7);
-    const id = runtimeBuildId(Buffer.from("\0asmdefault"));
-    const staged = path.join(root, "work/staging", id, "runtime");
-    expect(r.stderr.split("\n").filter(Boolean)).toEqual([
-      `chunk-runtime: WARNING — the default --out work/staging/<buildId>/runtime under the repo root (${staged}) is deprecated; use --out <dir> or set QED64_STAGING (docs/CLI-CONTRACT.md)`,
-      DEPRECATED,
-    ]);
-    expect(forwarded(r)).toEqual(["--bin", bin, "--out", staged, "--lean-version", "9.9.9", "--revision", "test"]);
-    expect(fs.existsSync(path.join(root, "work/staging", id))).toBe(false);
-  });
-
-  test("no package: the front half's WARNING, then one not-found line, exit 2", () => {
-    const r = chunk(["--bin", fakeBin("nopkg"), "--out", path.join(tmp, "runtime-nopkg"), "--revision", "test", "--lean-version", "9.9.9"], { LEAN4_WASM64_DIR: "" });
-    // the walk from the repo root may find an installed package (CI's npm ci); this host has none
-    if (r.status === 2) {
-      expect(r.stdout).toBe("");
-      expect(r.stderr.split("\n").filter(Boolean)).toEqual([DEPRECATED, expect.stringMatching(/^chunk-runtime: lean4-wasm64 not found — set LEAN4_WASM64_DIR=<package dir> or install it: /)]);
-    }
   });
 });
 

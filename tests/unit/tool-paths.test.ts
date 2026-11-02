@@ -9,8 +9,7 @@
 // case is chosen to stop at a cheap existence check: a missing lib tree, a
 // foreign index, a missing --snap, a bin/lean.js that is a directory. The one
 // bake that runs to completion runs a FAKE node-runner (a script that writes
-// the .snap and exits); gate's deprecated-default case forwards to a FAKE
-// lean4-wasm64 package (LEAN4_WASM64_DIR) whose gate records its argv. Every child has a SIGKILL timeout: spawnSync's,
+// the .snap and exits). Every child has a SIGKILL timeout: spawnSync's,
 // or (the one async spawn) a timer and a finally that kill it, and the scratch
 // tool's --hang mode exits by itself after 25 s whatever the test did.
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
@@ -25,7 +24,7 @@ import { batteryInputs } from "../../tests/adversarial/compiler-battery.mjs";
 
 const root = path.resolve(__dirname, "../..");
 const pathsModule = path.join(root, "pipeline/toolchain/artifact-paths.mjs");
-const RULE_ENV = ["QED64_LEAN_ARTIFACT", "QED64_WORK", "QED64_STAGING", "QED64_LIB_TREE", "QED64_MATHLIB_SNAP", "QED64_SNAP_DIR", "QED64_ALLOW_LEGACY_IMPORTS", "QED64_RUNNER", "LEAN4_WASM64_DIR"];
+const RULE_ENV = ["QED64_LEAN_ARTIFACT", "QED64_WORK", "QED64_STAGING", "QED64_LIB_TREE", "QED64_MATHLIB_SNAP", "QED64_SNAP_DIR", "QED64_ALLOW_LEGACY_IMPORTS", "QED64_RUNNER"];
 const marker = (tool: string, id: string) => SPECS[tool]!.markers.find((m) => m.id === id)!.regex;
 const DEPRECATED = marker("bake-snapshot", "deprecated-default");
 const NO_PATH = marker("bake-snapshot", "no-path");
@@ -50,8 +49,6 @@ const TOOLS: Record<string, string[]> = {
   "snapshot-probe": ["pipeline/snapshot/snapshot-probe.mjs"],
   "persistent-probe": ["pipeline/snapshot/persistent-probe.mjs"],
   "bake-snapshot": ["pipeline/snapshot/bake-snapshot.mjs"],
-  "chunk-runtime": ["pipeline/toolchain/chunk-runtime.mjs"],
-  gate: ["pipeline/toolchain/gate.mjs"],
   "resident-probe": ["pipeline/snapshot/resident-probe.mjs", "public/workers/lsp-frames.js", "public/workers/worker-constants.js", "public/workers/lean.worker.js"],
 };
 const toolCheckout = (tool: string) => checkout([...TOOLS[tool]!, "pipeline/toolchain/artifact-paths.mjs"]);
@@ -81,15 +78,6 @@ function tree(dir: string): string[] {
 }
 
 const legacyStage1 = (s: string) => path.join(s, "pipeline/toolchain/work/build/stage1");
-const CHUNK_FORWARD = "chunk-runtime: WARNING — pipeline/toolchain/chunk-runtime.mjs is deprecated; use lean4-wasm64 chunk --bin <dir> --out <dir> --lean-version <x.y.z> --revision <string> (the fork's package) (docs/CLI-CONTRACT.md)";
-/** A FAKE lean4-wasm64 package inside checkout `s`: its chunk-runtime.mjs prints its argv and exits 7. */
-function fakeChunker(s: string): string {
-  const pkg = path.join(s, "fake-lean4-wasm64");
-  fs.mkdirSync(pkg, { recursive: true });
-  fs.writeFileSync(path.join(pkg, "package.json"), JSON.stringify({ name: "lean4-wasm64" }));
-  fs.writeFileSync(path.join(pkg, "chunk-runtime.mjs"), "console.log(JSON.stringify(process.argv.slice(2)));\nprocess.exit(7);\n");
-  return pkg;
-}
 function fakeStage1(dir: string, { js = true, wasm = false, jsIsDir = false } = {}) {
   fs.mkdirSync(path.join(dir, "bin"), { recursive: true });
   if (jsIsDir) fs.mkdirSync(path.join(dir, "bin/lean.js"));
@@ -156,7 +144,6 @@ describe("the tools in a scratch checkout: nothing resolves → exit 2 + usage, 
     ["snapshot-probe", "pipeline/snapshot/snapshot-probe.mjs", ["--snap", "x.snap", "--probe", "#check 1"]],
     ["persistent-probe", "pipeline/snapshot/persistent-probe.mjs", []],
     ["bake-snapshot", "pipeline/snapshot/bake-snapshot.mjs", ["--name", "init"]],
-    ["gate", "pipeline/toolchain/gate.mjs", []],
     ["resident-probe", "pipeline/snapshot/resident-probe.mjs", []],
   ];
   for (const [tool, rel, args] of cases) {
@@ -169,8 +156,7 @@ describe("the tools in a scratch checkout: nothing resolves → exit 2 + usage, 
       expect(r.stdout).toBe("");
       expect(r.lines).toHaveLength(2);
       expect(r.lines[0]).toMatch(NO_PATH);
-      // gate's old default was the cwd; every other tool's, the checkout's own stage1
-      expect(r.lines[0]).toContain(`${tool}: no --artifact given and QED64_LEAN_ARTIFACT is unset; the deprecated default ${tool === "gate" ? s : legacyStage1(s)} has no bin/lean.`);
+      expect(r.lines[0]).toContain(`${tool}: no --artifact given and QED64_LEAN_ARTIFACT is unset; the deprecated default ${legacyStage1(s)} has no bin/lean.`);
       expect(r.lines[1]).toMatch(/^usage: /);
       if (SPECS[tool]) expect(r.lines[1]).toBe(`usage: ${SPECS[tool]!.synopsis}`);
       expect(tree(s)).toEqual(before);
@@ -201,10 +187,9 @@ test("each SPEC tool's usage literal for the rule's refusal is its synopsis", ()
 });
 
 describe("the tools in a scratch checkout: the variable is honoured", () => {
-  test("node-runner, gate, resident-probe: QED64_LEAN_ARTIFACT reaches the tool's own artifact check (exit 2, no WARNING)", () => {
+  test("node-runner, resident-probe: QED64_LEAN_ARTIFACT reaches the tool's own artifact check (exit 2, no WARNING)", () => {
     for (const [tool, rel, line] of [
       ["node-runner", "pipeline/snapshot/node-runner.mjs", (a: string) => `error: ${a}/bin/lean.js not found — pass --artifact or set QED64_LEAN_ARTIFACT`],
-      ["gate", "pipeline/toolchain/gate.mjs", (a: string) => `gate: ${a}/bin/lean.js not found`],
       ["resident-probe", "pipeline/snapshot/resident-probe.mjs", (a: string) => `error: ${a}/bin/lean.js not found`],
     ] as const) {
       const s = toolCheckout(tool);
@@ -250,17 +235,6 @@ describe("the tools in a scratch checkout: the variable is honoured", () => {
     expect(r.status).toBe(1);
     expect(r.stderr).toContain(path.join(env, "bin/lean.js"));
     expect(r.stderr).not.toMatch(/WARNING|no --\S+ given/);
-  });
-
-  test("chunk-runtime: QED64_STAGING puts the runtime under <root>/<buildId>/runtime (no path WARNING), handed to the package's chunker", () => {
-    const s = toolCheckout("chunk-runtime");
-    const bin = path.join(fakeStage1(path.join(s, "art/stage1"), { wasm: true }), "bin");
-    const r = run(s, "pipeline/toolchain/chunk-runtime.mjs", ["--bin", bin, "--revision", "test", "--lean-version", "9.9.9"], { QED64_STAGING: path.join(s, "stg"), LEAN4_WASM64_DIR: fakeChunker(s) });
-    expect(r.status, r.stderr).toBe(7);
-    expect(r.lines).toEqual([CHUNK_FORWARD]);
-    const id = runtimeBuildId(fs.readFileSync(path.join(bin, "lean.wasm")));
-    expect(JSON.parse(r.stdout)).toEqual(["--bin", bin, "--out", path.join(s, "stg", id, "runtime"), "--lean-version", "9.9.9", "--revision", "test"]);
-    expect(fs.existsSync(path.join(s, "work"))).toBe(false);
   });
 
   test("compiler-battery: flag, then QED64_MATHLIB_SNAP / QED64_LEAN_ARTIFACT / QED64_LIB_TREE, then the deprecated defaults, else exit 2", () => {
@@ -345,56 +319,9 @@ describe("the tools in a scratch checkout: a deprecated default prints exactly o
     ]);
     expect(tree(s)).toEqual(before);
   });
-
-  test("chunk-runtime: the default --out (one WARNING) is still the checkout's work/staging/<buildId>/runtime, forwarded absolute", () => {
-    const s = toolCheckout("chunk-runtime");
-    const bin = path.join(fakeStage1(path.join(s, "art/stage1"), { wasm: true }), "bin");
-    const r = run(s, "pipeline/toolchain/chunk-runtime.mjs", ["--bin", bin, "--revision", "test", "--lean-version", "9.9.9"], { LEAN4_WASM64_DIR: fakeChunker(s) });
-    expect(r.status, r.stderr).toBe(7);
-    const id = runtimeBuildId(fs.readFileSync(path.join(bin, "lean.wasm")));
-    const out = path.join(s, "work/staging", id, "runtime");
-    expect(r.lines).toEqual([`chunk-runtime: WARNING — the default --out work/staging/<buildId>/runtime under the repo root (${out}) is deprecated; use --out <dir> or set QED64_STAGING (docs/CLI-CONTRACT.md)`, CHUNK_FORWARD]);
-    expect(r.lines[0]).toMatch(marker("chunk-runtime", "deprecated-default"));
-    expect(r.lines[1]).toMatch(marker("chunk-runtime", "deprecated"));
-    expect(JSON.parse(r.stdout)).toEqual(["--bin", bin, "--out", out, "--lean-version", "9.9.9", "--revision", "test"]);
-    // without the package: the same front half, then exit 2 with one line
-    const absent = run(s, "pipeline/toolchain/chunk-runtime.mjs", ["--bin", bin, "--revision", "test", "--lean-version", "9.9.9", "--out", path.join(s, "o")]);
-    expect([absent.status, absent.stdout, absent.lines.length]).toEqual([2, "", 2]);
-    expect(absent.lines[1]).toMatch(marker("chunk-runtime", "no-package"));
-    expect(reservedHit(absent.stderr)).toBeNull();
-    expect(fs.existsSync(path.join(s, "work"))).toBe(false);
-    expect(fs.existsSync(path.join(s, "o"))).toBe(false);
-  });
 });
 
-describe("gate and resident-probe: the deprecated defaults and QED64_SNAP_DIR", () => {
-  // gate's deprecated default is the cwd; resolving it IS passing gate's own lean.js check, so the
-  // next step is the forward to lean4-wasm64's gate: here a FAKE package whose gate.mjs records its
-  // argv, prints the package gate's verdict line and exits 1.
-  const FAKE_GATE = `console.log(" ok   numBits=64 (fake)");
-console.log(JSON.stringify(process.argv.slice(2)));
-console.log("\\nGATE FAILED (1)");
-process.exit(1);
-`;
-  test("gate run from a stage1 dir: one path WARNING naming the current directory, one forward WARNING, then the package's gate gets --artifact <that dir>", () => {
-    const s = checkout([...TOOLS.gate!, "pipeline/toolchain/artifact-paths.mjs"]);
-    const pkg = path.join(s, "fake-lean4-wasm64");
-    fs.mkdirSync(pkg);
-    fs.writeFileSync(path.join(pkg, "package.json"), JSON.stringify({ name: "lean4-wasm64" }));
-    fs.writeFileSync(path.join(pkg, "gate.mjs"), FAKE_GATE);
-    const stage = fakeStage1(path.join(s, "stage1"));
-    const r = run(s, "pipeline/toolchain/gate.mjs", [], { LEAN4_WASM64_DIR: pkg }, stage);
-    expect(r.status, r.stderr).toBe(1);
-    expect(r.lines).toEqual([
-      `gate: WARNING — the default --artifact the current directory (${stage}) is deprecated; use --artifact <dir> or set QED64_LEAN_ARTIFACT (docs/CLI-CONTRACT.md)`,
-      "gate: WARNING — pipeline/toolchain/gate.mjs is deprecated; use lean4-wasm64 gate --artifact <dir> (the fork's package) (docs/CLI-CONTRACT.md)",
-    ]);
-    expect(r.lines[0]).toMatch(DEPRECATED);
-    const out = r.stdout.trimEnd().split("\n");
-    expect(out.at(-1)).toMatch(/^GATE FAILED \(\d+\)$/);
-    expect(JSON.parse(out[1]!)).toEqual(["--artifact", stage]);
-  });
-
+describe("resident-probe: the deprecated --snap-dir and QED64_SNAP_DIR", () => {
   // resident-probe resolves --snap-dir after its lean.js check; a bin/lean.js that is a directory
   // then stops it at the read (EISDIR, exit 1) before anything is evaluated.
   const residentStage = (s: string) => fakeStage1(path.join(s, "art/stage1"), { jsIsDir: true });

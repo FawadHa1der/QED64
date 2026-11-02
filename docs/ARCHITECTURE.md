@@ -133,8 +133,8 @@ import in a resident session.
 
 Snapshots are binary-paired: bake them with the *shipped* runtime via `npm run
 bake:snapshot` (the bake script gzips and upserts `index.json`);
-`pipeline/artifacts/unpack.mjs` reconstructs the olean tree the Node-side
-bake mounts via `--lib`. A missing or failed snapshot is a boot failure of
+the fork's `lean4-wasm64 unpack` (run by `adopt-release.sh`) reconstructs
+the olean tree the Node-side bake mounts via `--lib`. A missing or failed snapshot is a boot failure of
 that session (the relay reports it; the page never silently imports the
 umbrella's 4,821-module closure from oleans).
 

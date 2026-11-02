@@ -6,17 +6,12 @@
 // --help` booted wasm and never exited. Every child here therefore runs with
 // a SIGKILL timeout, with QED64_LEAN_ARTIFACT and --artifact naming a path
 // that does not exist (no runtime can boot), with every path flag pointing
-// into a temp tree, and only with --help or a deliberately invalid usage —
-// except chunk-runtime, which runs its front half for real against a fake bin
-// to prove --flag=value reaches it. The forwards (unpack, chunk-runtime) see a
-// FAKE lean4-wasm64 package (LEAN4_WASM64_DIR) whose scripts print their argv
-// and exit 7, never a real one.
+// into a temp tree, and only with --help or a deliberately invalid usage.
 import { describe, expect, test, beforeAll, afterAll } from "vitest";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { lean4Wasm64Dir } from "../../pipeline/toolchain/artifact-paths.mjs";
 import {
   SPECS, ENV, RESERVED_OUTPUT, compactSpec, cliContract, formatHelp, parseCli, reservedHit,
   PRELUDE_BEGIN, PRELUDE_END, type CliIo,
@@ -28,14 +23,9 @@ const TOOLS = Object.keys(SPECS);
 
 let tmp: string;
 let missing: string;
-let fakePkg: string;
 beforeAll(() => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), "qed64-cli-contract-"));
   missing = path.join(tmp, "no-such-artifact");
-  fakePkg = path.join(tmp, "fake-lean4-wasm64");
-  fs.mkdirSync(fakePkg);
-  fs.writeFileSync(path.join(fakePkg, "package.json"), JSON.stringify({ name: "lean4-wasm64" }));
-  for (const f of ["unpack.mjs", "chunk-runtime.mjs"]) fs.writeFileSync(path.join(fakePkg, f), "console.log(JSON.stringify(process.argv.slice(2)));\nprocess.exit(7);\n");
 });
 afterAll(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
 
@@ -46,7 +36,7 @@ function run(script: string, args: string[], cwd: string) {
     encoding: "utf8",
     timeout: 30_000,
     killSignal: "SIGKILL",
-    env: { ...process.env, QED64_LEAN_ARTIFACT: missing, LEAN4_WASM64_DIR: fakePkg },
+    env: { ...process.env, QED64_LEAN_ARTIFACT: missing },
   });
   return { status: r.status, signal: r.signal, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 }
@@ -91,9 +81,7 @@ const ARGS: Record<string, (d: string) => [string[], string[]]> = {
   preflight: (d) => [["--url", "http://127.0.0.1:9/", "--no-boot", "--run-dir", path.join(d, "run")], []],
   "fetch-artifacts": (d) => [["--out", path.join(d, "out"), "--manifests", d, "--origin", "http://127.0.0.1:9/", "--only", "runtime", "--with-manifests"], []],
   "olean-imports": (d) => [["--audit", path.join(d, "lib")], []],
-  "chunk-runtime": (d) => [["--bin", path.join(d, "bin"), "--out", path.join(d, "out"), "--revision", "test"], []],
   pack: (d) => [["--lib", path.join(d, "lib"), "--id", "x", "--out", path.join(d, "out"), "--no-imports"], []],
-  unpack: (d) => [["--manifest", path.join(d, "manifest.json"), "--out", path.join(d, "out")], []],
 };
 
 /** `own` without the flags of one required group (and their values). */
@@ -158,15 +146,12 @@ describe("SPECS", () => {
   });
 
   test("every marker's template is the real format string in the script, and the marker regex matches what it prints", () => {
-    // A forwarded marker's format string is the lean4-wasm64 package's: checked where the package
-    // is installed (CI's npm ci), and by its example and regex everywhere.
-    const pkgDir = lean4Wasm64Dir({ env: {}, cwd: root });
     for (const tool of TOOLS) {
       const s = SPECS[tool]!;
       for (const m of s.markers) {
-        const file = m.forwarded ? (pkgDir ? path.join(pkgDir, m.forwarded) : null) : path.join(root, m.source ?? s.script);
-        const source = file ? fs.readFileSync(file, "utf8") : null;
-        if (source !== null) for (const piece of m.template) expect(source, `${tool}/${m.id}: ${piece}`).toContain(piece);
+        const file = path.join(root, m.source ?? s.script);
+        const source = fs.readFileSync(file, "utf8");
+        for (const piece of m.template) expect(source, `${tool}/${m.id}: ${piece}`).toContain(piece);
         for (const example of [m.example, ...(m.examples ?? [])]) {
           expect(templateRegex(m.template, m.prefix).test(example), `${tool}/${m.id}: the example is not what the format prints: ${example}`).toBe(true);
           expect(m.regex.test(example), `${tool}/${m.id}: the regex does not match the example: ${example}`).toBe(true);
@@ -218,7 +203,7 @@ describe("SPECS", () => {
     const r = spawnSync("node", [cliScript, "--print-specs"], { encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL" });
     expect(r.status).toBe(0);
     const json = JSON.parse(r.stdout) as { contractVersion: number; specs: Record<string, { synopsis: string; markers: { regex: string; example: string; examples?: string[] }[] }>; env: object; exitClasses: object };
-    expect(json.contractVersion).toBe(4); // 4: bake-snapshot's reaped marker became completed (R5a); 3: unpack forwards to lean4-wasm64 and exits 2 without it (plan B1a); 2: the path rule of 2026-10-06
+    expect(json.contractVersion).toBe(4); // 4: bake-snapshot's reaped marker became completed (R5a), and the forwards and the gen-exports stub were removed (R9a, 2026-11); 3: unpack forwards to lean4-wasm64 (plan B1a); 2: the path rule of 2026-10-06
     expect(Object.keys(json.specs).sort()).toEqual([...TOOLS].sort());
     expect(Object.keys(json.exitClasses)).toEqual(["0", "1", "2", "3"]);
     for (const tool of TOOLS) {
@@ -353,8 +338,8 @@ describe("the argument grammar (cliContract, the one implementation)", () => {
   test("cliContract uses nothing but its parameters and Node globals (it is inlined into the preludes)", () => {
     const fresh = new Function(`return (${cliContract.toString()})`)() as typeof cliContract;
     const io = { out: [] as string[], err: [] as string[], code: null as number | null };
-    const r = fresh({ ...compactSpec("unpack") }, ["--manifest=m", "--out", "o"], { out: (s) => io.out.push(s), err: (s) => io.err.push(s), exit: (c) => { io.code = c; } });
-    expect(r!.values).toEqual({ manifest: "m", out: "o" });
+    const r = fresh({ ...compactSpec("pack") }, ["--lib=l", "--id", "x"], { out: (s) => io.out.push(s), err: (s) => io.err.push(s), exit: (c) => { io.code = c; } });
+    expect(r!.values).toEqual({ lib: "l", id: "x" });
   });
 });
 
@@ -455,33 +440,5 @@ describe("the real scripts", () => {
       "",
     ].join("\n"));
     expect(tree(d)).toEqual(before);
-  });
-
-  test("unpack: after the prelude, one deprecation WARNING and the package's unpack with the normalized arguments; without the package, exit 2 as SPECS declares", () => {
-    const d = sandbox("unpack-forward");
-    const before = tree(d);
-    const [own] = ARGS.unpack!(d);
-    const r = run(SPECS.unpack!.script, [`--manifest=${own[1]}`, ...own.slice(2), "--slim"], d);
-    expect(r.status, r.stderr).toBe(7);
-    expect(JSON.parse(r.stdout)).toEqual([...own, "--slim"]);
-    const deprecated = SPECS.unpack!.markers.find((m) => m.id === "deprecated")!;
-    expect(r.stderr.split("\n").filter(Boolean)).toEqual([deprecated.example]);
-    expect(tree(d)).toEqual(before);
-    expect(SPECS.unpack!.exits["2"]).toBe("usage, or lean4-wasm64 not found (set LEAN4_WASM64_DIR or install the devDependency)");
-    expect(SPECS.unpack!.env).toEqual(["LEAN4_WASM64_DIR"]);
-    expect(SPECS.unpack!.markers.find((m) => m.id === "no-package")!.regex.test(SPECS.unpack!.markers.find((m) => m.id === "no-package")!.example)).toBe(true);
-  });
-
-  test("chunk-runtime: --flag=value reaches the script's own front half, which hands the package the two-token form", () => {
-    const d = sandbox("chunk-eq");
-    const r = run(SPECS["chunk-runtime"]!.script, [`--bin=${path.join(d, "bin")}`, `--out=${path.join(d, "out")}`, "--revision=test", "--lean-version=9.9.9", "--upstream-base=v1"], d);
-    expect(r.status, r.stderr).toBe(7);
-    // no contract WARNING and no --lean-version warning: only the forward's deprecation line
-    const deprecated = SPECS["chunk-runtime"]!.markers.find((m) => m.id === "deprecated")!;
-    expect(r.stderr.split("\n").filter(Boolean)).toEqual([deprecated.example]);
-    expect(JSON.parse(r.stdout)).toEqual(["--bin", path.join(d, "bin"), "--out", path.join(d, "out"), "--lean-version", "9.9.9", "--revision", "test"]);
-    expect(fs.existsSync(path.join(d, "out"))).toBe(false);
-    expect(SPECS["chunk-runtime"]!.env).toEqual(["QED64_STAGING", "LEAN4_WASM64_DIR"]);
-    expect(SPECS["chunk-runtime"]!.markers.filter((m) => m.stream === "stdout").every((m) => m.forwarded === "chunk-runtime.mjs")).toBe(true);
   });
 });

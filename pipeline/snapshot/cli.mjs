@@ -32,7 +32,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** Bumped on a breaking change to the contract (docs/CLI-CONTRACT.md "Stability").
- * 4: bake-snapshot's stdout marker `reaped` became `completed` (architecture review R5a). */
+ * 4: bake-snapshot's stdout marker `reaped` became `completed` (architecture review R5a), and the
+ * forwards (unpack, chunk-runtime, inspect, gate) and the gen-exports stub were removed (R9a). */
 export const CONTRACT_VERSION = 4;
 
 /** Substrings new output (any line a pipeline run can print, help and
@@ -81,8 +82,8 @@ export const ENV = {
     readBy: ["bake-snapshot", "node-runner"],
   },
   QED64_STAGING: {
-    doc: "the staging root used when --out is absent: --out is <QED64_STAGING>/<buildId>/{snapshots,runtime}",
-    readBy: ["bake-snapshot", "chunk-runtime"],
+    doc: "the staging root used when --out is absent: --out is <QED64_STAGING>/<buildId>/snapshots",
+    readBy: ["bake-snapshot"],
   },
   QED64_LIB_TREE: {
     doc: "the olean tree mounted at /lib/lean (the tree the probed snapshot was baked from) used when --lib is absent",
@@ -105,10 +106,6 @@ export const ENV = {
   QED64_RUNNER: {
     doc: "the runner script bake-snapshot spawns when --runner is absent (default: QED64's own pipeline/snapshot/node-runner.mjs)",
     readBy: ["bake-snapshot"],
-  },
-  LEAN4_WASM64_DIR: {
-    doc: "the lean4-wasm64 package dir the forwards run (unpack, chunk-runtime, and the tier-3 inspect and gate); unset: the first node_modules/lean4-wasm64 above the cwd",
-    readBy: ["unpack", "chunk-runtime"],
   },
 };
 
@@ -535,49 +532,6 @@ export const SPECS = {
     ],
   },
 
-  "chunk-runtime": {
-    script: "pipeline/toolchain/chunk-runtime.mjs",
-    npm: null,
-    tier: 2,
-    binding: "inline",
-    node: "node",
-    synopsis: "chunk-runtime.mjs --bin <dir> [--lean-version v] [--revision sha] [--upstream-base sha] [--out dir]",
-    summary: "Chunk a built lean.js/lean.wasm pair into the verified runtime layout (16 MiB sha256-addressed parts + runtime-manifest.json and runtime-manifest.<buildId>.json) in a staging dir; additive, never inside public/. Deprecated forward (contract 3): after the path rule, the public/ refusal and the WARNINGs it prints one deprecation WARNING and runs lean4-wasm64 chunk with --bin, --out, --lean-version and --revision.",
-    flags: [
-      { name: "bin", value: "<dir>", doc: "dir holding lean.js + lean.wasm" },
-      { name: "lean-version", value: "<x.y.z>", default: "4.33.0-pre, with a WARNING on stderr", doc: "the manifest's leanVersion; promote pairs packs against it" },
-      { name: "revision", value: "<string>", default: "qed64-wasm64@<HEAD of pipeline/toolchain/work/lean4, relative to the cwd> (base <upstream-base>), else unspecified; git runs only when --revision is absent", doc: "the manifest's sourceRevision" },
-      { name: "upstream-base", value: "<sha|tag>", default: "5732b84", doc: "the upstream base named in the default --revision" },
-      { name: "out", value: "<dir>", default: viaEnv("QED64_STAGING", "work/staging/<buildId>/runtime under the repo root") + "; with QED64_STAGING, <QED64_STAGING>/<buildId>/runtime", doc: "staging dir; refused inside public/; a relative --out resolves against the repo root" },
-    ],
-    required: [["bin"]],
-    env: ["QED64_STAGING", "LEAN4_WASM64_DIR"],
-    exits: {
-      0: "chunked",
-      1: "a crash (lean.wasm unreadable under --bin, or the package's chunker failed)",
-      2: "usage, --out inside public/, or lean4-wasm64 not found (set LEAN4_WASM64_DIR or install the devDependency)",
-    },
-    markers: [
-      { id: "file", stream: "stdout", forwarded: "chunk-runtime.mjs", template: ["${name}: ${bytes.length} bytes, ${chunks.length} chunks, sha256:${whole.slice(0, 16)}…"],
-        regex: /^(lean\.js|lean\.wasm): (\d+) bytes, (\d+) chunks, sha256:([0-9a-f]{16})…$/, example: "lean.wasm: 109869533 bytes, 7 chunks, sha256:36a96239e08fd2e0…" },
-      { id: "done", stream: "stdout", forwarded: "chunk-runtime.mjs", template: ["runtime ${buildId} → ${outDir}"], regex: /^runtime (wasm64-[0-9a-f]{16}) → (.+)$/,
-        example: "runtime wasm64-36a96239e08fd2e0 → /repo/work/staging/wasm64-36a96239e08fd2e0/runtime" },
-      { id: "no-version", stream: "stderr", prefix: true, template: ["chunk-runtime: WARNING — no --lean-version given; the manifest will say Lean ${DEFAULT_LEAN_VERSION}."],
-        regex: /^chunk-runtime: WARNING — no --lean-version given/, example: "chunk-runtime: WARNING — no --lean-version given; the manifest will say Lean 4.33.0-pre." },
-      { id: "refuse-public", stream: "stderr", source: "pipeline/toolchain/artifact-paths.mjs", prefix: true,
-        template: ["${who}: refusing --out ${target}: it resolves inside public/. "],
-        regex: /^(bake-snapshot|chunk-runtime): refusing --out (.+): it resolves inside public\/\. /,
-        example: "chunk-runtime: refusing --out /repo/public/runtime: it resolves inside public/. Producers stage under work/staging/<buildId>/; use `npm run promote:staging` to publish (HARDENING #32)." },
-      { id: "deprecated", stream: "stderr", template: ["chunk-runtime: WARNING — pipeline/toolchain/chunk-runtime.mjs is deprecated; use lean4-wasm64 chunk --bin <dir> --out <dir> --lean-version <x.y.z> --revision <string> (the fork's package) (docs/CLI-CONTRACT.md)"],
-        regex: /^chunk-runtime: WARNING — pipeline\/toolchain\/chunk-runtime\.mjs is deprecated; use lean4-wasm64 chunk /,
-        example: "chunk-runtime: WARNING — pipeline/toolchain/chunk-runtime.mjs is deprecated; use lean4-wasm64 chunk --bin <dir> --out <dir> --lean-version <x.y.z> --revision <string> (the fork's package) (docs/CLI-CONTRACT.md)" },
-      { id: "no-package", stream: "stderr", source: "pipeline/toolchain/artifact-paths.mjs", prefix: true, template: ["${tool}: lean4-wasm64 not found — "],
-        regex: /^(\S+): lean4-wasm64 not found — set LEAN4_WASM64_DIR=<package dir> or install it: /,
-        example: "chunk-runtime: lean4-wasm64 not found — set LEAN4_WASM64_DIR=<package dir> or install it: npm i -D <release tgz URL> (toolchain/lean4-wasm64-release.json names it) (docs/CLI-CONTRACT.md)" },
-      pathMarkers("chunk-runtime", { flag: "out", placeholder: "<dir>", env: "QED64_STAGING", legacyLabel: "work/staging/<buildId>/runtime under the repo root", legacy: "/repo/work/staging/wasm64-36a96239e08fd2e0/runtime" })[0],
-    ],
-  },
-
   pack: {
     script: "pipeline/artifacts/pack.mjs",
     npm: "pack",
@@ -615,45 +569,6 @@ export const SPECS = {
         example: "fixture: 2 .olean file(s) had no readable import table (not 64-bit regions?) — their imports are recorded as []; pass --no-imports if that is intended" },
     ],
   },
-
-  unpack: {
-    script: "pipeline/artifacts/unpack.mjs",
-    npm: null,
-    tier: 2,
-    binding: "inline",
-    node: "node",
-    synopsis: "unpack.mjs --manifest <file> --out <dir> [--slim]",
-    summary: "Reconstruct an on-disk olean tree from a profile's verified transport parts (each part and the raw pack sha256-checked), for the Node-side bakes. Deprecated forward (contract 3): after this help and the usage check it prints one WARNING and runs lean4-wasm64 unpack with the same arguments.",
-    flags: [
-      { name: "manifest", value: "<file>", doc: "a profile manifest; its parts are read from the same directory by basename" },
-      { name: "out", value: "<dir>", doc: "the tree to write (files are added or overwritten, never deleted)" },
-      { name: "slim", doc: "do not write *.olean.private facets (lean4-wasm64 unpack --slim)" },
-    ],
-    required: [["manifest"], ["out"]],
-    env: ["LEAN4_WASM64_DIR"],
-    exits: {
-      0: "unpacked",
-      1: "a part, the raw pack or a path failed verification (or the manifest is unreadable)",
-      2: "usage, or lean4-wasm64 not found (set LEAN4_WASM64_DIR or install the devDependency)",
-    },
-    markers: [
-      // Group 4 is the out dir, group 5 the --slim count (absent without --slim).
-      { id: "done", stream: "stdout", forwarded: "unpack.mjs", template: ["${release}: unpacked ${files} files, ${(bytes / 1e9).toFixed(2)} GB → ${outDir}${slim ? ` (--slim: ${skipped} *.olean.private left out)` : \"\"}"],
-        regex: /^(\S+): unpacked (\d+) files, (\d+\.\d\d) GB → (.+?)(?: \(--slim: (\d+) \*\.olean\.private left out\))?$/, example: "lean-core-4.34.0-wasm64-36a96239e08fd2e0: unpacked 3245 files, 0.39 GB → /repo/work/lib-tree",
-        examples: ["lean-core-4.34.0-wasm64-36a96239e08fd2e0: unpacked 2596 files, 0.13 GB → /repo/work/lib-tree-slim (--slim: 649 *.olean.private left out)"] },
-      { id: "fail", stream: "stderr", forwarded: "unpack.mjs", template: ["FAIL: transport part ${part.url} failed verification"], regex: /^FAIL: (.*)$/,
-        example: "FAIL: transport part /profiles/lean-core.pack.gzip.0123456789abcdef0123.part-000 failed verification" },
-      { id: "deprecated", stream: "stderr", template: ["unpack: WARNING — pipeline/artifacts/unpack.mjs is deprecated; use lean4-wasm64 unpack (the fork's package) (docs/CLI-CONTRACT.md)"],
-        regex: /^unpack: WARNING — pipeline\/artifacts\/unpack\.mjs is deprecated; use lean4-wasm64 unpack/,
-        example: "unpack: WARNING — pipeline/artifacts/unpack.mjs is deprecated; use lean4-wasm64 unpack (the fork's package) (docs/CLI-CONTRACT.md)" },
-      { id: "no-package", stream: "stderr", source: "pipeline/toolchain/artifact-paths.mjs", prefix: true, template: ["${tool}: lean4-wasm64 not found — "],
-        regex: /^(\S+): lean4-wasm64 not found — set LEAN4_WASM64_DIR=<package dir> or install it: /,
-        example: "unpack: lean4-wasm64 not found — set LEAN4_WASM64_DIR=<package dir> or install it: npm i -D <release tgz URL> (toolchain/lean4-wasm64-release.json names it) (docs/CLI-CONTRACT.md)" },
-      { id: "not-package", stream: "stderr", source: "pipeline/toolchain/artifact-paths.mjs", prefix: true, template: ["${tool}: LEAN4_WASM64_DIR=${named} is not the lean4-wasm64 package (no package.json named lean4-wasm64) — "],
-        regex: /^(\S+): LEAN4_WASM64_DIR=(.+) is not the lean4-wasm64 package /,
-        example: "unpack: LEAN4_WASM64_DIR=/repo/vendor/qed64 is not the lean4-wasm64 package (no package.json named lean4-wasm64) — set LEAN4_WASM64_DIR=<package dir> or install it: npm i -D <release tgz URL> (toolchain/lean4-wasm64-release.json names it) (docs/CLI-CONTRACT.md)" },
-    ],
-  },
 };
 
 /** Tier 3 — diagnostic tools with no stability promise (no SPEC, no prelude). */
@@ -661,7 +576,6 @@ export const DIAGNOSTIC = [
   "pipeline/snapshot/thread-storm-probe.mjs",
   "pipeline/snapshot/fileworker-exit-probe.mjs",
   "pipeline/snapshot/resident-probe.mjs", // --snapshots/--mathlib/--act4 absorbed header-switch-probe.mjs (2026-10)
-  "pipeline/artifacts/inspect.mjs",
 ];
 
 /**

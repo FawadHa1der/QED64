@@ -56,24 +56,20 @@ node pipeline/snapshot/cli.mjs --write-preludes  # regenerate the inline prelude
 | [olean-imports](#olean-imports---audit----entries) | `pipeline/artifacts/olean-imports.mjs` | — | 1 | inline prelude (inside the main-module check) |
 | [node-runner](#node-runner) | `pipeline/snapshot/node-runner.mjs` | `runner` | 2 | inline prelude |
 | [persistent-probe](#persistent-probe) | `pipeline/snapshot/persistent-probe.mjs` | — | 2 | inline prelude |
-| [chunk-runtime](#chunk-runtime) | `pipeline/toolchain/chunk-runtime.mjs` — forward to `lean4-wasm64 chunk` (contract 3, plan B2a) | — | 2 | inline prelude, then the forward |
 | [pack](#pack) | `pipeline/artifacts/pack.mjs` (leaving for the fork: `lean4-wasm64 pack`, later) | `pack` | 2 | inline prelude |
-| [unpack](#unpack) | `pipeline/artifacts/unpack.mjs` — forward to `lean4-wasm64 unpack` (contract 3) | — | 2 | inline prelude, then the forward |
 
 Tier 3 tools: `pipeline/snapshot/{thread-storm-probe,fileworker-exit-probe,resident-probe}.mjs`
 (resident-probe's `--probe-file`, `--dump-messages` and `--settle-ms` included: the
 compiler battery's FileWorker lane, `--transport fileworker`, R4),
-`pipeline/artifacts/inspect.mjs` (a forward to `lean4-wasm64 inspect` since contract 3),
-`pipeline/toolchain/gate.mjs` (a forward to `lean4-wasm64 gate` since contract 3; both in
-[the forwards](#lean4-wasm64-the-forwards)), `pipeline/toolchain/gen-exports.py` (a stub that
-exits 2 for one cycle: moved to the fork's `wasm64-build/`),
 and `pipeline/release/release-manifest.mjs` (shipped since plan B2c), which
 writes `qed64.release/v1`, whose stable field paths are a contract of their own
 (docs/RELEASE-BUNDLE.md, "Stable field paths"); its flags are tier 3.
 (`pipeline/release/write-bundle.mjs`, which wrote the release bundle, was
 deleted on 2026-11-01: see the changelog. `header-switch-probe.mjs`, an edited copy of
 resident-probe, was folded into it on 2026-10-05 as `--snapshots <a,b>`,
-`--mathlib` and `--act4 [--act4-ms <ms>]`.)
+`--mathlib` and `--act4 [--act4-ms <ms>]`. The forwards `inspect.mjs` and
+`gate.mjs` and the `gen-exports.py` stub were removed in contract 4:
+[the forwards](#lean4-wasm64-the-forwards) says what to run instead.)
 
 **Ownership (architecture review D4, option a; 2026-11-01).**
 
@@ -155,8 +151,8 @@ There is one implementation of the grammar, `cliContract` in
   ```
 
   These lines go to stderr. Unknown flags are not fatal yet (see "Open
-  decisions"). The format follows the house style of the existing
-  `chunk-runtime: WARNING — …` lines.
+  decisions"). The format follows the house style of the tools' other
+  `<tool>: WARNING — …` lines.
 - **A missing required flag** prints all WARNINGs, then exactly one line
   `usage: <synopsis>` on stderr, and exits 2. A `required` group lists
   alternatives: snapshot-probe needs one of `--snap` / `--fresh-import` and
@@ -245,8 +241,8 @@ step is deleted outright.
 
 Relative flag values resolve against the **current working directory**, with
 these exceptions, which resolve against the **repo root** (the directory two
-levels above the script): bake-snapshot's `--work` and `--out`, and
-chunk-runtime's `--out`. The deprecated defaults live under the repo root too.
+levels above the script): bake-snapshot's `--work` and `--out`. The
+deprecated defaults live under the repo root too.
 In an installed package "the repo root" is the package root inside
 `node_modules`, which is why the defaults go.
 
@@ -276,15 +272,14 @@ decisions".
 
 | Variable | Read by | Meaning |
 |---|---|---|
-| `QED64_LEAN_ARTIFACT` | bake-snapshot, node-runner, snapshot-probe, persistent-probe (and `gate.mjs`, the compiler battery, resident-probe, the integration tests) | The stage1 artifact dir when `--artifact` is absent. An empty value counts as unset everywhere (before contract 2 bake-snapshot counted it as set, meaning the cwd). |
+| `QED64_LEAN_ARTIFACT` | bake-snapshot, node-runner, snapshot-probe, persistent-probe (and the compiler battery, resident-probe, the integration tests) | The stage1 artifact dir when `--artifact` is absent. An empty value counts as unset everywhere (before contract 2 bake-snapshot counted it as set, meaning the cwd). |
 | `QED64_WORK` | bake-snapshot, node-runner | The dir mounted at `/work` when `--work` is absent: bake-snapshot's raw `<name>.snap` and `probe.lean`, node-runner's Lean cwd. |
-| `QED64_STAGING` | bake-snapshot, chunk-runtime | A staging root when `--out` is absent: `--out` is `<QED64_STAGING>/<buildId>/snapshots` (bake-snapshot) or `<QED64_STAGING>/<buildId>/runtime` (chunk-runtime). `public/` is still refused. |
+| `QED64_STAGING` | bake-snapshot | A staging root when `--out` is absent: `--out` is `<QED64_STAGING>/<buildId>/snapshots`. `public/` is still refused. |
 | `QED64_LIB_TREE` | snapshot-probe (and the compiler battery) | The olean tree mounted at `/lib/lean` when `--lib` is absent: the tree the probed snapshot was baked from. |
 | `LEAN_COMPACTOR_RESERVE` | node-runner (forwarded into the wasm env) | Bytes the compactor reserves up front for a whole-environment save (patch 0011). bake-snapshot **sets** it for its runner from `--reserve` and overrides any inherited value. |
 | `QED64_ALLOW_LEGACY_IMPORTS` | node-runner (forwarded as `1` when non-empty) | Lets the exported-level env cache load legacy non-module packages (patch 0030). The documented form is `bake-snapshot --allow-legacy-imports`, which sets it to `1` for the runner; an inherited value is its equivalent and stays accepted (the showcase's bake sets the variable; the proof sheets pass the flag). |
 | `QED64_PROFILE_INIT` | node-runner, snapshot-probe (forwarded) | Profiles the `[init]` replay. |
 | `QED64_RUNNER` | bake-snapshot | The runner script when `--runner` is absent. Unset: QED64's own `pipeline/snapshot/node-runner.mjs` (the default, not deprecated). Resolves against the cwd. |
-| `LEAN4_WASM64_DIR` | unpack (and the tier-3 `inspect.mjs` and `gate.mjs` forwards) | The [lean4-wasm64](#lean4-wasm64-the-forwards) package dir the forwards run. Set, it must be that package too (its `package.json` name is `lean4-wasm64`), else the forward refuses (`not-package`, exit 2) without falling back to the walk. Unset or empty: the first `<ancestor of the cwd>/node_modules/lean4-wasm64` whose `package.json` name is `lean4-wasm64` (the consumer's own install). Never resolved from the script's own location; the package is never imported. |
 
 The QED64 lanes outside SPECS use the same rule with their own variables:
 
@@ -298,7 +293,10 @@ Other `QED64_*` variables belong to shell lanes, not to these tools:
 `QED64_ADOPT_IGNORE_DISK`, `QED64_PUBLIC_DIR` (the served tree it compares
 a release with) and `QED64_BASE_TREE` (the served base tree a reused
 `--umbrella` must match) are documented in `pipeline/release/adopt-release.sh`, and
-`QED64_SLOW` in docs/TESTING.md. (`QED64_LEAN_VERSION`, `QED64_ARTIFACT`,
+`QED64_SLOW` in docs/TESTING.md. adopt-release.sh also reads
+`LEAN4_WASM64_DIR`, the lean4-wasm64 package dir when `--tools` is absent
+(docs/REBUILD.md §3); since contract 4 no tool of this contract reads it.
+(`QED64_LEAN_VERSION`, `QED64_ARTIFACT`,
 `QED64_SNAP_WORK` and the rest left with `bump-chain.sh` in plan B2a.)
 
 ### Output streams and reserved substrings
@@ -447,7 +445,7 @@ usage: bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <di
 | verdict | stderr | `^bake-snapshot: verdict (\{.*\})$` (right after `notice`; group 1 is one JSON object, `verdict` `"failed"`, then `kind`, `stream`, `line`, `name` and `bytes`; since 2026-11-01, and kept at the flip) |
 | no-artifact | stderr | `^bake-snapshot: no lean\.wasm under (.+) — pass --artifact <stage1 dir>$` |
 | no-runner | stderr | `^bake-snapshot: no runner script (.+) — pass --runner <script> or set QED64_RUNNER$` |
-| refuse-public | stderr | `^(bake-snapshot\|chunk-runtime): refusing --out (.+): it resolves inside public\/\. ` |
+| refuse-public | stderr | `^(bake-snapshot\|chunk-runtime): refusing --out (.+): it resolves inside public\/\. ` (the regex is frozen, so it keeps the `chunk-runtime` alternative, removed in contract 4) |
 | refuse-foreign | stderr | `^bake-snapshot: (.+) already holds entries for runtime (\S+) \((.*)\) — refusing to mix pairings$` |
 | refuse-unpaired | stderr | `^bake-snapshot: (.+) holds entries with no runtime pairing \((.*)\) — rebake ` |
 | refuse-index-unreadable | stderr | `^bake-snapshot: cannot read (.+) \((\S+)\) — refusing to replace it$` (exit 2 before the runner; exit 1 under the index lock) |
@@ -1079,79 +1077,6 @@ usage: persistent-probe.mjs [--artifact <dir>]
   `runtime defect is FIXED`.
 - `tests/integration/persistent-path.test.ts`.
 
-### chunk-runtime
-
-**Tier 2.** `node pipeline/toolchain/chunk-runtime.mjs …` — since plan B2a
-(contract 3) a **forward** to `lean4-wasm64 chunk` (see
-[the forwards](#lean4-wasm64-the-forwards)).
-
-```
-usage: chunk-runtime.mjs --bin <dir> [--lean-version v] [--revision sha] [--upstream-base sha] [--out dir]
-```
-
-| Flag | Default | Meaning |
-|---|---|---|
-| `--bin <dir>` | — | **Required.** The dir holding `lean.js` and `lean.wasm`. |
-| `--lean-version <x.y.z>` | `4.33.0-pre`, with a WARNING on stderr | The manifest's `leanVersion`. Promote pairs packs against it. |
-| `--revision <string>` | `qed64-wasm64@<HEAD of pipeline/toolchain/work/lean4, relative to the cwd> (base <upstream-base>)`, else `unspecified` | The manifest's `sourceRevision`. git runs only when the flag is absent. |
-| `--upstream-base <sha\|tag>` | `5732b84` | Named in the default `--revision`. Never forwarded (the package has no such flag). |
-| `--out <dir>` | `<$QED64_STAGING>/<buildId>/runtime`, else (deprecated) `work/staging/<buildId>/runtime` under the repo root | The staging dir. Refused inside `public/`. Resolves against the repo root. |
-
-- **Environment:** `QED64_STAGING` (the path rule), `LEAN4_WASM64_DIR` (the
-  package dir).
-- **What runs:** QED64 keeps the front half: the prelude (help, usage, flag
-  WARNINGs), the buildId (`runtimeBuildId` of `<bin>/lean.wasm`, which keys
-  the default `--out`), the path rule, the `public/` refusal, the
-  `no-version` WARNING and the no-`--revision` WARNING with their defaults.
-  Then one `deprecated` WARNING, and the script replaces itself with
-  `node <package>/chunk-runtime.mjs --bin <bin> --out <abs out>
-  --lean-version <v> --revision <r>`: all four flags the package requires,
-  always. The package's chunker writes the same bytes (its tests pin the
-  manifest; the first release was checked against the served one).
-- **No package:** after the WARNINGs, one `no-package` line, exit 2 (or
-  `not-package` for a `LEAN4_WASM64_DIR` that is not it). Before contract 3's
-  B2a row it chunked by itself.
-- **A release-adopted runtime is not chunked:** `pipeline/release/adopt-release.sh`
-  stages the release's own `runtime-manifest.json` and chunks.
-- **Inputs:** `<bin>/lean.js` and `<bin>/lean.wasm`.
-- **Outputs** (the package's): `<out>/chunks/<file>.<sha20>.part-NNN`
-  (additive: existing files are kept), `<out>/runtime-manifest.json` and
-  `<out>/runtime-manifest.<buildId>.json`.
-
-| Marker | Stream | Regex |
-|---|---|---|
-| file | stdout | `^(lean\.js\|lean\.wasm): (\d+) bytes, (\d+) chunks, sha256:([0-9a-f]{16})…$` |
-| done | stdout | `^runtime (wasm64-[0-9a-f]{16}) → (.+)$` |
-| no-version | stderr | `^chunk-runtime: WARNING — no --lean-version given` |
-| refuse-public | stderr | `^(bake-snapshot\|chunk-runtime): refusing --out (.+): it resolves inside public\/\. ` |
-| deprecated | stderr | `^chunk-runtime: WARNING — pipeline\/toolchain\/chunk-runtime\.mjs is deprecated; use lean4-wasm64 chunk ` |
-| no-package | stderr | `^(\S+): lean4-wasm64 not found — set LEAN4_WASM64_DIR=<package dir> or install it: ` (then exit 2) |
-| deprecated-default | stderr | `^(\S+): WARNING — the default --(\S+) (.+) \((.+)\) is deprecated; use --\S+ \S+ or set (\w+) \(docs\/CLI-CONTRACT\.md\)$` (`--out`) |
-
-`file` and `done` are printed by the package's script (their format strings
-are checked against it where it is installed).
-
-| Exit | Meaning |
-|---|---|
-| 0 | Chunked. |
-| 1 | A crash: `lean.wasm` is unreadable under `--bin` (before the forward), or the package's chunker failed. |
-| 2 | Usage, `--out` inside `public/`, or lean4-wasm64 not found (set `LEAN4_WASM64_DIR` or install the devDependency). |
-
-**Side effects:**
-
-1. Without `--revision`, spawns `git -C pipeline/toolchain/work/lean4
-   rev-parse` for the default revision (relative to the cwd; git's own
-   stderr is discarded).
-2. None other before the forward; the package creates `<out>/chunks` and
-   writes the chunks and both manifests.
-
-**Consumers:**
-
-- None in QED64 since plan B2a: `import-packs.sh` and `bump-chain.sh` (the
-  restamp) are deleted, and `adopt-release.sh` stages the release's chunks.
-- `tests/unit/artifact-discipline.test.ts`, `tests/unit/tool-paths.test.ts`,
-  `tests/unit/cli-contract.test.ts` (against a fake package).
-
 ### pack
 
 **Tier 2.** `node pipeline/artifacts/pack.mjs …` or `npm run pack -- …`
@@ -1202,131 +1127,26 @@ usage: pack.mjs --lib <dir> --id <name> --out <dir> [...]
   `import-packs.sh` is deleted.
 - `tests/unit/{import-lane,pack-format,artifact-discipline}.test.ts`.
 
-### unpack
-
-**Tier 2.** `node pipeline/artifacts/unpack.mjs --manifest <file> --out <dir> [--slim]`
-— since contract 3 a **forward** to `lean4-wasm64 unpack` (see
-[the forwards](#lean4-wasm64-the-forwards)).
-
-```
-usage: unpack.mjs --manifest <file> --out <dir> [--slim]
-```
-
-| Flag | Default | Meaning |
-|---|---|---|
-| `--manifest <file>` | — | **Required.** A profile manifest. Its parts are read by basename from the same dir. |
-| `--out <dir>` | — | **Required.** The tree to write. Files are added or overwritten, never deleted. |
-| `--slim` | off | Do not write the `*.olean.private` facets (the slim tree QED64's bakes run on; every part and the raw pack are still verified). A private facet already in `--out` stays: use a fresh dir. New with the forward (the package's flag). |
-
-- **Environment:** `LEAN4_WASM64_DIR`: the package dir; unset, the first
-  `node_modules/lean4-wasm64` above the cwd.
-- **What runs:** the script's own prelude answers `--help`, the usage check
-  and the flag WARNINGs exactly as before, without the package, one WARNING
-  per flag. Then it prints one `deprecated` WARNING and replaces itself
-  (`process.execve`: same PID, stdio and exit code) with
-  `node <package>/unpack.mjs` and the normalized arguments it accepted: a
-  token it warned about as an unknown flag or an unexpected argument is
-  ignored, so it is not forwarded and the package's own prelude does not
-  warn about it again. Output and exits are the package's, which are this
-  tool's plus `--slim`: with `--slim` the `done` line ends ` (--slim: N
-  *.olean.private left out)` after the out dir. The `done` regex keeps the
-  out dir in group 4 either way and puts `N` in group 5 (absent without
-  `--slim`).
-- **No package:** after the WARNING, one `no-package` line, exit 2:
-  `unpack: lean4-wasm64 not found — set LEAN4_WASM64_DIR=<package dir> or install it: npm i -D <release tgz URL> (toolchain/lean4-wasm64-release.json names it) (docs/CLI-CONTRACT.md)`.
-  A `LEAN4_WASM64_DIR` that is not the package (no `package.json` named
-  `lean4-wasm64`) is one `not-package` line instead, exit 2. A package dir
-  without `unpack.mjs`, or whose `unpack.mjs` is this script itself, is one
-  line naming the dir, exit 2.
-- **Inputs:** the manifest and its transport parts.
-- **Outputs:** the olean tree. The raw pack is inflated **in memory**: the
-  essential pack is 3.5 GB.
-
-| Marker | Stream | Regex |
-|---|---|---|
-| done | stdout | `^(\S+): unpacked (\d+) files, (\d+\.\d\d) GB → (.+?)(?: \(--slim: (\d+) \*\.olean\.private left out\))?$` |
-| fail | stderr | `^FAIL: (.*)$` |
-| deprecated | stderr | `^unpack: WARNING — pipeline\/artifacts\/unpack\.mjs is deprecated; use lean4-wasm64 unpack` |
-| no-package | stderr | `^(\S+): lean4-wasm64 not found — set LEAN4_WASM64_DIR=<package dir> or install it: ` (then exit 2) |
-| not-package | stderr | `^(\S+): LEAN4_WASM64_DIR=(.+) is not the lean4-wasm64 package ` (then exit 2) |
-
-`done` and `fail` are printed by the package's script (their format strings
-are checked against it where it is installed).
-
-| Exit | Meaning |
-|---|---|
-| 0 | Unpacked. |
-| 1 | A part, the raw pack or a path failed verification. Also an unreadable manifest. |
-| 2 | Usage, or lean4-wasm64 not found (`no-package`, or `not-package` for a `LEAN4_WASM64_DIR` that is not it; set `LEAN4_WASM64_DIR` or install the devDependency). |
-
-**Side effects:** none before the forward; the package's unpack creates dirs
-(`mkdir -p`) and writes files under `--out`.
-
-**Consumers:**
-
-- None of QED64's lanes: `adopt-release.sh` runs the package's `unpack`
-  directly (`import-packs.sh`, which called this script, is deleted).
-- The showcase (from the submodule; no script of it calls unpack today,
-  checked 2026-10-06).
-
 ### lean4-wasm64: the forwards
 
-Decision 10: the fork's package `lean4-wasm64` is a devDependency of QED64,
-pinned by its release tgz URL (`toolchain/lean4-wasm64-release.json` names
-the release). QED64's library, workers and pipeline import nothing from it;
-four scripts hand it paths instead, through `forwardToLean4Wasm64` in
-`pipeline/toolchain/artifact-paths.mjs`:
+Removed in contract 4 (2026-11, architecture review R9a), after their
+contract-3 deprecation window.
 
-| Script | Tier | Before the forward | Runs |
-|---|---|---|---|
-| `pipeline/artifacts/unpack.mjs` | 2 | its prelude (help, usage, warnings), one WARNING | `<pkg>/unpack.mjs <args>` |
-| `pipeline/toolchain/chunk-runtime.mjs` | 2 | its prelude, the buildId, the `--out` path rule and `public/` refusal, the version/revision WARNINGs, one WARNING | `<pkg>/chunk-runtime.mjs --bin <dir> --out <abs dir> --lean-version <v> --revision <r>` |
-| `pipeline/artifacts/inspect.mjs` | 3 | one WARNING | `<pkg>/inspect.mjs <args>` |
-| `pipeline/toolchain/gate.mjs` | 3 | the `--artifact` path rule and the `bin/lean.js` check, one WARNING | `<pkg>/gate.mjs --artifact <abs dir>` |
+Decision 10 stands: `lean4-wasm64` is a devDependency pinned by its release
+tgz URL (`toolchain/lean4-wasm64-release.json`), and nothing in QED64 imports
+it.
 
-- **The package dir:** `LEAN4_WASM64_DIR` (relative to the cwd), else the
-  first `<ancestor of the cwd>/node_modules/lean4-wasm64` whose
-  `package.json` name is `lean4-wasm64`, walking past any that is not: the
-  consumer's own install, or QED64's devDependency when run from this repo.
-  The variable passes the same name check; a dir it names that is not the
-  package (QED64's own `pipeline/artifacts/`, a vendor dir of copied
-  forwards) refuses with one line, exit 2, and never falls back to the walk.
-  Never the script's own location, never `import`/`require`.
-- **The process:** `process.execve` replaces the script with
-  `node <pkg>/<script> …`: the same PID, stdio and exit code, so a
-  supervisor sees one process. A `<pkg>/<script>` that resolves to the
-  running script itself refuses (one line, exit 2) instead of re-executing
-  forever. Where execve is unavailable (or would drop an IPC channel) the
-  script runs as a child (`spawn`, inherited stdio): SIGINT, SIGTERM and
-  SIGHUP sent to the forward are passed on to it, so a supervisor's kill does
-  not orphan the package's gate and its runtime, and the forward exits when
-  the child does, with its code or 128 + its signal (SIGKILL: 137).
-- **Absent:** one stderr line, `<tool>: lean4-wasm64 not found — set
-  LEAN4_WASM64_DIR=<package dir> or install it: npm i -D <release tgz URL>
-  (toolchain/lean4-wasm64-release.json names it) (docs/CLI-CONTRACT.md)`, exit
-  2; for a `LEAN4_WASM64_DIR` that is not the package, `<tool>:
-  LEAN4_WASM64_DIR=<dir> is not the lean4-wasm64 package (no package.json
-  named lean4-wasm64) — …`, exit 2. No reserved substring.
-- **inspect** is stricter in the package than the script that lived here: it
-  also checks the manifest digest, the transport digest and that no two
-  WORKERFS ranges overlap, and it streams the parts (the 3.5 GB essential
-  pack is never held whole; QED64's `gunzipSync`'d it). Same positional
-  manifest, `--pack <file>` and `--deep`.
-- **gate** runs the package's own probes, runner and `--stack-size`; its
-  output keeps the ` ok `/`FAIL` check lines and `GATE PASSED` /
-  `GATE FAILED (n)`, the only markers parsed downstream (`adopt-release.sh
-  --gate`, which runs the package's gate directly, and lean4game's
-  `build-from-source.sh`); check labels differ. The kernel probes
-  stay in closure.json `pipelineData` (browser-check.sh uses them).
-- **Not flag-identical, whatever the kernel session's handover said:** the
-  package's `pack` requires `--lib --id --out --lean-version` (QED64's
-  defaults `--out work/packs` and `--lean-version 4.33.0-pre`), its
-  `chunk` requires `--bin --out --lean-version --revision`, and its
-  `unpack` has `--slim` but **no `--exclude`** (neither in the package nor
-  at fork HEAD 712e371a06). `pack`, `node-runner`, `persistent-probe`,
-  `olean-imports` and `artifact-paths.mjs` stay real QED64 scripts in this
-  contract; `chunk-runtime` forwards (plan B2a) by always passing the four
-  flags `chunk` requires.
+| Deleted script | Run instead |
+|---|---|
+| `unpack.mjs` | `node <pkg>/cli.mjs unpack --manifest <file> --out <dir> [--slim]` (no `--exclude`) |
+| `chunk-runtime.mjs` | `node <pkg>/cli.mjs chunk --bin <dir> --out <dir> --lean-version <x.y.z> --revision <string>` (all four required; stage outside `public/` and promote with `npm run promote:staging`) |
+| `inspect.mjs` | `node <pkg>/cli.mjs inspect <manifest.json> [--pack <file>] [--deep]` (`npm run inspect:pack -- …`) |
+| `gate.mjs` | `node <pkg>/cli.mjs gate --artifact <dir>` (`adopt-release.sh --gate` runs it) |
+| `gen-exports.py` | the fork's `wasm64-build/gen-exports.py` at `release.json` `kernel.commit` |
+
+`<pkg>` is the installed `node_modules/lean4-wasm64`, or `--tools` /
+`$LEAN4_WASM64_DIR` for adopt-release.sh. `pack`, `node-runner`,
+`persistent-probe`, `olean-imports` and `artifact-paths.mjs` stay QED64's.
 
 ## Frozen: the flags and lines consumers parse
 
@@ -1363,10 +1183,9 @@ plan step B1) that changes one is a breaking change for the consumer named.
 | `[DEBUG:PROGRESS] <i>/<N>: <module>` | patch 0031 | stderr | `judge-bake.mjs` J2 (`\bN/N: (\S+)`: the import reached its last module) |
 | `object compactor: out of memory growing the region buffer to …` (a thrown exception's text) | patch 0011 | stderr | the showcase's `scripts/bake.sh` (on this prefix it rebakes once with `--reserve` + 512 MiB); `judge-bake.mjs` J1 (any `object compactor:` line fails the bake, which is why it is a reserved substring) |
 
-The gate is the package's since contract 3 (`pipeline/toolchain/gate.mjs`
-forwards to `lean4-wasm64 gate --artifact <dir>`); it strips the
-`[DEBUG:PROGRESS]` and `[WASM DEBUG]` lines before it judges Lean's output,
-as QED64's own gate did.
+The gate is the package's (`lean4-wasm64 gate --artifact <dir>`); it strips
+the `[DEBUG:PROGRESS]` and `[WASM DEBUG]` lines before it judges Lean's
+output, as QED64's own gate did.
 
 ## Stability policy
 
@@ -1451,6 +1270,7 @@ as QED64's own gate did.
 | 3 | 2026-11-01 | Architecture review D4, option (a): **QED64 owns the bake** (the kernel copy's extras, ported as behaviour). **bake-snapshot** takes `<work>/.bake.lock` (one bake per `--work`: two bakes sharing it baked each other's `probe.lean` and the runtime's `<name>.snap.tmp.<pid>` and could exit 0 with a wrong snapshot), holding the bake's pid and then its runner's; a held lock is exit 2 (`work-locked`, naming both pids), never taken over; it is released at exit and kept when the runner is still running. It removes stale `<name>.snap.tmp.*` files under the lock (one `removed the stale …` line each), refuses a `--name` outside `[A-Za-z0-9][A-Za-z0-9._-]*` (`refuse-name`) and an explicit `--lib` that is not a directory (`no-lib`; before, the runner failed on it after the paired `.snap` was unlinked), both exit 2 before any side effect, gains `--entry-fields <json object>` (more entry keys after the page fields; a core key, a page field or a reserved `raw`/`lib`/`bakedBy` refuses, exit 2), and prints a `build environment: node …, zlib …, shared zlib …` line (`build-env`) after `baking`. The index's writer rules move from the fork's `formats/snapshot-index.md` to [SNAPSHOT-INDEX.md](SNAPSHOT-INDEX.md); the Ownership paragraph under Tiers names the owners. The `baked`, `index-copy`, `reaped` and refusal lines are unchanged. | fix; additive (a flag, markers, exit-2 refusals) |
 | 4 | 2026-11-01 | Architecture review R5a, **bake-snapshot finishes when its `.snap` is complete**: it polls every `--stable-ms` (new, default 5000) and stops the runner once `<work>/<name>.snap` has the same size at two polls (before: 300 s without output and 120 s of a stable size, about 4.5 min of every bake). **Breaking, so contract 4:** the stdout marker `reaped` (`bake output stable … — reaping the wedged exit`) becomes `completed` (`bake output complete … — stopping the runner`). The rename follows the report's approved R5a without a deprecation window (stability policy): no consumer parses it (lean4game `wasm64-port`, the proof sheets `website-v4.35` and the showcase `port-lean-4.35` grepped). New guards: a failure line (the new classifier, SPEC `classifier`) with no `.snap` and no save in progress for `--quiet-ms` (new, default 120000) ends the bake with `failed-quiet` and `no-snap`, exit 1 (before: a header Lean rejects waited forever); `--give-up-ms` (new, default 21600000) ends any bake with `gave-up`, exit 1; a malformed value of the three is exit 2 before any side effect. The `baked`, `index-copy` and refusal lines, exit 0's meaning (not a Lean verdict) and the runner's argv are unchanged. | breaking (a marker renamed); additive (flags, markers); fix |
 | 4 | 2026-11-01 | Architecture review D6, the notice (decided 2026-11-01), **bake-snapshot**: a failure line in a run whose `.snap` is complete prints the `notice` WARNING and one `verdict <json>` line on stderr before `compressing` (new markers `notice` and `verdict`; the verdict is `{"verdict":"failed","kind":…,"stream":…,"line":…,"name":…,"bytes":…}`); the bake still compresses, indexes and exits 0. After lean4game and the showcase re-pin past this row, at the next runtime release, such a bake exits **1** without compressing or indexing and keeps the raw `.snap` (contract 5). Exit 1 by the user's decision, not the report's new code 3: 3 stays the infrastructure refusal, and the `verdict` line tells a Lean failure from a runner crash. Open decision 3 is decided. QED64's `adopt-release.sh` fails on a `verdict` line now (its slim audit's manual "zero errors" check goes). No other line, flag or exit changes; a bake without a failure line prints nothing new. | deprecation (notice) |
+| 4 | 2026-11-01 | **The forwards and the gen-exports stub are removed** (architecture review R9a; deprecated since contract 3, 2026-10-06). (1) Removed: `pipeline/artifacts/unpack.mjs` and `pipeline/toolchain/chunk-runtime.mjs` (tier 2), `pipeline/artifacts/inspect.mjs` and `pipeline/toolchain/gate.mjs` (tier 3) and `pipeline/toolchain/gen-exports.py`. They leave the repository, package.json `files` and closure.json `pipeline`, together with their SPECS, the `LEAN4_WASM64_DIR` entry of `ENV` (no tool of this contract reads it; adopt-release.sh still takes it as its `--tools` default) and `forwardToLean4Wasm64`/`lean4Wasm64Dir`/`LEAN4_WASM64_TGZ_HINT` in `artifact-paths.mjs`, and `forwarded` leaves `CliMarker` in `cli.d.mts`; `QED64_STAGING` is read by bake-snapshot only. (2) Instead, run `node <lean4-wasm64>/cli.mjs unpack\|chunk\|inspect\|gate` (["lean4-wasm64: the forwards"](#lean4-wasm64-the-forwards)). `npm run inspect:pack` runs `lean4-wasm64 inspect`. bake-snapshot's `refuse-public` regex keeps its `chunk-runtime` alternative (frozen). (3) Consumers: none runs any of the five (lean4game `wasm64-port`, the proof sheets `website-v4.35` and the showcase grepped 2026-11-01). lean4game (73d7f3b), the proof sheets (c512c21) and the showcase's candidate pin O (521cf3f) carry the deprecation WARNINGs. The showcase's live pin H (bf9d947) predates them, but it runs none of the five. Shares contract 4 with the R5a row above (one bump). | breaking (tools removed after their window) |
 
 ## Open decisions
 
@@ -1475,13 +1295,13 @@ These are recorded here, not decided:
    `cli.mjs`; that is batched with the next runtime adoption ("How the tools
    bind").
 5. **Turn crashes on unreadable inputs into class-2 refusals.**
-   persistent-probe and chunk-runtime crash on an explicit artifact or bin
-   that is missing, unpack on an unreadable manifest, and snapshot-probe on a
-   missing or cross-device `--snap` (it no longer leaks its scratch dir
-   there). The path rule's own refusal (`no-path`) is class 2 already.
-6. **Unify path resolution.** bake-snapshot's `--work`/`--out` and
-   chunk-runtime's `--out` resolve a relative flag value against the repo
-   root, and everything else (variables included) against the cwd. Unifying
+   persistent-probe crashes on an explicit artifact that is missing, and
+   snapshot-probe on a missing or cross-device `--snap` (it no longer leaks
+   its scratch dir there). The path rule's own refusal (`no-path`) is class 2
+   already.
+6. **Unify path resolution.** bake-snapshot's `--work`/`--out` resolve a
+   relative flag value against the repo root, and everything else (variables
+   included) against the cwd. Unifying
    them is breaking. Once the deprecated defaults are gone (next cycle), the
    repo root matters only for these relative values.
 7. **Switch to last-wins for repeated flags,** the common convention.

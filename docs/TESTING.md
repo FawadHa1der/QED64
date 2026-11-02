@@ -77,13 +77,13 @@ variables at the main checkout's.
 
 | Variable | Used by | After a release adoption (`$W` = `work/adopt/<id>`) | Deprecated default (this checkout) |
 |---|---|---|---|
-| `QED64_LEAN_ARTIFACT` | `npm run test:integration` (all four files), node-runner, snapshot-probe, persistent-probe, bake-snapshot, `gate.mjs`, the compiler battery, resident-probe | `$W/artifact` (the release runtime, its `lean-lib` as `lib/lean`) | `pipeline/toolchain/work/build/stage1` when it has `bin/lean.js` (node-runner, snapshot-probe, persistent-probe, resident-probe) or `bin/lean.wasm` (bake-snapshot, the compiler battery); `gate.mjs`: the cwd when it has `bin/lean.js` |
+| `QED64_LEAN_ARTIFACT` | `npm run test:integration` (all four files), node-runner, snapshot-probe, persistent-probe, bake-snapshot, the compiler battery, resident-probe | `$W/artifact` (the release runtime, its `lean-lib` as `lib/lean`) | `pipeline/toolchain/work/build/stage1` when it has `bin/lean.js` (node-runner, snapshot-probe, persistent-probe, resident-probe) or `bin/lean.wasm` (bake-snapshot, the compiler battery) |
 | `QED64_INIT_SNAP` | `tests/integration/fileworker-exit.test.ts`, `tests/integration/lean-options.test.ts` (its directory, when `QED64_SNAP_DIR` is unset) | `$W/snapshot/init.snap` | `work/snapshot/init.snap` |
 | `QED64_MATHLIB_SNAP` | the compiler battery (`--snap`; `run.mjs --snap` forwards) | `$W/snapshot/mathlib.snap` | `work/snapshot/mathlib.snap` |
 | `QED64_LIB_TREE` | the compiler battery (`--lib`: the tree the snapshot was baked from), snapshot-probe | `$W/lib-tree-slim` (the battery's; snapshot-probe of the mathlib snapshot too) | `work/lib-tree-slim` (battery), `work/lib-tree` (snapshot-probe) |
 | `QED64_SNAP_DIR` | resident-probe (`--snap-dir`), `tests/integration/lean-options.test.ts` (over `QED64_INIT_SNAP`'s directory) | `$W/snapshot` | `work/snapshot` (lean-options: only when `QED64_INIT_SNAP` is unset too) |
 | `QED64_WORK` | bake-snapshot and node-runner (`--work`) | a scratch dir of your own (a bake for another runtime must not use the paired set) | `work/snapshot` (bake), `work/runner` (runner) |
-| `QED64_STAGING` | bake-snapshot and chunk-runtime (`--out` = `<it>/<buildId>/{snapshots,runtime}`) | `work/staging` (adopt-release.sh stages into `work/staging/<buildId>/`) | `work/staging/<buildId>/…` |
+| `QED64_STAGING` | bake-snapshot (`--out` = `<it>/<buildId>/snapshots`) | `work/staging` (adopt-release.sh stages into `work/staging/<buildId>/`) | `work/staging/<buildId>/…` |
 | `QED64_SLOW` | `npm run test:integration` | — | unset: the slow tier is off |
 
 **After a release adoption** (`pipeline/release/adopt-release.sh`, docs/REBUILD.md
@@ -556,12 +556,13 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
 
 ## Artifact discipline (pipeline/, tests/unit/artifact-discipline.test.ts)
 
-- `chunk-runtime.mjs` and `bake-snapshot.mjs` default `--out` to
-  `work/staging/<buildId>/{runtime,snapshots}` and hard-error (exit 2) on any
-  `--out` inside `public/`; neither deletes anything it produced before.
+- `bake-snapshot.mjs` defaults `--out` to `work/staging/<buildId>/snapshots`
+  (`stage-profiles.mjs` to `…/profiles`), and both hard-error (exit 2) on any
+  `--out` inside `public/`; bake-snapshot never deletes anything it produced
+  before.
 - Every snapshot index entry carries `runtime: <buildId>` (the sha256 of the
-  baking artifact's lean.wasm, the same identity chunk-runtime writes);
-  `lib/snapshots.ts` accepts it, preflight checks it, and
+  baking artifact's lean.wasm, the identity the release's runtime manifest
+  names); `lib/snapshots.ts` accepts it, preflight checks it, and
   `promote-staging.mjs --staging work/staging/<buildId> [--dry-run]` refuses
   a mismatch, re-derives every staged chunk's and snapshot's sha256 against
   the manifest/index (a truncated staging file is refused at plan time, not

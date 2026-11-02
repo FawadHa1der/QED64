@@ -7,8 +7,8 @@
 // the first import with a seconds-long region load.
 //
 // Output is a STAGING tree (work/staging/<buildId>/snapshots by default, where
-// <buildId> is the identity of the artifact's lean.wasm — the same function
-// chunk-runtime.mjs uses), and every index entry records that `runtime`, so
+// <buildId> is the identity of the artifact's lean.wasm — the one its
+// runtime manifest names), and every index entry records that `runtime`, so
 // the pairing is a datum rather than prose (review C6). `--out` inside
 // public/ is refused before the runner starts; promotion is a separate step.
 //
@@ -85,7 +85,7 @@ import { buildIdOfArtifact, refuseInsidePublic, resolveToolPath, stagingDir, too
     "environment:",
     "  QED64_LEAN_ARTIFACT       stage1 artifact dir (bin/lean.js, bin/lean.wasm, lib/lean) used when --artifact is absent (empty = unset)",
     "  QED64_WORK                the dir mounted at /work (bake-snapshot: where <name>.snap lands) used when --work is absent",
-    "  QED64_STAGING             the staging root used when --out is absent: --out is <QED64_STAGING>/<buildId>/{snapshots,runtime}",
+    "  QED64_STAGING             the staging root used when --out is absent: --out is <QED64_STAGING>/<buildId>/snapshots",
     "  QED64_RUNNER              the runner script bake-snapshot spawns when --runner is absent (default: QED64's own pipeline/snapshot/node-runner.mjs)",
     "  LEAN_COMPACTOR_RESERVE    bytes the compactor reserves up front for a whole-environment save (toolchain patch 0011)",
     "  QED64_ALLOW_LEGACY_IMPORTS",
