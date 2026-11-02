@@ -4,13 +4,14 @@
 // The in-browser installer verifies transport parts (streaming) but cannot
 // stream-digest the multi-GB raw pack; this job closes that gap by inflating
 // each published profile and recomputing the raw pack digest, plus the
-// runtime chunk/whole digests, and checks that the profile index is paired
-// with the served runtime. Run before every deploy.
+// runtime chunk/whole digests (over the inflated parts for a v2 gzip
+// runtime), and checks that the profile index is paired with the served
+// runtime. Run before every deploy.
 //
 // Usage: node pipeline/release/verify-release.mjs [--public <dir>]
 
 import { createHash } from "node:crypto";
-import { createGunzip } from "node:zlib";
+import { createGunzip, gunzipSync } from "node:zlib";
 import fs from "node:fs";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
@@ -30,18 +31,60 @@ const check = (ok, label) => {
   if (!ok) failures += 1;
 };
 
-// Runtime chunks + wholes
+// Runtime chunks + wholes. A v2 runtime (org.lean-browser64.runtime/v2, the
+// fork's formats/runtime-manifest.md) names each file's encoding, gzip or
+// identity: a gzip file's parts are gzip members, each of one decoded slice.
+// A part's bytes/sha256 are as served; its decodedBytes, and the file's
+// bytes/sha256, are over the inflated bytes. Every part but the last decodes
+// to exactly 16 MiB (the v1 chunk size). An absent schema is v1. Built-ins
+// only: lean4game vendors this file.
+const RUNTIME_V1 = "org.lean-browser64.runtime/v1";
+const RUNTIME_V2 = "org.lean-browser64.runtime/v2";
+/** The file encodings each runtime manifest schema allows, a closed set (absent: identity in v1, refused in v2). */
+const RUNTIME_ENCODINGS = { [RUNTIME_V1]: ["identity"], [RUNTIME_V2]: ["identity", "gzip"] };
+/** A v2 part's decoded size, every part but the last (the v1 chunk size). */
+const DECODED_SLICE = 16 * 1024 * 1024;
+/** Why a file's encoding or parts break its schema's rules, or null. */
+function runtimeFileFault(schema, file) {
+  const allowed = RUNTIME_ENCODINGS[schema];
+  if (!allowed) return `schema ${schema} is not one this tool reads`;
+  const encoding = file.encoding ?? (schema === RUNTIME_V1 ? "identity" : undefined);
+  if (!allowed.includes(encoding)) return `encoding ${encoding === undefined ? "(none)" : JSON.stringify(encoding)} is not one ${schema} allows (${allowed.join(", ")})`;
+  if (schema !== RUNTIME_V2) return null;
+  let sum = 0;
+  for (const [i, c] of file.chunks.entries()) {
+    const d = c.decodedBytes;
+    if (!Number.isSafeInteger(d) || d <= 0) return `chunk ${i} has no usable decodedBytes (${JSON.stringify(d) ?? "none"})`;
+    if (i < file.chunks.length - 1 ? d !== DECODED_SLICE : d > DECODED_SLICE) return `chunk ${i} decodes to ${d} bytes; every part but the last decodes to exactly ${DECODED_SLICE}, the last to at most that`;
+    if (encoding === "identity" && d !== c.bytes) return `chunk ${i} is identity-encoded, but its decodedBytes ${d} is not its bytes ${c.bytes}`;
+    sum += d;
+  }
+  return sum === file.bytes ? null : `its parts decode to ${sum} bytes, the file is ${file.bytes}`;
+}
 const runtime = JSON.parse(fs.readFileSync(path.join(publicDir, "runtime/runtime-manifest.json"), "utf8"));
+const schema = runtime.schema ?? RUNTIME_V1;
+check(Object.hasOwn(RUNTIME_ENCODINGS, schema), `runtime manifest: schema ${schema}`);
 for (const [name, file] of Object.entries(runtime.files)) {
+  const v2 = schema === RUNTIME_V2;
+  const gzip = v2 && file.encoding === "gzip";
+  const fault = runtimeFileFault(schema, file);
+  check(!fault, `${name}: ${fault ?? `encoding ${file.encoding ?? "identity"}${v2 ? `, parts decode to ${file.bytes} bytes in ${DECODED_SLICE}-byte slices` : ""}`}`);
   const whole = createHash("sha256");
   let bytes = 0;
   let chunksOk = true;
   for (const chunk of file.chunks) {
     const p = path.join(publicDir, chunk.url.replace(/^\//, ""));
     const data = fs.readFileSync(p);
-    if (data.length !== chunk.bytes || sha256(data) !== chunk.sha256) chunksOk = false;
-    whole.update(data);
-    bytes += data.length;
+    const served = data.length === chunk.bytes && sha256(data) === chunk.sha256;
+    if (!served) chunksOk = false;
+    // A gzip part is inflated only once it is verified as served: the inflater never sees an unverified byte.
+    let decoded = data;
+    if (gzip) {
+      try { decoded = served ? gunzipSync(data) : Buffer.alloc(0); } catch { chunksOk = false; decoded = Buffer.alloc(0); }
+    }
+    if (v2 && decoded.length !== chunk.decodedBytes) chunksOk = false;
+    whole.update(decoded);
+    bytes += decoded.length;
   }
   check(chunksOk, `${name}: ${file.chunks.length} chunks`);
   check(bytes === file.bytes && whole.digest("hex") === file.sha256, `${name}: whole-file digest`);

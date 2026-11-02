@@ -19,12 +19,16 @@ export function sweepStaleTemps(dir: string, names: Set<string>): Promise<{ file
 export interface PlannedFile { group: ArtifactGroup; rel: string; bytes: number; sha256: string }
 export interface ArtifactPlan {
   items: PlannedFile[];
-  wholes: { label: string; rels: string[]; bytes: number; sha256: string }[];
+  /** Files whose concatenated parts are pinned too. A v2 gzip runtime file (org.lean-browser64.runtime/v2) carries
+   * encoding "gzip" and each part's decodedBytes: its parts are inflated first, and bytes/sha256 are the inflated file's. */
+  wholes: { label: string; rels: string[]; bytes: number; sha256: string; encoding?: "gzip"; decoded?: number[] }[];
   /** Files written from tracked bytes, never fetched: the digest-named runtime manifest
    * (group "runtime"; no per-build index copies since 2026-11, architecture review D2). */
   copies: { group: ArtifactGroup; rel: string; data: Uint8Array; from: string }[];
   manifests: { group: ArtifactGroup; rel: string; data: Uint8Array }[];
   buildId: string | null;
+  /** The runtime manifest's schema (org.lean-browser64.runtime/v1 when it has none), when runtime is chosen. */
+  runtimeSchema: string | null;
 }
 
 export function sitePath(group: ArtifactGroup, url: unknown, where: string): string;

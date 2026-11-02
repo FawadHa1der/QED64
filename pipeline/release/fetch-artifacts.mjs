@@ -7,7 +7,8 @@
 // What is fetched, from the manifests under --manifests (default: this
 // checkout's public/):
 //   runtime    every chunk of runtime/runtime-manifest.json (chunk sha256 and
-//              size, then each whole file's sha256 and size over its chunks),
+//              size, then each whole file's sha256 and size over its chunks,
+//              inflated first for a v2 gzip runtime: org.lean-browser64.runtime/v2),
 //              plus runtime/runtime-manifest.<buildId>.json, the digest-named
 //              copy the page reads first: written from the tracked manifest's
 //              own bytes, never fetched;
@@ -44,11 +45,19 @@ import path from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
+import { gunzipSync } from "node:zlib";
 import { parseCli } from "../snapshot/cli.mjs";
 
 export const DEFAULT_ORIGIN = "https://qed64.fawadworkaddress.workers.dev/";
 export const GROUPS = ["runtime", "profiles", "snapshots"];
 export const RELEASE_SCHEMA = "lean4-wasm64.release/v1";
+/** The runtime manifest schemas this tool reads (the fork's formats/runtime-manifest.md) and the file encodings each
+ * allows, a closed set: absent is identity in v1 and refused in v2. An absent schema is v1. */
+const RUNTIME_V1 = "org.lean-browser64.runtime/v1";
+const RUNTIME_V2 = "org.lean-browser64.runtime/v2";
+const RUNTIME_ENCODINGS = Object.freeze({ [RUNTIME_V1]: Object.freeze(["identity"]), [RUNTIME_V2]: Object.freeze(["identity", "gzip"]) });
+/** A v2 part's decoded size, every part but the last (the v1 chunk size). */
+const DECODED_SLICE = 16 * 1024 * 1024;
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const TOOL = "fetch-artifacts";
 /** The directory each group's manifest URLs must stay in (one path segment below it). */
@@ -66,6 +75,24 @@ export class FetchFailure extends Error {
   constructor(message, code = 1) { super(message); this.code = code; }
 }
 const refuse = (message) => new FetchFailure(message, 2);
+
+/** Why a runtime file's encoding or parts break its schema's rules (v2: each part's decodedBytes a positive integer,
+ * exactly DECODED_SLICE but the last, at most that for the last, summing to the file's bytes; identity: decodedBytes
+ * = bytes), or null. */
+function runtimeFileFault(schema, f) {
+  const encoding = f.encoding ?? (schema === RUNTIME_V1 ? "identity" : undefined);
+  if (!RUNTIME_ENCODINGS[schema].includes(encoding)) return `encoding ${encoding === undefined ? "(none)" : JSON.stringify(encoding)} is not one ${schema} allows (${RUNTIME_ENCODINGS[schema].join(", ")})`;
+  if (schema !== RUNTIME_V2) return null;
+  let sum = 0;
+  for (const [i, c] of f.chunks.entries()) {
+    const d = c?.decodedBytes;
+    if (!Number.isSafeInteger(d) || d <= 0) return `chunk ${i} has no usable decodedBytes (${JSON.stringify(d) ?? "none"})`;
+    if (i < f.chunks.length - 1 ? d !== DECODED_SLICE : d > DECODED_SLICE) return `chunk ${i} decodes to ${d} bytes; every part but the last decodes to exactly ${DECODED_SLICE}, the last to at most that`;
+    if (encoding === "identity" && d !== c.bytes) return `chunk ${i} is identity-encoded, but its decodedBytes ${d} is not its bytes ${c.bytes}`;
+    sum += d;
+  }
+  return sum === f.bytes ? null : `its parts decode to ${sum} bytes, the file is ${f.bytes}`;
+}
 
 const hex = (d) => { const m = /^(?:sha256:)?([0-9a-f]{64})$/.exec(String(d ?? "")); return m ? m[1] : null; };
 const inside = (p, root) => { const rel = path.relative(root, p); return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel)); };
@@ -117,16 +144,20 @@ async function readTrackedJson(manifests, rel) {
 /**
  * What the tracked manifests name for the chosen groups:
  *   items  [{ group, rel, bytes, sha256 }]  content-addressed files to fetch;
- *   wholes [{ label, rels, bytes, sha256 }] files whose concatenated parts are pinned too;
+ *   wholes [{ label, rels, bytes, sha256, encoding?, decoded? }]
+ *                                           files whose concatenated parts are pinned too (a v2
+ *                                           gzip runtime file: encoding "gzip", each part inflated
+ *                                           to decoded[i] bytes first);
  *   copies [{ group, rel, data }]           files written from tracked bytes (never fetched): the
  *                                           per-build runtime manifest;
  *   manifests [{ group, rel, data }]        the tracked manifests themselves (--with-manifests);
- *   buildId                                 the runtime's, when runtime is chosen.
- * Throws FetchFailure(2) on a missing or malformed manifest, a URL outside its
- * group's directory, or one path pinned two ways.
+ *   buildId, runtimeSchema                  the runtime's (an absent schema is v1), when runtime is chosen.
+ * Throws FetchFailure(2) on a missing or malformed manifest (a runtime manifest
+ * schema this tool does not read, a file encoding or decodedBytes its schema
+ * does not allow), a URL outside its group's directory, or one path pinned two ways.
  */
 export async function planFromManifests(manifests, groups) {
-  const plan = { items: [], wholes: [], copies: [], manifests: [], buildId: null };
+  const plan = { items: [], wholes: [], copies: [], manifests: [], buildId: null, runtimeSchema: null };
   const seen = new Map();
   const add = (group, rel, bytes, sha256, where) => {
     if (!Number.isSafeInteger(bytes) || bytes < 0 || !sha256) throw refuse(`${where}: ${rel} has no usable size and sha256`);
@@ -144,7 +175,10 @@ export async function planFromManifests(manifests, groups) {
     const m = await readTrackedJson(manifests, rel);
     const { buildId, files } = m.json ?? {};
     if (!/^wasm64-[0-9a-f]{16}$/.test(String(buildId)) || !files || typeof files !== "object") throw refuse(`${m.file}: no buildId and files`);
+    const schema = m.json.schema ?? RUNTIME_V1;
+    if (!Object.hasOwn(RUNTIME_ENCODINGS, schema)) throw refuse(`${m.file}: runtime manifest schema ${JSON.stringify(m.json.schema)} is not one this tool reads (${Object.keys(RUNTIME_ENCODINGS).join(", ")})`);
     plan.buildId = buildId;
+    plan.runtimeSchema = schema;
     for (const [name, f] of Object.entries(files)) {
       if (!Array.isArray(f?.chunks) || !f.chunks.length) throw refuse(`${m.file}: ${name} has no chunks`);
       const rels = f.chunks.map((c, i) => {
@@ -153,7 +187,10 @@ export async function planFromManifests(manifests, groups) {
         return r;
       });
       if (!hex(f.sha256) || !Number.isSafeInteger(f.bytes)) throw refuse(`${m.file}: ${name} has no whole-file sha256 and bytes`);
-      plan.wholes.push({ label: `runtime ${name}`, rels, bytes: f.bytes, sha256: hex(f.sha256) });
+      const fault = runtimeFileFault(schema, f);
+      if (fault) throw refuse(`${m.file}: ${name}: ${fault}`);
+      const gzip = schema === RUNTIME_V2 && f.encoding === "gzip";
+      plan.wholes.push({ label: `runtime ${name}`, rels, bytes: f.bytes, sha256: hex(f.sha256), ...(gzip ? { encoding: "gzip", decoded: f.chunks.map((c) => c.decodedBytes) } : {}) });
     }
     plan.copies.push({ group: "runtime", rel: `runtime/runtime-manifest.${buildId}.json`, data: m.bytes, from: rel });
     plan.manifests.push({ group: "runtime", rel, data: m.bytes });
@@ -236,6 +273,10 @@ export function releaseResolver(release, plan, groups) {
   if (hosting.layout !== "served") throw new FetchFailure(`release ${release.id}: hosting.layout is ${JSON.stringify(hosting.layout)}, not "served"`);
   if (groups.includes("runtime") && release.runtime?.buildId !== plan.buildId) {
     throw new FetchFailure(`release ${release.id} carries runtime ${release.runtime?.buildId}; the tracked manifests pin ${plan.buildId}`);
+  }
+  // runtime.schema: additive in lean4-wasm64.release/v1, absent = v1. A buildId is never re-chunked in another format.
+  if (groups.includes("runtime") && (release.runtime?.schema ?? RUNTIME_V1) !== plan.runtimeSchema) {
+    throw new FetchFailure(`release ${release.id} carries a runtime of schema ${release.runtime?.schema ?? RUNTIME_V1}; the tracked runtime manifest's is ${plan.runtimeSchema}`);
   }
   const files = new Map((Array.isArray(release.files) ? release.files : []).map((f) => [f.path, f]));
   const mounts = Object.entries(hosting.mount ?? {});
@@ -411,12 +452,21 @@ export async function fetchArtifacts({ out, manifests, only = GROUPS, release, o
     await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, jobs.length)) }, worker));
     if (failure) throw failure;
 
-    // Whole files: the concatenated parts, as the manifests pin them.
+    // Whole files: the concatenated parts, as the manifests pin them. A v2 gzip runtime file's parts, each verified
+    // above as served, are inflated first; the whole-file pin is over the inflated bytes.
     for (const w of plan.wholes) {
       if (failure) throw failure;
       const h = createHash("sha256");
       let n = 0;
-      for (const rel of w.rels) for await (const c of fs.createReadStream(path.resolve(outRoot, rel))) { h.update(c); n += c.length; }
+      for (const [i, rel] of w.rels.entries()) {
+        if (w.encoding === "gzip") {
+          let out;
+          try { out = gunzipSync(await fsp.readFile(path.resolve(outRoot, rel))); } catch (e) { throw new FetchFailure(`${w.label}: ${rel} does not inflate (${e.message})`); }
+          if (out.length !== w.decoded[i]) throw new FetchFailure(`${w.label}: ${rel} inflates to ${out.length} bytes; the manifest pins ${w.decoded[i]}`);
+          h.update(out);
+          n += out.length;
+        } else for await (const c of fs.createReadStream(path.resolve(outRoot, rel))) { h.update(c); n += c.length; }
+      }
       const got = h.digest("hex");
       if (n !== w.bytes || got !== w.sha256) throw new FetchFailure(`${w.label}: its parts assemble to ${n} bytes, sha256 ${got}; the manifest pins ${w.bytes} bytes, ${w.sha256}`);
       log(`${TOOL}: verified ${w.label} (${w.bytes} bytes, sha256 ${got.slice(0, 16)}…, ${w.rels.length} parts)`);

@@ -9,6 +9,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { gzipSync } from "node:zlib";
 import { isInsidePublic, runtimeBuildId } from "../../pipeline/toolchain/artifact-paths.mjs";
 import { isImmutable } from "../../infra/worker.js";
 import { fetchSnapshotIndex } from "../../lib/snapshots";
@@ -562,6 +563,70 @@ fs.writeFileSync(path.join(work, a.find((x) => x.startsWith("--incr-header-save=
       expect(fs.readFileSync(indexFile, "utf8")).toBe(JSON.stringify({ ...served, runtime: { buildId: bump.manifest.buildId, leanVersion: LEAN } }, null, 2) + eol);
     }
   }, 120_000);
+});
+
+describe("verify-release reads a v2 (gzip) runtime (org.lean-browser64.runtime/v2, architecture review M3)", () => {
+  /** A minimal public tree: a v2 runtime manifest of fakeBin's files, each gzipped as one part (lean.wasm in two parts
+   * with `split`; served raw with `plain`), the parts, and an empty profile index paired with it. */
+  function v2Tree(tag: string, edit: (m: { files: Record<string, { bytes: number; encoding?: string; chunks: { decodedBytes?: number }[] }> }) => void = () => {}, opts: { split?: boolean; plain?: boolean } = {}) {
+    const bin = fakeBin(`v2-${tag}`);
+    const pub = path.join(tmp, `public-v2-${tag}`);
+    fs.mkdirSync(path.join(pub, "runtime/chunks"), { recursive: true });
+    const files: Record<string, unknown> = {};
+    for (const name of ["lean.js", "lean.wasm"]) {
+      const whole = fs.readFileSync(path.join(bin, name));
+      const slices = opts.split && name === "lean.wasm" ? [whole.subarray(0, 3), whole.subarray(3)] : [whole];
+      const chunks = slices.map((slice, i) => {
+        const wire = opts.plain && name === "lean.wasm" ? Buffer.from(slice) : gzipSync(slice, { level: 9 });
+        const file = `${name}.${sha(wire).slice(0, 20)}.part-${String(i).padStart(3, "0")}`;
+        fs.writeFileSync(path.join(pub, "runtime/chunks", file), wire);
+        return { url: `/runtime/chunks/${file}`, bytes: wire.length, sha256: sha(wire), decodedBytes: slice.length };
+      });
+      files[name] = { bytes: whole.length, sha256: sha(whole), encoding: "gzip", chunks };
+    }
+    const manifest = {
+      schema: "org.lean-browser64.runtime/v2", buildId: runtimeBuildId(fs.readFileSync(path.join(bin, "lean.wasm"))), leanVersion: "4.36.0-test",
+      sourceRevision: "test", target: "wasm64-unknown-emscripten", pointerBits: 64, memory: { initialBytes: 134217728, maximumBytes: 17179869184, shared: true }, files,
+    };
+    edit(manifest as unknown as Parameters<typeof edit>[0]);
+    fs.writeFileSync(path.join(pub, "runtime/runtime-manifest.json"), JSON.stringify(manifest, null, 2));
+    fs.mkdirSync(path.join(pub, "profiles"), { recursive: true });
+    fs.writeFileSync(path.join(pub, "profiles/index.json"), JSON.stringify({ schema: "qed64.profile-index/v1", runtime: { buildId: manifest.buildId, leanVersion: manifest.leanVersion }, profiles: [] }, null, 2));
+    return pub;
+  }
+
+  test("a v2 tree verifies: each part as served, then inflated; the whole-file digest over the inflated bytes", () => {
+    const r = run(verifyRelease, ["--public", v2Tree("ok")]);
+    expect(r.status, r.stdout).toBe(0);
+    expect(r.stdout).toMatch(/^ ok {3}runtime manifest: schema org\.lean-browser64\.runtime\/v2$/m);
+    expect(r.stdout).toMatch(/^ ok {3}lean\.wasm: encoding gzip, parts decode to \d+ bytes in 16777216-byte slices$/m);
+    expect(r.stdout).toMatch(/^ ok {3}lean\.wasm: whole-file digest$/m);
+    expect(r.stdout).toMatch(/RELEASE VERIFIED/);
+  });
+
+  test("a corrupted v2 tree fails: a decodedBytes off by one, a part that is not gzip, a part but the last that is not 16 MiB, an encoding or schema it does not read", () => {
+    const off = run(verifyRelease, ["--public", v2Tree("off", (m) => { m.files["lean.wasm"]!.chunks[0]!.decodedBytes! += 1; })]);
+    expect(off.status).toBe(1);
+    expect(off.stdout).toMatch(/^FAIL {2}lean\.wasm: 1 chunks$/m);
+    expect(off.stdout).toMatch(/^FAIL {2}lean\.wasm: its parts decode to \d+ bytes, the file is \d+$/m);
+    // served exactly as the manifest pins it (sha256 and size), but not a gzip member
+    const plain = run(verifyRelease, ["--public", v2Tree("plain", () => {}, { plain: true })]);
+    expect(plain.status).toBe(1);
+    expect(plain.stdout).toMatch(/^FAIL {2}lean\.wasm: 1 chunks$/m);
+    expect(plain.stdout).toMatch(/^FAIL {2}lean\.wasm: whole-file digest$/m);
+    // every part but the last decodes to exactly 16 MiB (the v1 chunk size): the bytes are right, the slicing is not
+    const split = run(verifyRelease, ["--public", v2Tree("split", () => {}, { split: true })]);
+    expect(split.status).toBe(1);
+    expect(split.stdout).toMatch(/^FAIL {2}lean\.wasm: chunk 0 decodes to 3 bytes; every part but the last decodes to exactly 16777216, the last to at most that$/m);
+    expect(split.stdout).toMatch(/^ ok {3}lean\.wasm: 2 chunks$/m);
+    expect(split.stdout).toMatch(/^ ok {3}lean\.wasm: whole-file digest$/m);
+    const br = run(verifyRelease, ["--public", v2Tree("br", (m) => { m.files["lean.js"]!.encoding = "br"; })]);
+    expect(br.status).toBe(1);
+    expect(br.stdout).toMatch(/^FAIL {2}lean\.js: encoding "br" is not one org\.lean-browser64\.runtime\/v2 allows \(identity, gzip\)$/m);
+    const v9 = run(verifyRelease, ["--public", v2Tree("v9", (m) => { (m as { schema?: string }).schema = "org.lean-browser64.runtime/v9"; })]);
+    expect(v9.status).toBe(1);
+    expect(v9.stdout).toMatch(/^FAIL {2}runtime manifest: schema org\.lean-browser64\.runtime\/v9$/m);
+  });
 });
 
 describe("snapshot index schema", () => {

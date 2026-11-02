@@ -231,6 +231,7 @@ in order. Each one trusts only the previous one.
    import { createHash } from "node:crypto";
    import fs from "node:fs";
    import path from "node:path";
+   import { gunzipSync } from "node:zlib";
    const [file, dir] = process.argv.slice(2);
    const m = JSON.parse(fs.readFileSync(file, "utf8"));
    const sha = (b) => createHash("sha256").update(b).digest("hex");
@@ -247,7 +248,10 @@ in order. Each one trusts only the previous one.
    for (const t of [runtime.manifest, snapshots.index, profiles.index, ...profiles.packs.map((p) => p.manifest)]) one(t.path, null, t.sha256);
    for (const f of runtime.files) {
      const whole = createHash("sha256");
-     for (const c of f.chunks) whole.update(one(c.path, c.bytes, c.sha256));
+     for (const c of f.chunks) {
+       const b = one(c.path, c.bytes, c.sha256); // as served; a v2 runtime's gzip part is hashed inflated
+       whole.update(f.encoding === "gzip" ? gunzipSync(b) : b);
+     }
      if (whole.digest("hex") !== f.sha256) fail(f.name);
    }
    for (const s of snapshots.entries) one(s.path, s.transferBytes, s.sha256);

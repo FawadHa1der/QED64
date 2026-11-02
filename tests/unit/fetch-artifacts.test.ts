@@ -11,6 +11,7 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { gzipSync } from "node:zlib";
 import { fetchArtifacts, main, oneLine, parseOnly, planFromManifests, type FetchOptions } from "../../pipeline/release/fetch-artifacts.mjs";
 import { SPECS } from "../../pipeline/snapshot/cli.mjs";
 
@@ -278,6 +279,8 @@ describe("fetchArtifacts", () => {
       [(r) => { r.files = r.files.filter((f: { path: string }) => f.path !== victim); }, `${victim}: release lean-test does not list ${victim} in files[]`],
       [(r) => { r.runtime.buildId = "wasm64-0000000000000000"; }, `release lean-test carries runtime wasm64-0000000000000000; the tracked manifests pin ${buildId}`],
       [(r) => { r.schema = "lean4-wasm64.release/v0"; }, 'release.json schema is "lean4-wasm64.release/v0", not lean4-wasm64.release/v1'],
+      // runtime.schema (additive in lean4-wasm64.release/v1, absent = v1) must be the tracked manifest's (architecture review M3)
+      [(r) => { r.runtime.schema = "org.lean-browser64.runtime/v2"; }, "release lean-test carries a runtime of schema org.lean-browser64.runtime/v2; the tracked runtime manifest's is org.lean-browser64.runtime/v1"],
     ];
     const none = await run({ out: outDir(), manifests: manifestsDir(), only: ["runtime"], release: `${base}/no-release` });
     expect([none.code, none.message]).toEqual([1, `release.json: HTTP 404 from ${base}/no-release/release.json`]);
@@ -333,6 +336,129 @@ describe("fetchArtifacts", () => {
     const r = await run({ out: outDir(), manifests: path.join(tmp, "no-such-dir") });
     expect(r.code).toBe(2);
     expect(r.message).toMatch(/^no tracked manifest .*no-such-dir\/runtime\/runtime-manifest\.json \(ENOENT\); pass --manifests <dir>, a QED64 checkout's public\/$/);
+  });
+});
+
+describe("a v2 (gzip) runtime manifest (org.lean-browser64.runtime/v2, architecture review M3)", () => {
+  // The v2 shape: each file's parts are gzip members of its decoded slices, every slice but the last exactly 16 MiB;
+  // a part's bytes/sha256 are as served, its decodedBytes and the file's bytes/sha256 over the inflated bytes.
+  const V2 = "org.lean-browser64.runtime/v2";
+  const SLICE = 16 << 20;
+  const raw = { "lean.js": [Buffer.concat(lj)], "lean.wasm": [Buffer.alloc(SLICE, "lean.wasm-v2;"), bytes("lean.wasm-v2-tail", 70)] };
+  const wire = { "lean.js": raw["lean.js"].map((b) => gzipSync(b, { level: 9 })), "lean.wasm": raw["lean.wasm"].map((b) => gzipSync(b, { level: 9 })) };
+  const v2BuildId = `wasm64-${sha(Buffer.concat(raw["lean.wasm"])).slice(0, 16)}`;
+  const v2Manifest = {
+    schema: V2,
+    buildId: v2BuildId,
+    leanVersion: "0.0.0-test",
+    files: Object.fromEntries((["lean.js", "lean.wasm"] as const).map((name) => {
+      const whole = Buffer.concat(raw[name]);
+      return [name, {
+        bytes: whole.length, sha256: sha(whole), encoding: "gzip" as string | undefined,
+        chunks: wire[name].map((b, i) => ({ url: chunkUrl(name, b, i), bytes: b.length, sha256: sha(b), decodedBytes: raw[name][i]!.length as number | undefined })),
+      }];
+    })),
+  };
+  type V2Manifest = typeof v2Manifest;
+  const v2Parts = (["lean.js", "lean.wasm"] as const).flatMap((name) => v2Manifest.files[name]!.chunks.map((c, i) => [c.url.slice(1), wire[name][i]!] as const));
+  /** The tracked manifests (manifestsDir) with the runtime manifest replaced by the (edited) v2 one. */
+  const v2Dir = (edit: (rt: V2Manifest) => void = () => {}) => {
+    const d = manifestsDir();
+    const rt = structuredClone(v2Manifest);
+    edit(rt);
+    fs.writeFileSync(path.join(d, "runtime/runtime-manifest.json"), JSON.stringify(rt, null, 2));
+    return d;
+  };
+  const wasmTail = v2Manifest.files["lean.wasm"]!.chunks[1]!.url.slice(1);
+  beforeEach(() => serve("/site/", v2Parts));
+
+  test("the plan: the served parts are the items, a gzip file's whole carries its encoding and each part's decoded size", async () => {
+    const plan = await planFromManifests(v2Dir(), ["runtime"]);
+    expect(plan.runtimeSchema).toBe(V2);
+    expect(plan.buildId).toBe(v2BuildId);
+    expect(plan.items.map((i) => [i.rel, i.bytes, i.sha256])).toEqual(v2Parts.map(([rel, b]) => [rel, b.length, sha(b)]));
+    expect(plan.wholes).toEqual((["lean.js", "lean.wasm"] as const).map((name) => ({
+      label: `runtime ${name}`, rels: v2Manifest.files[name]!.chunks.map((c) => c.url.slice(1)),
+      bytes: Buffer.concat(raw[name]).length, sha256: sha(Buffer.concat(raw[name])), encoding: "gzip", decoded: raw[name].map((b) => b.length),
+    })));
+    // v1, with or without a schema: no encoding on the wholes, read as v1
+    const v1 = await planFromManifests(manifestsDir(), ["runtime"]);
+    expect(v1.runtimeSchema).toBe("org.lean-browser64.runtime/v1");
+    for (const w of v1.wholes) expect(Object.keys(w).sort()).toEqual(["bytes", "label", "rels", "sha256"]);
+    const bare = await planFromManifests(manifestsDir(({ runtime }) => { delete (runtime as { schema?: string }).schema; }), ["runtime"]);
+    expect(bare.runtimeSchema).toBe("org.lean-browser64.runtime/v1");
+  });
+
+  test("happy path: the gzip parts land as served, each whole file verified over its inflated parts", async () => {
+    const out = outDir();
+    const r = await run({ out, manifests: v2Dir(), only: ["runtime"] });
+    expect(r.message).toBe("");
+    for (const [rel, b] of v2Parts) expect(fs.readFileSync(path.join(out, rel)).equals(b), rel).toBe(true);
+    expect(list(out)).toEqual([...v2Parts.map(([rel]) => rel), `runtime/runtime-manifest.${v2BuildId}.json`].sort());
+    const wasm = Buffer.concat(raw["lean.wasm"]);
+    expect(r.lines).toContain(`fetch-artifacts: verified runtime lean.wasm (${wasm.length} bytes, sha256 ${sha(wasm).slice(0, 16)}…, 2 parts)`);
+    expect(r.lines).toContain(`fetch-artifacts: verified runtime lean.js (${raw["lean.js"][0]!.length} bytes, sha256 ${sha(raw["lean.js"][0]!).slice(0, 16)}…, 1 parts)`);
+    const markers = SPECS["fetch-artifacts"]!.markers.filter((m) => m.stream === "stderr");
+    for (const line of r.lines) expect(markers.some((m) => m.regex.test(line)), line).toBe(true);
+    // from a release that records the schema (release.json runtime.schema), and refused from one that records none (v1)
+    const v2Release = (schema?: string) => {
+      const files = new Map<string, Buffer>(v2Parts);
+      const rj = {
+        schema: "lean4-wasm64.release/v1", id: "lean-test-v2",
+        runtime: { buildId: v2BuildId, manifest: "runtime/runtime-manifest.json", ...(schema ? { schema } : {}) },
+        hosting: { layout: "served", mount: { "/runtime/": "runtime/" }, siteOwned: ["/profiles/index.json", "/snapshots/"] },
+        files: [...files].map(([p, b]) => ({ path: p, bytes: b.length, sha256: sha(b) })),
+      };
+      files.set("release.json", Buffer.from(JSON.stringify(rj)));
+      return releaseDir(files);
+    };
+    hits.length = 0;
+    const fromRelease = await run({ out: outDir(), manifests: v2Dir(), only: ["runtime"], release: v2Release(V2) });
+    expect([fromRelease.code, fromRelease.message]).toEqual([0, ""]);
+    expect(hits).toEqual([]);
+    const unrecorded = outDir();
+    const v1Release = await run({ out: unrecorded, manifests: v2Dir(), only: ["runtime"], release: v2Release() });
+    expect([v1Release.code, v1Release.message]).toEqual([1, `release lean-test-v2 carries a runtime of schema org.lean-browser64.runtime/v1; the tracked runtime manifest's is ${V2}`]);
+    expect(list(unrecorded)).toEqual([]);
+  });
+
+  test("a part that inflates to another size than its decodedBytes, or does not inflate, fails (1) naming the part", async () => {
+    // the tail's decodedBytes (and so the file's bytes) one more than it inflates to: the plan is well-formed, the bytes are not
+    const off = await run({ out: outDir(), manifests: v2Dir((rt) => { rt.files["lean.wasm"]!.chunks[1]!.decodedBytes! += 1; rt.files["lean.wasm"]!.bytes += 1; }), only: ["runtime"] });
+    expect([off.code, off.message]).toEqual([1, `runtime lean.wasm: ${wasmTail} inflates to 70 bytes; the manifest pins 71`]);
+    // a part served as pinned (its own sha256 and size) that is not a gzip member
+    const plain = raw["lean.js"][0]!;
+    const plainUrl = chunkUrl("lean.js", plain, 0);
+    served.set(`/site${plainUrl}`, plain);
+    const notGzip = await run({ out: outDir(), manifests: v2Dir((rt) => { Object.assign(rt.files["lean.js"]!.chunks[0]!, { url: plainUrl, bytes: plain.length, sha256: sha(plain) }); }), only: ["runtime"] });
+    expect(notGzip.code).toBe(1);
+    expect(notGzip.message).toMatch(new RegExp(`^runtime lean\\.js: ${plainUrl.slice(1).replace(/\./g, "\\.")} does not inflate \\(`));
+  });
+
+  test("refuses (2) before any request or write: a schema it does not read, an encoding or decodedBytes the schema does not allow", async () => {
+    const file = (d: string) => path.join(d, "runtime/runtime-manifest.json");
+    const cases: [string, string][] = [];
+    const add = (manifests: string, why: string) => cases.push([manifests, why]);
+    add(v2Dir((rt) => { rt.schema = "org.lean-browser64.runtime/v9"; }), 'runtime manifest schema "org.lean-browser64.runtime/v9" is not one this tool reads (org.lean-browser64.runtime/v1, org.lean-browser64.runtime/v2)');
+    add(v2Dir((rt) => { rt.files["lean.wasm"]!.encoding = "br"; }), `lean.wasm: encoding "br" is not one ${V2} allows (identity, gzip)`);
+    add(v2Dir((rt) => { delete rt.files["lean.js"]!.encoding; }), `lean.js: encoding (none) is not one ${V2} allows (identity, gzip)`);
+    add(v2Dir((rt) => { delete rt.files["lean.js"]!.chunks[0]!.decodedBytes; }), "lean.js: chunk 0 has no usable decodedBytes (none)");
+    // every part but the last decodes to exactly 16 MiB (the v1 chunk size), even when the sum is right
+    add(v2Dir((rt) => { rt.files["lean.wasm"]!.chunks[0]!.decodedBytes! -= 1; rt.files["lean.wasm"]!.chunks[1]!.decodedBytes! += 1; }),
+      `lean.wasm: chunk 0 decodes to ${SLICE - 1} bytes; every part but the last decodes to exactly ${SLICE}, the last to at most that`);
+    add(v2Dir((rt) => { rt.files["lean.js"]!.chunks[0]!.decodedBytes! += 1; }), `lean.js: its parts decode to ${raw["lean.js"][0]!.length + 1} bytes, the file is ${raw["lean.js"][0]!.length}`);
+    add(v2Dir((rt) => { rt.files["lean.js"]!.encoding = "identity"; }),
+      `lean.js: chunk 0 is identity-encoded, but its decodedBytes ${raw["lean.js"][0]!.length} is not its bytes ${wire["lean.js"][0]!.length}`);
+    // v1 allows identity only (absent = identity)
+    add(manifestsDir(({ runtime }) => { Object.assign(runtime.files["lean.js"]!, { encoding: "gzip" }); }), 'lean.js: encoding "gzip" is not one org.lean-browser64.runtime/v1 allows (identity)');
+    for (const [manifests, why] of cases) {
+      hits.length = 0;
+      const out = outDir();
+      const r = await run({ out, manifests, only: ["runtime"] });
+      expect([r.code, r.message], why).toEqual([2, `${file(manifests)}: ${why}`]);
+      expect(list(out)).toEqual([]);
+      expect(hits).toEqual([]);
+    }
   });
 });
 

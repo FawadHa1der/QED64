@@ -468,8 +468,8 @@ export const SPECS = {
     env: [],
     exits: {
       0: "FETCH OK: every file the manifests name is in --out with its pinned digest",
-      1: "FETCH FAILED: a fetch failed (an HTTP status, the network), a size or digest mismatch (the temp file is deleted), parts that do not assemble to their whole-file pin, or a release that does not list or pin a file as the manifests do",
-      2: "FETCH FAILED, refused before any write: a malformed --only, a tracked manifest missing or malformed, a manifest URL outside its directory, a target outside --out (a symlink out of the tree), or the default --out inside node_modules",
+      1: "FETCH FAILED: a fetch failed (an HTTP status, the network), a size or digest mismatch (the temp file is deleted), parts that do not assemble to their whole-file pin, a v2 runtime part that does not inflate to its decodedBytes, or a release that does not list or pin a file as the manifests do (or carries another runtime schema)",
+      2: "FETCH FAILED, refused before any write: a malformed --only, a tracked manifest missing or malformed, a runtime manifest of a schema it does not read (or a file encoding or decodedBytes its schema does not allow), a manifest URL outside its directory, a target outside --out (a symlink out of the tree), or the default --out inside node_modules",
       130: "FETCH FAILED interrupted (SIGINT): the run stopped and deleted its temp files",
       143: "FETCH FAILED interrupted (SIGTERM): the run stopped and deleted its temp files",
     },

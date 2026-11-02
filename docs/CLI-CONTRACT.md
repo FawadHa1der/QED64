@@ -849,7 +849,7 @@ owner's sibling checkout.
 |---|---|---|
 | `--out <dir>` | this checkout's `public/` (refused, exit 2, when that is inside `node_modules`) | The tree to fill, in the served layout (`runtime/chunks/`, `profiles/`, `snapshots/`). Nothing is written outside it. Created if absent. |
 | `--manifests <dir>` | this checkout's `public/` | The tree holding the tracked manifests: `runtime/runtime-manifest.json`, `profiles/index.json` and the profile manifests it lists, `snapshots/index.json`. An installed package ships none of them (the profile manifests are 12 MB): pass a QED64 checkout's `public/` at your pin. |
-| `--release <dir\|url>` | none | A fork release in the served layout (`release.json`, schema `lean4-wasm64.release/v1`). `/runtime/*` and `/profiles/*` come from it through its `hosting.mount`; each file must also be listed in its `files[]` with the sha256 and size the tracked manifest pins. The release's `runtime.buildId` must be the tracked manifest's (when runtime is fetched). |
+| `--release <dir\|url>` | none | A fork release in the served layout (`release.json`, schema `lean4-wasm64.release/v1`). `/runtime/*` and `/profiles/*` come from it through its `hosting.mount`; each file must also be listed in its `files[]` with the sha256 and size the tracked manifest pins. The release's `runtime.buildId` must be the tracked manifest's, and its `runtime.schema` (absent = `org.lean-browser64.runtime/v1`) the tracked manifest's `schema` (when runtime is fetched). |
 | `--origin <url\|dir>` | `https://qed64.fawadworkaddress.workers.dev/` | A QED64 site, or a served tree on disk: everything `--release` does not provide. Manifest URLs (`/runtime/chunks/…`) resolve against it, so an origin with a path prefix works. The live site serves `/runtime/*` and `/profiles/<not index.json>` only from the release its current record pins (no bucket-root fallback since 2026-10-25), so a checkout pinned to an older release needs `--release <that release>` for them. |
 | `--only <groups>` | `runtime,profiles,snapshots` | A comma list of `runtime`, `profiles`, `snapshots`. |
 | `--with-manifests` | off | Also writes the tracked manifests themselves into `--out`, for a tree that is not this checkout's `public/` (an upload, another server's root). |
@@ -858,9 +858,23 @@ What each group fetches, and against what it is verified:
 
 | Group | Files | Verified against |
 |---|---|---|
-| `runtime` | every chunk of `runtime/runtime-manifest.json`, and `runtime/runtime-manifest.<buildId>.json` | each chunk's `sha256` and `bytes`, then each whole file (`lean.js`, `lean.wasm`) over its chunks in order. The digest-named copy is written from the tracked manifest's own bytes, never fetched. |
+| `runtime` | every chunk of `runtime/runtime-manifest.json`, and `runtime/runtime-manifest.<buildId>.json` | each chunk's `sha256` and `bytes`, then each whole file (`lean.js`, `lean.wasm`) over its chunks in order (a v2 runtime's gzip parts each inflated first, to its `decodedBytes`). The digest-named copy is written from the tracked manifest's own bytes, never fetched. |
 | `profiles` | the transport parts of every manifest `profiles/index.json` lists | each part's `digest` and `byteLength` as the profile manifest records them, then the whole transport's `digest` and `byteLength` |
 | `snapshots` | every `.snapz` of `snapshots/index.json` | the entry's `digest` (the sha256 of the `.snapz` itself) and `transfer` (its size; `bytes` when an entry has no `transfer`) |
+
+**Runtime manifest formats.** The tracked runtime manifest is
+`org.lean-browser64.runtime/v1` (an absent `schema` is read as v1) or
+`org.lean-browser64.runtime/v2` (the fork's `formats/runtime-manifest.md`).
+In v2 every file names its `encoding`, `gzip` or `identity` (a closed set),
+and every chunk its `decodedBytes`: a chunk's `sha256` and `bytes` are the
+part as served, the file's are the decoded file's. Every part but the last
+decodes to exactly 16,777,216 bytes, the last to at most that, and the
+`decodedBytes` sum to the file's `bytes`; an `identity` part's
+`decodedBytes` is its `bytes`. A v1 file may only be `identity` (or name no
+encoding). A manifest that breaks these rules, or has another schema, is
+refused before anything is written. The files land as served (the gzip
+parts as they are); only the whole-file check inflates them. Served gzip
+bytes are compared only with the same build's pins, never across builds.
 
 **Site-owned files.** Snapshots and `/profiles/index.json` belong to the site
 that serves them (release.json `hosting.siteOwned`): they come from the
@@ -894,8 +908,8 @@ otherwise the tool refuses before writing anything.
 | Exit | Meaning |
 |---|---|
 | 0 | `FETCH OK`: every file the manifests name is under `--out` with its pinned digest. |
-| 1 | `FETCH FAILED`: a fetch failed (an HTTP status such as `404`, the network, 120 s without bytes), a size or digest mismatch, parts that do not assemble to their whole-file pin, or a release whose schema, `runtime.buildId` or `files[]` does not match. The run stops at the first failure; files verified before it stay. |
-| 2 | `FETCH FAILED`, refused before any write: a malformed `--only`, a tracked manifest missing or malformed, a manifest URL outside its directory, a target outside `--out`, or the default `--out` inside `node_modules`. |
+| 1 | `FETCH FAILED`: a fetch failed (an HTTP status such as `404`, the network, 120 s without bytes), a size or digest mismatch, parts that do not assemble to their whole-file pin, a v2 runtime part that does not inflate, or inflates to another size than its `decodedBytes`, or a release whose schema, `runtime.buildId`, `runtime.schema` or `files[]` does not match. The run stops at the first failure; files verified before it stay. |
+| 2 | `FETCH FAILED`, refused before any write: a malformed `--only`, a tracked manifest missing or malformed, a runtime manifest of a schema it does not read (or whose file `encoding` or `decodedBytes` its schema does not allow), a manifest URL outside its directory, a target outside `--out`, or the default `--out` inside `node_modules`. |
 | 130 | `FETCH FAILED interrupted (SIGINT)`: Ctrl-C. The run stops, its temp files are deleted; files verified before it stay. |
 | 143 | `FETCH FAILED interrupted (SIGTERM)`: likewise. |
 
@@ -915,7 +929,8 @@ otherwise the tool refuses before writing anything.
    hashing as it streams (a body longer than the pin is cut off), and renames
    it into place only when the size and sha256 match. A mismatch deletes the
    temp file. Nothing is written under a final name unverified.
-5. Re-reads each whole file's parts and checks the whole-file pin.
+5. Re-reads each whole file's parts and checks the whole-file pin (a v2
+   runtime's gzip parts inflated in memory, each to its `decodedBytes`).
 6. Writes the digest-named runtime manifest (and, with `--with-manifests`,
    the tracked manifests) the same way.
 
@@ -1271,6 +1286,7 @@ output, as QED64's own gate did.
 | 4 | 2026-11-01 | Architecture review R5a, **bake-snapshot finishes when its `.snap` is complete**: it polls every `--stable-ms` (new, default 5000) and stops the runner once `<work>/<name>.snap` has the same size at two polls (before: 300 s without output and 120 s of a stable size, about 4.5 min of every bake). **Breaking, so contract 4:** the stdout marker `reaped` (`bake output stable … — reaping the wedged exit`) becomes `completed` (`bake output complete … — stopping the runner`). The rename follows the report's approved R5a without a deprecation window (stability policy): no consumer parses it (lean4game `wasm64-port`, the proof sheets `website-v4.35` and the showcase `port-lean-4.35` grepped). New guards: a failure line (the new classifier, SPEC `classifier`) with no `.snap` and no save in progress for `--quiet-ms` (new, default 120000) ends the bake with `failed-quiet` and `no-snap`, exit 1 (before: a header Lean rejects waited forever); `--give-up-ms` (new, default 21600000) ends any bake with `gave-up`, exit 1; a malformed value of the three is exit 2 before any side effect. The `baked`, `index-copy` and refusal lines, exit 0's meaning (not a Lean verdict) and the runner's argv are unchanged. | breaking (a marker renamed); additive (flags, markers); fix |
 | 4 | 2026-11-01 | Architecture review D6, the notice (decided 2026-11-01), **bake-snapshot**: a failure line in a run whose `.snap` is complete prints the `notice` WARNING and one `verdict <json>` line on stderr before `compressing` (new markers `notice` and `verdict`; the verdict is `{"verdict":"failed","kind":…,"stream":…,"line":…,"name":…,"bytes":…}`); the bake still compresses, indexes and exits 0. After lean4game and the showcase re-pin past this row, at the next runtime release, such a bake exits **1** without compressing or indexing and keeps the raw `.snap` (contract 5). Exit 1 by the user's decision, not the report's new code 3: 3 stays the infrastructure refusal, and the `verdict` line tells a Lean failure from a runner crash. Open decision 3 is decided. QED64's `adopt-release.sh` fails on a `verdict` line now (its slim audit's manual "zero errors" check goes). No other line, flag or exit changes; a bake without a failure line prints nothing new. | deprecation (notice) |
 | 4 | 2026-11-01 | **The forwards and the gen-exports stub are removed** (architecture review R9a; deprecated since contract 3, 2026-10-06). (1) Removed: `pipeline/artifacts/unpack.mjs` and `pipeline/toolchain/chunk-runtime.mjs` (tier 2), `pipeline/artifacts/inspect.mjs` and `pipeline/toolchain/gate.mjs` (tier 3) and `pipeline/toolchain/gen-exports.py`. They leave the repository, package.json `files` and closure.json `pipeline`, together with their SPECS, the `LEAN4_WASM64_DIR` entry of `ENV` (no tool of this contract reads it; adopt-release.sh still takes it as its `--tools` default) and `forwardToLean4Wasm64`/`lean4Wasm64Dir`/`LEAN4_WASM64_TGZ_HINT` in `artifact-paths.mjs`, and `forwarded` leaves `CliMarker` in `cli.d.mts`; `QED64_STAGING` is read by bake-snapshot only. (2) Instead, run `node <lean4-wasm64>/cli.mjs unpack\|chunk\|inspect\|gate` (["lean4-wasm64: the forwards"](#lean4-wasm64-the-forwards)). `npm run inspect:pack` runs `lean4-wasm64 inspect`. bake-snapshot's `refuse-public` regex keeps its `chunk-runtime` alternative (frozen). (3) Consumers: none runs any of the five (lean4game `wasm64-port`, the proof sheets `website-v4.35` and the showcase grepped 2026-11-01). lean4game (73d7f3b), the proof sheets (c512c21) and the showcase's candidate pin O (521cf3f) carry the deprecation WARNINGs. The showcase's live pin H (bf9d947) predates them, but it runs none of the five. Shares contract 4 with the R5a row above (one bump). | breaking (tools removed after their window) |
+| 4 | 2026-11-01 | Architecture review M3 (Phase B1; the kernel accepted `org.lean-browser64.runtime/v2` 2026-11-01): **fetch-artifacts** reads a v2 runtime manifest as well as v1 (an absent `schema` is v1). A v2 file names its `encoding` (`gzip` or `identity`, a closed set) and every chunk its `decodedBytes`: each part is verified as served, then a gzip part is inflated to its `decodedBytes` and the whole-file pin is checked over the inflated bytes. New refusals (2, before any request or write): a runtime manifest schema it does not read, a v2 file without a known `encoding` or a v1 file with one other than `identity`, a v2 part without a positive `decodedBytes`, a part but the last that does not decode to exactly 16,777,216 bytes (the last to more), `decodedBytes` that do not sum to the file's `bytes`, an `identity` part whose `decodedBytes` is not its `bytes`. New failures (1): a gzip part that does not inflate, or inflates to another size; with `--release`, a release whose `runtime.schema` (additive in `lean4-wasm64.release/v1`, absent = v1) is not the tracked manifest's. Flags, markers and the `verified` line are unchanged; a v1 run is unchanged. verify-release (not a contract tool; Node built-ins only) reads v2 the same way and prints one new `runtime manifest: schema` line and one encoding line per file. | additive (an accepted format); refusals |
 
 ## Open decisions
 
