@@ -576,7 +576,9 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   drop every sibling), and the pairing is re-checked under the index lock
   (`tests/unit/bake-snapshot.test.ts`, which also pins the runner's stripped
   environment, its unbuffered output, a runner killed by a signal or exiting
-  non-zero, and the bake's signals, HARDENING #83).
+  non-zero, and the bake's signals, HARDENING #83; and the `--work` lock, the
+  stale-temp removal, the `--name`, `--lib` and `--entry-fields` refusals and
+  the `build environment` line, D4 a).
 - `infra/worker.js` serves `runtime-manifest*.json` and every `index.json`
   with `must-revalidate`; only digest-named chunks/`.snapz`/`.part-*` files
   are `immutable` (the per-build manifest's NAME is sha256(lean.wasm) but

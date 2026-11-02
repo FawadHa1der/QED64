@@ -253,7 +253,8 @@ snapshots together. `npm run promote:staging` takes only such a complete
 staging (`runtime/runtime-manifest.json` and `chunks/`, and every snapshot of
 the pairing) and replaces the served index wholesale.
 Every pipeline tool, with its flags, exit codes and stable output lines, is in
-[docs/CLI-CONTRACT.md](docs/CLI-CONTRACT.md).
+[docs/CLI-CONTRACT.md](docs/CLI-CONTRACT.md). The snapshot index's writer
+rules are [docs/SNAPSHOT-INDEX.md](docs/SNAPSHOT-INDEX.md).
 
 Deploying (Cloudflare Workers static assets plus R2, one origin) is
 [docs/DEPLOY.md](docs/DEPLOY.md). `scripts/deploy-app.sh` is the one deploy

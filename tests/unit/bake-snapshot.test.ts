@@ -2,7 +2,10 @@
 // review's bake defects, ported as behaviour from the kernel copy, D4 a): a corrupt index is
 // refused, never replaced; the pairing is re-checked under the index lock; the runner gets only
 // the bake's environment and no output buffer; a runner killed by a signal the bake did not
-// send, or exiting non-zero, fails the bake; a signal to the bake reaches its runner.
+// send, or exiting non-zero, fails the bake; a signal to the bake reaches its runner. And the
+// kernel copy's extras (QED64 owns the bake, D4 a; docs/SNAPSHOT-INDEX.md): one bake per --work
+// (<work>/.bake.lock, never taken over), stale runtime temps removed, the --name, --lib and
+// --entry-fields refusals, --entry-fields in the entry, and the build environment line.
 //
 // Safety: no test here loads a lean.js or a lean.wasm. Each bake runs from a SCRATCH CHECKOUT
 // (bake-snapshot.mjs and pipeline/toolchain/artifact-paths.mjs copied into a temp dir) with a
@@ -234,13 +237,15 @@ describe("bake-snapshot's lifecycle: signals and a gone reader", () => {
   }
 
   for (const [sig, code] of [["SIGTERM", 143], ["SIGINT", 130], ["SIGHUP", 129]] as [NodeJS.Signals, number][]) {
-    test(`${sig}: forwarded to the runner, which is gone; the bake exits ${code} and writes no index`, async () => {
+    test(`${sig}: forwarded to the runner, which is gone; the bake exits ${code}, writes no index and releases its --work lock`, async () => {
       const { s, out, work, args } = bakeCheckout({ snap: false, hang: true });
       const bake = startBake(s, args);
       try {
         for (let t = 0; t < 400 && !fs.existsSync(path.join(work, "runner.json")); t += 1) await sleep(25);
         const { pid } = recorded(work);
         expect(alive(pid)).toBe(true);
+        // while the runner runs, the lock names the bake and then its runner (every process that may write into --work)
+        expect(fs.readFileSync(path.join(work, ".bake.lock"), "utf8")).toBe(`${bake.child.pid}\n${pid}\n`);
         bake.child.kill(sig);
         expect(await bake.exited).toBe(code);
         let t = 0;
@@ -251,6 +256,7 @@ describe("bake-snapshot's lifecycle: signals and a gone reader", () => {
       }
       expect(fs.existsSync(path.join(out, "index.json"))).toBe(false);
       expect(bake.stderr()).not.toContain("the bake ended with its runner");
+      expect(fs.existsSync(path.join(work, ".bake.lock"))).toBe(false);
     }, 30_000);
   }
 
@@ -265,5 +271,125 @@ describe("bake-snapshot's lifecycle: signals and a gone reader", () => {
     }
     expect(bake.stderr()).toBe("a runner line on stderr\n");
     expect(JSON.parse(fs.readFileSync(path.join(out, "index.json"), "utf8")).snapshots.map((e: { name: string }) => e.name)).toEqual(["init"]);
+  }, 30_000);
+});
+
+describe("bake-snapshot: one bake per --work (<work>/.bake.lock, never taken over)", () => {
+  test("a held lock is exit 2 naming its holders (a live bake, a dead bake and its runner, an unreadable holder); nothing is touched and the runner never starts", () => {
+    const { s, work, args } = bakeCheckout();
+    fs.writeFileSync(path.join(work, "init.snap"), "the paired raw snapshot");
+    const lock = path.join(work, ".bake.lock");
+    const dead = () => Number(spawnSync(process.execPath, ["-e", "console.log(process.pid)"], { encoding: "utf8" }).stdout.trim());
+    const [deadBake, deadRunner] = [dead(), dead()];
+    const old = (Date.now() - 600_000) / 1000;
+    for (const [make, who] of [
+      [() => fs.writeFileSync(lock, `${process.pid}\n`), `bake pid ${process.pid} (running on this host)`],
+      [() => fs.writeFileSync(lock, `${deadBake}\n${deadRunner}\n`), `bake pid ${deadBake} (not running on this host) and runner pid ${deadRunner} (not running on this host)`],
+      [() => fs.writeFileSync(lock, "garbage"), 'a holder it cannot read ("garbage")'],
+      [() => fs.mkdirSync(lock), "a holder it cannot read (a directory)"],
+    ] as [() => void, string][]) {
+      make();
+      fs.utimesSync(lock, old, old); // a 10-minute-old lock is not stale either
+      const before = tree(s);
+      const r = run(s, args);
+      expect(r.status, who).toBe(2);
+      expect(r.lines).toEqual([`bake-snapshot: --work ${work} is in use (lock ${lock} held by ${who}); a lock is never taken over: once no bake uses ${work}, remove it and rerun`]);
+      expect(marker("work-locked").exec(r.lines[0]!)?.[3]).toBe(who);
+      expect(r.stdout).toBe("");
+      expect(tree(s)).toEqual(before);
+      expect(fs.readFileSync(path.join(work, "init.snap"), "utf8")).toBe("the paired raw snapshot");
+      expect(fs.existsSync(path.join(work, "runner.json"))).toBe(false);
+      fs.rmSync(lock, { recursive: true });
+    }
+    // the documented way out: remove it once no bake uses --work, rerun
+    const r = run(s, args);
+    expect([r.status, r.stderr]).toEqual([0, ""]);
+    expect(fs.existsSync(lock)).toBe(false);
+  }, 30_000);
+
+  test("a successful bake leaves no lock; a stale <name>.snap.tmp.* of its own name is removed (one line), another name's is kept", () => {
+    const { s, work, args } = bakeCheckout();
+    fs.writeFileSync(path.join(work, "init.snap.tmp.42"), "an interrupted save");
+    fs.writeFileSync(path.join(work, "mathlib.snap.tmp.42"), "another name's save");
+    const r = run(s, args);
+    expect([r.status, r.stderr]).toEqual([0, ""]);
+    expect(r.stdout.split("\n").filter((l) => l.startsWith("removed the stale "))).toEqual([`removed the stale ${path.join(work, "init.snap.tmp.42")} (an interrupted save's temp file)`]);
+    expect(fs.readFileSync(path.join(work, "init.snap"), "utf8")).toBe("a raw region init.snap"); // the fake's own save, not the stale temp
+    expect(fs.existsSync(path.join(work, "init.snap.tmp.42"))).toBe(false);
+    expect(fs.readFileSync(path.join(work, "mathlib.snap.tmp.42"), "utf8")).toBe("another name's save");
+    expect(fs.existsSync(path.join(work, ".bake.lock"))).toBe(false);
+  }, 30_000);
+});
+
+describe("bake-snapshot refuses a bad --name, --lib or --entry-fields before any side effect", () => {
+  test("--name outside [A-Za-z0-9][A-Za-z0-9._-]*: exit 2, one line, nothing touched", () => {
+    const { s, work, args } = bakeCheckout();
+    fs.writeFileSync(path.join(work, "init.snap"), "the paired raw snapshot");
+    const base = args.slice(0, args.indexOf("--name"));
+    for (const name of ["../x", "a/b", ".x", "-x"]) {
+      const before = tree(s);
+      const r = run(s, [...base, "--name", name]);
+      expect(r.status, name).toBe(2);
+      expect(r.lines).toEqual([`bake-snapshot: refusing --name ${JSON.stringify(name)}: expected a letter or digit, then letters, digits, '.', '_' or '-' (it names <work>/<name>.snap, the .snapz and the index entry)`]);
+      expect(marker("refuse-name").exec(r.lines[0]!)?.[1]).toBe(JSON.stringify(name));
+      expect(tree(s)).toEqual(before);
+    }
+    expect(fs.existsSync(path.join(work, "runner.json"))).toBe(false);
+  }, 30_000);
+
+  test("an explicit --lib that is not a directory: exit 2 before the paired .snap is unlinked", () => {
+    const { s, work, args } = bakeCheckout();
+    fs.writeFileSync(path.join(work, "init.snap"), "the paired raw snapshot");
+    const file = path.join(s, "lib-file");
+    fs.writeFileSync(file, "not a tree");
+    for (const lib of [path.join(s, "no-such-tree"), file]) {
+      const before = tree(s);
+      const r = run(s, [...args, "--lib", lib]);
+      expect(r.status, lib).toBe(2);
+      expect(r.lines).toEqual([`bake-snapshot: no olean tree ${lib} — pass --lib <olean tree> (the tree mounted at /lib/lean)`]);
+      expect(r.lines[0]).toMatch(marker("no-lib"));
+      expect(tree(s)).toEqual(before);
+    }
+    expect(fs.readFileSync(path.join(work, "init.snap"), "utf8")).toBe("the paired raw snapshot");
+    expect(fs.existsSync(path.join(work, "runner.json"))).toBe(false);
+    // a directory passes, and reaches the runner as given
+    fs.mkdirSync(path.join(s, "tree"));
+    const ok = run(s, [...args, "--lib", path.join(s, "tree")]);
+    expect([ok.status, ok.stderr]).toEqual([0, ""]);
+    expect(recorded(work).argv.slice(4, 6)).toEqual(["--lib", path.join(s, "tree")]);
+  }, 30_000);
+
+  test("--entry-fields: written after the core keys and the page fields, in the object's order; a non-object, a core key, a page field or a reserved key refuses (exit 2)", () => {
+    const { s, out, args } = bakeCheckout();
+    const r = run(s, [...args, "--label", "L", "--entry-fields", '{"course":"x","n":1}']);
+    expect([r.status, r.stderr]).toEqual([0, ""]);
+    const entry = JSON.parse(fs.readFileSync(path.join(out, "index.json"), "utf8")).snapshots[0];
+    expect(Object.keys(entry)).toEqual(["name", "url", "digest", "bytes", "transfer", "imports", "runtime", "label", "course", "n"]);
+    expect([entry.label, entry.course, entry.n]).toEqual(["L", "x", 1]);
+    for (const [text, why] of [
+      ["nope", "expected a JSON object"],
+      ["[1]", "expected a JSON object"],
+      ['{"url":"x"}', '"url" is a core entry key, written by the bake'],
+      ['{"roots":["A"]}', '"roots" goes through --roots, which validates it'],
+      ['{"initialBytes":1}', '"initialBytes" goes through --initial-bytes, which validates it'],
+      ['{"raw":"x"}', '"raw" is reserved (docs/SNAPSHOT-INDEX.md)'],
+    ]) {
+      const before = tree(s);
+      const refused = run(s, [...args, "--entry-fields", text!]);
+      expect(refused.status, text).toBe(2);
+      expect(refused.lines).toEqual([`bake-snapshot: refusing --entry-fields ${JSON.stringify(text)}: ${why}`]);
+      expect(tree(s)).toEqual(before);
+    }
+  }, 30_000);
+});
+
+describe("bake-snapshot records its build environment", () => {
+  test("exactly one build environment line on stdout: node, zlib and the shared-zlib flag (the .snapz digest depends on the zlib build)", () => {
+    const { s, args } = bakeCheckout();
+    const r = run(s, args);
+    expect([r.status, r.stderr]).toEqual([0, ""]);
+    const lines = r.stdout.split("\n").filter((l) => marker("build-env").test(l));
+    expect(lines).toHaveLength(1);
+    expect(marker("build-env").exec(lines[0]!)?.slice(1, 3)).toEqual([process.version, process.versions.zlib]);
   }, 30_000);
 });

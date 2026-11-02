@@ -358,7 +358,9 @@ Page-tier facts (stable, for preflights and deploy tools):
   carries `name`, `url`, `digest` (`sha256:` of the served bytes), `bytes`
   (raw), `transfer`, `imports`, `runtime` (the buildId that baked it), and
   optionally `roots`, `label` and `initialBytes` (§8). Entry URLs must
-  resolve on the page's origin.
+  resolve on the page's origin. Any other entry key (`bake-snapshot
+  --entry-fields`) is ignored by the page. The writer's rules:
+  docs/SNAPSHOT-INDEX.md.
 - **Re-rooting.** Under `?snapshots=<dir>`, an entry URL starting with
   `/snapshots/` is re-rooted to `/<dir>/`.
 - **The runtime manifest.** `/runtime/runtime-manifest.<buildId>.json`

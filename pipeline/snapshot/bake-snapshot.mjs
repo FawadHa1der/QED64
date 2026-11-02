@@ -16,7 +16,13 @@
 // writes no index and exits 128+n. The runner gets only PATH, HOME, TMPDIR and
 // the bake's own variables (runnerEnv below).
 //
-// Usage: node pipeline/snapshot/bake-snapshot.mjs [--name init] [--probe '#check 2+2'] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--allow-legacy-imports] [--runner <script>]
+// One bake per --work at a time: <work>/.bake.lock holds the bake's pid and then
+// its runner's, is never taken over, and is released when the bake exits (kept
+// when its runner is still running; a SIGKILLed bake leaves it: remove it once
+// no bake uses --work). QED64 owns the bake and the snapshot index (architecture
+// review D4 a); the writer rules are docs/SNAPSHOT-INDEX.md.
+//
+// Usage: node pipeline/snapshot/bake-snapshot.mjs [--name init] [--probe '#check 2+2'] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--roots <A,B,…>] [--label <text>] [--initial-bytes <bytes>] [--entry-fields <json object>] [--allow-legacy-imports] [--runner <script>]
 // Paths: each flag, else its variable (QED64_LEAN_ARTIFACT, QED64_WORK,
 // QED64_STAGING), else the deprecated repo-relative default with one WARNING
 // (docs/CLI-CONTRACT.md "Path resolution").
@@ -39,26 +45,28 @@ import { buildIdOfArtifact, refuseInsidePublic, resolveToolPath, stagingDir, too
 // --flag=value is rewritten to the two-token form this script reads, with the later values
 // of a repeated flag dropped so the first wins here too (docs/CLI-CONTRACT.md).
 {
-  const spec = {"tool":"bake-snapshot","usage":"bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--roots <A,B,…>] [--label <text>] [--initial-bytes <bytes>] [--allow-legacy-imports] [--runner <script>]","flags":{"name":1,"probe":1,"artifact":1,"lib":1,"reserve":1,"work":1,"out":1,"roots":1,"label":1,"initial-bytes":1,"allow-legacy-imports":0,"runner":1},"required":[],"passthrough":null,"passthroughRequired":false};
+  const spec = {"tool":"bake-snapshot","usage":"bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--roots <A,B,…>] [--label <text>] [--initial-bytes <bytes>] [--entry-fields <json object>] [--allow-legacy-imports] [--runner <script>]","flags":{"name":1,"probe":1,"artifact":1,"lib":1,"reserve":1,"work":1,"out":1,"roots":1,"label":1,"initial-bytes":1,"entry-fields":1,"allow-legacy-imports":0,"runner":1},"required":[],"passthrough":null,"passthroughRequired":false};
   spec.help = [
-    "usage: bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--roots <A,B,…>] [--label <text>] [--initial-bytes <bytes>] [--allow-legacy-imports] [--runner <script>]",
+    "usage: bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--roots <A,B,…>] [--label <text>] [--initial-bytes <bytes>] [--entry-fields <json object>] [--allow-legacy-imports] [--runner <script>]",
     "Bake an environment snapshot with the exact wasm64 runtime under Node (the runner is supervised and reaped), gzip it content-addressed into the staging dir and upsert its index entry; the index's per-build copy index.<buildId>.json is written beside it with the same bytes.",
     "run as: node pipeline/snapshot/bake-snapshot.mjs (or npm run bake:snapshot -- …)",
     "",
     "flags:",
-    "  --name <name>            snapshot name: <work>/<name>.snap, <name>.<digest16>.snapz and the index entry (default: init)",
-    "  --probe <lean source>    the baked file; its import lines become the entry's imports (the env-cache key) (default: #check (2 + 2 : Nat))",
-    "  --artifact <dir>         stage1 dir whose bin/lean.wasm bakes and is stamped as `runtime`; always passed to the runner (default: $QED64_LEAN_ARTIFACT, else (deprecated, one WARNING) pipeline/toolchain/work/build/stage1 under the repo root when it has bin/lean.wasm; nothing else: exit 2)",
-    "  --lib <olean tree>       olean tree mounted at /lib/lean (default: the runner's <artifact>/lib/lean)",
-    "  --reserve <bytes>        compactor buffer reserved up front (LEAN_COMPACTOR_RESERVE for the runner) (default: 3758096384 (3.5 GiB))",
-    "  --work <dir>             raw .snap + probe.lean; <work>/<name>.snap is deleted when the bake starts; a relative --work resolves against the repo root (default: $QED64_WORK, else (deprecated, one WARNING) work/snapshot under the repo root: the PAIRED set the probes load)",
-    "  --out <dir>              staged .snapz, index.json and its per-build copy index.<buildId>.json (same bytes, copy first; another runtime's copy is never touched); refused inside public/; a relative --out resolves against the repo root (default: $QED64_STAGING, else (deprecated, one WARNING) work/staging/<buildId>/snapshots under the repo root; with QED64_STAGING, <QED64_STAGING>/<buildId>/snapshots)",
-    "  --roots <A,B,…>          module roots the entry serves (docs/EMBEDDING.md §8): the page boots and widens to it for a header naming one (default: none (the legacy rule: an entry named mathlib serves the umbrella roots))",
-    "  --label <text>           the entry's human name for the page's pill and boot card (default: none)",
-    "  --initial-bytes <bytes>  initial Memory64 commit when the entry is loaded (default: none (2 GiB with a non-base entry))",
-    "  --allow-legacy-imports   let the runner's env cache load legacy non-module packages (patch 0030): sets QED64_ALLOW_LEGACY_IMPORTS=1 for the runner; an inherited QED64_ALLOW_LEGACY_IMPORTS does the same",
-    "  --runner <script>        the runner script, spawned as <this node> --stack-size=8192 <script> --work <dir> --artifact <dir> [--lib <tree>] -- …; a relative path resolves against the cwd (default: $QED64_RUNNER, else QED64's own pipeline/snapshot/node-runner.mjs (not deprecated))",
-    "  -h, --help               print this help and exit 0, before any side effect",
+    "  --name <name>             snapshot name, a letter or digit then letters, digits, '.', '_' or '-': <work>/<name>.snap, <name>.<digest16>.snapz and the index entry (default: init)",
+    "  --probe <lean source>     the baked file; its import lines become the entry's imports (the env-cache key) (default: #check (2 + 2 : Nat))",
+    "  --artifact <dir>          stage1 dir whose bin/lean.wasm bakes and is stamped as `runtime`; always passed to the runner (default: $QED64_LEAN_ARTIFACT, else (deprecated, one WARNING) pipeline/toolchain/work/build/stage1 under the repo root when it has bin/lean.wasm; nothing else: exit 2)",
+    "  --lib <olean tree>        olean tree mounted at /lib/lean; a --lib that is not a directory refuses (exit 2) before anything is touched (default: the runner's <artifact>/lib/lean)",
+    "  --reserve <bytes>         compactor buffer reserved up front (LEAN_COMPACTOR_RESERVE for the runner) (default: 3758096384 (3.5 GiB))",
+    "  --work <dir>              raw .snap + probe.lean; <work>/<name>.snap is deleted when the bake starts; a relative --work resolves against the repo root; one bake per --work at a time (<work>/.bake.lock: the bake's and its runner's pids; never taken over) (default: $QED64_WORK, else (deprecated, one WARNING) work/snapshot under the repo root: the PAIRED set the probes load)",
+    "  --out <dir>               staged .snapz, index.json and its per-build copy index.<buildId>.json (same bytes, copy first; another runtime's copy is never touched); refused inside public/; a relative --out resolves against the repo root (default: $QED64_STAGING, else (deprecated, one WARNING) work/staging/<buildId>/snapshots under the repo root; with QED64_STAGING, <QED64_STAGING>/<buildId>/snapshots)",
+    "  --roots <A,B,…>           module roots the entry serves (docs/EMBEDDING.md §8): the page boots and widens to it for a header naming one (default: none (the legacy rule: an entry named mathlib serves the umbrella roots))",
+    "  --label <text>            the entry's human name for the page's pill and boot card (default: none)",
+    "  --initial-bytes <bytes>   initial Memory64 commit when the entry is loaded (default: none (2 GiB with a non-base entry))",
+    "  --entry-fields <json object>",
+    "                            more entry fields after the core keys and roots/label/initialBytes, in the object's order; refused: not a JSON object, a core key, roots/label/initialBytes (their flags validate them), and the reserved raw, lib and bakedBy (docs/SNAPSHOT-INDEX.md) (default: none)",
+    "  --allow-legacy-imports    let the runner's env cache load legacy non-module packages (patch 0030): sets QED64_ALLOW_LEGACY_IMPORTS=1 for the runner; an inherited QED64_ALLOW_LEGACY_IMPORTS does the same",
+    "  --runner <script>         the runner script, spawned as <this node> --stack-size=8192 <script> --work <dir> --artifact <dir> [--lib <tree>] -- …; a relative path resolves against the cwd (default: $QED64_RUNNER, else QED64's own pipeline/snapshot/node-runner.mjs (not deprecated))",
+    "  -h, --help                print this help and exit 0, before any side effect",
     "",
     "environment:",
     "  QED64_LEAN_ARTIFACT       stage1 artifact dir (bin/lean.js, bin/lean.wasm, lib/lean) used when --artifact is absent (empty = unset)",
@@ -73,7 +81,7 @@ import { buildIdOfArtifact, refuseInsidePublic, resolveToolPath, stagingDir, too
     "exit codes:",
     "  0    baked and the index upserted (also when the wedged runner was reaped); NOT a verdict on the probe's Lean messages",
     "  1    after the bake started: the runner exited non-zero, was killed by a signal this bake did not send or could not start; no .snap was produced; compressing failed; or the index could not be written (unreadable, corrupt, foreign or unpaired under the lock, its lock held past the wait, or a failed write): a written .snapz is kept and its entry printed (unindexed entry <json>)",
-    "  2    refused before the runner: no --artifact, QED64_LEAN_ARTIFACT or deprecated default; no lean.wasm under the artifact, --out inside public/, an index paired with another runtime or with none, a malformed --roots or --initial-bytes, a --runner (or QED64_RUNNER) script that does not exist, an unreadable or corrupt index.json (only a missing one is a new index)",
+    "  2    refused before the runner: no --artifact, QED64_LEAN_ARTIFACT or deprecated default; no lean.wasm under the artifact, --out inside public/, an index paired with another runtime or with none, a malformed --roots or --initial-bytes, a --runner (or QED64_RUNNER) script that does not exist, an unreadable or corrupt index.json (only a missing one is a new index), a bad --name or --entry-fields, a --lib that is not a directory, or a <work>/.bake.lock that is held or cannot be created",
     "  129  SIGHUP received before the index was written: forwarded to the runner (SIGKILL 10 s later), no index write",
     "  130  SIGINT, likewise",
     "  143  SIGTERM, likewise",
@@ -133,6 +141,7 @@ const SIGNAL_EXIT = { SIGHUP: 129, SIGINT: 130, SIGTERM: 143 };
 const state = {
   signal: null, // the first SIGINT/SIGTERM/SIGHUP this bake received
   child: null, // the runner until it has closed
+  workLock: null, // <work>/.bake.lock once taken: { path, addPid(pid), release() }
   snapzTmp: null, // the .snapz temp while it is written
   unindexed: null, // the entry of a .snapz in place but not (yet) in the index
   indexed: false, // index.json and its copy written: a later signal changes nothing
@@ -168,12 +177,16 @@ for (const sig of Object.keys(SIGNAL_EXIT)) {
     setTimeout(() => { if (state.child === child) child.kill("SIGKILL"); }, 10_000).unref();
   });
 }
-// Every exit ends here. A runner still running (a crash mid-bake, or a second signal) is killed;
-// a .snapz temp is removed; a .snapz in place but not indexed gets its entry printed.
+// Every exit ends here. A runner still running (a crash mid-bake, or a second signal) is killed,
+// and the --work lock that names it is KEPT: the lock lists every process that may write into
+// --work, and SIGKILL is not instant. Otherwise the lock is released (only while it is ours).
+// A .snapz temp is removed; a .snapz in place but not indexed gets its entry printed.
 process.on("exit", () => {
   if (state.child) {
     try { state.child.kill("SIGKILL"); } catch { /* gone */ }
-    lastWords(`${TOOL}: the bake ended with its runner (pid ${state.child.pid}) still running: killed`);
+    lastWords(`${TOOL}: the bake ended with its runner (pid ${state.child.pid}) still running: killed${state.workLock ? `; ${state.workLock.path} is kept: remove it once no bake uses --work` : ""}`);
+  } else {
+    state.workLock?.release();
   }
   if (state.snapzTmp) try { fs.rmSync(state.snapzTmp, { force: true }); } catch { /* left behind */ }
   if (state.unindexed) lastWords(`${TOOL}: unindexed entry ${JSON.stringify(state.unindexed)}`);
@@ -186,10 +199,37 @@ function arg(name, fallback) {
   const i = process.argv.indexOf(`--${name}`);
   return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : fallback;
 }
-const USAGE = "bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--roots <A,B,…>] [--label <text>] [--initial-bytes <bytes>] [--allow-legacy-imports] [--runner <script>]";
+const USAGE = "bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--roots <A,B,…>] [--label <text>] [--initial-bytes <bytes>] [--entry-fields <json object>] [--allow-legacy-imports] [--runner <script>]";
 // Overlay metadata (docs/EMBEDDING.md §8), written into the entry only when
 // given: the module roots the environment serves, a label, an initial commit.
 const ROOT = /^[A-Za-z_][\w']*(?:\.[A-Za-z_][\w']*)*$/;
+// A snapshot name: it is joined into <work>/<name>.snap, <name>.<digest16>.snapz and the entry.
+const SNAPSHOT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+// The entry keys docs/SNAPSHOT-INDEX.md gives a meaning: --entry-fields may add any other key.
+const CORE_KEYS = ["name", "url", "digest", "bytes", "transfer", "imports", "runtime"];
+const PAGE_FIELD_FLAGS = { roots: "roots", label: "label", initialBytes: "initial-bytes" };
+const RESERVED_KEYS = ["raw", "lib", "bakedBy"];
+
+/**
+ * --entry-fields: one JSON object whose keys go after the core keys and the page fields, in the
+ * object's order → { fields } or { refusal }. Refused: not a JSON object, a core key, roots / label
+ * / initialBytes (only through their validating flags: one malformed entry makes the page refuse
+ * the whole index), and the reserved keys.
+ */
+function parseEntryFields(text) {
+  const refuse = (why) => ({ refusal: `bake-snapshot: refusing --entry-fields ${JSON.stringify(text)}: ${why}` });
+  let fields;
+  try { fields = JSON.parse(text); } catch { return refuse("expected a JSON object"); }
+  if (!fields || typeof fields !== "object" || Array.isArray(fields)) return refuse("expected a JSON object");
+  for (const key of Object.keys(fields)) {
+    if (CORE_KEYS.includes(key)) return refuse(`${JSON.stringify(key)} is a core entry key, written by the bake`);
+    if (Object.hasOwn(PAGE_FIELD_FLAGS, key)) return refuse(`${JSON.stringify(key)} goes through --${PAGE_FIELD_FLAGS[key]}, which validates it`);
+    if (RESERVED_KEYS.includes(key)) return refuse(`${JSON.stringify(key)} is reserved (docs/SNAPSHOT-INDEX.md)`);
+  }
+  return { fields };
+}
+
+const isDir = (p) => { try { return fs.statSync(p).isDirectory(); } catch { return false; } };
 
 /** Only ENOENT is a new index; anything else is refused, never replaced (it would drop every sibling entry). */
 function readIndex(indexPath) {
@@ -240,6 +280,80 @@ function importsOf(source) {
 
 /** true when `pid` is a process on this host (EPERM: alive, another user's); only reported, never acted on. */
 const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; } };
+const pidLabel = (pid) => `pid ${pid} (${pidAlive(Number(pid)) ? "running" : "not running"} on this host)`;
+
+/**
+ * An existing lock's holder, read without following a link: { text } for a regular file,
+ * { gone: true } when it was released meanwhile (ENOENT), else { unreadable }. An exclusive create
+ * never makes a symlink, so one at the lock path (dangling or not) is no bake's lock, and neither is
+ * a directory: each is named at once, never retried, since open() keeps answering EEXIST for them
+ * while no read succeeds (a retry there spun at 100% CPU). Shared by both locks.
+ */
+function lockHolder(lockPath) {
+  try {
+    const st = fs.lstatSync(lockPath);
+    if (st.isSymbolicLink()) return { unreadable: "a symlink" };
+    if (st.isDirectory()) return { unreadable: "a directory" };
+    if (!st.isFile()) return { unreadable: "not a regular file" };
+    return { text: fs.readFileSync(lockPath, "utf8") };
+  } catch (e) {
+    return e.code === "ENOENT" ? { gone: true } : { unreadable: `unreadable: ${e.code ?? e.message}` };
+  }
+}
+
+/**
+ * Take the --work lock `lockPath`: an exclusive create holding `<bake pid>\n`, never waited for and
+ * never taken over (whatever its holder: running, not running, unreadable; or its age), since two
+ * bakes sharing --work bake each other's probe.lean and the runtime's <name>.snap.tmp.<pid> (its
+ * getpid() is a constant under Emscripten) and can exit 0 with a wrong snapshot. → { lock } or
+ * { refusal } (held, or it cannot be created). lock.addPid(pid) appends `<pid>\n` through the fd
+ * that created it (a lock someone removed and another bake re-created is never written);
+ * lock.release() closes that fd once and removes the lock only while it reads every line this
+ * bake wrote.
+ */
+function takeWorkLock(lockPath, work) {
+  let text = `${process.pid}\n`;
+  for (let vanished = 0; ;) {
+    let fd;
+    try {
+      fd = fs.openSync(lockPath, "wx");
+    } catch (e) {
+      if (e?.code !== "EEXIST") return { refusal: `bake-snapshot: cannot create ${lockPath} (${e?.code ?? e?.message})` };
+      const held = lockHolder(lockPath);
+      if (held.gone && (vanished += 1) <= 100) continue; // released between the create and the read
+      const m = held.text === undefined ? null : /^(\d+)\n(?:(\d+)\n)?$/.exec(held.text);
+      const who = m
+        ? `bake ${pidLabel(m[1])}${m[2] ? ` and runner ${pidLabel(m[2])}` : ""}`
+        : `a holder it cannot read (${held.unreadable ?? (held.gone ? "unreadable: ENOENT" : JSON.stringify(held.text.slice(0, 200)))})`;
+      return { refusal: `bake-snapshot: --work ${work} is in use (lock ${lockPath} held by ${who}); a lock is never taken over: once no bake uses ${work}, remove it and rerun` };
+    }
+    try {
+      fs.writeSync(fd, text);
+    } catch (e) {
+      try { fs.closeSync(fd); } catch { /* the write's error is the one reported */ }
+      fs.rmSync(lockPath, { force: true }); // ours, just created: never left behind for the next bake to refuse on
+      return { refusal: `bake-snapshot: cannot create ${lockPath} (${e?.code ?? e?.message})` };
+    }
+    let open = true;
+    return {
+      lock: {
+        path: lockPath,
+        addPid(pid) {
+          const line = `${pid}\n`;
+          fs.writeSync(fd, line);
+          text += line;
+        },
+        release() {
+          if (open) {
+            open = false;
+            try { fs.closeSync(fd); } catch { /* closed */ }
+          }
+          try { if (fs.readFileSync(lockPath, "utf8") === text) fs.rmSync(lockPath, { force: true }); } catch { /* gone, or unreadable: left */ }
+        },
+      },
+    };
+  }
+}
 
 /**
  * Run the runner and supervise it. spawn, not execFile: no output buffer whose limit kills the
@@ -247,9 +361,10 @@ const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch (e)
  * EXIT wedges (the proxied exit is swallowed by the 0020 mailbox keepalive) while the actual bake
  * (save + probe) completes fine, so once the target .snap has been stable for a while after the
  * runner goes quiet, the bake SIGKILLs it. Resolves once, on 'close' (the process exited and both
- * pipes closed): { code, signal, reaped }, or { error } when it could not start.
+ * pipes closed): { code, signal, reaped }, or { error } when it could not start. `onSpawn(pid)`
+ * runs as soon as the runner has a pid.
  */
-function supervise(runnerArgs, runnerEnv, target) {
+function supervise(runnerArgs, runnerEnv, target, onSpawn) {
   return new Promise((resolve) => {
     let done = false;
     let watch = null;
@@ -262,6 +377,7 @@ function supervise(runnerArgs, runnerEnv, target) {
     };
     const child = spawn(process.execPath, ["--stack-size=8192", ...runnerArgs], { env: runnerEnv, stdio: ["ignore", "pipe", "pipe"] });
     state.child = child;
+    if (child.pid) onSpawn(child.pid);
     child.on("error", (error) => finish({ error }));
     // The runner's output goes to the bake's; if that reader is gone the runner is drained instead.
     for (const [from, to] of [[child.stdout, process.stdout], [child.stderr, process.stderr]]) {
@@ -296,6 +412,10 @@ function supervise(runnerArgs, runnerEnv, target) {
 
 async function main() {
   const name = arg("name", "init");
+  if (!SNAPSHOT_NAME.test(name)) {
+    console.error(`bake-snapshot: refusing --name ${JSON.stringify(name)}: expected a letter or digit, then letters, digits, '.', '_' or '-' (it names <work>/<name>.snap, the .snapz and the index entry)`);
+    return 2;
+  }
   const probe = arg("probe", "#check (2 + 2 : Nat)");
   const rootsArg = arg("roots", null);
   const roots = rootsArg === null ? null : rootsArg.split(",").map((r) => r.trim()).filter(Boolean);
@@ -309,6 +429,16 @@ async function main() {
   if (initialBytes !== null && !(Number.isSafeInteger(initialBytes) && initialBytes > 0)) {
     console.error(`bake-snapshot: refusing --initial-bytes ${JSON.stringify(initialBytesArg)}: expected a positive whole number of bytes`);
     return 2;
+  }
+  const entryFieldsArg = arg("entry-fields", null);
+  let fields = null;
+  if (entryFieldsArg !== null) {
+    const r = parseEntryFields(entryFieldsArg);
+    if (r.refusal) {
+      console.error(r.refusal);
+      return 2;
+    }
+    fields = r.fields;
   }
   // The runtime identity comes from the artifact that will do the baking,
   // never from a manifest in public/ — a bake must not inherit whatever the
@@ -349,6 +479,14 @@ async function main() {
     console.error(`bake-snapshot: no runner script ${runner} — pass --runner <script> or set QED64_RUNNER`);
     return 2;
   }
+  // An explicit --lib that is not a directory refuses here, before the paired .snap is unlinked
+  // (the runner failed on it after). It is passed to the runner as given; an absent one is the
+  // runner's own <artifact>/lib/lean.
+  const lib = arg("lib", null);
+  if (lib && !isDir(path.resolve(lib))) {
+    console.error(`bake-snapshot: no olean tree ${path.resolve(lib)} — pass --lib <olean tree> (the tree mounted at /lib/lean)`);
+    return 2;
+  }
 
   // The raw .snap lands here. The default, work/snapshot, is the PAIRED set the
   // Node probes and the compiler battery load against the served binary — a
@@ -359,6 +497,22 @@ async function main() {
     legacy: path.join(root, "work/snapshot"), legacyLabel: "work/snapshot under the repo root", usage: USAGE,
   }).path;
   fs.mkdirSync(work, { recursive: true });
+  // One bake per --work (takeWorkLock): the last exit-2 check, never taken over.
+  const workLockPath = path.join(work, ".bake.lock");
+  const taken = takeWorkLock(workLockPath, work);
+  if (taken.refusal) {
+    console.error(taken.refusal);
+    return 2;
+  }
+  state.workLock = taken.lock;
+  // Stale runtime temp files of this name (a save killed mid-write; the runtime writes
+  // <file>.tmp.<getpid()> and renames it): never mistaken for a save in progress or for output.
+  for (const f of fs.readdirSync(work)) {
+    if (f.startsWith(`${name}.snap.tmp.`)) {
+      fs.rmSync(path.join(work, f), { force: true });
+      console.log(`removed the stale ${path.join(work, f)} (an interrupted save's temp file)`);
+    }
+  }
   fs.writeFileSync(path.join(work, "probe.lean"), `${probe}\n`);
 
   const runnerArgs = [
@@ -369,7 +523,6 @@ async function main() {
   // artifactDir's lean.wasm) must name the binary that baked, whatever the
   // runner's own resolution would have picked.
   runnerArgs.push("--artifact", artifactDir);
-  const lib = arg("lib", null);
   if (lib) runnerArgs.push("--lib", lib);
   runnerArgs.push("--", `--incr-header-save=/work/${name}.snap`, "/work/probe.lean");
 
@@ -391,11 +544,20 @@ async function main() {
   if (allowLegacyImports) runnerEnv.QED64_ALLOW_LEGACY_IMPORTS = "1";
   if (process.env.QED64_PROFILE_INIT) runnerEnv.QED64_PROFILE_INIT = process.env.QED64_PROFILE_INIT;
   console.log(`baking ${name}.snap for runtime ${buildId} (probe: ${JSON.stringify(probe)}; compactor reserve ${(Number(reserve) / 1024 ** 3).toFixed(1)} GiB) → ${out}`);
+  // The .snapz digest depends on the zlib build (gzip output is not reproducible across builds):
+  // record a digest together with this line (docs/SNAPSHOT-INDEX.md, identity and transport).
+  console.log(`build environment: node ${process.version}, zlib ${process.versions.zlib}, shared zlib ${process.config?.variables?.node_shared_zlib ?? "unknown"}`);
   // The bake must start CLEAN: a stale target satisfies the stability check
   // before the new save even begins (it cost two silently-skipped bakes).
   const snap = path.join(work, `${name}.snap`);
   try { fs.rmSync(snap); } catch { /* absent */ }
-  const run = await supervise(runnerArgs, runnerEnv, snap);
+  const run = await supervise(runnerArgs, runnerEnv, snap, (pid) => {
+    try {
+      state.workLock.addPid(pid);
+    } catch (e) {
+      console.error(`bake-snapshot: WARNING — could not record the runner's pid ${pid} in ${workLockPath} (${e?.code ?? e?.message})`);
+    }
+  });
   if (state.signal) return SIGNAL_EXIT[state.signal];
   if (run.error) {
     console.error(`${TOOL}: cannot start the runner (${run.error.code ?? run.error.message})`);
@@ -476,6 +638,7 @@ async function main() {
     ...(roots ? { roots } : {}),
     ...(label ? { label } : {}),
     ...(initialBytes ? { initialBytes } : {}),
+    ...(fields ?? {}), // --entry-fields, in the object's order (docs/SNAPSHOT-INDEX.md)
   };
   state.unindexed = entry; // printed by the 'exit' handler on any exit before the index has it
   // THE PER-BUILD COPY (HARDENING #64). Beside index.json the bake writes
@@ -537,26 +700,14 @@ async function main() {
     } catch (e) {
       if (e.code !== "EEXIST") throw e;
       if (Date.now() - lockWaitStart > LOCK_WAIT_MS) {
-        // Read without following a link. An exclusive create never makes a symlink, so one at the lock path (dangling or
-        // not) is no bake's lock, and neither is a directory: each is named at once, never retried, since open() keeps
-        // answering EEXIST for them while no read succeeds (a retry there spun at 100% CPU). A lock released between the
-        // open and the read (ENOENT) sends the bake back to open(), at most 100 times.
-        let text = null;
-        let unreadable = null;
-        try {
-          const st = fs.lstatSync(lockPath);
-          if (st.isSymbolicLink()) unreadable = "a symlink";
-          else if (st.isDirectory()) unreadable = "a directory";
-          else if (!st.isFile()) unreadable = "not a regular file";
-          else text = fs.readFileSync(lockPath, "utf8");
-        } catch (e) {
-          if (e.code === "ENOENT" && ++lockVanished <= 100) continue; // released meanwhile
-          unreadable = `unreadable: ${e.code ?? e.message}`;
-        }
-        const holder = text === null ? null : /^(\d+)\n$/.exec(text);
+        // Read without following a link (lockHolder). A lock released between the open and the
+        // read (ENOENT) sends the bake back to open(), at most 100 times.
+        const held = lockHolder(lockPath);
+        if (held.gone && ++lockVanished <= 100) continue; // released meanwhile
+        const holder = held.text === undefined ? null : /^(\d+)\n$/.exec(held.text);
         const who = holder
-          ? `pid ${holder[1]} (${pidAlive(Number(holder[1])) ? "running" : "not running"} on this host)`
-          : `a holder it cannot read (${unreadable ?? JSON.stringify(text.slice(0, 200))})`;
+          ? pidLabel(holder[1])
+          : `a holder it cannot read (${held.unreadable ?? (held.gone ? "unreadable: ENOENT" : JSON.stringify(held.text.slice(0, 200)))})`;
         console.error(`bake-snapshot: index lock ${lockPath} is held by ${who} for over ${LOCK_WAIT_MS} ms; a lock is never taken over: once no bake writes ${out}, remove it and rerun (the .snapz is in place, the index is not updated)`);
         return 1; // the 'exit' handler prints the entry
       }
