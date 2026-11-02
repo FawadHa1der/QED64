@@ -162,7 +162,7 @@ for x, y in pairs:
     if x in crash and y in crash:
         p(f"- {x} {crash[x][0]}/{crash[x][1]} vs {y} {crash[y][0]}/{crash[y][1]}: p = {fisher(crash[x][0], crash[x][1], crash[y][0], crash[y][1]):.3f}")
 p()
-p("Per-reload process facts (sampler; reloads 1–4 = the previous runtime was still booting (true only at a sub-boot cadence on 36d7f415)):")
+p("Per-reload process facts (sampler; reloads 1–4 = the previous runtime was still booting, true only at a sub-boot cadence on 36d7f415):")
 p("| arm | reloads | renderer kept | footprint before (median GB) | thread drop after reload (median) | lowest thread count at (median ms after reload) | max pressure level |")
 p("|---|---|---|---|---|---|---|")
 for arm, runs in arms.items():

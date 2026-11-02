@@ -209,7 +209,7 @@ describe("embedding/closure.json", () => {
     expect(prefetch && served.includes(prefetch[1]!), "prefetchRaw's default worker URL").toBe(true);
     const lean = read("lib/client.ts").match(/workerUrl = "(\/workers\/[^"]+)"/);
     expect(lean && served.includes(lean[1]!), "LeanSession's default worker URL").toBe(true);
-    // What an offline cache warms (embed/urls.ts, docs/EMBEDDING.md §7.5) is exactly what ships.
+    // What an offline cache warms (lib/urls.ts, docs/EMBEDDING.md §7.5) is exactly what ships.
     expect([...WORKER_URLS].sort()).toEqual([...served].sort());
   });
 });

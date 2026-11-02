@@ -34,12 +34,24 @@ describe("umbrella aliases (lib/snapshots.ts UMBRELLA_ALIASES)", () => {
     expect([...UMBRELLA_ALIASES]).toEqual(["Mathlib", "Mathlib.Tactic", "Batteries", "MIL.Common"]);
   });
   it("the compiler battery rewrites exactly these to the umbrella's key", () => {
+    // The regex's own alternation is the list, in order (a Node script cannot import lib).
+    const battery = fs.readFileSync(path.join(root, "tests/adversarial/compiler-battery.mjs"), "utf8");
+    const fn = battery.indexOf("export function rewriteAliases");
+    expect(fn, "rewriteAliases in compiler-battery.mjs").toBeGreaterThanOrEqual(0);
+    const alt = /import\\s\+\(([^)]+)\)\\s\*\$/.exec(battery.slice(fn));
+    expect(alt, "rewriteAliases' import regex").not.toBeNull();
+    expect(alt![1]!.split("|").map((s) => s.replace(/\\\./g, "."))).toEqual([...UMBRELLA_ALIASES]);
     for (const a of UMBRELLA_ALIASES) expect(rewriteAliases(`import ${a}`), a).toBe("import QED64.Essential");
-    for (const m of ["Mathlib.Data.Real.Basic", "Mathlib.Tactic.Ring", "MIL", "Batteries.Data.List.Basic", "Lean"]) expect(rewriteAliases(`import ${m}`), m).toBe(`import ${m}`);
+    for (const m of ["Mathlib.Data.Real.Basic", "Mathlib.Tactic.Ring", "MIL", "Batteries.Data.List.Basic", "Lean", "Std", "Aesop", "Qq", "QED64"]) expect(rewriteAliases(`import ${m}`), m).toBe(`import ${m}`);
   });
   it("import completion offers lib's list and keeps no copy of its own", () => {
     const src = fs.readFileSync(path.join(root, "frontend/src/import-completion.ts"), "utf8");
     expect(src).toMatch(/import \{[^}]*\bUMBRELLA_ALIASES\b[^}]*\} from "\.\.\/\.\.\/lib\/snapshots";/);
-    for (const a of UMBRELLA_ALIASES) expect(src, a).not.toContain(`"${a}"`);
+    expect(src).toMatch(/new Set<string>\(UMBRELLA_ALIASES\)/);
+    for (const a of UMBRELLA_ALIASES) {
+      expect(src, a).not.toContain(`"${a}"`);
+      expect(src, a).not.toContain(`'${a}'`);
+      expect(src, a).not.toContain(`\`${a}\``);
+    }
   });
 });

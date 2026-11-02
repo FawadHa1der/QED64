@@ -775,7 +775,11 @@ if (fsReads) {
   const infra = e instanceof InfraError;
   const failing = planned.find((n) => !results.some((r) => r.name === n)) ?? "run";
   await record(failing, infra ? "infra" : "harness", infra ? "infra" : "fail", `${infra ? "" : "harness threw: "}${String(e.message ?? e).slice(0, 200)}`);
-  for (const n of remainingAfter(failing)) await record(n, "aborted", "aborted", `not run: ${infra ? "infrastructure refusal" : "harness error"} at ${failing}`);
+  // An aborted fs-reads row still carries what was read so far (its verdict stays aborted).
+  for (const n of remainingAfter(failing)) {
+    await record(n, "aborted", "aborted", `not run: ${infra ? "infrastructure refusal" : "harness error"} at ${failing}`,
+      n === "fs-reads" && fsReads ? { fsReads: await fsReads.finish().catch(() => undefined) } : {});
+  }
   exitCode = infra ? 3 : 1;
 } finally {
   fsReads?.stop();

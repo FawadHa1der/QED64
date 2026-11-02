@@ -60,12 +60,14 @@ describe("deploy.yml calls the one deploy script", () => {
   });
 
   // A concurrency group serializes the runs; the job-level `if:` stops a workflow_dispatch of another
-  // branch; the head check stops a re-run of an older run (or one that waited behind a newer push) from
+  // branch; the head check stops a re-run of an older run (or a run a newer push overtook while it ran) from
   // deploying over a newer commit, which the group alone does not.
   it("serializes deploys in push order; only main's head deploys", () => {
-    expect(text).toMatch(/^concurrency:\n {2}group: qed64-deploy\n {2}cancel-in-progress: false$/m);
+    expect(text).toMatch(/^concurrency:\n {2}group: qed64-deploy-\$\{\{ github\.ref \}\}\n {2}cancel-in-progress: false$/m);
     expect(text).toMatch(/^ {4}if: github\.ref == 'refs\/heads\/main'$/m);
     const head = steps.findIndex((s) => s.includes("git ls-remote origin refs/heads/main") && s.includes('"$GITHUB_SHA"'));
+    // Fail closed: a refused head check ends the run red (DEPLOY.md quotes the message).
+    expect(steps[head]).toMatch(/\|\| \{ echo "deploy refused, [^"]*" >&2; exit 1; \}$/);
     expect(head, steps.join("\n")).toBeGreaterThan(at("vitest run tests/unit"));
     expect(head).toBe(steps.length - 2);
   });

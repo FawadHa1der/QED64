@@ -66,18 +66,22 @@ at the origin root.
   serve yet, and nothing deploys. Upload them, then start the workflow again
   ('Run workflow' on `main`).
   The workflow deploys one commit at a time, in push order, and only main's
-  head. Its runs share one concurrency group (`qed64-deploy`,
-  `cancel-in-progress: false`): a run waits for the deploy before it, a
-  newer push replaces a run still waiting, and a running deploy is never
-  cancelled midway. A manual 'Run workflow' deploys only on `main`: the
-  job's `if: github.ref == 'refs/heads/main'` skips it on any other branch.
-  Just before `scripts/deploy-app.sh`, a one-line `git ls-remote` check
-  refuses (exit 1, `deploy refused, <sha> is no longer the head of main`)
-  unless the run's commit is still the head of `main`. So a 'Re-run jobs' of
-  an older run, or a run that waited behind a newer push, never deploys over
-  a newer commit; the newer head deploys in its own run. After a guard
-  refusal, upload, then use 'Run workflow' on `main` rather than re-running
-  the refused run, which deploys only while its commit is still the head.
+  head. Its runs share one concurrency group (`qed64-deploy-<ref>`, one per
+  branch, `cancel-in-progress: false`): a run waits for the deploy before
+  it, a newer push replaces a run still waiting, and a running deploy is
+  never cancelled midway. A manual 'Run workflow' deploys only on `main`:
+  the job's `if: github.ref == 'refs/heads/main'` skips it on any other
+  branch. Just before `scripts/deploy-app.sh`, a one-line `git ls-remote`
+  check refuses unless the run's commit is still the head of `main` (exit 1,
+  `deploy refused, <sha> is no longer the head of main`). So a 'Re-run jobs'
+  of an older run, or a run a newer push overtook while it ran, never
+  deploys over a newer commit; such a run fails with the `deploy refused`
+  line by design and needs no action: the newer head deploys in its own
+  run. Any run that joins main's group (a re-run, a 'Run workflow') replaces
+  one still waiting, so after a cancelled or refused run use 'Run workflow'
+  on `main`. After a guard refusal, upload, then use 'Run workflow' on
+  `main` rather than re-running the refused run, which deploys only while
+  its commit is still the head.
 
 ### The deploy script
 

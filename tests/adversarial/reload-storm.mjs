@@ -62,6 +62,8 @@ const EMBED = has("--embed");
 const SAMPLE_MS = Number(arg("sample-ms", "0"));
 const READY_EACH = has("--ready-each");
 const CONSOLE_LOG = has("--console-log");
+// A flag given as the last argument (or with "") has no value: arg() would hand back the default arm.
+for (const f of ["wait-ms", "boot-budget-ms", "hold-ms"]) if (has(`--${f}`) && arg(f, "") === "") { console.error(`reload-storm: --${f} needs a value`); process.exit(2); }
 const WAIT_RAW = arg("wait-ms", "");
 const WAIT_MS = WAIT_RAW === "" ? null : Number(WAIT_RAW);
 if (WAIT_MS !== null && !(Number.isInteger(WAIT_MS) && WAIT_MS >= 1 && WAIT_MS <= 60000)) { console.error("reload-storm: --wait-ms must be an integer in [1, 60000] (the worker reads 0 as unset; 1 = no wait)"); process.exit(2); }
@@ -263,7 +265,7 @@ for (let n = 1; n <= RUNS; n++) {
   runs.push(out);
   const ca = out.crashAfterReload;
   console.log(`run ${n}: ${out.verdict}${out.crashedAtMs !== null && out.crashedAtMs !== undefined ? ` at ${out.crashedAtMs} ms${ca ? ` (${ca.ms} ms after reload ${ca.reload})` : ""}` : ""}${out.oomKind ? ` [${out.oomKind}, ${out.oom.length} OOM line(s)]` : ""}; first ready ${out.firstReadyMs} ms; at ready ${JSON.stringify(out.atReady ?? null)}; peak live workers ${out.peakAlive}${out.predecessorWaits?.length ? `; waited for predecessors ${out.predecessorWaits.length}× (${out.predecessorWaits.map((w) => (/waited (\d+) ms/.exec(w.text) || [])[1]).join("/")} ms)` : ""}; ready after storm ${out.readyAfterMs ?? null} ms${READY_EACH ? `; reload→ready ${(out.reloads || []).map((r) => r.readyMs ?? "-").join("/")} ms` : ""}; host ${out.host.reclaimableGB} GB reclaimable`
-    + `; .snapz after first ready ${out.snapzAfterFirstReady ?? null}${out.snapzCounterBlind ? " (COUNTER BLIND)" : ""}; raw cache busy ${out.rawCacheBusy?.length ?? 0}${WAIT_MS !== null ? `; wait-ms ${WAIT_MS}, arm ${out.armOk ? "ok" : "INVALID"}` : ""}`);
+    + `; .snapz after first ready ${out.snapzAfterFirstReady ?? null}${out.snapzCounterBlind ? " (COUNTER BLIND)" : ""}; raw cache busy ${out.rawCacheBusy?.length ?? 0}${WAIT_MS !== null ? `; wait-ms ${WAIT_MS}, arm ${out.armOk === undefined ? "-" : out.armOk ? "ok" : "INVALID"}` : ""}`);
   fs.writeFileSync(path.join(dir, `reload-storm-${TAG}.json`), JSON.stringify({ url: pageUrl, qed64Url: url, embed: EMBED, ballastMb: BALLAST_MB, mode: browserMode, buildId: manifest.buildId, tag: TAG, waitMs: WAIT_MS, holdMs: HOLD_MS, bootBudgetMs: BOOT_BUDGET_MS, runs }, null, 1));
   await sleep(5000); // let the dead browser's memory drain before the next run
 }

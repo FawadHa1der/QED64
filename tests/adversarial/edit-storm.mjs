@@ -70,8 +70,10 @@ const REPS = Number(arg("reps", "2"));
 const SCENARIOS = arg("scenarios", "sleep,sleepreq,pagesleep,pagecadence,fast,pageslow").split(",");
 const GROW = Number(arg("grow-tolerance", "4"));
 // A leading '-' is refused too: `--tag` with its value missing would otherwise take the next flag as the tag.
+// `--tag` as the last argument (or `--tag ""`) has no value either: arg() would hand back "" and the untagged report.
 const TAG = arg("tag", "");
 if (!/^(?:[A-Za-z0-9._][A-Za-z0-9._-]{0,79})?$/.test(TAG)) { console.error("edit-storm: --tag must match [A-Za-z0-9._-]{0,80} and not start with '-'"); process.exit(2); }
+if (process.argv.includes("--tag") && !TAG) { console.error("edit-storm: --tag needs a label"); process.exit(2); }
 const target = resolveTarget(url);
 const manifest = await fetchJson(target.manifestUrl).catch((e) => { console.error(`edit-storm: refused — ${e.message}`); process.exit(3); });
 const dir = runDir(manifest.buildId ?? "unknown", target.mode);

@@ -10,9 +10,11 @@ on:
     branches: [main]
   workflow_dispatch:
 # One deploy at a time: a run waits for the deploy before it, and a newer run replaces one still
-# waiting, so deploys land in push order. A running deploy is never cancelled midway.
+# waiting, so deploys land in push order. A running deploy is never cancelled midway. There is one
+# group per ref, so a "Run workflow" on another branch (whose job skips) never replaces main's
+# waiting run.
 concurrency:
-  group: qed64-deploy
+  group: qed64-deploy-${{ github.ref }}
   cancel-in-progress: false
 jobs:
   deploy:
@@ -36,8 +38,8 @@ jobs:
       # with the step order below by tests/unit/deploy-script.test.ts.
       - run: npm ci --prefix frontend
       - run: npx tsc --noEmit && npx vitest run tests/unit
-      # A re-run of an older run, or one that waited behind a newer push, must not deploy over a
-      # newer commit: only the current head of main deploys.
+      # A re-run of an older run, or a run a newer push overtook while it ran, must not deploy over a
+      # newer commit (such a run ends red by design): only the current head of main deploys.
       - run: test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$GITHUB_SHA" || { echo "deploy refused, $GITHUB_SHA is no longer the head of main (the newer head deploys in its own run)" >&2; exit 1; }
       # The one deploy path, shared with operators: typecheck:site, build:site,
       # the artifact prune, the 25 MiB size check, the live-snapshot guard

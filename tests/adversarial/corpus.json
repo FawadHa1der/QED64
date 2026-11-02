@@ -2250,7 +2250,7 @@
         "settleMs": 300000,
         "zeroErrors": true
       },
-      "rationale": "The browser twin of module-public-import-lean: the resident FileWorker on the umbrella snapshot (the path the 2026-10-22 probe found failing on the live site). Since HARDENING #82 the editor's policy boots the umbrella for this header itself, so the item no longer depends on the page having booted on Mathlib."
+      "rationale": "The browser twin of module-public-import-lean: the resident FileWorker on the umbrella snapshot (the path the 2026-10-22 probe found failing on the live site). Since HARDENING #82 the umbrella claims Lean, so this header reaches the umbrella from any session (a policy boot, or the self-widen when e2e sets it on a running light page), and the item no longer depends on the page having booted on Mathlib."
     },
     {
       "name": "module-resident-init-only",

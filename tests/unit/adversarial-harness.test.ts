@@ -50,6 +50,12 @@ describe("settleClass", () => {
     expect(settleClass("elaborating")).toBeNull();
     expect(settleClass("the checker crashed — restarting (~15 s)")).toBeNull();
   });
+  test("main.ts's own headerRefused label settles as headerUnresolvable (no drift from the literal above)", () => {
+    const main = fs.readFileSync(path.resolve(__dirname, "../../frontend/src/main.ts"), "utf8");
+    const m = /const PHASE_LABEL\b[^{]*\{[^}]*?\bheaderRefused:\s*"([^"]+)"/.exec(main);
+    expect(m, "PHASE_LABEL.headerRefused in frontend/src/main.ts").not.toBeNull();
+    expect(settleClass(m![1]!)).toBe("headerUnresolvable");
+  });
   test("the phase enum is the primary oracle: ready / headerRefused / halted are terminal, the rest are not", () => {
     expect(settleClassFromPhase("ready")).toBe("ready");
     expect(settleClassFromPhase("headerRefused")).toBe("headerUnresolvable");

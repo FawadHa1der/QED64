@@ -82,8 +82,8 @@ function readRecord() {
 const top = (entries, n = 20) => entries.sort((a, b) => b.n - a.n || (a.op + a.path < b.op + b.path ? -1 : 1)).slice(0, n);
 
 /** Groups worker records by LEAN_PATH. `hits` sums the open-hit and stat-hit calls on library paths, `misses` every
- * -miss call on them, `writes` the write opens (never reads); `distinct` counts the library paths read; `blind` the
- * records whose FS was never wrapped. */
+ * -miss call on them, `writes` the write opens (never reads); `distinct` counts the library paths looked up (hit or
+ * miss); `blind` the records whose FS was never wrapped. */
 export function summarizeFsReads(records, { installFailures = 0 } = {}) {
   const sessions = {};
   const merged = new Map();

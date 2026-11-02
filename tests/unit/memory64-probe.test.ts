@@ -60,6 +60,7 @@ describe("MEMORY64_PROBE: one source", () => {
 
   it("no other source file carries the probe bytes or validates a probe of its own", () => {
     const files = ["public/workers/lean.worker.js", "public/workers/lsp-frames.js", "public/workers/lsp-front-door.js", "public/workers/snapshot-prefetch.worker.js",
+      "public/workers/worker-constants.js",
       ...fs.readdirSync(path.join(root, "lib")).filter((f) => /\.ts$/.test(f)).map((f) => `lib/${f}`),
       ...fs.readdirSync(path.join(root, "frontend/src"), { recursive: true }).map(String).filter((f) => /\.ts$/.test(f)).map((f) => `frontend/src/${f}`)];
     for (const f of files) {
