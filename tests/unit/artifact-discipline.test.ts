@@ -158,8 +158,11 @@ describe("promote-staging.mjs", () => {
     // the dry run changed nothing
     expect(JSON.parse(fs.readFileSync(path.join(pub, "runtime/runtime-manifest.json"), "utf8")).buildId).toBe(old.manifest.buildId);
     expect(fs.readdirSync(path.join(pub, "runtime/chunks"))).toEqual(oldChunks);
+    const leftover = path.join(pub, "snapshots", `index.${old.manifest.buildId}.json`);
+    fs.writeFileSync(leftover, "an earlier promote's copy\n");
     const real = run(promote, ["--staging", newStage, "--public", pub]);
     expect(real.status).toBe(0);
+    expect(fs.readFileSync(leftover, "utf8")).toBe("an earlier promote's copy\n");
     // a public tree that publishes no profiles: nothing to re-point, nothing invented
     expect(real.stdout).toMatch(/kernel-only: no profiles\/index\.json/);
     expect(fs.existsSync(path.join(pub, "profiles"))).toBe(false);
@@ -177,8 +180,8 @@ describe("promote-staging.mjs", () => {
     const idx = JSON.parse(fs.readFileSync(path.join(pub, "snapshots/index.json"), "utf8"));
     expect(idx.snapshots[0].runtime).toBe(neu.manifest.buildId);
     expect(fs.readdirSync(path.join(pub, "runtime")).filter((f) => f.endsWith(".tmp"))).toEqual([]);
-    // D2: no per-build index copy is written (QED64's indexes ship in each deploy), for either runtime
-    expect(fs.readdirSync(path.join(pub, "snapshots")).filter((f) => /^(profiles-)?index\..+\.json$/.test(f))).toEqual([]);
+    // D2: no per-build index copy is written; the one an earlier promote left is left alone
+    expect(fs.readdirSync(path.join(pub, "snapshots")).filter((f) => /^(profiles-)?index\..+\.json$/.test(f))).toEqual([`index.${old.manifest.buildId}.json`]);
   });
 
   test("a staged per-build copy written by the bake is neither copied nor checked (D2)", () => {

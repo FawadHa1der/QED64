@@ -51,7 +51,8 @@ function checkoutFiles(dir: string, keep: (file: string) => boolean): string[] {
   } catch {
     return walk(dir, keep);
   }
-  return listed.split("\0").filter((rel) =>
+  // a conflicted merge lists a path once per index stage
+  return [...new Set(listed.split("\0"))].filter((rel) =>
     rel !== "" &&
     !rel.split("/").some((s) => s === "node_modules" || s.startsWith(".")) &&
     keep(rel) &&

@@ -308,12 +308,13 @@ describe("durable storage (HARDENING #75; moved from the installer by D1)", () =
     expect(persist).toHaveBeenCalledTimes(1);
   });
   it("under the Web Lock it asks once too; a rejected ask is swallowed", async () => {
-    const persist = vi.fn(() => Promise.reject(new Error("denied")));
+    let asked = 0;
+    const persist = () => { asked += 1; return Promise.reject(new Error("denied")); }; // a plain function: vitest's spy would handle the rejection itself
     stub({ withLocks: true, persist });
     const r = prefetchRaw(entry);
     await until(() => FakeWorker.all.length > 0);
     await flush();
-    expect(persist).toHaveBeenCalledTimes(1);
+    expect(asked).toBe(1);
     FakeWorker.all[0]!.emit({ status: "done", bytes: 1000 });
     await expect(r).resolves.toEqual({ status: "done", bytes: 1000 });
   });

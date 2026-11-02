@@ -255,6 +255,11 @@ describe("the worker protocol ledger (docs/EMBEDDING.md §7.7)", () => {
     expect([...RUNTIME_MANIFEST_SCHEMAS]).toEqual(c.runtime.manifestSchemas);
     expect(c.runtime.manifestSchemas).toContain(record.runtime.schema ?? "org.lean-browser64.runtime/v1");
     expect(c.runtime.manifestSchemas).toContain(JSON.parse(read("public/runtime/runtime-manifest.json")).schema);
+    // verify-release (built-ins only: lean4game vendors it) and fetch-artifacts keep module-private copies
+    for (const file of ["pipeline/release/verify-release.mjs", "pipeline/release/fetch-artifacts.mjs"]) {
+      const declared = [...read(file).matchAll(/^const RUNTIME_V\d+ = "(org\.lean-browser64\.runtime\/v\d+)";$/gm)].map((m) => m[1]);
+      expect(declared, file).toEqual(c.runtime.manifestSchemas);
+    }
   });
   // The floor is checked against the pinned release record (toolchain/lean4-wasm64-release.json, a
   // byte copy of the fork's release.json), never against the lean4-wasm64 package: it is a

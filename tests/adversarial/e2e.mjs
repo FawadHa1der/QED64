@@ -676,7 +676,7 @@ if (runs("import-lean-sessions")) {
   await visit(LEAN_DOC);
   const reloaded = await until(onLean, bootBudgetMs);
   const s2 = await statsSnap();
-  const leg2 = reloaded.ok && s2?.userRestarts === 0;
+  const leg2 = reloaded.ok && s2?.userRestarts === 0 && s2?.workerDeaths === 0;
   // 3. a Mathlib buffer switched to `import Lean` (covered, no restart), then the worker is killed: the relay reboots
   // with no restart options, so the policy runs on `import Lean` (the heartbeat watchdog runs from the arm, #78)
   await visit(MATHLIB_DOC);
@@ -696,7 +696,7 @@ if (runs("import-lean-sessions")) {
   const leg3 = mathlib.ok && switched.ok && killed && before !== null && rebooted.ok && d3?.workerDeaths === 1 && d3?.userRestarts === 0;
   await page.evaluate((v) => { if (v === null) localStorage.removeItem("qed64.buffer"); else localStorage.setItem("qed64.buffer", v); }, storedBefore).catch(() => {});
   await record("import-lean-sessions", "functional", leg1 && leg2 && leg3,
-    `light→widen: boot=${show(light)} then ${show(widened.f)}@${widened.ms}ms restarts=${d1?.userRestarts ?? "?"} deaths=${d1?.workerDeaths ?? "?"}; restored: ${show(reloaded.f)}@${reloaded.ms}ms restarts=${s2?.userRestarts ?? "?"}; crash after switch: mathlib=${show(mathlib.f)}@${mathlib.ms}ms switched=${show(switched.f)} killed=${killed} rebooted=${show(rebooted.f)}@${rebooted.ms}ms session=${before}→${rebooted.f?.session ?? "?"} deaths=${d3?.workerDeaths ?? "?"} restarts=${d3?.userRestarts ?? "?"}`);
+    `light→widen: boot=${show(light)} then ${show(widened.f)}@${widened.ms}ms restarts=${d1?.userRestarts ?? "?"} deaths=${d1?.workerDeaths ?? "?"}; restored: ${show(reloaded.f)}@${reloaded.ms}ms restarts=${s2?.userRestarts ?? "?"} deaths=${s2?.workerDeaths ?? "?"}; crash after switch: mathlib=${show(mathlib.f)}@${mathlib.ms}ms switched=${show(switched.f)} killed=${killed} rebooted=${show(rebooted.f)}@${rebooted.ms}ms session=${before}→${rebooted.f?.session ?? "?"} deaths=${d3?.workerDeaths ?? "?"} restarts=${d3?.userRestarts ?? "?"}`);
 }
 
 // ---------- recovery drill: hard worker kill ---------------------------------

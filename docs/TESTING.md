@@ -254,10 +254,11 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   three visits and requires `status()` ready with header mode `covered` for
   the header it set (`header.key` names the import) and
   `relay.session.snapshots` holding `mathlib`: after a light (Init-only)
-  session gains `import Lean` (exactly one user restart), on a fresh page
-  with `import Lean` restored (no user restart), and after a Mathlib session
-  switched to it is killed (one worker death, no user restart, a new
-  session). It puts back the buffer the earlier scenarios saved.
+  session gains `import Lean` (exactly one user restart, no worker death), on
+  a fresh page with `import Lean` restored (no user restart, no worker death),
+  and after a Mathlib session switched to it is killed (one worker death, no
+  user restart, a new session). It puts back the buffer the earlier scenarios
+  saved.
 - **Run directories.** Each run writes to
   `work/adversarial/runs/<ts>-<buildId>-<mode>/` (preflight.json, e2e.log,
   e2e-report.json, compiler.log, gauntlet-*.log, latency-*.json, report.md);

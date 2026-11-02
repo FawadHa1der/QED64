@@ -66,10 +66,10 @@ describe("deploy.yml calls the one deploy script", () => {
     expect(text).toMatch(/^concurrency:\n {2}group: qed64-deploy-\$\{\{ github\.ref \}\}\n {2}cancel-in-progress: false$/m);
     expect(text).toMatch(/^ {4}if: github\.ref == 'refs\/heads\/main'$/m);
     const head = steps.findIndex((s) => s.includes("git ls-remote origin refs/heads/main") && s.includes('"$GITHUB_SHA"'));
-    // Fail closed: a refused head check ends the run red (DEPLOY.md quotes the message).
-    expect(steps[head]).toMatch(/\|\| \{ echo "deploy refused, [^"]*" >&2; exit 1; \}$/);
     expect(head, steps.join("\n")).toBeGreaterThan(at("vitest run tests/unit"));
     expect(head).toBe(steps.length - 2);
+    // Fail closed: a refused head check ends the run red (DEPLOY.md quotes the message).
+    expect(steps[head]).toMatch(/\|\| \{ echo "deploy refused, [^"]*" >&2; exit 1; \}$/);
   });
 
   it("hands the script wrangler's auth variables", () => {

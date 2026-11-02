@@ -22,6 +22,8 @@ const GiB = 1073741824;
 const MiB = 1048576;
 const entry = (name: string, bytes: number, extra: Partial<SnapshotEntry> = {}): SnapshotEntry => ({ name, url: `/snapshots/${name}.x.snapz`, bytes, imports: [], ...extra });
 const STOCK: SnapshotIndex = { schema: "qed64.snapshot-index/v1", snapshots: [entry("init", 122 * MiB), entry("mathlib", 1127 * MiB, { imports: ["QED64.Essential"] })] };
+// The next adoption's served index (D10): the mathlib entry declares the umbrella's roots.
+const STOCK_ROOTS: SnapshotIndex = { ...STOCK, snapshots: [STOCK.snapshots[0]!, { ...STOCK.snapshots[1]!, roots: [...LEGACY_UMBRELLA_ROOTS] }] };
 // An overlay built on QED64.Essential claims every umbrella root (§8: beside the stock entry, a superset) plus its own.
 const WIDGET_ROOTS = [...LEGACY_UMBRELLA_ROOTS, "ProofWidgets", "HasseView", "SimpLens"];
 const OVERLAY: SnapshotIndex = {
@@ -43,6 +45,14 @@ describe("an index without roots behaves exactly as before", () => {
     expect(policy.snapshotsFor!(header)).toEqual(EDITOR_POLICY.snapshotsFor!(header));
     expect(policy.initialBytesFor!(header, ["init", "mathlib"])).toBe(EDITOR_POLICY.initialBytesFor!(header, ["init", "mathlib"]));
   });
+  it.each(HEADERS)("header %j: the stock index with its roots declared (D10) gives the same verdicts", (header) => {
+    const modules = importedModulesOf(header);
+    expect(chooseSnapshots(STOCK_ROOTS, modules)).toEqual(chooseSnapshots(STOCK, modules));
+    const declared = makeEditorPolicy(STOCK_ROOTS);
+    const stock = makeEditorPolicy(STOCK);
+    expect(declared.snapshotsFor!(header)).toEqual(stock.snapshotsFor!(header));
+    expect(declared.initialBytesFor!(header, ["init", "mathlib"])).toBe(stock.initialBytesFor!(header, ["init", "mathlib"]));
+  });
   it("widens exactly when the legacy rule did: a light session, every missing module under an umbrella root", () => {
     const legacy = (missing: string[], loaded: string[]) => !loaded.includes("mathlib") && missing.length > 0 && missing.every(isUmbrellaModule);
     for (const [missing, loaded] of [
@@ -52,6 +62,8 @@ describe("an index without roots behaves exactly as before", () => {
       [["Lean"], ["init"]], [["Lean.Elab.Command", "Aesop"], ["init"]], [["ProofWidgets.Component.HtmlDisplay"], ["init"]], [["Lean.Bogus"], ["init", "mathlib"]],
     ] as Array<[string[], string[]]>) {
       expect(widenTarget(STOCK, missing, loaded)?.name === "mathlib", JSON.stringify([missing, loaded])).toBe(legacy(missing, loaded));
+      // D10: declaring the umbrella's roots changes no widen verdict
+      expect(widenTarget(STOCK_ROOTS, missing, loaded)?.name, JSON.stringify([missing, loaded])).toBe(widenTarget(STOCK, missing, loaded)?.name);
     }
   });
   it("without an index, the policy IS the legacy one", () => {

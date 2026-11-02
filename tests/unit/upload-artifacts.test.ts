@@ -129,7 +129,7 @@ describe("scripts/upload-artifacts.sh against a stubbed rclone", () => {
     write("public/snapshots/widgets8/index.json", "overlay index");
     write("public/snapshots/widgets8/hasse.aaaaaaaaaaaaaaaa.snapz", "overlay snap");
     write(`public/snapshots/widgets8/index.${BUILD}.json`, "overlay copy");
-    // the local per-build copies a promote or fetch-artifacts writes beside the indexes
+    // local per-build copies an earlier promote or fetch-artifacts left beside the indexes (neither writes them since D2)
     write(`public/snapshots/index.${BUILD}.json`, "local copy");
     write(`public/snapshots/profiles-index.${BUILD}.json`, "local copy");
     const puts = path.join(tmp, "puts.log");

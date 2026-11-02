@@ -862,14 +862,14 @@ describe("events", () => {
     const t = setup();
     const boots: string[] = [];
     const off = t.api.on("boot", (b) => boots.push(`${b.stage}${b.subject ? `:${b.subject}` : ""}${b.done ? " done" : ""}${b.failed ? " failed" : ""}${b.error ? ` ${b.error.kind}` : ""}`));
-    t.page.bootStep("installing the Lean core library", { stage: "profile", subject: "core" });
+    t.page.bootStep("downloading the Lean runtime", { stage: "runtime", subject: "lean.wasm" });
     t.page.bootStep("snapshot failed", { stage: "snapshot", subject: "mathlib", error: { kind: "network", message: "HTTP 503" } });
     expect(t.api.status().boot).toMatchObject({ stage: "snapshot", done: false, overlay: true });
     t.page.bootFinished();
     expect(t.api.status().boot).toMatchObject({ done: true, overlay: false });
     off();
     t.page.bootFailed("never seen");
-    expect(boots).toEqual(["profile:core", "snapshot:mathlib network", "done done"]);
+    expect(boots).toEqual(["runtime:lean.wasm", "snapshot:mathlib network", "done done"]);
   });
 });
 
