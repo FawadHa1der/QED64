@@ -60,11 +60,12 @@ One persistent Worker owns one Lean process for the whole session:
 7. **Snapshots** — a baked `--incr-header-save` region (produced by the exact
    same binary under Node — its closure relocations are function-table-keyed)
    streams straight into the wasm heap and loads via
-   `lean_wasm_load_snapshot_mem` (MEMFS + `lean_wasm_load_snapshot` as the
-   fallback). The loaded
-   environment is registered under the normalized header key recorded
-   *inside* the snapshot, so the resolver serves a header with that exact
-   key — or one the environment covers — instead of importing the closure.
+   `lean_wasm_load_snapshot_mem`, the browser's only loader (W5 deleted the
+   MEMFS + `lean_wasm_load_snapshot` fallback,
+   public/workers/lean.worker.js). The loaded environment is registered under
+   the normalized header key recorded *inside* the snapshot, so the resolver
+   serves a header with that exact key — or one the environment covers —
+   instead of importing the closure.
 8. **The resident FileWorker** — after boot and the pre-open snapshot loads
    the page arms the worker, and the real `lean --worker` loop runs on an
    application pthread reading a futex stdin ring; see "Transport".

@@ -1,9 +1,11 @@
 // `qed64/embed` — the library entry point for embedders that build their own
 // page on the QED64 runtime (docs/EMBEDDING.md §6–§8). The contract is every
-// export of this module that docs/EMBEDDING.md §7.0 names; a re-export marked
-// `@internal` is outside it, and a path not reachable from this module (or
-// listed in embedding/closure.json) is internal (§9).
-// tests/unit/embed-barrel.test.ts checks that §7 names every other export.
+// value export of this module that docs/EMBEDDING.md §7.0 names and every type
+// those exports' signatures use; a re-export marked `@internal` is outside
+// it, and a path not reachable from this module (or listed in
+// embedding/closure.json) is internal (§9).
+// tests/unit/embed-barrel.test.ts checks that §7 names every other value
+// export.
 //
 // Closure rule (tests/unit/package-contract.test.ts): this module and
 // everything it reaches import only relative paths — no bare specifiers, no

@@ -21,8 +21,9 @@ QED64 is consumed in two ways, and this document is the contract for both:
 recipe for a new one (a Vite page with or without the editor).
 
 Everything not named here is internal and may change in any commit (§9).
-For `qed64/embed` the barrel agrees: §7.0 names every export of
-`lib/index.ts` except those marked `@internal`.
+For `qed64/embed` the barrel agrees: §7.0 names every value export of
+`lib/index.ts` except those marked `@internal`, and the contract includes
+every type those exports' signatures use.
 
 ---
 
@@ -494,7 +495,7 @@ v1.1 adds:
   allowlist served as `/embed-config.json`, never URL parameters;
   `frame-ancestors` and `Cross-Origin-Resource-Policy: cross-origin` on the
   HTML shell only; and a statement that cross-site frames get partitioned
-  storage (a separate ~600 MB first visit);
+  storage (a separate ~460 MB first visit);
 - `layout=split|stack|auto` and an embed `escape` key event (`#codez=`
   landed with HARDENING #77).
 
@@ -509,7 +510,7 @@ cells on 2026-11-01 at `website-v4.35` 5468694):
 | | lean4game (library tier) | the proof sheets (library tier) | the widgets showcase (page tier, and the tools) |
 |---|---|---|---|
 | holds QED64 as | an npm **git dependency** pinned by a full SHA: `"qed64": "github:FawadHa1der/QED64#<40-hex>"` in `client/package.json` (branch `wasm64-port`). npm fetches the codeload tarball, with no git or SSH needed, and honours `files`. | the same kind of **git dependency**, in `website/site/package.json`; `website/build.sh` refuses a `sources.json` QED64 commit that the lockfile does not resolve | a **git submodule**, `deps/qed64`, checked out at the pinned commit (`pins/<id>/QED64.lock.json`); a pin under test is a worktree of that submodule |
-| imports | `qed64/embed` only: every runtime name it uses is in §7.0 (`tests/unit/embed-barrel.test.ts` pins the list). Its tsconfig maps `qed64/embed` to closure.json `entry`, and `scripts/stage-workers.sh` checks that mapping against the installed package. | `qed64/embed`: twelve runtime names, among them `chooseSnapshots`, `importedModulesOf`, `initialBytesForEntries` and `DEFAULT_MAXIMUM_BYTES` (§7.0; `tests/unit/embed-barrel.test.ts` pins the list), under `moduleResolution: "bundler"`; and `qed64/edge`: its Cloudflare Worker is `createWorker` with its release record | nothing from `qed64/embed`. Its Cloudflare Worker reuses QED64's edge code: `qed64/edge` (§6 exports, docs/DEPLOY.md "Using qed64/edge in your own Worker") was cut for it; today the Worker imports `isImmutable` from the submodule's `infra/worker.js`. |
+| imports | `qed64/embed` only: every runtime name it uses is in §7.0 (`tests/unit/embed-barrel.test.ts` pins the list). Its tsconfig maps `qed64/embed` to closure.json `entry`, and `scripts/stage-workers.sh` checks that mapping against the installed package. Its tests also load `lib/edit-coalescer.ts` by path (`client/src/wasm/game-translation-guard.test.ts`), an internal path (§9). | `qed64/embed`: twelve runtime names, among them `chooseSnapshots`, `importedModulesOf`, `initialBytesForEntries` and `DEFAULT_MAXIMUM_BYTES` (§7.0; `tests/unit/embed-barrel.test.ts` pins the list), under `moduleResolution: "bundler"`; and `qed64/edge`: its Cloudflare Worker is `createWorker` with its release record; its relay tests bundle `lib/lsp-relay.ts` by path (`website/site/test/stubs/qed64-embed-real.mjs`), an internal path (§9) | nothing from `qed64/embed`. Its Cloudflare Worker reuses QED64's edge code: `qed64/edge` (§6 exports, docs/DEPLOY.md "Using qed64/edge in your own Worker") was cut for it; today the Worker imports `isImmutable` from the submodule's `infra/worker.js`. |
 | workers | `scripts/stage-workers.sh` copies closure.json `workers` into `client/public/workers/` (exactly that set) and compares `runtime.minKernelPatch` with its own kernel pin | `website/site/scripts/stage.mjs` copies closure.json `workers` into `public/workers/` before every dev start and build, and adds the course's Lean options to the staged `lean.worker.js` | the shell's `dist/workers/` |
 | editor | its own page: lean4monaco's client, behind its translation layer, on `LspRelay.clientPort` (§7.9) | its own page: the Waterproof editor (CodeMirror) and `@leanprover/infoview`, on `LspRelay.clientPort` | QED64's own page in an iframe, `?embed=1` (§3) |
 | pipeline CLIs (docs/CLI-CONTRACT.md) | `wasm/build-from-source.sh` runs bake-snapshot and snapshot-probe from `node_modules/qed64` (or `$QED64_DIR`); its trees and runtime come from the lean4-wasm64 package | `website/build.sh` runs bake-snapshot from `node_modules/qed64` (or `$QED64_DIR`); its bake fingerprint hashes that package's `pipeline/snapshot/node-runner.mjs`, so a change there means a rebake | bake-snapshot, snapshot-probe, supervised-run, preflight and olean-imports, from the submodule |
@@ -790,10 +791,14 @@ dist was built from without opening the bundle.
 
 ### 7.0 Exports
 
-Every export of `qed64/embed` is named below (and `EMBED_API_REVISION`
-above); one marked `@internal` is outside the contract (§9).
-`tests/unit/embed-barrel.test.ts` checks this and pins the names lean4game,
-the proof sheets and the stock page import.
+Every value export of `qed64/embed` is named below (and
+`EMBED_API_REVISION` above), and the contract holds every type their
+signatures use (lean4game imports `SnapshotEntry`, `Qed64Artifacts`,
+`PrefetchRawResult`, `StatusSink`, `ProgressInfo`, `BootOverrides` and
+`FailureCause`; the proof sheets `SnapshotEntry`, `Qed64Artifacts`,
+`StatusSink` and `ProgressInfo`); one marked `@internal` is outside the
+contract (§9). `tests/unit/embed-barrel.test.ts` checks this and pins the
+names lean4game, the proof sheets and the stock page import.
 
 - **runtime:** `LeanSession`, `probeMemory64`, `MEMORY64_PROBE`
   (the 13 probe bytes `probeMemory64` and the worker validate; a fixed-shape
@@ -1028,12 +1033,13 @@ Errors the relay invents carry
 halted relay answers every request -32603 with `reason: "repeated crashes"`
 (the breaker) or `reason: "stack limit"` (the stack pause: "QED64: checking
 paused: Lean ran out of the browser's stack; edit the file to check it
-again"). A deliberate restart (`LspRelay.restart`: a self-widen, the page
-API's `restart()`) answers each in-flight request with `kind: "restart"` and
-`reason: "restarting the checker"` ("restarting with exact imports" before
-D1, for every restart): match on `kind`, not on the words. The message
-prefix `QED64:` stays as a fallback. `LspRelay.rearm()` re-arms a
-halted relay without an edit; it returns false unless the relay is halted.
+again"). A deliberate restart (`LspRelay.restart`, whoever calls it: a
+self-widen, the page API's `restart()`, an embedder) answers each in-flight
+request with `kind: "restart"` and `reason: "restarting the checker"`
+("restarting with exact imports" before D1, for every restart): match on
+`kind`, not on the words. The message prefix `QED64:` stays as a fallback.
+`LspRelay.rearm()` re-arms a halted relay without an edit; it returns false
+unless the relay is halted.
 
 ### 7.3 Session files and the pre-arm hook
 
@@ -1118,9 +1124,11 @@ function prefetchRaw(entry, opts?: { onProgress?; signal?; silenceMs?; workerUrl
   withdrawn when the last waiting caller leaves. `loadSnapshotByName` uses
   `"wait"`, with `ResidentHost.busyWaitMs` (§7.3) as its `busyWaitMs`.
 - **Durable storage.** A fresh write asks `navigator.storage.persist()`
-  first and never waits for the answer (HARDENING #75). A cached region, a
-  caller answered `busy`, and a waiter that finds another tab's write done
-  ask nothing.
+  first and never waits for the answer (HARDENING #75). A region found
+  cached before the write, a caller the Web Lock answers `busy` (at once,
+  after its `busyWaitMs`, or with its wait cut short), and a waiter that
+  finds another tab's write done ask nothing; a `busy` or cached answer from
+  the prefetch worker itself comes after the ask.
 - **It needs the raw size.** The prefetch worker refuses a message without a
   positive `rawBytes` (the entry's `bytes`) with `error` (`corrupt`). Its
   compressed-only mode, which fetched without the redirect and HTML
@@ -1268,21 +1276,22 @@ itself).
 - **Runtime manifest formats.** The worker reads the schemas `closure.json`
   lists under `runtime.manifestSchemas` (today v1 and v2) and refuses any
   other schema, or a file `encoding` its schema does not allow, before any
-  fetch (`RUNTIME_MANIFEST_MISMATCH`, `corrupt`). v2 (the fork's
-  `formats/runtime-manifest.md`): each file names its `encoding` (`gzip` or
-  `identity`, a closed set) and its `bytes`/`sha256` are the decoded
-  file's; each part keeps `url`, `bytes` and `sha256` as served and adds
-  `decodedBytes`. Every part but the last decodes to exactly 16,777,216
-  bytes, the `decodedBytes` sum to the file's `bytes`, and an `identity`
-  part's `decodedBytes` is its `bytes`; the worker refuses a v2 manifest
-  that breaks these before any fetch. It verifies each part as served,
-  then inflates a gzip part (DecompressionStream) and checks the whole file
-  over the decoded bytes, so the buildId rule (§7.2) is unchanged. A worker
-  older than this check has no list: on another format it downloads the
-  parts and fails every boot on the whole-file size, so consumers check the
-  list at staging (§6). A schema joins the list in a QED64 commit before
-  any runtime uses it, and leaves it the way a request does
-  (`workerProtocol.deprecated`).
+  fetch (`RUNTIME_MANIFEST_MISMATCH`, `corrupt`). v2 (the fork owns the
+  format; its `formats/runtime-manifest.md` gains the v2 section with the
+  first v2 release, and this is the shape it accepted on 2026-11-01): each
+  file names its `encoding` (`gzip` or `identity`, a closed set) and its
+  `bytes`/`sha256` are the decoded file's; each part keeps `url`, `bytes`
+  and `sha256` as served and adds `decodedBytes`. Every part but the last
+  decodes to exactly 16,777,216 bytes, the `decodedBytes` sum to the file's
+  `bytes`, and an `identity` part's `decodedBytes` is its `bytes`; the
+  worker refuses a v2 manifest that breaks these before any fetch. It
+  verifies each part as served, then inflates a gzip part
+  (DecompressionStream) and checks the whole file over the decoded bytes,
+  so the buildId rule (§7.2) is unchanged. A worker older than this check
+  has no list: on another format it downloads the parts and fails every
+  boot on the whole-file size, so consumers check the list at staging (§6).
+  A schema joins the list in a QED64 commit before any runtime uses it, and
+  leaves it the way a request does (`workerProtocol.deprecated`).
 - **A `telemetry` request may be answered after a `status` event.** The
   worker re-samples its status before replying and emits the event when
   the status changed (the pool sample included); an unchanged status emits
@@ -1800,9 +1809,10 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   - marked `/** @internal */`, still exported: `installProfile`,
     `ensureProfile`, `fetchProfileIndex`, `parseBootParams`, `overridesOf`,
     `NO_OVERRIDES`, `memoryCandidates`, `rawRegionName`, `httpStatusOf`,
-    `failureKindOf` and `isImport` (§7.0 lists the contract member to use
-    instead). Every name lean4game imports through the barrel stays in the
-    contract; `tests/unit/embed-barrel.test.ts` pins both lists.
+    `failureKindOf` and `isImport` (§7.0 listed the contract member to use
+    instead; since `1.0.0-pre.11` the R9a row below does). Every name
+    lean4game imports through the barrel stays in the contract;
+    `tests/unit/embed-barrel.test.ts` pins both lists.
   - the stock page (`frontend/src/main.ts`) imports the library surface
     from the barrel instead of deep paths: it is the barrel's first
     consumer. No behaviour change.
@@ -2331,8 +2341,11 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   `acceptOffer()` returns false. `status().collision` and the front door's
   note stay; the note is reworded neutrally ("Already declared in the
   preloaded environment: …", then why and "Rename yours"), because lean4game
-  and the proof sheets run the same front door. The library is untouched by
-  this change. The page API's `api.version` (1) and `API_REVISION` (`1.0.0`)
+  and the proof sheets run the same front door. `qed64/embed`'s API is
+  untouched; the front-door worker script, which the package ships
+  (closure.json workers), changes only its collision note text and keeps
+  `REVISION` "1", so a consumer that stages the workers re-stages it to get
+  the new note. The page API's `api.version` (1) and `API_REVISION` (`1.0.0`)
   are unchanged: a false capability is v1's way to say absent (§1, item 2);
   `EMBED_API_REVISION` is unchanged.
 - **Library packs leave the browser; "Load exact imports" retired (D1 with
@@ -2501,3 +2514,8 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
     no rebake.
   - The worker scripts keep `REVISION` "1", and `PROTOCOL` is unchanged.
   - `EMBED_API_REVISION` → `1.1.0`.
+- **The v1 contract names its types (docs, 2026-11):** `qed64/embed`'s
+  contract is every value export §7.0 names and every type those exports'
+  signatures use, so a change to `SnapshotEntry`, `Qed64Artifacts`,
+  `StatusSink` or another such type is a break like any other (§1). No code
+  change: `EMBED_API_REVISION` is unchanged.

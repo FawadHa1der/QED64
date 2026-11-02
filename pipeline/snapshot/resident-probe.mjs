@@ -59,8 +59,10 @@
 //                entry, which a refused header leaves standing, counts as
 //                drained, as in the page's front door) it prints the final
 //                diagnostics (with --dump-messages one {"caption":"",…} JSON
-//                line each, snapshot-probe's shape: severity by name, pos and
-//                endPos 1-based lines and LSP's UTF-16 columns), then
+//                line each: caption, severity by name, pos, endPos and data, a
+//                subset of snapshot-probe's keys; 1-based lines, LSP's UTF-16
+//                columns; endPos is LSP's `range` end, which Lean shortens for
+//                a multi-line span, and isSilent diagnostics are kept), then
 //                `compile: tag=0 elapsed=<ms since didOpen> errors=<n>`, and
 //                exits 0 whatever the document's errors are (the compiler
 //                battery's --transport fileworker judges them, review R4).

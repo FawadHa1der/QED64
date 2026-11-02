@@ -78,10 +78,10 @@ at the origin root.
   deploys over a newer commit; such a run fails with the `deploy refused`
   line by design and needs no action: the newer head deploys in its own
   run. Any run that joins main's group (a re-run, a 'Run workflow') replaces
-  one still waiting, so after a cancelled or refused run use 'Run workflow'
-  on `main`. After a guard refusal, upload, then use 'Run workflow' on
-  `main` rather than re-running the refused run, which deploys only while
-  its commit is still the head.
+  one still waiting, so to deploy main's head after a cancelled run, or
+  after a refused one whose newer head did not deploy (after a guard
+  refusal, upload first), use 'Run workflow' on `main`, never 'Re-run
+  jobs', which deploys only while its commit is still the head.
 
 ### The deploy script
 
@@ -308,9 +308,11 @@ What R2 holds for QED64:
 - frozen since 2026-11: the bucket-root `snapshots/index.json`,
   `profiles/index.json` and the per-build copies
   `snapshots/index.wasm64-*.json` and `snapshots/profiles-index.wasm64-*.json`.
-  Only a Worker version from before 2026-11 reads them (it served both
-  indexes from R2). Nothing writes them any more, and they stay while such
-  a version is a rollback target ("R2 clean-up" below).
+  Only a Worker version from before 2026-11 reads the two bucket-root
+  indexes (it served both from R2); the hardened Worker still serves the
+  per-build copies, to a tab left open across a runtime deploy ("Old
+  shells"). Nothing writes them any more, and they stay while such a
+  version is a rollback target ("R2 clean-up" below).
 
 The pinned runtime manifest is unchanged: the shell build injects the
 `buildId` of the committed `public/runtime/runtime-manifest.json` and asks
@@ -344,14 +346,18 @@ Promote checklist, in order:
    manifests), `embedding/base-tree.json` and, when the umbrella was
    rebuilt, `embedding/umbrella/QED64/Essential.olean*`,
    `public/runtime/runtime-manifest.json`, the profile manifests, and both
-   indexes. Do not push yet. Push nothing to `main` from this commit until
-   step 3 has finished: a push is the deploy (step 5), and it would deploy
-   this commit's shell and indexes before their snapshots are in R2. The
-   deploy's guard (the one step 4 runs by hand) refuses such a deploy, so
-   nothing deploys, the push's other changes included, until the upload and
-   a 'Run workflow' on `main`. When to adopt a release at all: the cadence
-   in docs/REBUILD.md §3.
-2. For a new release: its owner has uploaded `lean4-wasm64/<id>/`.
+   indexes (and, once the release is published, the `lean4-wasm64`
+   devDependency re-pinned to its tgz in package.json and package-lock.json:
+   adopt-release's landing step 4). Do not push yet. Push nothing to `main`
+   from this commit until step 3 has finished: a push is the deploy
+   (step 5), and it would deploy this commit's shell and indexes before
+   their snapshots are in R2. The deploy's guard (the one step 4 runs by hand)
+   refuses such a deploy, so nothing deploys, the push's other changes
+   included, until the upload and a 'Run workflow' on `main`. When to adopt
+   a release at all: the cadence in docs/REBUILD.md §3.
+2. For a new release: its owner has uploaded `lean4-wasm64/<id>/`
+   (normally before step 1: docs/REBUILD.md §3 orders publish, land, upload,
+   push).
 3. Run `DRY_RUN=1 scripts/upload-artifacts.sh`, then
    `scripts/upload-artifacts.sh`, from a checkout whose `public/` holds the
    new `.snapz` (after an adoption, the checkout whose `public/` is the
@@ -399,8 +405,11 @@ is step 5 alone.
   `snapshots/index.json`, `profiles/index.json`, `snapshots/index.wasm64-*.json`
   and `snapshots/profiles-index.wasm64-*.json`, plus the 5650321f grace
   keys (`work/r2-gc-2026-10-23/` in the main checkout, not tracked), and
-  remove `serve-dist.mjs`'s `legacy` mode in the same change. QED64's root
-  then holds only `.snapz`. Superseded `.snapz` are garbage-collected the
+  remove `serve-dist.mjs`'s `legacy` mode in the same change. Deleting the
+  per-build copies also changes what an old tab does: one left open across
+  the next runtime deploy then gets a 404 for its copy and pairs with the
+  new snapshots instead of being refused `unpaired` ("Old shells"). QED64's
+  root then holds only `.snapz`. Superseded `.snapz` are garbage-collected the
   same way, deliberately, once no rollback needs them (the 2026-10-23 sweep
   kept the live and the previous pairing: `work/r2-gc-2026-10-23/README.md`).
 

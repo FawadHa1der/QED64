@@ -132,7 +132,7 @@ launch); their own docs keep their copy of the rule.
   (2) the landing commit (docs/DEPLOY.md, promote checklist step 1); (3) the
   upload (`scripts/upload-artifacts.sh`, step 3); (4) the push of `main`,
   which is the deploy (step 5). Nothing is pushed to `main` between (2) and
-  (3): a push deploys the landing commit's shell and indexes, whose
+  (3): a push would deploy the landing commit's shell and indexes, whose
   snapshots are not in R2 yet. The deploy guard (`scripts/deploy-guard.mjs`)
   refuses that deploy, so nothing deploys, that push's other changes
   included, until the upload and a 'Run workflow' on `main`. A consumer
@@ -236,11 +236,16 @@ fetching and writing nothing):
      --roots <LEGACY_UMBRELLA_ROOTS of lib/snapshots.ts, comma-separated>
    ```
 
+   A `bake-snapshot: verdict` line in either bake log (the D6 notice) fails
+   the adoption (`ADOPT-FAIL`; docs/CLI-CONTRACT.md, bake-snapshot, "Lean
+   failure lines").
+
    The mathlib entry thereby declares the umbrella's roots (docs/EMBEDDING.md
    §8; review D10, from the first adoption after 2026-11-01 on); they change
    only `index.json`, not the region. adopt-release reads the list from
-   `lib/snapshots.ts` at run time and refuses if it cannot (Node ≥ 22.18 or
-   23.6 strips the types).
+   `lib/snapshots.ts` at run time and refuses if it cannot (Node strips the
+   types by default from 22.18 on the 22 line and from 23.6 on; the repo's
+   floor, Node 24, does).
 
    The raw `.snap` files land in `$W/snapshot`, never `work/snapshot` (the
    set paired to the served runtime). The raw sizes in the served

@@ -191,23 +191,28 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   and a fresh all-infra `compiler-report.json` (work/adversarial/ and the run
   dir) whose `refused` field and rows carry the `no-path` line; `run.mjs`
   counts that 2 as a refusal (exit 3) and its report.md shows the lane with a
-  `REFUSED` line. `--probe <file>` runs another snapshot-probe with the same
-  CLI in place of QED64's (the bake move's acceptance runs the corpus through
-  QED64's probe and the lean4-wasm64 package's), a missing one being the same
-  exit 2 with a fresh all-infra report; `--messages-dir <dir>` writes each
-  item's message JSON lines (`<name>.jsonl`, the `{"caption":…}` lines in
-  order), so two runs diff file by file. With `--transport fileworker` the
-  report records `transport`, `--probe` is refused (exit 2, a fresh all-infra
-  report), a missing `init.snap` beside `--snap` is the all-infra refusal
-  (exit 3), the probe's `resident: reached elaboration` marker counts as
-  reaching the compile step, and a `RESIDENT PROBE FAIL` after it (budget,
-  abort, an exit before the drain settled) is a `fail`, never `infra`.
-  `--settle-ms <ms>` is passed to resident-probe as its stable-drain settle
-  (without it, resident-probe's 5000): an item's `compile:` line comes only
-  once progress has stayed drained that long, and the probe exits 500 ms
-  later, so the default adds about 5.5 s to every item's wall time, which a
-  wall-time comparison with the compile lane has to allow for. The settle
-  also runs inside the probe's budget (the item's plus 30 s). A value that is
+  `REFUSED` line. `--probe <file>` runs any snapshot-probe with the same CLI
+  in place of QED64's (the bake move's acceptance, 2026-10-08, ran the corpus
+  through QED64's probe and the lean4-wasm64 package's; the package deletes
+  its bake-snapshot, snapshot-probe and their index writer at its next
+  runtime release, review D4 a), a missing one being the same exit 2 with a
+  fresh all-infra report; `--messages-dir <dir>` writes each item's message
+  JSON lines (`<name>.jsonl`, the `{"caption":…}` lines in order), so two
+  runs of one transport diff file by file (a fileworker line has only
+  caption, severity, pos, endPos and data, its endPos is LSP's `range` end
+  and silent messages are kept, so compare the two transports on severity,
+  start line and data). With `--transport fileworker` the report records
+  `transport`, `--probe` is refused (exit 2, a fresh all-infra report), a
+  missing `init.snap` beside `--snap` is the all-infra refusal (exit 3), the
+  probe's `resident: reached elaboration` marker counts as reaching the
+  compile step, and a `RESIDENT PROBE FAIL` after it (budget, abort, an exit
+  before the drain settled) is a `fail`, never `infra`. `--settle-ms <ms>` is
+  passed to resident-probe as its stable-drain settle (without it,
+  resident-probe's 5000): an item's `compile:` line comes only once progress
+  has stayed drained that long, and the probe exits 500 ms later, so the
+  default adds about 5.5 s to every item's wall time, which a wall-time
+  comparison with the compile lane has to allow for. The settle also runs
+  inside the probe's budget (the item's plus 30 s). A value that is
   not a number of milliseconds >= 0, and `--settle-ms` under
   `--transport compile` (which has no settle), are refused (exit 2, a fresh
   all-infra report). A lane that ran and wrote no report at all is a `REFUSED` /

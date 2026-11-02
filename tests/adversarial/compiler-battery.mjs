@@ -188,8 +188,9 @@ async function main() {
     process.exit(refusal ?? 2);
   }
   const { snap, artifact, lib } = inputs;
-  // --probe: another snapshot-probe with this CLI (the bake move's acceptance runs the corpus through QED64's probe and
-  // the lean4-wasm64 package's, docs/TESTING.md); --messages-dir: each item's message JSON lines, for diffing two runs.
+  // --probe: any snapshot-probe with this CLI (the bake move's acceptance, 2026-10-08, ran the corpus through QED64's probe
+  // and the lean4-wasm64 package's, whose copy goes at the package's next runtime release, D4 a; docs/TESTING.md);
+  // --messages-dir: each item's message JSON lines, for diffing two runs.
   const probe = fileworker ? path.join(root, "pipeline/snapshot/resident-probe.mjs") : path.resolve(arg("probe", path.join(root, "pipeline/snapshot/snapshot-probe.mjs")));
   if (!fs.existsSync(probe)) refuse(fileworker ? `compiler-battery: ${probe} does not exist` : `compiler-battery: --probe ${probe} does not exist`, fileworker ? { transport } : {});
   // The FileWorker lane seeds init.snap and --snap by name from --snap's directory (resident-probe --snap-dir/--snapshots).

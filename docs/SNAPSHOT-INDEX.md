@@ -101,9 +101,11 @@ its leading spaces trimmed, matches
 It does not port the fork's full header lexer, so write bake probes plainly:
 the imports first, one per line, no `import all` (it would record `all`), no
 comment or second import on an import line. A header Lean rejects saves no
-snapshot, so it never gets an entry: the bake ends with `no-snap` (exit 1)
-once its runner has exited (the runtime's exit can wedge, patch 0031; stop
-such a bake with SIGTERM).
+snapshot, so it never gets an entry: the bake exits 1, with `failed-quiet`
+then `no-snap` once `--quiet-ms` passes after the failure line with no save
+begun, or `runner-exit` if the runner exits non-zero first
+(docs/CLI-CONTRACT.md, bake-snapshot side effect 6; before 2026-11-01 a
+wedged runtime exit, patch 0031, made it wait for a SIGTERM).
 
 ## Identity and transport
 

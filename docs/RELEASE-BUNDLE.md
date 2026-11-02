@@ -196,9 +196,11 @@ served URLs spelled `/runtime/chunks/<file>`, `/snapshots/<file>` or
 year-long immutable cache sound); chunk and part sizes that add up to the
 whole (a v2 runtime's chunks by their `decodedBytes`, with the file's
 `encoding` one v2 allows, every chunk but the last exactly 16,777,216 bytes
-decoded, and no `encoding` in a v1 file); index entries that describe their
-manifests (release, module count); and each profile manifest's `digest` equal
-to `sha256(JSON.stringify(content))`.
+decoded, and no `encoding` in a v1 file, which is stricter than the readers:
+the worker, fetch-artifacts and verify-release accept a v1 file naming
+`identity`, and the kernel's v1 manifests name none); index entries that
+describe their manifests (release, module count); and each profile manifest's
+`digest` equal to `sha256(JSON.stringify(content))`.
 
 Nothing in this tool reads artifact bytes. It checks the facts the tracked
 files state about each other. `npm run verify:release` remains the job that
