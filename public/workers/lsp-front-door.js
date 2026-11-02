@@ -475,6 +475,6 @@
     return r;
   }
 
-  // REVISION: see lsp-frames.js (the three worker scripts move together).
+  // REVISION: see lsp-frames.js (the worker scripts move together).
   root.Qed64LspFrontDoor = { initialState, step, statusOf, SERVER_CAPABILITIES, FORWARDED_NOTIFICATIONS, UMBRELLA_ALIASES, REVISION: "1" };
 })(globalThis);

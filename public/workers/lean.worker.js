@@ -1854,15 +1854,16 @@ function compile(msg) {
 //   2. cold / no OPFS: fetch → sniff → DecompressionStream → the same wasm
 //      allocation. Kept as the fallback because embedders lie about storage
 //      and an origin's OPFS view can rot mid-session (HARDENING #6, #16), so
-//      a missing or unreadable `.raw` must still boot from the network.
+//      a missing or unopenable `.raw` must still boot from the network.
 //
 // Deleted in W5 (dead on the raw path, and a second multi-GB copy in the JS
 // heap on the cold path): the compressed `.snapz` OPFS cache and its
 // transactional writer, the download tee that fed it, the MEMFS staging
 // file, and the `_lean_wasm_load_snapshot` path-loader branch. A raw region
 // another context holds open is retried for RAW_BUSY.waitMs first
-// (architecture review R2), then logged; any cache failure ends in a network
-// boot, never a failed load.
+// (architecture review R2), then logged. A missing, unopenable, wrong-sized
+// (discarded) or busy `.raw` ends in a network boot; one that fails mid-read
+// or is not a compacted region fails the load (`corrupt`).
 
 async function snapshotCacheDir() {
   try {

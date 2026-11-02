@@ -5,8 +5,8 @@
 // Before every deploy, every .snapz that the tracked snapshot index
 // (public/snapshots/index.json) names must already answer on the live origin.
 // scripts/upload-artifacts.sh uploads them before the push; a push that comes
-// before its upload deploys nothing (lean4game's 90 s window on 2026-10-09, the
-// class of QED64's 2026-10-08 outage, HARDENING #64).
+// before its upload deploys nothing (lean4game's 90 s window on 2026-10-09;
+// QED64's 2026-10-08 outage, HARDENING #64, was the reverse order: an upload before its deploy).
 //
 // It checks only site-owned files. Every QED64 Worker, old or new, serves
 // /snapshots/*.snapz from the same bucket-root key, so the live Worker answers

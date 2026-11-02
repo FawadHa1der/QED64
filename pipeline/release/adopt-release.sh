@@ -35,7 +35,7 @@ H=(node "$Q/pipeline/release/adopt-helper.mjs")
 refuse() { echo "adopt-release: $1" >&2; exit 2; }
 fail() { echo "ADOPT-FAIL $1"; exit 1; }
 say() { echo "== $1 == $(date +%H:%M:%S)"; }
-USAGE="usage: adopt-release.sh --id <id> --digest sha256:<hex> (--from <url> | --from-dir <dir>) --public <dir> [--tools <dir>] [--umbrella <dir> | --rebuild-umbrella] [--fat-tree] [--gate] [--init-lib lean-lib|lean-core] [--allow-served] [--dry-run] [--keep]"
+USAGE="usage: adopt-release.sh --id <id> --digest sha256:<hex> (--from <url> | --from-dir <dir>) --public <dir> [--tools <dir>] [--umbrella <dir> (default embedding/umbrella) | --rebuild-umbrella] [--fat-tree] [--gate] [--init-lib lean-lib|lean-core] [--allow-served] [--dry-run] [--keep]"
 ID=""; DIG=""; SRC=""; FROMDIR=0; PUB=""; T=""; UMBD=""; REBUILD=0; FAT=0; GATE=0; INITLIB=lean-lib; ALLOW=(); DRY=0; KEEP=0
 while [ $# -gt 0 ]; do
   case "$1" in --id|--digest|--from|--from-dir|--public|--tools|--umbrella|--init-lib) [ $# -ge 2 ] && [ -n "$2" ] || refuse "$1 needs a value";; esac

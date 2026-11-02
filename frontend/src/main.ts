@@ -238,7 +238,7 @@ const ui: StatusSink = {
 // The pill is `render(status)` — one enum from the worker (§2.2(e)), no label
 // strings to regex over (C10). The overlay goes at the first phase in which
 // the workspace is actionable: `ready`, or `headerRefused` (a restored buffer
-// with a half-typed import needs editing, so it must be visible).
+// with a refused import needs editing, so it must be visible).
 const PHASE_LABEL: Record<RelayStatus["phase"], string> = {
   booting: "starting Lean",
   starting: "starting the Lean checker",
