@@ -1433,8 +1433,9 @@ frame at once). Embedders do not need their own throttle.
   (requests that waited for a slot), `cancelled`, `superseded`).
 - The cost: under pressure an edit waits for the pool, up to the cap, and
   the InfoView follows when the change goes; past the cap a request waits
-  for a reply to an earlier one. That trades latency on a runtime already
-  near the cage ceiling (#55) for the tab staying alive. Measured with the
+  for a reply to an earlier one. That trades latency for a bound on the
+  pool, which without the hold grows with the typing and never shrinks
+  (R16: 24 → 36-37 on `pagelong`; docs/HARDENING.md #59). Measured with the
   edit-storm lane's `pageslow` scenario, the typing above: see
   docs/HARDENING.md #59 (addendum).
 - What it does not do: it keys on the pool and on the requests, not on the
@@ -1570,7 +1571,8 @@ product code:
 - `lsp.notify(method, params)`.
 
 The worker's `self.__qed64TestExports` is its test hook, under the same
-terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
+terms. Its `liveness` member holds the mailbox internals; no fault injection
+(`inject`/`freeze`) or pool hook was built.
 
 ---
 
@@ -2550,8 +2552,10 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   228-490 ms on a mid-boot boot that waited. `LeanSession`'s boot sends
   `instance: {id}`, newer workers ignore `instance.waitMs`, and an older
   worker reads the missing field as its 6 s budget, so mixed caches still
-  boot. The `[boot] waited` line is gone. The `qed64-wanted:` and
-  `qed64-alive:` Web Locks stay, as lifetime signals nothing waits on. An
-  embedding page's own heap has at least 2400 MiB of headroom at a 3 s reload
-  cadence on wasm64-36d7f415; a heavy page reloaded mid-boot was not measured.
+  boot. An embedder that boots a replacement right after `dispose()` no
+  longer waits either (the 2026-10-09 row). The `[boot] waited` line is gone.
+  The `qed64-wanted:` and `qed64-alive:` Web Locks stay, as lifetime signals
+  nothing waits on. An embedding page's own heap has at least 2400 MiB of
+  headroom at a 3 s reload cadence on wasm64-36d7f415 (chrome-headless-shell;
+  headed not measured); a heavy page reloaded mid-boot was not measured.
   No API change: `EMBED_API_REVISION` and the worker `REVISION` are unchanged.

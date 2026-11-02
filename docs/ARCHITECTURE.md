@@ -11,7 +11,7 @@
 | First Mathlib check after the umbrella load | **71 ms** (light `rw` buffer) – **1.6 s** (first use of linarith/norm_num/ring/positivity) |
 | Any later Mathlib check — *any* import combination, including headers never baked (e.g. `Nat.Prime.Basic` + `Topology.Basic` + `Order.Filter.Basic`) | **21–77 ms** |
 | The same reals example compiled by importing its closure in-browser (strict-headers mode / no snapshot) | minutes (dominated by the olean closure import) |
-| Peak Memory64 heap with the umbrella resident | 3.01 GiB of 8 GiB max |
+| Memory64 heap with the umbrella resident | 2 GiB of 6 GiB max in all 124 R16 runs (`status().memory`, 2026-11-02, wasm64-36d7f415) |
 | App bundle (everything that isn't Lean) | 127 KB gzipped |
 
 Before toolchain patch 0017 the umbrella load took **~128 s** and the first
@@ -31,10 +31,11 @@ One persistent Worker owns one Lean process for the whole session:
    private object URLs. Content-Encoding transforms are refused.
    A manifest whose schema or file encoding the worker does not read
    (closure.json `runtime.manifestSchemas`) is refused before any fetch.
-3. **Memory** — one shared `WebAssembly.Memory({address:"i64"})`, 256 MiB
-   initial, maximum probed downward (8 → 6 → 4 → 3 GiB) so constrained
-   machines still boot. The module was linked with a 16 GiB declared maximum,
-   so any smaller imported maximum is type-compatible.
+3. **Memory** — one shared `WebAssembly.Memory({address:"i64"})`, 2 GiB
+   initial with the umbrella snapshot (256 MiB without), maximum probed
+   downward from the 6 GiB cap (6 → 4 → 3 GiB, then 2 on a device under 8 GB)
+   so constrained machines still boot. The module was linked with a 16 GiB
+   declared maximum, so any smaller imported maximum is type-compatible.
 4. **Library mounts** — none since D1 (2026-11): every environment is a
    snapshot, and the library boots with an empty `LEAN_PATH`. For one more
    release the worker still mounts a `boot`'s `packs` (each under its own
