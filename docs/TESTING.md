@@ -259,18 +259,18 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   instruments every lean.worker's Emscripten FS (`open`/`stat`/`readdir`, hit
   or miss, with the session's `LEAN_PATH`; an open with write access, such as
   a memory-mode pack mount, counts as a write, not a read) and adds one last
-  `fs-reads` row (one more than the pass line's count). The row fails when a
-  stock session opened or found a library file (`.olean*`, `.ir*`, `.ilean`)
-  under `/lib`, with `.` and `..` resolved first (Lean's sysroot is `/bin/..`,
-  so its own library directory is `/bin/../lib/lean`); a session whose
-  `LEAN_PATH` includes `/lib/packs/essential` ("Load exact imports", retired
-  by D1 in 2026-11) is reported, never failed. Since D1 every session's
-  `LEAN_PATH` is empty (L1's run before it measured 0 stock-session library
-  reads). A worker that was never instrumented, a failed
+  `fs-reads` row (the pass line then counts one more row). The row fails when
+  a stock session opened, or found through `stat`, a library file (`.olean*`,
+  `.ir*`, `.ilean`) under `/lib`, with `.` and `..` resolved first (Lean's
+  sysroot is `/bin/..`, so its own library directory is `/bin/../lib/lean`); a
+  session whose `LEAN_PATH` includes `/lib/packs/essential` ("Load exact
+  imports", retired by D1 in 2026-11) is reported, never failed. Since D1
+  every session's `LEAN_PATH` is empty (L1's run before it measured 0
+  stock-session library reads). A worker that was never instrumented, a failed
   install or a stock session's overflowing record (more than 2,000 distinct
-  paths) makes the row `infra`, never a pass. The row's `fsReads` field in
-  `e2e-report.json` carries the hits, misses and the 20 most frequent library,
-  other `/lib` and outside paths per session.
+  op+path keys) makes the row `infra`, never a pass. The row's `fsReads` field
+  in `e2e-report.json` carries the hits, misses and the 20 most frequent
+  library, other `/lib` and outside paths per session.
 - **Cool-down.** Between browser lanes `harness.mjs cooldown` REFUSES while
   any `chrome-headless-shell` is alive (listing pid + command line: on this
   machine it may be a sibling worktree's or an interactive session's live

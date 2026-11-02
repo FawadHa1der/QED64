@@ -165,12 +165,15 @@ The raw (inflated) region is cached in OPFS as
 `qed64-snapshots/<cacheKey>.raw`. Only the disposable prefetch worker writes
 it (`snapshot-prefetch.worker.js`: network → gunzip → `<key>.raw.partial` →
 rename). The Lean worker sync-reads it straight into the wasm heap in 64 MiB
-slices on later sessions, so a Mathlib region is downloaded once per browser,
-not once per session. The read opens a read-only handle and retries a busy
-one for about 3 s (another tab's or a predecessor's worker mid-read), then
-logs `[boot] raw cache busy` and streams. A missing or unreadable `.raw`
-streams the `.snapz` from the network and inflates it in the Lean worker.
-Cache failures never fail a load.
+slices on every session once the prefetch has committed it (the first one too:
+the boot prefetches before it loads), so a Mathlib region is downloaded once
+per browser, not once per session. The read opens a read-only handle and
+retries a busy one for about 3 s (another tab's or a predecessor's worker
+mid-read), then logs `[boot] raw cache busy` and streams. A missing,
+unopenable or busy `.raw` streams the `.snapz` from the network and inflates
+it in the Lean worker (one of the wrong size is discarded first). A `.raw`
+that opens at its size but cannot be read whole, or is not a compacted region,
+fails the load as `corrupt`.
 
 Long preparation steps are rendered live by the page (frontend/src/main.ts
 `ui.progress` from the worker's `progress` events): the boot overlay and the
@@ -268,9 +271,9 @@ queued) → open → dead`:
   signatureHelp, color and the `experimental` block;
   `tests/unit/server-capabilities.test.ts` compares it with a transcription of
   the pinned tag's `mkLeanServerCapabilities` and names each difference) and
-  cached; a *replay* (the relay re-sending after a
-  reboot) is cached only. `shutdown` is answered `null`. The FileWorker itself
-  never answers `initialize` — in a native setup that is the watchdog's job.
+  cached; a *replay* (the relay re-sending after a reboot) is cached only.
+  `shutdown` is answered `null`. The FileWorker itself never answers
+  `initialize` — in a native setup that is the watchdog's job.
 - The first `didOpen` while `ready` starts the loop: `startLoop` (the host
   opens the ring and calls `main --worker`), then `initialize` and the
   `didOpen` go into the ring back to back — the FileWorker reads exactly

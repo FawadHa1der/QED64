@@ -1083,8 +1083,9 @@ FileWorker, as `name=value` strings (`"autoImplicit=false"`,
   latency, `Elab.async=false` for HARDENING #70); yours win, and each `-D`
   appears once.
 - A malformed entry or a repeated name fails the boot (`INVALID_MESSAGE`,
-  before anything is fetched). An unknown name that is not `weak.`-prefixed
-  is Lean's own header error.
+  before the worker fetches the runtime; a `ResidentSession` may have
+  downloaded snapshots by then: HARDENING #63's pre-boot download). An
+  unknown name that is not `weak.`-prefixed is Lean's own header error.
 - A worker script older than the field ignores it. The session then fails as
   `stale` (offer a reload) instead of running Lean without your options;
   `ReadyInfo.argv` is the command line the worker will run.
@@ -1266,8 +1267,8 @@ itself).
   and still sends both.
 - **Runtime manifest formats.** The worker reads the schemas `closure.json`
   lists under `runtime.manifestSchemas` (today v1 and v2) and refuses any
-  other, or a file `encoding` the schema does not allow it, before any fetch
-  (`RUNTIME_MANIFEST_MISMATCH`, `corrupt`). v2 (the fork's
+  other schema, or a file `encoding` its schema does not allow, before any
+  fetch (`RUNTIME_MANIFEST_MISMATCH`, `corrupt`). v2 (the fork's
   `formats/runtime-manifest.md`): each file names its `encoding` (`gzip` or
   `identity`, a closed set) and its `bytes`/`sha256` are the decoded
   file's; each part keeps `url`, `bytes` and `sha256` as served and adds
@@ -1605,31 +1606,32 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   showcase serves QED64's `dist/workers`, which has the file.
 
 **lean4game (library tier):**
-- Delete the vendored copies and `sync-qed64.sh`. Import from `qed64/embed`,
-  and stage the workers from `closure.json`.
-- Until then, a `sync-qed64.sh` pin at or after plan step A3c must name
-  `public/workers/memory64-probe.js` at every by-name site of the vendored
-  lane (branch `wasm64-port`), or the game breaks in one of two ways:
-  - `scripts/sync-qed64.sh` `PATHS` must vendor it. The vendored
-    `src/runtime/client.ts` has a bare `import
+- Done in lean4game 00bf77e (2026-10-05, `wasm64-port`): the vendored copies
+  and `sync-qed64.sh` are deleted; it imports from `qed64/embed` and stages
+  the workers from `closure.json`.
+- Until then (history: that lane is retired), a `sync-qed64.sh` pin at or
+  after plan step A3c had to name `public/workers/memory64-probe.js` at
+  every by-name site of the vendored lane (branch `wasm64-port`), or the
+  game broke in one of two ways:
+  - `scripts/sync-qed64.sh` `PATHS` had to vendor it. The vendored
+    `src/runtime/client.ts` had a bare `import
     "../../public/workers/memory64-probe.js"`, so without the file the
-    client build fails (the script's own sanity regex, which matches only
-    `from "…"` and `import("…")`, does not see a bare `import "…"`; it
-    should).
-  - `scripts/stage-workers.sh` must copy it into `client/public/workers`
+    client build failed (the script's own sanity regex, which matched only
+    `from "…"` and `import("…")`, did not see a bare `import "…"`).
+  - `scripts/stage-workers.sh` had to copy it into `client/public/workers`
     beside `lean.worker.js` (for example guarded like `lsp-frames.js`: when
     `lean.worker.js` contains `importScripts("memory64-probe.js")`, require
     the file and copy it). `lean.worker.js` loads it eagerly, so a vendored
-    but unstaged file is a 404 and every session dies `WORKER_DEP_MISSING`
+    but unstaged file was a 404 and every session died `WORKER_DEP_MISSING`
     at script load.
   - `scripts/deploy-app.sh`'s required-files list and
     `client/src/wasm/game-boot.ts` `WORKER_SCRIPTS` (the reboot preflight)
-    should name `/workers/memory64-probe.js`, so the deploy check and the
-    preflight catch a missing copy. Replacing those fixed lists with
+    had to name `/workers/memory64-probe.js` for the deploy check and the
+    preflight to catch a missing copy. Replacing those fixed lists with
     closure.json `workers` / `WORKER_URLS` removes the by-name sites.
 
-  Staging from `closure.json` (the package lane, branch `qed64-dep`) picks
-  the file up with no change.
+  Staging from `closure.json` (the package lane: branch `qed64-dep` then,
+  `wasm64-port` since 00bf77e) picks the file up with no change.
 - From a pin at or after plan step A7 the library lives in `lib/` and
   closure.json `entry` is `lib/index.ts` (§6, §12). The package lane
   (`qed64-dep`, `lean-v4.34`) changes two places at that bump:
@@ -2022,9 +2024,10 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   370-500 KiB that checked on earlier runtimes got "stack is exhausted".
   `lean.worker.js` now sets the runtime's `LEAN_WASM_STACK_PROBE_SLOTS` to
   8192 (64 KiB) at preRun: in Chrome, `decide` over `Fin 20` and `Fin 22`
-  check again, `Fin 24` still does not (the kernel's patch 0038 was to fix
-  it; not pursued since 2026-10-12, #71 below), and over-deep proofs still
-  end in Lean's error with the checker alive.
+  check again, `Fin 24` still does not (the depth-based stack probing
+  planned for the kernel's patch 0038 was to fix it; not pursued since
+  2026-10-12, #71 below), and over-deep proofs still end in Lean's error
+  with the checker alive.
   No export, type or worker-revision change: `EMBED_API_REVISION` stays
   `1.0.0-pre.7`, the four worker scripts keep `REVISION` "1". A page that
   stages QED64's workers gets it with the pin.

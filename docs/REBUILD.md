@@ -191,8 +191,9 @@ fetching and writing nothing):
    in `work/lib-tree`, is refused before anything is fetched. `$W`
    and the staging dir must be real directories with no symlink three
    levels down (a rerun's `rm -rf`, unpacks and copies would follow it).
-   With `--from <URL>` the record is fetched first, and an id or digest
-   mismatch is a one-line refusal before `$W/logs` exists.
+   With `--from <URL>` the record is fetched before the rest of the release
+   (after the umbrella check), and an id or digest mismatch is a one-line
+   refusal before `$W/logs` exists.
 3. **artifact-lib**: `lean-lib` (the runtime's own `lib/lean`, the tree the
    release gate passed on) unpacked to `$W/artifact/lib/lean`. It has no
    `.ilean` files, so the persistent-path test's patch-0010 check is skipped

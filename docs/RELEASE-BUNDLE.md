@@ -9,12 +9,13 @@ tracked files: the pinned toolchain record `toolchain/lean4-wasm64-release.json`
 `embedding/base-tree.json`, `public/runtime/runtime-manifest.json`,
 `public/snapshots/index.json`, `public/profiles/index.json` and the profile
 manifests (`pipeline/toolchain/KERNEL-PIN` was one of them until it was
-retired in 2026-10, plan B2c). Before this manifest a
-downstream that wanted to pin "the QED64 it tested against" had to pin a git
-commit and then re-derive everything from those files. Downstreams include
-lean4game, which vendors qed64 at its own pin, and the widgets showcase, which
-vendors `pipeline/snapshot/` and three pipeline modules. Re-deriving also
-meant trusting that those files agree with each other.
+retired in 2026-10, plan B2c). Before this manifest a downstream that wanted
+to pin "the QED64 it tested against" had to pin a git commit and then
+re-derive everything from those files. Downstreams include lean4game and the
+proof sheets, which install qed64 at their own pins
+(`github:FawadHa1der/QED64#<sha>`), and the widgets showcase, which checks
+QED64's sources out at its pin. Re-deriving also meant trusting that those
+files agree with each other.
 
 `pipeline/release/release-manifest.mjs` writes one document per release. It
 names every served object by sha256 and gives the release three identities. It
@@ -189,15 +190,15 @@ checked here instead:
 The second group is structural. A manifest has to pass these before it can be
 described at all: known schemas (the runtime manifest's:
 `RUNTIME_MANIFEST_SCHEMAS`, equal to closure.json `runtime.manifestSchemas`);
-served URLs spelled `/runtime/chunks/<file>`,
-`/snapshots/<file>` or `/profiles/<file>`; content-addressed names (the file
-name carries the first 16 hex digits of its sha256, which is what makes
-`rclone copy` and the year-long immutable cache sound); chunk and part sizes
-that add up to the whole (a v2 runtime's chunks by their `decodedBytes`, with
-the file's `encoding` one v2 allows, every chunk but the last exactly
-16,777,216 bytes decoded, and no `encoding` in a v1 file); index entries
-that describe their manifests (release, module count); and each profile
-manifest's `digest` equal to `sha256(JSON.stringify(content))`.
+served URLs spelled `/runtime/chunks/<file>`, `/snapshots/<file>` or
+`/profiles/<file>`; content-addressed names (the file name carries the first
+16 hex digits of its sha256, which is what makes `rclone copy` and the
+year-long immutable cache sound); chunk and part sizes that add up to the
+whole (a v2 runtime's chunks by their `decodedBytes`, with the file's
+`encoding` one v2 allows, every chunk but the last exactly 16,777,216 bytes
+decoded, and no `encoding` in a v1 file); index entries that describe their
+manifests (release, module count); and each profile manifest's `digest` equal
+to `sha256(JSON.stringify(content))`.
 
 Nothing in this tool reads artifact bytes. It checks the facts the tracked
 files state about each other. `npm run verify:release` remains the job that
@@ -280,8 +281,7 @@ in order. Each one trusts only the previous one.
 5. **Pin by identity.** Record `releaseId` and `digest`. When you bump, an
    unchanged `artifactSetId` means no artifact moved, so the artifacts do not
    need re-verifying, and an unchanged `shellId` means the shell did not move.
-   A downstream that vendors qed64 sources (lean4game, the widgets showcase)
-   can record `qed64.commit` next to its vendored copy.
+   A downstream records `qed64.commit` beside its pin.
 
 ### Rebuilding a base tree
 
@@ -298,14 +298,16 @@ the umbrella files are per tree, not the whole `embedding/umbrella/` set:
    `packs[].manifest` for that `id`); its raw digest must be the entry's
    `rawSha256`.
 3. Copy exactly the files `trees.<name>.umbrella` lists, each from
-   `embedding/umbrella/<path>` at the release's `qed64.commit` (`git show
-   <commit>:embedding/umbrella/<path> > <dir>/<path>`; committed since
-   2026-11-01, review D9; for an older commit, the adopting checkout's
-   `work/adopt/<id>/umbrella/`) to `<dir>/<path>`, and nothing else.
-   `core-lib-slim` lists none; `lib-tree-slim` lists the top-level
-   `umbrella` (`QED64/Essential.olean`, and `.olean.server` for a split
-   umbrella); `lib-tree` lists the same, plus `QED64/Essential.olean.private`
-   when the umbrella has one.
+   `embedding/umbrella/<path>` at the release's `qed64.commit`
+   (`mkdir -p <dir>/QED64; git show <commit>:embedding/umbrella/<path> > <dir>/<path>`;
+   committed since 2026-11-01, review D9; for an older commit, the same path
+   at any later commit whose `embedding/base-tree.json` lists the same
+   umbrella sha256 (the 4.35 umbrella is committed from eed3721 on), else the
+   adopting checkout's `work/adopt/<id>/umbrella/`) to `<dir>/<path>`, and
+   nothing else. `core-lib-slim` lists none; `lib-tree-slim` lists the
+   top-level `umbrella` (`QED64/Essential.olean`, and `.olean.server` for a
+   split umbrella); `lib-tree` lists the same, plus
+   `QED64/Essential.olean.private` when the umbrella has one.
 4. Count the files (`trees.<name>.files`) and compute the digest by
    `baseTree.digestRule`: sha256 over the lines `<relpath>\0<sha256 hex>\n`
    of every file, relpath `/`-separated, sorted by byte order, compared with

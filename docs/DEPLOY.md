@@ -42,8 +42,11 @@ at the origin root.
 4. `scripts/deploy-app.sh` — builds the shell and `wrangler deploy`s it
    (see "The deploy script" below; `--dry-run` first if you want to see the
    build pass without deploying). A first deploy to a new origin sets
-   `QED64_DEPLOY_ORIGIN=none`: its guard has nothing to ask yet. The app is
-   live at `qed64.<account>.workers.dev` (or attach a domain).
+   `QED64_DEPLOY_ORIGIN=none`: its guard has nothing to ask yet. Every later
+   deploy from another account sets `QED64_DEPLOY_ORIGIN=<its origin>`: the
+   default asks this repository's live site (fetch-artifacts'
+   `DEFAULT_ORIGIN`), and the guard runs on `--dry-run` too. The app is live
+   at `qed64.<account>.workers.dev` (or attach a domain).
 
 ## Continuous integration & deployment
 
@@ -109,8 +112,9 @@ From the repository root, whatever the cwd, under `set -euo pipefail`:
 
 **The guard.** A push that comes before its upload must deploy nothing: a
 shell whose index names `.snapz` files R2 does not hold yet fails every new
-visit until the upload (the class of QED64's 2026-10-08 outage, HARDENING
-#64, and of lean4game's 90 s window on 2026-10-09). So before the deploy,
+visit until the upload (lean4game's 90 s window on 2026-10-09; QED64's
+2026-10-08 outage, HARDENING #64, was the same deploy-ordering class run the
+other way: an upload before its deploy). So before the deploy,
 `scripts/deploy-guard.mjs` sends one `HEAD` (redirects not followed, 20 s
 each) for every `url` in `public/snapshots/index.json`, on the live origin
 (`QED64_DEPLOY_ORIGIN`, else fetch-artifacts' `DEFAULT_ORIGIN`,
