@@ -25,8 +25,7 @@
 // (transfer, else bytes); a Worker from before 2026-11 (QED64_LEGACY,
 // artifactHead "get") sends none on HEAD, so against it the check is the
 // status alone; the hardened Worker answers HEAD with the length, so the
-// sizes are checked (docs/DEPLOY.md). The
-// first refusal stops the check.
+// sizes are checked (docs/DEPLOY.md). The first refusal stops the check.
 //
 // Usage: [QED64_DEPLOY_ORIGIN=<url>|none] node scripts/deploy-guard.mjs [--index <file>] [--origin <url>]
 //   --index   the snapshot index (default <repo>/public/snapshots/index.json)

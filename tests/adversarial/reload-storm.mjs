@@ -30,8 +30,9 @@
 //   --headed     Chrome for Testing in a real window (the default is chrome-headless-shell),
 //                with --force-device-scale-factor=1 and a 1440×900 viewport
 //   --embed      load the QED64 page (--url) as the only iframe of the same-origin host
-//                page public/embed-host.html (dev server only) and reload the HOST, as an
-//                embedding site does; ready = the frame's qed64.status()
+//                page public/embed-host.html (the dev server, or scripts/serve-dist.mjs
+//                locally) and reload the HOST, as an embedding site does; ready = the
+//                frame's qed64.status()
 //   --ballast-mb N (with --embed) the host page first holds N MiB of live JS objects: a heavy
 //                embedding page sharing the renderer's pointer cage (HARDENING #55 residual)
 //   --console-log keep the worker's [lean:*] console lines with their times (boot phases per instance)
@@ -79,7 +80,7 @@ const manifest = await fetchJson(target.runtimeOverride ? target.manifestUrl : t
 if (EMBED) {
   const r = await fetch(pageUrl, { cache: "no-cache" }).catch(() => null);
   const body = r && r.ok ? await r.text() : "";
-  if (!/qed64-frame/.test(body) || r.headers.get("cross-origin-embedder-policy") !== "require-corp") { console.error(`reload-storm: refused — ${pageUrl} is not the embed host page with COEP (dev server only)`); process.exit(3); }
+  if (!/qed64-frame/.test(body) || r.headers.get("cross-origin-embedder-policy") !== "require-corp") { console.error(`reload-storm: refused — ${pageUrl} is not the embed host page with COEP (the dev server or scripts/serve-dist.mjs serves it)`); process.exit(3); }
 }
 const dir = runDir(manifest.buildId ?? "unknown", target.mode);
 teeLog(dir, `reload-storm-${TAG}.log`);

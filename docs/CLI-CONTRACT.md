@@ -1334,6 +1334,7 @@ output, as QED64's own gate did.
 | 4 | 2026-11-02 | Review fix (R5a), **bake-snapshot**: `--stable-ms`, `--quiet-ms` and `--give-up-ms` (new in this contract) take at most 2147483647 ms, Node's timer limit (a larger `--stable-ms` was clamped to a 1 ms poll with a TimeoutOverflowWarning and a false `completed` line); a larger value is the same exit-2 refusal, and every such refusal line now ends `, at most 2147483647`. | a refusal (contract-4 flags) |
 | 4 | 2026-11-02 | Recorded late (architecture review D1, 8e0f9a7), tier 3: **fileworker-exit-probe** drops `--scenario batch-eval-exit` (the page's only batch compile, the warm header, left the library); `exit`, `eval-exit` and `shutdown-exit` are unchanged. | tier 3, no promise |
 | 4 | 2026-11-02 | Recorded late (architecture review D2, 14562fa), tier 3: **release-manifest** `--dist` accepts `profiles/index.json` and `snapshots/index.json`, the two indexes the deploy carries, when each is byte-identical to the tracked `public/` file, and refuses one that is not ("the deploy would serve another pairing's index"); any other `runtime/`, `profiles/` or `snapshots/` path is still refused. | tier 3; a refusal added |
+| 4 | 2026-11-02 | Review fix (R16, lane L2), tier 3: the **compiler battery**'s `--messages-dir` files no longer carry snapshot-probe's failure tail (its last Lean lines again, indented and cut short), so two runs of one transport diff with no dedupe. | tier 3, no promise |
 
 ## Open decisions
 

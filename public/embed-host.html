@@ -1,8 +1,9 @@
 <!doctype html>
-<!-- Test-only host page (dev server only: the production build copies nothing from public/ but workers/).
+<!-- Test-only host page (the dev server and, locally, scripts/serve-dist.mjs only: the production build
+     copies nothing from public/ but workers/).
      tests/adversarial/reload-storm.mjs --embed loads it to reload QED64 the way an embedding site does: a
      minimal same-origin document whose only content is one iframe of the QED64 page given as ?src= (a
-     same-origin path, default "/"). The dev server sends it with the same COOP/COEP headers as the app,
+     same-origin path, default "/"). Both send it with the same COOP/COEP headers as the app,
      so the frame is cross-origin isolated exactly as at the top level.
      ?ballast=<MiB> (HARDENING #55 residual) first fills the host page's own JS heap with that many MiB of
      small live objects, standing in for a heavy embedding page (the widgets gallery) that shares the

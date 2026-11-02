@@ -361,8 +361,9 @@ function checkActs() {
   }
 }
 
-/** File mode's result, once the drain has settled: the document's final diagnostics in
- * snapshot-probe's --dump-messages shape, then its `compile:` line. A document with errors
+/** File mode's result, once the drain has settled: the document's final diagnostics (with
+ * --dump-messages one {"caption":"",…} JSON line each, a subset of snapshot-probe's keys,
+ * endPos being LSP's `range` end), then its `compile:` line. A document with errors
  * still exits 0: the caller (compiler-battery.mjs --transport fileworker) judges it. */
 function finishFile() {
   if (fileDone || finished) return;

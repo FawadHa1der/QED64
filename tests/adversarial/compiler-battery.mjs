@@ -47,8 +47,9 @@ const USAGE = "compiler-battery.mjs [--corpus <file>] [--jobs 3] [--run-dir <dir
 /** Items the FileWorker lane skips: their point is the exact (compile) path. #43: covered, this header's names collide ("already declared"). */
 export const COMPILE_ONLY = new Set(["mathlib-name-shadow-faithful-compile"]);
 
-/** The message JSON lines a probe run printed (`--dump-messages`), in order. */
-export const messageLines = (out) => [...out.matchAll(/\{"caption":.*/g)].map((m) => m[0]);
+/** The message JSON lines a probe run printed (`--dump-messages`), in order.
+ * Not snapshot-probe's failure tail, which repeats its last Lean lines indented `  [lean:…] ` and cut short. */
+export const messageLines = (out) => [...out.matchAll(/(?<!^ {2}\[lean:\w+\] )\{"caption":.*/gm)].map((m) => m[0]);
 
 /** A message JSON line's decoded `data`, the text as Lean wrote it ("" for a line that does not parse). */
 const messageData = (line) => {

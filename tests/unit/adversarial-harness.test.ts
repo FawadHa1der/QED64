@@ -6,7 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { MODE, batteryArgv, browserArgv, browserName, coolDown, laneSections, memoryReading, onlyMatches, parseMeminfo, parseVmStat, resolveTarget, settleClass, settleClassFromPhase, suiteExitCode } from "../../tests/adversarial/harness.mjs";
-import { COMPILE_ONLY, classify, missingInputs } from "../../tests/adversarial/compiler-battery.mjs";
+import { COMPILE_ONLY, classify, messageLines, missingInputs } from "../../tests/adversarial/compiler-battery.mjs";
 
 describe("onlyMatches", () => {
   test("a plain name matches exactly, never as a substring", () => {
@@ -143,6 +143,14 @@ describe("compiler-battery classify", () => {
     // A message line cut off mid-JSON decodes to nothing: a missing fragment, not a throw.
     const cut = classify(item({ mustError: true, containsMsgs: ['"forty-two"'] }), { ...run, out: out.replace(line, line.slice(0, -20)) });
     expect([cut.outcome, cut.failures]).toEqual(["fail", ['missing message fragment: "\\"forty-two\\""']]);
+  });
+
+  // R16 (L2): snapshot-probe's failure tail repeats its last Lean lines indented and cut short; --messages-dir must not carry them.
+  test("messageLines keeps the echo and a raw line, not snapshot-probe's failure tail", () => {
+    const echoed = JSON.stringify({ caption: "", severity: "error", pos: { line: 1, column: 0 }, endPos: { line: 1, column: 5 }, data: "first" });
+    const raw = JSON.stringify({ caption: "", severity: "warning", pos: { line: 2, column: 0 }, endPos: { line: 2, column: 5 }, data: "second" });
+    const out = `[lean:stdout] ${echoed}\nSNAPSHOT PROBE FAIL: snapshot load reported failure\n  [lean:stdout] {"caption":"","da\n${raw}\n`;
+    expect(messageLines(out)).toEqual([echoed, raw]);
   });
 
   test("COMPILE_ONLY names corpus items (a renamed item would silently run on the FileWorker lane)", () => {

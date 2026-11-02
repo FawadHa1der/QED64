@@ -15,7 +15,8 @@
 // Before anything is copied the two manifests are checked as a PAIR, because
 // they are unpacked into one tree and imported as one library:
 //   - every part file exists in --packs with the manifest's length and SHA-256;
-//   - every part URL is /profiles/<basename> (the browser fetches it verbatim);
+//   - every part URL is /profiles/<basename> (served verbatim; QED64's page
+//     fetches no part since D1);
 //   - both manifests carry --lean-version;
 //   - no module is in both packs; every root is present; every import of every
 //     module resolves inside the two packs (the union is import-closed);
