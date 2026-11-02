@@ -470,7 +470,7 @@ function supervise({ args, env, target, work, name, stableMs, quietMs, giveUpMs 
         return stop("completed");
       }
       lastSize = size;
-      if (failure && size < 0 && Date.now() - lastActivity > quietMs && !saveInProgress(work, name)) {
+      if (failure && size < 0 && Date.now() - lastActivity > quietMs && !saveInProgress(work, name) && !fs.existsSync(target)) { // re-stat: a save may have renamed into place since this poll's stat
         console.error(`${TOOL}: the runner printed a failure line (${failure.kind}, ${failure.stream} line ${failure.line}) and, after ${quietMs} ms of quiet, wrote no ${name}.snap and began no save (--quiet-ms) — stopping it`);
         return stop("failure");
       }
@@ -517,8 +517,8 @@ async function main() {
   for (const [flag, fallback] of TIMING) {
     const text = arg(flag, null);
     const ms = text === null ? fallback : /^\d+$/.test(text) ? Number(text) : NaN;
-    if (!(Number.isSafeInteger(ms) && ms > 0)) {
-      console.error(`bake-snapshot: refusing --${flag} ${JSON.stringify(text)}: expected a positive whole number of milliseconds`);
+    if (!(Number.isSafeInteger(ms) && ms > 0 && ms <= 2147483647)) {
+      console.error(`bake-snapshot: refusing --${flag} ${JSON.stringify(text)}: expected a positive whole number of milliseconds, at most 2147483647`);
       return 2;
     }
     timing[flag] = ms;
@@ -743,9 +743,9 @@ async function main() {
   // page pinned to that runtime reads when the mutable index.json beside it
   // names another runtime (loadSnapshotIndex's `pairedBuildId`,
   // lib/snapshots.ts). Another runtime's copy in --out is never touched.
-  // QED64's own path does not need it: promote-staging derives public/'s copy
-  // from the staged index.json and ignores this one, and upload-artifacts.sh
-  // sends no copy at all (since D2 QED64's indexes ship in its deploy). It suits only
+  // QED64's own path does not need it: since D2 QED64's indexes ship in its
+  // deploy, so promote-staging neither copies nor checks this one and writes no
+  // copy under public/, and upload-artifacts.sh sends none. It suits only
   // a consumer that serves its staging dir UNMERGED (uploads --out as baked):
   // the copy arrives with the index, so a page pinned to this runtime keeps
   // reading its pairing when that consumer's next pairing is uploaded ahead of
@@ -775,9 +775,9 @@ async function main() {
   // written by different bakes; a sibling bake of another runtime that upserted
   // meanwhile is refused, never mixed in. Both files go through temp file + rename
   // (both temps written first: a full disk fails before either switches),
-  // the COPY FIRST and index.json LAST, as promote-staging switches public/:
-  // index.json is the commit record. Every version of either file names this
-  // runtime only, so no order can show a reader a mispaired index. Copy-first
+  // the COPY FIRST and index.json LAST: index.json is the commit record.
+  // Every version of either file names this runtime only, so no order can
+  // show a reader a mispaired index. Copy-first
   // means the copy is never OLDER than index.json: at every instant it holds
   // index.json's bytes or the next version's (whose .snapz is already in
   // place), so a reader that falls back to it never loses an entry the index

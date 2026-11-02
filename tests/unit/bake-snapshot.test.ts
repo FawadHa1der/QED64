@@ -51,7 +51,7 @@ const after = () => {
   if (cfg.exitCode !== undefined) process.exit(cfg.exitCode);
   if (cfg.hang) { setInterval(() => {}, 1 << 30); setTimeout(() => process.exit(9), 25_000); } // the wedged runtime: never exits
 };
-// growMs: the saved file keeps growing that long (appends every 10 ms), then grown.json records its final size
+// growMs: the saved file keeps growing that long (appends every 5 ms), then grown.json records its final size
 const grow = () => {
   if (!cfg.growMs) return after();
   const until = Date.now() + cfg.growMs;
@@ -61,7 +61,7 @@ const grow = () => {
     clearInterval(t);
     fs.writeFileSync(path.join(work, "grown.json"), JSON.stringify({ bytes: fs.statSync(target).size }));
     after();
-  }, 10);
+  }, 5);
 };
 if (cfg.snap === false) after();
 else {
@@ -447,7 +447,7 @@ describe("bake-snapshot finishes when its .snap is complete, and ends a run that
 
   test("growth: a .snap still growing is not complete; the indexed bytes and the completed line are its final size", () => {
     const { s, out, work, args } = bakeCheckout({ hang: true, growMs: 600 });
-    const r = run(s, [...args, "--stable-ms", "300", "--quiet-ms", "400", "--give-up-ms", "10000"]);
+    const r = run(s, [...args, "--stable-ms", "500", "--quiet-ms", "400", "--give-up-ms", "10000"]);
     expect([r.status, r.stderr]).toEqual([0, ""]);
     const grown = JSON.parse(fs.readFileSync(path.join(work, "grown.json"), "utf8")).bytes as number; // written only once the growth ended
     expect(fs.statSync(path.join(work, "init.snap")).size).toBe(grown);
@@ -515,11 +515,11 @@ describe("bake-snapshot finishes when its .snap is complete, and ends a run that
   test("a malformed --stable-ms, --quiet-ms or --give-up-ms refuses (exit 2, one line) before any side effect", () => {
     const { s, work, args } = bakeCheckout();
     fs.writeFileSync(path.join(work, "init.snap"), "the paired raw snapshot");
-    for (const [flag, text] of [["stable-ms", "x"], ["quiet-ms", "0"], ["give-up-ms", "1.5"], ["stable-ms", "-5"], ["give-up-ms", "99999999999999999999"]]) {
+    for (const [flag, text] of [["stable-ms", "x"], ["quiet-ms", "0"], ["give-up-ms", "1.5"], ["stable-ms", "-5"], ["give-up-ms", "99999999999999999999"], ["stable-ms", "2147483648"]]) {
       const before = tree(s);
       const r = run(s, [...args, `--${flag}`, text!]);
       expect(r.status, `${flag} ${text}`).toBe(2);
-      expect(r.lines).toEqual([`bake-snapshot: refusing --${flag} ${JSON.stringify(text)}: expected a positive whole number of milliseconds`]);
+      expect(r.lines).toEqual([`bake-snapshot: refusing --${flag} ${JSON.stringify(text)}: expected a positive whole number of milliseconds, at most 2147483647`]);
       expect(tree(s)).toEqual(before);
     }
     expect(fs.readFileSync(path.join(work, "init.snap"), "utf8")).toBe("the paired raw snapshot");
