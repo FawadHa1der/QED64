@@ -575,7 +575,7 @@ export const SPECS = {
 export const DIAGNOSTIC = [
   "pipeline/snapshot/thread-storm-probe.mjs",
   "pipeline/snapshot/fileworker-exit-probe.mjs",
-  "pipeline/snapshot/resident-probe.mjs", // --snapshots/--mathlib/--act4 absorbed header-switch-probe.mjs (2026-10)
+  "pipeline/snapshot/resident-probe.mjs", // --snapshots/--mathlib/--act4 absorbed header-switch-probe.mjs (2026-10); the kernel gate's surface is tier 2 (R10, docs/CLI-CONTRACT.md "Tiers")
 ];
 
 /**

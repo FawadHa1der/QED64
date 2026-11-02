@@ -43,7 +43,7 @@ node pipeline/snapshot/cli.mjs --write-preludes  # regenerate the inline prelude
 | Tier | Promise |
 |---|---|
 | **1: downstream-stable** | Flags, defaults, exit codes and the stable markers below change only under the stability policy (a deprecation window of one downstream re-pin cycle). |
-| **2: internal-stable** | Same rules, but the consumers are QED64's own scripts and, through bake-snapshot, the consumers' bakes (every one runs node-runner; the proof sheets also hash its bytes). A breaking change still needs a changelog row, and a re-pin of every consumer that runs it ("Stability policy"). |
+| **2: internal-stable** | Same rules, but the consumers are QED64's own scripts and, through bake-snapshot, the consumers' bakes (every one runs node-runner; the proof sheets also hash its bytes); and for resident-probe's gate surface (below), the lean4-wasm64 gate. A breaking change still needs a changelog row, and a re-pin of every consumer that runs it ("Stability policy"). |
 | **3: diagnostic** | No promise. They may change or disappear without notice. |
 
 | Tool | Script | npm alias | Tier | `--help` wiring |
@@ -59,17 +59,51 @@ node pipeline/snapshot/cli.mjs --write-preludes  # regenerate the inline prelude
 | [pack](#pack) | `pipeline/artifacts/pack.mjs` (leaving for the fork: `lean4-wasm64 pack`, later) | `pack` | 2 | inline prelude |
 
 Tier 3 tools: `pipeline/snapshot/{thread-storm-probe,fileworker-exit-probe,resident-probe}.mjs`
-(resident-probe's `--probe-file`, `--dump-messages` and `--settle-ms` included: the
-compiler battery's FileWorker lane, `--transport fileworker`, R4),
-and `pipeline/release/release-manifest.mjs` (shipped since plan B2c), which
-writes `qed64.release/v1`, whose stable field paths are a contract of their own
-(docs/RELEASE-BUNDLE.md, "Stable field paths"); its flags are tier 3.
+(resident-probe's `--settle-ms` included: the compiler battery's FileWorker
+lane, `--transport fileworker`, R4; resident-probe's gate surface, below, is
+tier 2), and `pipeline/release/release-manifest.mjs` (shipped since plan
+B2c), which writes `qed64.release/v1`, whose stable field paths are a
+contract of their own (docs/RELEASE-BUNDLE.md, "Stable field paths"); its
+flags are tier 3.
 (`pipeline/release/write-bundle.mjs`, which wrote the release bundle, was
 deleted on 2026-11-01: see the changelog. `header-switch-probe.mjs`, an edited copy of
 resident-probe, was folded into it on 2026-10-05 as `--snapshots <a,b>`,
 `--mathlib` and `--act4 [--act4-ms <ms>]`. The forwards `inspect.mjs` and
 `gate.mjs` and the `gen-exports.py` stub were removed in contract 4:
 [the forwards](#lean4-wasm64-the-forwards) says what to run instead.)
+
+**resident-probe's gate surface is tier 2** (kernel review R10, accepted
+2026-11-01). Its consumer is the lean4-wasm64 gate (block 7, in the fork's
+tools from the v4.36 cut on), which runs `resident-probe.mjs` from QED64's
+checkout when an adoption passes it in (`--resident-probe`) and parses what
+it prints. A change to any of the following is told to the kernel session
+before it lands:
+
+- the flags `--artifact <dir>`, `--snap-dir <dir>`, `--budget-ms <ms>`,
+  `--mathlib`, `--snapshots init`, and the `--snapshots` defaults (`init`;
+  `init,mathlib` with `--mathlib` or `--probe-file`);
+- `--probe-file <file>` with `--dump-messages`. The gate finds out whether
+  the probe has the file mode by the text `--probe-file` in the script;
+- on stdout, with `--dump-messages`, one line per final diagnostic,
+  `{"caption":"","severity":<name>,"pos":{"line":<n>,"column":<n>},"endPos":{…},"data":<message>}`
+  (`caption` first; severity `error`, `warning`, `information` or `hint`;
+  lines 1-based, columns LSP's UTF-16), then one
+  `compile: tag=0 elapsed=<ms>ms errors=<n>` line;
+- one `RESIDENT PROBE PASS <json>` or `RESIDENT PROBE FAIL <json>` line,
+  whose JSON has at least `why`, `diagnostics`, `frames`,
+  `nonFrameStdoutBytes`, `wallMs` and `argv`; exit 0 for PASS, 1 for FAIL,
+  2 for a refusal before the run (a usage error or a missing file; no
+  verdict line);
+- the Init run (neither `--mathlib` nor `--probe-file`) writes only LSP
+  frames on the runtime's stdout: the gate requires `nonFrameStdoutBytes` 0.
+
+`[WASM LSP] header <mode>: key=#[…]` is information only, with no promise:
+the runtime prints it (stderr, which resident-probe echoes in its log), and
+the gate shows it when it is there. The rest of resident-probe (its other
+flags, its log lines, the verdict's other keys) stays tier 3.
+`tests/unit/tool-paths.test.ts` ("resident-probe: the kernel gate's
+surface") pins the surface as the gate runs it, with a fake glue and no
+wasm.
 
 **Ownership (architecture review D4, option a; 2026-11-01).**
 
@@ -79,8 +113,9 @@ resident-probe, was folded into it on 2026-10-05 as `--snapshots <a,b>`,
   copies (`bake-snapshot.mjs`, `snapshot-index.mjs` and `.d.mts`,
   `snapshot-probe.mjs`) with its next runtime or import release. Its gate
   makes its own small raw `.snap` with its own `node-runner` (no index, no
-  gzip, nothing of QED64's), and runs QED64's tier-3 `resident-probe.mjs` only
-  when QED64's `adopt-release.sh` passes it in (otherwise it notes "skipped").
+  gzip, nothing of QED64's), and runs QED64's `resident-probe.mjs` (its gate
+  surface tier 2, above) only when QED64's `adopt-release.sh` passes it in
+  (otherwise it notes "skipped").
 - QED64 owns `olean-imports` (tier 1; the showcase's G5 and `pack.mjs` run
   it). The package drops its copy once `adopt-release.sh`'s
   `--rebuild-umbrella` audit runs QED64's own script, at the next Lean import.
@@ -1289,6 +1324,7 @@ output, as QED64's own gate did.
 | 4 | 2026-11-01 | Architecture review M3 (Phase B1; the kernel accepted `org.lean-browser64.runtime/v2` 2026-11-01): **fetch-artifacts** reads a v2 runtime manifest as well as v1 (an absent `schema` is v1). A v2 file names its `encoding` (`gzip` or `identity`, a closed set) and every chunk its `decodedBytes`: each part is verified as served, then a gzip part is inflated to its `decodedBytes` and the whole-file pin is checked over the inflated bytes. New refusals (2, before any request or write): a runtime manifest schema it does not read, a v2 file without a known `encoding` or a v1 file with one other than `identity`, a v2 part without a positive `decodedBytes`, a part but the last that does not decode to exactly 16,777,216 bytes (the last to more), `decodedBytes` that do not sum to the file's `bytes`, an `identity` part whose `decodedBytes` is not its `bytes`. New failures (1): a gzip part that does not inflate, or inflates to another size; with `--release`, a release whose `runtime.schema` (additive in `lean4-wasm64.release/v1`, absent = v1) is not the tracked manifest's. Flags, markers and the `verified` line are unchanged; a v1 run is unchanged. verify-release (not a contract tool; Node built-ins only) reads v2 the same way and prints one new `runtime manifest: schema` line and one encoding line per file. | additive (an accepted format); refusals |
 | 4 | 2026-11-01 | Architecture review M3 (Phase B2, beside the worker's v2 reader), tier 3: **release-manifest** describes an `org.lean-browser64.runtime/v2` runtime manifest as well as v1 (`RUNTIME_MANIFEST_SCHEMAS` adds v2, still equal to closure.json `runtime.manifestSchemas`). For v2 only, `runtime.files[]` gains `encoding` (after `sha256`) and each chunk `decodedBytes` (after `sha256`); a v1 runtime's section, and so `artifactSetId`, are byte-identical. New refusals (exit 1): a v2 file whose `encoding` is not `gzip` or `identity`, a v1 file that names an `encoding`, a v2 chunk whose `decodedBytes` is not a positive integer, not exactly 16,777,216 for a chunk but the last (more than that for the last), or not its `bytes` for `identity`, v2 chunks that do not decode to the file's `bytes` ("chunks decode to …"), and a record whose `runtime.schema` (additive in `lean4-wasm64.release/v1`, absent = v1) is not the served manifest's `schema`. The v9 refusal now names both schemas ("expected …/v1 or …/v2"); every v1 message is unchanged. Flags and the other output keys are unchanged. | additive (an accepted format, v2-only output keys); refusals |
 | 4 | 2026-11-01 | Architecture review R4 follow-up (the stage-2 review of the FileWorker lane), tier 3: the **compiler battery** gains `--settle-ms <ms>`, passed to resident-probe as `--settle-ms <ms>` (after `--dump-messages`) under `--transport fileworker`. Without it the battery passes none and resident-probe keeps its 5000 default, so the lane's argv is unchanged. The settle (and the probe's 500 ms exit) is part of every item's wall time: at the fixed 5 s the wait dominated a wall-time comparison of the two lanes. `--settle-ms` under `--transport compile` (the default; that lane has no settle), and a value that is not a number of milliseconds >= 0 or is missing, exit 2 with the usage line and a fresh all-infra `compiler-report.json` whose `refused` names it (its `transport` recorded), like the battery's other flag refusals; the usage line gains `[--settle-ms 5000]` inside `--transport`'s brackets. resident-probe's flags, output lines and exits are unchanged (the kernel's R10 gate parses them). | tier 3, no promise |
+| 4 | 2026-11-01 | Kernel review R10 follow-up (accepted by the kernel 2026-11-01): **resident-probe's gate surface is tier 2** ("Tiers"); the rest of the tool stays tier 3. The lean4-wasm64 gate (block 7, in the fork's tools from the v4.36 cut on) runs it from QED64's checkout: `--artifact`, `--snap-dir`, `--budget-ms`, `--mathlib`, `--snapshots init` and the `init` / `init,mathlib` defaults, `--probe-file` with `--dump-messages` (found by the text `--probe-file` in the script), the `{"caption":"",…}` lines, the `compile: tag=0 …` line, the `RESIDENT PROBE PASS\|FAIL <json>` line with its keys `why`, `diagnostics`, `frames`, `nonFrameStdoutBytes`, `wallMs` and `argv`, exits 0 / 1 / 2, and `nonFrameStdoutBytes` 0 for the Init run. A change to any of them is told to the kernel session before it lands. `[WASM LSP] header <mode>: key=#[…]` is the runtime's line, information only. No flag, line or exit changes (`resident-probe.mjs` gains only a comment saying so); `tests/unit/tool-paths.test.ts` pins the surface with a fake glue. | additive (a stronger promise) |
 
 ## Open decisions
 

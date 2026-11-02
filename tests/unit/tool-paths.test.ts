@@ -394,6 +394,144 @@ describe("resident-probe: the deprecated --snap-dir and QED64_SNAP_DIR", () => {
   });
 });
 
+// Kernel R10 (tier 2, docs/CLI-CONTRACT.md "Tiers"): the lean4-wasm64 gate's block 7 runs resident-probe from
+// this checkout and parses what it prints. Pinned as the gate runs it (its argv shapes, its RESIDENT_ENV, its
+// regexes) with a FAKE glue at bin/lean.js, no wasm: the fake writes each snapshot handed to the loader to
+// FAKE_LOG and, after callMain, writes FAKE_LSP's messages as LSP frames (a string as raw bytes) through the
+// stdout TTY's put_char, byte by byte, as the real glue does.
+describe("resident-probe: the kernel gate's surface (R10, tier 2)", () => {
+  const FAKE_GLUE = `const fs = require("node:fs");
+const M = globalThis.Module;
+const mem = { buffer: new SharedArrayBuffer(80 << 20) }; // the probe's 64 MiB ring fits
+let brk = 64;
+const tty = { output: [], ops: { put_char() {}, fsync() {} } };
+globalThis.TTY = { ttys: { [5 * 256]: tty } };
+Object.assign(M, {
+  wasmMemory: mem,
+  FS: { makedev: (major, minor) => major * 256 + minor },
+  _lean_initialize_runtime_module() {}, _lean_initialize() {}, _lean_io_mark_end_initialization() {},
+  _lean_init_task_manager_using() {}, _lean_init_search_path() {}, _lean_wasm_shell_mark_preinitialized() {},
+  _malloc(n) { const p = brk; brk += (Number(n) + 15) & ~15; return p; },
+  _lean_wasm_load_snapshot_mem(p, n) { fs.appendFileSync(process.env.FAKE_LOG, Buffer.from(mem.buffer, Number(p), Number(n)).toString() + "\\n"); return 0; },
+  _lean_browser64_configure_input_ring() { return 0; },
+  callMain() {
+    const out = (s) => { for (const b of Buffer.from(s)) tty.ops.put_char(tty, b); };
+    JSON.parse(process.env.FAKE_LSP).forEach((m, i) => setTimeout(() => {
+      if (typeof m === "string") return out(m);
+      const body = JSON.stringify(m);
+      out("Content-Length: " + Buffer.byteLength(body) + "\\r\\n\\r\\n" + body);
+    }, 20 * (i + 1)));
+  },
+});
+setTimeout(() => M.onRuntimeInitialized(), 0);
+`;
+  // The gate's RESIDENT_ENV (the probe's experiment switches, empty = off) and its three regexes.
+  const GATE_ENV = { PROBE_HEADER: "", PROBE_MINIMAL: "", SKIP_TASK_MANAGER: "", DUMP_MSGS: "", RAW_TAP: "" };
+  const VERDICT = /^RESIDENT PROBE (PASS|FAIL) (\{.*\})$/;
+  const MESSAGE = /^(\{"caption":.*\})$/;
+  const COMPILE = /^compile: tag=0 /;
+  const KEYS = { why: expect.any(String), diagnostics: expect.any(Number), frames: expect.any(Number),
+    nonFrameStdoutBytes: expect.any(Number), wallMs: expect.any(Number), argv: expect.any(Array) };
+  const uri = "file:///workspace/Probe.lean";
+  const at = (line: number, from: number, to: number) => ({ start: { line, character: from }, end: { line, character: to } });
+  const progress = (...kinds: number[]) => ({ jsonrpc: "2.0", method: "$/lean/fileProgress",
+    params: { textDocument: { uri, version: 1 }, processing: kinds.map((kind) => ({ range: at(0, 0, 9), kind })) } });
+  const publish = (...diagnostics: object[]) => ({ jsonrpc: "2.0", method: "textDocument/publishDiagnostics", params: { uri, diagnostics } });
+  const INFO = { range: at(0, 0, 6), severity: 3, message: "Nat : Type" };
+  const ERROR = { range: at(3, 8, 11), severity: 1, message: "Type mismatch: rfl" }; // the Init run's deliberate error
+
+  function gateCheckout() {
+    const s = toolCheckout("resident-probe");
+    const art = path.join(s, "art/stage1");
+    fs.mkdirSync(path.join(art, "bin"), { recursive: true });
+    fs.writeFileSync(path.join(art, "bin/lean.js"), FAKE_GLUE);
+    const snaps = path.join(s, "snaps");
+    fs.mkdirSync(snaps);
+    fs.writeFileSync(path.join(snaps, "init.snap"), "init");
+    fs.writeFileSync(path.join(snaps, "mathlib.snap"), "mathlib");
+    const doc = path.join(s, "parity.lean");
+    fs.writeFileSync(doc, "#check Nat  -- R10:reached\n");
+    return { s, art, snaps, doc, runs: 0 };
+  }
+  /** One gate-shaped run: its exit, the stdout lines the gate parses (in order), the verdicts and the snapshots loaded. */
+  function probe(g: ReturnType<typeof gateCheckout>, args: string[], lsp: unknown[]) {
+    const log = path.join(g.s, `loaded-${g.runs++}.txt`);
+    fs.writeFileSync(log, "");
+    const r = run(g.s, "pipeline/snapshot/resident-probe.mjs", ["--artifact", g.art, ...args], { ...GATE_ENV, FAKE_LSP: JSON.stringify(lsp), FAKE_LOG: log });
+    const lines = r.stdout.split("\n");
+    return {
+      status: r.status, out: r.stdout + r.stderr,
+      order: lines.flatMap((l) => (MESSAGE.test(l) ? ["message"] : COMPILE.test(l) ? ["compile"] : VERDICT.test(l) ? ["verdict"] : [])),
+      messages: lines.filter((l) => MESSAGE.test(l)),
+      compile: lines.filter((l) => COMPILE.test(l)),
+      verdicts: lines.flatMap((l) => { const m = VERDICT.exec(l); return m ? [{ pass: m[1] === "PASS", ...JSON.parse(m[2]!) }] : []; }),
+      loaded: fs.readFileSync(log, "utf8").split("\n").filter(Boolean),
+    };
+  }
+
+  test("the gate's support check and flags: the text --probe-file is in the script; the usage names each flag the gate passes", () => {
+    const source = fs.readFileSync(path.join(root, "pipeline/snapshot/resident-probe.mjs"), "utf8");
+    expect(source.includes("--probe-file")).toBe(true); // the gate: fs.readFileSync(residentProbe, "utf8").includes("--probe-file")
+    const usage = /const USAGE = "([^"]+)"/.exec(source)![1]!;
+    for (const flag of ["--artifact <stage1>", "--budget-ms 180000", "--snap-dir <dir>", "--snapshots init,mathlib", "--mathlib", "--probe-file <file> [--dump-messages"]) {
+      expect(usage, flag).toContain(flag);
+    }
+  });
+
+  test("the Init run (--snap-dir --budget-ms): init.snap alone, one PASS verdict with the gate's keys, exit 0; non-frame stdout is counted", () => {
+    const g = gateCheckout();
+    const args = ["--snap-dir", g.snaps, "--budget-ms", "180000"]; // residentRun on the gate's own init.snap
+    const clean = probe(g, args, [progress(1), publish(ERROR), progress()]);
+    expect(clean.status, clean.out).toBe(0);
+    expect(clean.verdicts).toEqual([expect.objectContaining({ pass: true, ...KEYS, diagnostics: 1, frames: 3, nonFrameStdoutBytes: 0 })]);
+    expect(clean.loaded).toEqual(["init"]);
+    // The gate fails this run unless nonFrameStdoutBytes === 0: a line of non-frame stdout shows there.
+    const junk = probe(g, args, ["[WASM INIT] 1/2\n", progress(1), publish(ERROR), progress()]);
+    expect(junk.status, junk.out).toBe(0);
+    expect(junk.verdicts).toEqual([expect.objectContaining({ pass: true, frames: 3, nonFrameStdoutBytes: 16 })]);
+  });
+
+  test("the covered run (--mathlib): init then mathlib from --snap-dir; PASS when the drain has no error, exit 0", () => {
+    const g = gateCheckout();
+    const r = probe(g, ["--snap-dir", g.snaps, "--mathlib", "--budget-ms", "600000"], [progress(1), publish(INFO), progress()]);
+    expect(r.status, r.out).toBe(0);
+    expect(r.verdicts).toEqual([expect.objectContaining({ pass: true, ...KEYS, diagnostics: 1, nonFrameStdoutBytes: 0 })]);
+    expect(r.loaded).toEqual(["init", "mathlib"]);
+  });
+
+  test("file mode (--probe-file --dump-messages): a caption line per final diagnostic, then compile: tag=0, then PASS, exit 0 with errors; --snapshots init, else init,mathlib", () => {
+    const g = gateCheckout();
+    // The gate's resident facts (--snapshots init) and covered facts (the default). --settle-ms 0 only
+    // shortens the test: the gate passes none (resident-probe's 5000).
+    for (const [args, loaded] of [
+      [["--snap-dir", g.snaps, "--snapshots", "init", "--budget-ms", "180000"], ["init"]],
+      [["--snap-dir", g.snaps, "--budget-ms", "600000"], ["init", "mathlib"]],
+    ] as const) {
+      const r = probe(g, [...args, "--probe-file", g.doc, "--dump-messages", "--settle-ms", "0"], [progress(1), publish(INFO, ERROR), progress()]);
+      expect(r.status, r.out).toBe(0);
+      expect(r.order).toEqual(["message", "message", "compile", "verdict"]);
+      expect(r.messages).toEqual([ // severity by name, 1-based lines, LSP's columns, the message as data
+        '{"caption":"","severity":"information","pos":{"line":1,"column":0},"endPos":{"line":1,"column":6},"data":"Nat : Type"}',
+        '{"caption":"","severity":"error","pos":{"line":4,"column":8},"endPos":{"line":4,"column":11},"data":"Type mismatch: rfl"}',
+      ]);
+      expect(r.compile[0]).toMatch(/^compile: tag=0 elapsed=\d+ms errors=1$/);
+      expect(r.verdicts).toEqual([expect.objectContaining({ pass: true, ...KEYS, diagnostics: 2 })]);
+      expect(r.loaded).toEqual(loaded);
+    }
+  });
+
+  test("exits: a FAIL verdict is 1 (the budget, before any compile line); a refusal is 2, with no verdict", () => {
+    const g = gateCheckout();
+    const late = probe(g, ["--snap-dir", g.snaps, "--budget-ms", "1000", "--probe-file", g.doc, "--dump-messages"], []);
+    expect(late.status, late.out).toBe(1);
+    expect(late.order).toEqual(["verdict"]);
+    expect(late.verdicts).toEqual([expect.objectContaining({ pass: false, ...KEYS })]);
+    const refused = probe(g, ["--snap-dir", g.snaps, "--probe-file", path.join(g.s, "none.lean"), "--dump-messages"], []);
+    expect(refused.status, refused.out).toBe(2);
+    expect(refused.order).toEqual([]);
+  });
+});
+
 describe("compiler-battery's CLI refusal leaves a record (no stale or missing report)", () => {
   const BATTERY = ["tests/adversarial/compiler-battery.mjs", "tests/adversarial/harness.mjs", "pipeline/release/page-target.mjs", "pipeline/toolchain/artifact-paths.mjs"];
   function batteryCheckout() {

@@ -68,6 +68,10 @@
 //                `RESIDENT PROBE FAIL {…}`, exit 1. Refused with --mathlib,
 //                --act2, --act4 and --option-check (exit 2); --lean-option
 //                applies to it
+//
+// Tier 3, except the surface the lean4-wasm64 gate runs and parses (kernel R10, tier 2): its flags,
+// the --dump-messages and `compile:` lines, the verdict line's keys and the exits. Tell the kernel
+// session before changing any of it (docs/CLI-CONTRACT.md "Tiers"; tests/unit/tool-paths.test.ts).
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
