@@ -21,7 +21,7 @@
 // <dir> is packed; module names derive from relative paths; each module's
 // direct imports are read from its .olean (olean-imports.mjs; --no-imports
 // skips that for fixtures that are not real regions). `--url-prefix` is where
-// the parts will be SERVED from: the browser fetches part URLs verbatim and
+// the parts will be SERVED from: part URLs are served verbatim and
 // verify-release resolves them under public/, so a pack meant for
 // public/profiles/ needs `/profiles/` (the default, bare names, suits a pack
 // that is only unpacked locally — unpack.mjs goes by basename either way).

@@ -268,7 +268,7 @@ function walkFiles(dir, prefix = "") {
 
 // ----------------------------------------------------------------- build --
 /** `/runtime/chunks/<base>` etc. → the origin-relative path, refusing any
- * other spelling (the page fetches these URLs verbatim). */
+ * other spelling (these URLs are served verbatim). */
 function servedPath(url, dir, what) {
   const prefix = `/${dir}/`;
   const base = typeof url === "string" && url.startsWith(prefix) ? url.slice(prefix.length) : null;

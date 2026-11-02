@@ -89,8 +89,9 @@
 //     after it began, the newest change goes regardless, and the cap is not
 //     restarted by a newer change replacing the held one (a sustained pace
 //     under sustained pressure sees one change per `ms + maxHoldMs`, never
-//     none). Samples arrive only with the worker's status events (every
-//     server frame), so a silent worker is what the cap is for;
+//     none). Samples arrive only with the worker's status events (on a
+//     server frame or the session's telemetry poll, when the status changed),
+//     so a silent worker is what the cap is for;
 //   * REQUESTS IN FLIGHT. Each request Lean is handling is a task on its own
 //     dedicated thread while it waits for its snapshot, and a thread is a
 //     Worker: ~90 requests released at once above a 3 s `IO.sleep` grew the

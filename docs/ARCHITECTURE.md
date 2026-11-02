@@ -7,11 +7,11 @@
 | Runtime verify + instantiate + Lean init | ~8–10 s |
 | `init` snapshot (107 MB wire / 342 MB region) region-load at boot | **~0.7–0.8 s**; first Init-only check ~300 ms |
 | First check, Init only, without the snapshot | ~25–43 s |
-| `mathlib` umbrella snapshot (806 MiB wire / 2.57 GiB region) — download + region walk + `[init]` replay | **~5–7 s** past the download (repeat visits: **~18 s click-to-✓ total** reading the OPFS-cached bytes, zero network) |
+| `mathlib` umbrella snapshot (305 MiB wire / 1.04 GiB region: the served index, 2026-11-02, wasm64-36d7f415) — download + region walk + `[init]` replay | **~5–7 s** past the download (repeat visits: **~18 s click-to-✓ total** reading the OPFS-cached bytes, zero network); both times from 2026-08-24, on that day's bake of 806 MiB wire / 2.57 GiB region |
 | First Mathlib check after the umbrella load | **71 ms** (light `rw` buffer) – **1.6 s** (first use of linarith/norm_num/ring/positivity) |
 | Any later Mathlib check — *any* import combination, including headers never baked (e.g. `Nat.Prime.Basic` + `Topology.Basic` + `Order.Filter.Basic`) | **21–77 ms** |
 | The same reals example compiled by importing its closure in-browser (strict-headers mode / no snapshot) | minutes (dominated by the olean closure import) |
-| Memory64 heap with the umbrella resident | 2 GiB of 6 GiB max in all 124 R16 runs (`status().memory`, 2026-11-02, wasm64-36d7f415) |
+| Memory64 heap with the umbrella resident | 2 GiB of 6 GiB max in the 124 L7, L8 and L9 runs (Chrome and release Firefox), from `status().memory`, 2026-11-02, wasm64-36d7f415 |
 | App bundle (everything that isn't Lean) | 127 KB gzipped |
 
 Before toolchain patch 0017 the umbrella load took **~128 s** and the first
@@ -33,9 +33,10 @@ One persistent Worker owns one Lean process for the whole session:
    (closure.json `runtime.manifestSchemas`) is refused before any fetch.
 3. **Memory** — one shared `WebAssembly.Memory({address:"i64"})`, 2 GiB
    initial with the umbrella snapshot (256 MiB without), maximum probed
-   downward from the 6 GiB cap (6 → 4 → 3 GiB, then 2 on a device under 8 GB)
-   so constrained machines still boot. The module was linked with a 16 GiB
-   declared maximum, so any smaller imported maximum is type-compatible.
+   downward from the 6 GiB cap (6 → 4 → 3 GiB; under 8 GB a device adds 2, and
+   under 4 GB it starts at 4) so constrained machines still boot. The module
+   was linked with a 16 GiB declared maximum, so any smaller imported maximum
+   is type-compatible.
 4. **Library mounts** — none since D1 (2026-11): every environment is a
    snapshot, and the library boots with an empty `LEAN_PATH`. For one more
    release the worker still mounts a `boot`'s `packs` (each under its own
@@ -91,7 +92,8 @@ inflates transparently, so the URL cannot be trusted — inflates through
 `DecompressionStream` when needed, and streams the region **straight into a
 wasm-`malloc`'d buffer**, which the runtime adopts as the region's backing
 store (`lean_wasm_load_snapshot_mem`, toolchain patch 0013). No MEMFS staging
-copy: a 2.57 GiB region costs 2.57 GiB of wasm heap, not that plus a
+copy: a region costs its size in wasm heap (the umbrella, 1.04 GiB on
+wasm64-36d7f415 as of 2026-11-02, costs 1.04 GiB), not that plus a
 JavaScript-heap duplicate. The MEMFS path remains as the fallback when the
 raw size is unknown.
 
@@ -145,7 +147,8 @@ umbrella's 4,821-module closure from oleans).
 ### What the load actually costs (profiled)
 
 Every snapshot load prints its stage split to the worker log. For the
-2.57 GiB umbrella: **region read + relocation walk ≈ 1–2 s; `[init]`
+umbrella (profiled 2026-08 on a 2.57 GiB bake; it is 1.04 GiB on
+wasm64-36d7f415, 2026-11-02): **region read + relocation walk ≈ 1–2 s; `[init]`
 attribute replay over 152 modules ≈ 1–2 s.** The replay streams
 `[WASM INIT] i/n module` lines through the otherwise-blocking call, which
 the app renders as a live 152-step counter.

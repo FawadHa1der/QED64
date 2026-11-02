@@ -1433,9 +1433,10 @@ frame at once). Embedders do not need their own throttle.
   (requests that waited for a slot), `cancelled`, `superseded`).
 - The cost: under pressure an edit waits for the pool, up to the cap, and
   the InfoView follows when the change goes; past the cap a request waits
-  for a reply to an earlier one. That trades latency for a bound on the
-  pool, which without the hold grows with the typing and never shrinks
-  (R16: 24 → 36-37 on `pagelong`; docs/HARDENING.md #59). Measured with the
+  for a reply to an earlier one. That trades latency for a smaller pool:
+  without the hold it grew by 12-13 Workers in the first 4-7 s of typing,
+  about one per keystroke at its fastest, and never shrank (R16: 24 → 36-37
+  on `pagelong`, 24 → 26 with it; docs/HARDENING.md #59). Measured with the
   edit-storm lane's `pageslow` scenario, the typing above: see
   docs/HARDENING.md #59 (addendum).
 - What it does not do: it keys on the pool and on the requests, not on the

@@ -174,7 +174,7 @@ const promotedRuntime = { buildId: manifest.buildId, leanVersion: manifest.leanV
  * basenames included — would be promoted fine and 404. */
 const servedProfileBase = (url, what) => {
   const m = typeof url === "string" ? /^\/profiles\/([^/]+)$/.exec(url) : null;
-  if (!m || m[1] === "index.json") fail(`${what}: url ${JSON.stringify(url)} is not /profiles/<file> — such URLs are served verbatim and the promote installs it under public/profiles`);
+  if (!m || m[1] === "index.json") fail(`${what}: url ${JSON.stringify(url)} is not /profiles/<file> — such URLs are served verbatim and the promote installs the file under public/profiles`);
   return m[1];
 };
 /** A pack's Lean version must be the promoted runtime's: that is what

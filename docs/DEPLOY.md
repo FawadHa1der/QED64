@@ -323,8 +323,8 @@ mutable path (dev, an embedder without the define). Both are the toolchain
 release's (`lean4-wasm64/<id>/runtime/`), and the Worker reads `/runtime/*`
 only from the release its record pins (no fallback to the bucket root since
 2026-10-25), so the runtime pairing was already atomic; D2 makes the
-indexes so too. An old shell that boots after a deploy is another matter:
-see "Old shells" under "The toolchain release prefix".
+indexes so too. An open tab, or an old shell that boots after a deploy, is
+another matter: see "Old shells" under "The toolchain release prefix".
 
 The reader rule of HARDENING #64 stays in the library: when the mutable
 snapshot index names another runtime than the one the shell pins, the shell
