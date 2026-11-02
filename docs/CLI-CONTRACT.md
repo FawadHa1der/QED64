@@ -120,8 +120,9 @@ resident-probe, was folded into it on 2026-10-05 as `--snapshots <a,b>`,
   persistent-probe without it.
 - Since toolchain patches 0020 and 0031, the one-shot Lean CLI does its work
   and then **never exits** (HARDENING #47). Whatever runs node-runner judges
-  the job by its output and reaps the process. bake-snapshot and
-  supervised-run do this; the package's gate uses a timeout.
+  the job by its output and stops the process: bake-snapshot once its `.snap`
+  is complete (two polls), supervised-run once its target is stable with the
+  runner quiet; the package's gate uses a timeout.
 
 ### Argument grammar
 
@@ -340,7 +341,7 @@ regexes are exactly the ones in SPECS (`--print-specs` prints them as strings).
 **Tier 1.** `node pipeline/snapshot/bake-snapshot.mjs …` or `npm run bake:snapshot -- …`
 
 ```
-usage: bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--roots <A,B,…>] [--label <text>] [--initial-bytes <bytes>] [--entry-fields <json object>] [--allow-legacy-imports] [--runner <script>]
+usage: bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--roots <A,B,…>] [--label <text>] [--initial-bytes <bytes>] [--entry-fields <json object>] [--allow-legacy-imports] [--runner <script>] [--stable-ms <ms>] [--quiet-ms <ms>] [--give-up-ms <ms>]
 ```
 
 | Flag | Default | Meaning |
@@ -358,6 +359,9 @@ usage: bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <di
 | `--entry-fields <json object>` | none | More entry keys, written after the core keys and `roots`/`label`/`initialBytes`, in the object's order; the page ignores them ([SNAPSHOT-INDEX.md](SNAPSHOT-INDEX.md), "Rules"). Refused (exit 2, before any side effect): text that is not a JSON object, a core key (`name`, `url`, `digest`, `bytes`, `transfer`, `imports`, `runtime`), `roots`, `label` or `initialBytes` (their flags validate them) and the reserved `raw`, `lib` and `bakedBy`. Since 2026-11-01. |
 | `--allow-legacy-imports` | off | Sets `QED64_ALLOW_LEGACY_IMPORTS=1` for the runner (patch 0030: the env cache loads legacy non-module packages, the lean4game games). An inherited `QED64_ALLOW_LEGACY_IMPORTS` does the same and stays accepted. |
 | `--runner <script>` | `$QED64_RUNNER`, else QED64's own `pipeline/snapshot/node-runner.mjs` (not deprecated, no WARNING) | The runner script (contract 3, additive). It is spawned as `<this node> --stack-size=8192 <script> --work … --artifact … [--lib …] -- …`, so it must take node-runner's flags. Resolves against the cwd; a script that does not exist refuses (`no-runner`, exit 2) before `<work>` is created. The default stays QED64's runner: a bake through the package's `node-runner.mjs` (which pins `LEAN_PATH=/lib/lean`, mirrors only `bin/` and shadows `<artifact>/lib/lean` with `--lib`) was shown byte-identical on Lean 4.34 (2026-10-08), not yet on 4.35. |
+| `--stable-ms <ms>` | `5000` | The poll interval. The bake is done once `<work>/<name>.snap` has the same nonzero size at two polls this far apart; the runner is then stopped (side effect 6). Since 2026-11-01 (architecture review R5a). |
+| `--quiet-ms <ms>` | `120000` | After a failure line in the runner's output (the classifier below): this long without output, with no `<name>.snap` and no save in progress, ends the bake (`failed-quiet`, exit 1). Since 2026-11-01. |
+| `--give-up-ms <ms>` | `21600000` (6 h) | No complete `<name>.snap` by then ends the bake (`gave-up`, exit 1). A backstop only. Since 2026-11-01. |
 
 - **Environment:** `QED64_LEAN_ARTIFACT`, `QED64_WORK`, `QED64_STAGING` (the
   path rule), `QED64_RUNNER`. The runner gets exactly `PATH`, `HOME`,
@@ -368,6 +372,17 @@ usage: bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <di
   (lean_main's prologue copies it after preRun). Since 2026-11-01 (the
   kernel copy's rule, architecture review D4 a); before, the runner inherited
   the bake's whole environment.
+- **Failure classifier.** A runner output line (either stream, judged per
+  line) matching
+  `/^(?:\S*\/)?probe\.lean:\d+:\d+: error[:( ]|PANIC|ABORT:|RuntimeError|object compactor:|uncaught exception/`
+  is a failure line: supervised-run's `: error` rule scoped to probe.lean's
+  own error diagnostics, plus the runtime's failure lines (a failed region
+  save surfaces as `uncaught exception` or `object compactor:`). Warnings and
+  other files' diagnostics never count. Its kind is the first that matches, in
+  this order: `lean-error` (the probe.lean alternative), `compactor`, `abort`,
+  `panic`, `runtime-trap`, `exception`. Since 2026-11-01 it decides only the
+  failure guard (side effect 6); exit 0 is still not a verdict on Lean's
+  messages (open decision 3).
 - **Inputs:** `<artifact>/bin/lean.wasm` (whose sha256 gives the buildId),
   `<out>/index.json` if present, and the `--lib` tree.
 - **Outputs:**
@@ -402,11 +417,13 @@ usage: bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <di
 | Marker | Stream | Regex |
 |---|---|---|
 | baking | stdout | `^baking (\S+)\.snap for runtime (\S+) \(probe: (.*); compactor reserve (\d+\.\d) GiB\) → (.+)$` |
-| reaped | stdout | `^bake output stable \((\d+) bytes\) with runner quiet — reaping the wedged exit$` |
+| completed | stdout | `^bake output complete \((\d+) bytes, unchanged across two polls (\d+) ms apart\) — stopping the runner$` (since contract 4; it replaced `reaped`, `bake output stable (N bytes) with runner quiet — reaping the wedged exit`) |
 | compressing | stdout | `^compressing (\S+)\.snapz …$` |
 | baked | stdout | `^baked (\S+\/([^/\s]+)\.([0-9a-f]{16})\.snapz) \((\d+) bytes transfer, (\d+) raw\); index updated \(imports: \[([^\]]*)\], runtime (\S+)\)$` |
 | index-copy | stdout | `^index copy (.+[\/\\]index\.(wasm64-[0-9a-f]{16})\.json) written \(runtime (wasm64-[0-9a-f]{16})\)$` (after `baked`, since 2026-10-08) |
 | no-snap | stderr | `^FAIL: snapshot file was not produced$` |
+| failed-quiet | stderr | `^bake-snapshot: the runner printed a failure line \(([a-z-]+), (stdout\|stderr) line (\d+)\) and, after (\d+) ms of quiet, wrote no (\S+)\.snap and began no save \(--quiet-ms\) — stopping it$` (then `no-snap`, exit 1; since 2026-11-01; the groups are the kind, the stream, the line number in that stream, `--quiet-ms` and the name) |
+| gave-up | stderr | `^bake-snapshot: no complete (\S+)\.snap within (\d+) ms \(--give-up-ms\) — the runner is stopped, nothing compressed, the index is not written$` (exit 1, since 2026-11-01) |
 | no-artifact | stderr | `^bake-snapshot: no lean\.wasm under (.+) — pass --artifact <stage1 dir>$` |
 | no-runner | stderr | `^bake-snapshot: no runner script (.+) — pass --runner <script> or set QED64_RUNNER$` |
 | refuse-public | stderr | `^(bake-snapshot\|chunk-runtime): refusing --out (.+): it resolves inside public\/\. ` |
@@ -427,9 +444,9 @@ The runner's output (node-runner and Lean) is interleaved on both streams.
 
 | Exit | Meaning |
 |---|---|
-| 0 | Baked and the index upserted. This includes the case where the wedged runner was reaped. **It is not a verdict on the probe's Lean messages:** the header snapshot is saved before Lean returns on errors. Judge the log, as the showcase's `judge-bake.mjs` does. |
-| 1 | After the bake started: the runner exited non-zero (`runner-exit`), was killed by a signal this bake did not send (`runner-signal`) or could not start; no `.snap` was produced (`no-snap`); compressing failed; or the index could not be written (unreadable, corrupt, foreign or unpaired under the lock, its lock held past the wait, or a failed write). A written `.snapz` is kept and its entry printed (`unindexed entry <json>` on stderr). |
-| 2 | Refused before the runner started: no `--artifact`, `QED64_LEAN_ARTIFACT` or deprecated default (`no-path`), no `lean.wasm` under the artifact, `--out` inside `public/`, an index paired with another runtime or with none, a malformed `--roots` / `--initial-bytes`, a `--runner` / `QED64_RUNNER` script that does not exist (`no-runner`), an unreadable or corrupt `index.json` (`refuse-index-unreadable`, `refuse-index-corrupt`: only a missing one is a new index), a bad `--name` (`refuse-name`) or `--entry-fields`, an explicit `--lib` that is not a directory (`no-lib`), or a `<work>/.bake.lock` that is held (`work-locked`) or cannot be created. |
+| 0 | Baked: the `.snap` complete, compressed, and the index upserted (the runner is stopped once its `.snap` is complete, `completed`). **It is not a verdict on the probe's Lean messages:** the header snapshot is saved before Lean returns on errors. Judge the log, as the showcase's `judge-bake.mjs` does. |
+| 1 | After the bake started: the runner exited non-zero (`runner-exit`), was killed by a signal this bake did not send (`runner-signal`) or could not start; no `.snap` was produced (`no-snap`: a failure line and then `--quiet-ms` of quiet, `failed-quiet`, or nothing complete within `--give-up-ms`, `gave-up`); compressing failed; or the index could not be written (unreadable, corrupt, foreign or unpaired under the lock, its lock held past the wait, or a failed write). A written `.snapz` is kept and its entry printed (`unindexed entry <json>` on stderr). |
+| 2 | Refused before the runner started: no `--artifact`, `QED64_LEAN_ARTIFACT` or deprecated default (`no-path`), no `lean.wasm` under the artifact, `--out` inside `public/`, an index paired with another runtime or with none, a malformed `--roots` / `--initial-bytes` / `--stable-ms` / `--quiet-ms` / `--give-up-ms` (a positive whole number of milliseconds), a `--runner` / `QED64_RUNNER` script that does not exist (`no-runner`), an unreadable or corrupt `index.json` (`refuse-index-unreadable`, `refuse-index-corrupt`: only a missing one is a new index), a bad `--name` (`refuse-name`) or `--entry-fields`, an explicit `--lib` that is not a directory (`no-lib`), or a `<work>/.bake.lock` that is held (`work-locked`) or cannot be created. |
 | 129 | SIGHUP received before the index was written: forwarded to the runner (SIGKILL 10 s later); no index write. A `.snapz` already in place is kept and its entry printed. |
 | 130 | SIGINT (Ctrl-C), likewise. |
 | 143 | SIGTERM, likewise. |
@@ -461,10 +478,24 @@ The runner's output (node-runner and Lean) is interleaved on both streams.
    with the environment above (`spawn`, no output buffer: execFile's 64 MiB
    `maxBuffer` killed a runner that printed more, before 2026-11-01).
    For the Mathlib umbrella this runs about 20 minutes and needs about 11 GB.
-6. Polls the `.snap` every 5 s. Once the output has been quiet for more than
-   300 s and the `.snap` stable for more than 120 s, SIGKILLs the runner. It
-   judges the run only once the runner has exited and both its pipes have
-   closed.
+6. Polls every `--stable-ms` (default 5 s). Once `<work>/<name>.snap` has
+   the same nonzero size at two consecutive polls, prints `completed`,
+   SIGKILLs the runner and waits until it has exited and both its pipes have
+   closed; only then does it judge the run. The runtime writes the region to
+   `<name>.snap.tmp.<pid>` and renames it, after printing every message of
+   probe.lean (fork `module.cpp:316-423`, `Frontend.lean:370-405`), so a
+   complete `.snap` comes after the probe's whole log. A failure line (the
+   classifier above), with no `.snap`, no `<name>.snap.tmp.*` (no save in
+   progress; side effect 3 removed the stale ones) and no output for
+   `--quiet-ms`: `failed-quiet`, then `no-snap`, exit 1 (a header Lean rejects
+   never saves). No complete `.snap` within `--give-up-ms`: `gave-up`, exit 1.
+   A probe that prints a failure line and then runs for longer than
+   `--quiet-ms` without output before its save opens the temp file is cut
+   short: bake probes are a header and a `#check`. A runner that exits by
+   itself is judged as before (`runner-exit`, `runner-signal`, `no-snap`).
+   Before contract 4 the bake waited for 300 s without output and 120 s of a
+   stable size (about 4.5 min of every bake), and a probe whose header Lean
+   rejected waited forever.
 7. Creates `<out>` (`mkdir -p`), unlinks `<work>/<name>.snap.deps`, writes
    `<name>.snapz.<pid>.tmp` and renames it to the final name. A failure is one
    line and exit 1; the temp is removed.
@@ -1396,6 +1427,7 @@ as QED64's own gate did.
 | 3 | 2026-11-01 | Architecture review R11a (QED64 half), **deprecated, one cycle:** snapshot-probe's path loader `lean_wasm_load_snapshot`. Without `--via-mem` (the default) or with `--via-memfs`: one stderr WARNING (new marker `deprecated-loader`) after the path rule, before any side effect; the run is otherwise unchanged. Flags, the other markers and exits are unchanged; every executed caller already passes `--via-mem` (the compiler battery, the showcase's `exact-header.mjs`, lean4game's `--verify-snapshots`). Removal (the two branches deleted, `--via-mem` the only loader, a contract bump) after both lean4game and the showcase re-pin past this row. Also: TESTING.md's probe row and adopt-release's printed slim-bake recipe pass `--via-mem`, and the help and the script's comments name `lean_wasm_load_snapshot_mem` as the browser's path (they called the path loader, and `--via-memfs`, the worker's). | deprecation (WARNING) |
 | 3 | 2026-11-01 | Review fixes, **bake-snapshot** (the kernel copy's rules, architecture review D4 a): an unreadable or corrupt `index.json` is refused (exit 2 before the runner; exit 1 under the lock, the entry printed) instead of being read as empty and rewritten without its siblings; the pairing is re-checked under the lock; the runner is spawned with no output buffer (execFile's 64 MiB `maxBuffer` killed it) and an environment of exactly `PATH`, `HOME`, `TMPDIR` and the bake's variables (a host `LEAN_PATH` replaced `--lib`); a runner killed by a signal the bake did not send, or exiting non-zero, is exit 1 with one line (before: success for a signal, an unhandled rejection otherwise); SIGINT/SIGTERM/SIGHUP are forwarded and the bake exits 130/143/129 without an index write (before: the runner was orphaned); the `.snapz` temp is `<name>.snapz.<pid>.tmp`; a failed compression or index write is one line and exit 1. New markers `refuse-index-unreadable`, `refuse-index-corrupt`, `runner-signal`, `runner-exit`; the `baked`, `index-copy`, `reaped` and refusal lines are unchanged. | fix; additive (exit codes, markers) |
 | 3 | 2026-11-01 | Architecture review D4, option (a): **QED64 owns the bake** (the kernel copy's extras, ported as behaviour). **bake-snapshot** takes `<work>/.bake.lock` (one bake per `--work`: two bakes sharing it baked each other's `probe.lean` and the runtime's `<name>.snap.tmp.<pid>` and could exit 0 with a wrong snapshot), holding the bake's pid and then its runner's; a held lock is exit 2 (`work-locked`, naming both pids), never taken over; it is released at exit and kept when the runner is still running. It removes stale `<name>.snap.tmp.*` files under the lock (one `removed the stale …` line each), refuses a `--name` outside `[A-Za-z0-9][A-Za-z0-9._-]*` (`refuse-name`) and an explicit `--lib` that is not a directory (`no-lib`; before, the runner failed on it after the paired `.snap` was unlinked), both exit 2 before any side effect, gains `--entry-fields <json object>` (more entry keys after the page fields; a core key, a page field or a reserved `raw`/`lib`/`bakedBy` refuses, exit 2), and prints a `build environment: node …, zlib …, shared zlib …` line (`build-env`) after `baking`. The index's writer rules move from the fork's `formats/snapshot-index.md` to [SNAPSHOT-INDEX.md](SNAPSHOT-INDEX.md); the Ownership paragraph under Tiers names the owners. The `baked`, `index-copy`, `reaped` and refusal lines are unchanged. | fix; additive (a flag, markers, exit-2 refusals) |
+| 4 | 2026-11-01 | Architecture review R5a, **bake-snapshot finishes when its `.snap` is complete**: it polls every `--stable-ms` (new, default 5000) and stops the runner once `<work>/<name>.snap` has the same size at two polls (before: 300 s without output and 120 s of a stable size, about 4.5 min of every bake). **Breaking, so contract 4:** the stdout marker `reaped` (`bake output stable … — reaping the wedged exit`) becomes `completed` (`bake output complete … — stopping the runner`). The rename follows the report's approved R5a without a deprecation window (stability policy): no consumer parses it (lean4game `wasm64-port`, the proof sheets `website-v4.35` and the showcase `port-lean-4.35` grepped). New guards: a failure line (the new classifier, SPEC `classifier`) with no `.snap` and no save in progress for `--quiet-ms` (new, default 120000) ends the bake with `failed-quiet` and `no-snap`, exit 1 (before: a header Lean rejects waited forever); `--give-up-ms` (new, default 21600000) ends any bake with `gave-up`, exit 1; a malformed value of the three is exit 2 before any side effect. The `baked`, `index-copy` and refusal lines, exit 0's meaning (not a Lean verdict) and the runner's argv are unchanged. | breaking (a marker renamed); additive (flags, markers); fix |
 
 ## Open decisions
 

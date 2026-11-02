@@ -5,7 +5,9 @@
 // send, or exiting non-zero, fails the bake; a signal to the bake reaches its runner. And the
 // kernel copy's extras (QED64 owns the bake, D4 a; docs/SNAPSHOT-INDEX.md): one bake per --work
 // (<work>/.bake.lock, never taken over), stale runtime temps removed, the --name, --lib and
-// --entry-fields refusals, --entry-fields in the entry, and the build environment line.
+// --entry-fields refusals, --entry-fields in the entry, and the build environment line. And R5a:
+// the bake finishes when its .snap is complete (two equal polls), stops its never-exiting runner,
+// and ends a run that cannot finish (a failure line, no save, quiet; or the give-up deadline).
 //
 // Safety: no test here loads a lean.js or a lean.wasm. Each bake runs from a SCRATCH CHECKOUT
 // (bake-snapshot.mjs and pipeline/toolchain/artifact-paths.mjs copied into a temp dir) with a
@@ -19,7 +21,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { runtimeBuildId } from "../../pipeline/toolchain/artifact-paths.mjs";
-import { SPECS } from "../../pipeline/snapshot/cli.mjs";
+import { SPECS, reservedHit } from "../../pipeline/snapshot/cli.mjs";
 
 const root = path.resolve(__dirname, "../..");
 const SCRIPT = "pipeline/snapshot/bake-snapshot.mjs";
@@ -40,14 +42,38 @@ fs.writeFileSync(path.join(work, "runner.json"), JSON.stringify({ pid: process.p
 for (const [stream, line] of cfg.print ?? []) fs.writeSync(stream === "stderr" ? 2 : 1, line + "\n");
 for (let i = 0; i < (cfg.bigStdoutMiB ?? 0); i++) fs.writeSync(1, "x".repeat(1 << 20) + "\n");
 if (cfg.corrupt) fs.writeFileSync(cfg.corrupt, cfg.corruptWith ?? "{ not json");
-const tmp = path.join(work, save + ".tmp.42");
-if (cfg.snap !== false) { fs.writeFileSync(tmp, "a raw region " + save); fs.renameSync(tmp, path.join(work, save)); }
-if (cfg.selfKill) process.kill(process.pid, "SIGKILL");
-if (cfg.exitCode !== undefined) process.exit(cfg.exitCode);
-if (cfg.hang) { setInterval(() => {}, 1 << 30); setTimeout(() => process.exit(9), 25_000); } // the wedged runtime: never exits
+const target = path.join(work, save);
+const tmp = target + ".tmp.42"; // the runtime's save: <file>.tmp.<getpid()>, then a rename
+const after = () => {
+  if (cfg.selfKill) process.kill(process.pid, "SIGKILL");
+  if (cfg.exitCode !== undefined) process.exit(cfg.exitCode);
+  if (cfg.hang) { setInterval(() => {}, 1 << 30); setTimeout(() => process.exit(9), 25_000); } // the wedged runtime: never exits
+};
+// growMs: the saved file keeps growing that long (appends every 10 ms), then grown.json records its final size
+const grow = () => {
+  if (!cfg.growMs) return after();
+  const until = Date.now() + cfg.growMs;
+  const t = setInterval(() => {
+    fs.appendFileSync(target, "more region bytes\n");
+    if (Date.now() < until) return;
+    clearInterval(t);
+    fs.writeFileSync(path.join(work, "grown.json"), JSON.stringify({ bytes: fs.statSync(target).size }));
+    after();
+  }, 10);
+};
+if (cfg.snap === false) after();
+else {
+  fs.writeFileSync(tmp, "a raw region " + save);
+  // saveDelayMs: the save stays in progress (the temp file open) that long before its rename
+  if (cfg.saveDelayMs) setTimeout(() => { fs.renameSync(tmp, target); grow(); }, cfg.saveDelayMs);
+  else { fs.renameSync(tmp, target); grow(); }
+}
 `;
 
-type Fake = { print?: [string, string][]; bigStdoutMiB?: number; corrupt?: string; corruptWith?: string; snap?: boolean; selfKill?: boolean; exitCode?: number; hang?: boolean };
+type Fake = {
+  print?: [string, string][]; bigStdoutMiB?: number; corrupt?: string; corruptWith?: string; snap?: boolean; selfKill?: boolean; exitCode?: number; hang?: boolean;
+  growMs?: number; saveDelayMs?: number;
+};
 
 let tmp: string;
 // realpath: the script derives its repo root from import.meta.url, which Node gives as the real path.
@@ -391,5 +417,108 @@ describe("bake-snapshot records its build environment", () => {
     const lines = r.stdout.split("\n").filter((l) => marker("build-env").test(l));
     expect(lines).toHaveLength(1);
     expect(marker("build-env").exec(lines[0]!)?.slice(1, 3)).toEqual([process.version, process.versions.zlib]);
+  }, 30_000);
+});
+
+describe("bake-snapshot finishes when its .snap is complete, and ends a run that cannot finish (R5a)", () => {
+  // Fast clocks for the fakes: a poll every 100 ms, 400 ms of quiet, a 5 s deadline (unless a test says otherwise).
+  const FAST = ["--stable-ms", "100", "--quiet-ms", "400", "--give-up-ms", "5000"];
+  const LEAN_ERROR = "/work/probe.lean:1:0: error: unknown module prefix 'Nope'";
+  const timed = (s: string, args: string[]) => { const t0 = Date.now(); const r = run(s, args); return { ...r, ms: Date.now() - t0 }; };
+  const stdoutMatching = (stdout: string, id: string) => stdout.split("\n").filter((l) => marker(id).test(l));
+
+  test("completion: a runner that saves and never exits is stopped once the .snap is unchanged across two polls; exit 0, baked, the runner gone", () => {
+    const { s, out, work, args } = bakeCheckout({ hang: true });
+    const r = timed(s, [...args, ...FAST]);
+    expect([r.status, r.stderr]).toEqual([0, ""]);
+    expect(r.ms).toBeLessThan(10_000); // the fake would hang 25 s
+    const completed = stdoutMatching(r.stdout, "completed");
+    const raw = fs.statSync(path.join(work, "init.snap")).size;
+    expect(completed).toEqual([`bake output complete (${raw} bytes, unchanged across two polls 100 ms apart) — stopping the runner`]);
+    expect(reservedHit(completed[0]!)).toBeNull();
+    expect(stdoutMatching(r.stdout, "baked")).toHaveLength(1);
+    expect(r.stdout.indexOf(completed[0]!)).toBeLessThan(r.stdout.indexOf("compressing init.snapz"));
+    expect(alive(recorded(work).pid)).toBe(false);
+    expect(JSON.parse(fs.readFileSync(path.join(out, "index.json"), "utf8")).snapshots[0].bytes).toBe(raw);
+    expect(fs.existsSync(path.join(work, ".bake.lock"))).toBe(false);
+  }, 30_000);
+
+  test("growth: a .snap still growing is not complete; the indexed bytes and the completed line are its final size", () => {
+    const { s, out, work, args } = bakeCheckout({ hang: true, growMs: 600 });
+    const r = run(s, [...args, "--stable-ms", "300", "--quiet-ms", "400", "--give-up-ms", "10000"]);
+    expect([r.status, r.stderr]).toEqual([0, ""]);
+    const grown = JSON.parse(fs.readFileSync(path.join(work, "grown.json"), "utf8")).bytes as number; // written only once the growth ended
+    expect(fs.statSync(path.join(work, "init.snap")).size).toBe(grown);
+    expect(JSON.parse(fs.readFileSync(path.join(out, "index.json"), "utf8")).snapshots[0].bytes).toBe(grown);
+    const completed = stdoutMatching(r.stdout, "completed");
+    expect(completed).toHaveLength(1);
+    expect(Number(marker("completed").exec(completed[0]!)?.[1])).toBe(grown);
+  }, 30_000);
+
+  test("failure guard: a failure line, no .snap, no save in progress and --quiet-ms of quiet: failed-quiet, then no-snap, exit 1; nothing staged, no lock, the runner gone", () => {
+    const { s, out, work, args } = bakeCheckout({ snap: false, hang: true, print: [["stdout", LEAN_ERROR]] });
+    const r = timed(s, [...args, ...FAST]);
+    expect(r.status, r.stderr).toBe(1);
+    expect(r.ms).toBeLessThan(4_000);
+    expect(r.lines).toEqual([
+      "bake-snapshot: the runner printed a failure line (lean-error, stdout line 1) and, after 400 ms of quiet, wrote no init.snap and began no save (--quiet-ms) — stopping it",
+      "FAIL: snapshot file was not produced",
+    ]);
+    expect(marker("failed-quiet").exec(r.lines[0]!)?.slice(1)).toEqual(["lean-error", "stdout", "1", "400", "init"]);
+    expect(reservedHit(r.lines[0]!)).toBeNull();
+    expect(r.lines[1]).toMatch(marker("no-snap"));
+    expect(r.stdout).toContain(`${LEAN_ERROR}\n`); // the runner's line still reaches the bake's stdout
+    expect(alive(recorded(work).pid)).toBe(false);
+    expect(fs.existsSync(out)).toBe(false);
+    expect(fs.existsSync(path.join(work, ".bake.lock"))).toBe(false);
+    // the kind and the line number: the first failure line of either stream, counted per stream
+    const panic = bakeCheckout({ snap: false, hang: true, print: [["stderr", "a runner line"], ["stdout", "/work/probe.lean:2:0: warning: w"], ["stderr", "INTERNAL PANIC: x"]] });
+    const p = run(panic.s, [...panic.args, ...FAST]);
+    expect(p.status).toBe(1);
+    expect(marker("failed-quiet").exec(p.lines.find((l) => marker("failed-quiet").test(l))!)?.slice(1, 4)).toEqual(["panic", "stderr", "2"]);
+  }, 30_000);
+
+  test("out of scope: another file's error and probe.lean's warnings are not failure lines; such a runner runs on to the deadline", () => {
+    const { s, args } = bakeCheckout({ snap: false, hang: true, print: [["stdout", "/work/Other.lean:1:0: error: x"], ["stdout", "/work/probe.lean:1:0: warning: w"]] });
+    const r = run(s, [...args, "--stable-ms", "100", "--quiet-ms", "200", "--give-up-ms", "1500"]);
+    expect(r.status).toBe(1);
+    expect(r.lines).toEqual(["bake-snapshot: no complete init.snap within 1500 ms (--give-up-ms) — the runner is stopped, nothing compressed, the index is not written"]);
+  }, 30_000);
+
+  test("a save in progress (<name>.snap.tmp.* present) exempts the failure guard: the probe that reports an error and then saves completes, exit 0", () => {
+    const { s, out, work, args } = bakeCheckout({ print: [["stdout", LEAN_ERROR]], saveDelayMs: 1200, hang: true });
+    const r = run(s, [...args, "--stable-ms", "100", "--quiet-ms", "300", "--give-up-ms", "10000"]);
+    expect([r.status, r.stderr]).toEqual([0, ""]);
+    expect(stdoutMatching(r.stdout, "completed")).toHaveLength(1);
+    expect(stdoutMatching(r.stdout, "baked")).toHaveLength(1);
+    expect(JSON.parse(fs.readFileSync(path.join(out, "index.json"), "utf8")).snapshots.map((e: { name: string }) => e.name)).toEqual(["init"]);
+    expect(fs.readdirSync(work).filter((f) => f.startsWith("init.snap.tmp."))).toEqual([]);
+  }, 30_000);
+
+  test("give-up: no complete .snap within --give-up-ms is gave-up and exit 1; nothing staged, the runner gone", () => {
+    const { s, out, work, args } = bakeCheckout({ snap: false, hang: true });
+    const r = timed(s, [...args, "--stable-ms", "100", "--quiet-ms", "400", "--give-up-ms", "600"]);
+    expect(r.status).toBe(1);
+    expect(r.ms).toBeLessThan(4_000);
+    expect(r.lines).toEqual(["bake-snapshot: no complete init.snap within 600 ms (--give-up-ms) — the runner is stopped, nothing compressed, the index is not written"]);
+    expect(marker("gave-up").exec(r.lines[0]!)?.slice(1)).toEqual(["init", "600"]);
+    expect(reservedHit(r.lines[0]!)).toBeNull();
+    expect(alive(recorded(work).pid)).toBe(false);
+    expect(fs.existsSync(out)).toBe(false);
+    expect(fs.existsSync(path.join(work, ".bake.lock"))).toBe(false);
+  }, 30_000);
+
+  test("a malformed --stable-ms, --quiet-ms or --give-up-ms refuses (exit 2, one line) before any side effect", () => {
+    const { s, work, args } = bakeCheckout();
+    fs.writeFileSync(path.join(work, "init.snap"), "the paired raw snapshot");
+    for (const [flag, text] of [["stable-ms", "x"], ["quiet-ms", "0"], ["give-up-ms", "1.5"], ["stable-ms", "-5"], ["give-up-ms", "99999999999999999999"]]) {
+      const before = tree(s);
+      const r = run(s, [...args, `--${flag}`, text!]);
+      expect(r.status, `${flag} ${text}`).toBe(2);
+      expect(r.lines).toEqual([`bake-snapshot: refusing --${flag} ${JSON.stringify(text)}: expected a positive whole number of milliseconds`]);
+      expect(tree(s)).toEqual(before);
+    }
+    expect(fs.readFileSync(path.join(work, "init.snap"), "utf8")).toBe("the paired raw snapshot");
+    expect(fs.existsSync(path.join(work, "runner.json"))).toBe(false);
   }, 30_000);
 });

@@ -177,8 +177,10 @@ describe("SPECS", () => {
       const legacy = [...fs.readFileSync(path.join(root, s.script), "utf8").matchAll(/console\.error\("(usage: [^"]*)"\)/g)];
       for (const m of legacy) expect(m[1], tool).toBe(`usage: ${s.synopsis}`);
     }
-    const sr = SPECS["supervised-run"]!;
-    expect(fs.readFileSync(path.join(root, sr.script), "utf8")).toContain(sr.classifier!.template);
+    // A classifier's template is its script's own source line (supervised-run's and bake-snapshot's FAILURE).
+    const classified = TOOLS.filter((tool) => SPECS[tool]!.classifier);
+    expect(classified.sort()).toEqual(["bake-snapshot", "supervised-run"]);
+    for (const tool of classified) expect(fs.readFileSync(path.join(root, SPECS[tool]!.script), "utf8"), tool).toContain(SPECS[tool]!.classifier!.template);
   });
 
   test("help text and warnings never contain a reserved substring a downstream log judge matches", () => {
@@ -216,7 +218,7 @@ describe("SPECS", () => {
     const r = spawnSync("node", [cliScript, "--print-specs"], { encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL" });
     expect(r.status).toBe(0);
     const json = JSON.parse(r.stdout) as { contractVersion: number; specs: Record<string, { synopsis: string; markers: { regex: string; example: string; examples?: string[] }[] }>; env: object; exitClasses: object };
-    expect(json.contractVersion).toBe(3); // 3: unpack forwards to lean4-wasm64 and exits 2 without it (plan B1a); 2: the path rule of 2026-10-06
+    expect(json.contractVersion).toBe(4); // 4: bake-snapshot's reaped marker became completed (R5a); 3: unpack forwards to lean4-wasm64 and exits 2 without it (plan B1a); 2: the path rule of 2026-10-06
     expect(Object.keys(json.specs).sort()).toEqual([...TOOLS].sort());
     expect(Object.keys(json.exitClasses)).toEqual(["0", "1", "2", "3"]);
     for (const tool of TOOLS) {
@@ -242,6 +244,38 @@ describe("SPECS", () => {
         expect(source).toMatch(/import \{ parseCli \} from "(\.\/|(\.\.\/)+(pipeline\/)?snapshot\/)cli\.mjs";/);
         expect(source).toMatch(new RegExp(`parseCli\\(${JSON.stringify(tool)}[,)]`));
       }
+    }
+  });
+});
+
+describe("the failure classifiers", () => {
+  // Each SPEC's classifier template, evaluated: the regex its script runs on the runner's output.
+  const classifier = (tool: string) => new Function(`return ${SPECS[tool]!.classifier!.template.replace(/^const FAILURE = |;$/g, "")}`)() as RegExp;
+  const bake = classifier("bake-snapshot");
+  const sr = classifier("supervised-run");
+  test("bake-snapshot's is supervised-run's rule scoped to probe.lean's own diagnostics, plus the runtime's failure lines", () => {
+    for (const line of [
+      "/work/probe.lean:1:0: error: unknown module prefix 'Nope'",
+      "/work/probe.lean:3:2: error(lean.unknownIdentifier): Unknown identifier `foo`",
+      "PANIC at Lean.Foo bar",
+      "INTERNAL PANIC: x",
+      "ABORT: RuntimeError: unreachable",
+      "RuntimeError: memory access out of bounds",
+      "uncaught exception: failed to write '/work/init.snap': x",
+    ]) {
+      expect(bake.test(line), `bake: ${line}`).toBe(true);
+      expect(sr.test(line), `supervised-run: ${line}`).toBe(true);
+    }
+    // only the bake's: a failed region save
+    const compactor = "object compactor: out of memory growing the region buffer to 4294967296 bytes";
+    expect([bake.test(compactor), sr.test(compactor)]).toEqual([true, false]);
+    // only supervised-run's: another file's error, and a tool's own `error:` line
+    for (const line of ["/work/Other.lean:1:0: error: x", "error: /a/bin/lean.js not found — pass --artifact or set QED64_LEAN_ARTIFACT"]) {
+      expect([bake.test(line), sr.test(line)], line).toEqual([false, true]);
+    }
+    const completed = SPECS["bake-snapshot"]!.markers.find((m) => m.id === "completed")!.example;
+    for (const line of ["/work/probe.lean:2:0: warning: unused variable `x`", "[DEBUG:PROGRESS] 12/5092: Mathlib.Logic.Basic", "2 + 2 : Nat", completed]) {
+      expect([bake.test(line), sr.test(line)], line).toEqual([false, false]);
     }
   });
 });

@@ -578,7 +578,13 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   environment, its unbuffered output, a runner killed by a signal or exiting
   non-zero, and the bake's signals, HARDENING #83; and the `--work` lock, the
   stale-temp removal, the `--name`, `--lib` and `--entry-fields` refusals and
-  the `build environment` line, D4 a).
+  the `build environment` line, D4 a; and R5a's completion rule: a runner that
+  never exits is stopped once its `.snap` is unchanged across two polls, a
+  growing `.snap` is not complete, a failure line with no save in progress and
+  `--quiet-ms` of quiet is exit 1, a save in progress is exempt, the
+  `--give-up-ms` deadline, and the refusals of the three timing flags).
+  `tests/unit/cli-contract.test.ts` pins the bake's failure classifier against
+  supervised-run's.
 - `infra/worker.js` serves `runtime-manifest*.json` and every `index.json`
   with `must-revalidate`; only digest-named chunks/`.snapz`/`.part-*` files
   are `immutable` (the per-build manifest's NAME is sha256(lean.wasm) but

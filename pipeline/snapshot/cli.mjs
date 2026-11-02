@@ -31,8 +31,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-/** Bumped on a breaking change to the contract (docs/CLI-CONTRACT.md "Stability"). */
-export const CONTRACT_VERSION = 3;
+/** Bumped on a breaking change to the contract (docs/CLI-CONTRACT.md "Stability").
+ * 4: bake-snapshot's stdout marker `reaped` became `completed` (architecture review R5a). */
+export const CONTRACT_VERSION = 4;
 
 /** Substrings new output (any line a pipeline run can print, help and
  * warnings included) must not contain: downstream log judges match them
@@ -148,8 +149,8 @@ export const SPECS = {
     tier: 1,
     binding: "inline",
     node: "node",
-    synopsis: "bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--roots <A,B,…>] [--label <text>] [--initial-bytes <bytes>] [--entry-fields <json object>] [--allow-legacy-imports] [--runner <script>]",
-    summary: "Bake an environment snapshot with the exact wasm64 runtime under Node (the runner is supervised and reaped), gzip it content-addressed into the staging dir and upsert its index entry; the index's per-build copy index.<buildId>.json is written beside it with the same bytes.",
+    synopsis: "bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--roots <A,B,…>] [--label <text>] [--initial-bytes <bytes>] [--entry-fields <json object>] [--allow-legacy-imports] [--runner <script>] [--stable-ms <ms>] [--quiet-ms <ms>] [--give-up-ms <ms>]",
+    summary: "Bake an environment snapshot with the exact wasm64 runtime under Node: the runner, which never exits by itself, is stopped once <work>/<name>.snap is complete; gzip it content-addressed into the staging dir and upsert its index entry (docs/SNAPSHOT-INDEX.md); the index's per-build copy index.<buildId>.json is written beside it with the same bytes.",
     flags: [
       { name: "name", value: "<name>", default: "init", doc: "snapshot name, a letter or digit then letters, digits, '.', '_' or '-': <work>/<name>.snap, <name>.<digest16>.snapz and the index entry" },
       { name: "probe", value: "<lean source>", default: "#check (2 + 2 : Nat)", doc: "the baked file; its import lines become the entry's imports (the env-cache key)" },
@@ -164,23 +165,36 @@ export const SPECS = {
       { name: "entry-fields", value: "<json object>", default: "none", doc: "more entry fields after the core keys and roots/label/initialBytes, in the object's order; refused: not a JSON object, a core key, roots/label/initialBytes (their flags validate them), and the reserved raw, lib and bakedBy (docs/SNAPSHOT-INDEX.md)" },
       { name: "allow-legacy-imports", doc: "let the runner's env cache load legacy non-module packages (patch 0030): sets QED64_ALLOW_LEGACY_IMPORTS=1 for the runner; an inherited QED64_ALLOW_LEGACY_IMPORTS does the same" },
       { name: "runner", value: "<script>", default: "$QED64_RUNNER, else QED64's own pipeline/snapshot/node-runner.mjs (not deprecated)", doc: "the runner script, spawned as <this node> --stack-size=8192 <script> --work <dir> --artifact <dir> [--lib <tree>] -- …; a relative path resolves against the cwd" },
+      { name: "stable-ms", value: "<ms>", default: "5000", doc: "the poll interval: the bake is done once <work>/<name>.snap has the same size at two polls this far apart; the runner is then stopped" },
+      { name: "quiet-ms", value: "<ms>", default: "120000", doc: "after a failure line in the runner's output: this long without output, with no <name>.snap and no save in progress, ends the bake (exit 1)" },
+      { name: "give-up-ms", value: "<ms>", default: "21600000 (6 h)", doc: "no complete <name>.snap by then ends the bake (exit 1)" },
     ],
     env: ["QED64_LEAN_ARTIFACT", "QED64_WORK", "QED64_STAGING", "QED64_RUNNER", "LEAN_COMPACTOR_RESERVE", "QED64_ALLOW_LEGACY_IMPORTS", "QED64_PROFILE_INIT"],
     exits: {
-      0: "baked and the index upserted (also when the wedged runner was reaped); NOT a verdict on the probe's Lean messages",
-      1: "after the bake started: the runner exited non-zero, was killed by a signal this bake did not send or could not start; no .snap was produced; compressing failed; or the index could not be written (unreadable, corrupt, foreign or unpaired under the lock, its lock held past the wait, or a failed write): a written .snapz is kept and its entry printed (unindexed entry <json>)",
-      2: "refused before the runner: no --artifact, QED64_LEAN_ARTIFACT or deprecated default; no lean.wasm under the artifact, --out inside public/, an index paired with another runtime or with none, a malformed --roots or --initial-bytes, a --runner (or QED64_RUNNER) script that does not exist, an unreadable or corrupt index.json (only a missing one is a new index), a bad --name or --entry-fields, a --lib that is not a directory, or a <work>/.bake.lock that is held or cannot be created",
+      0: "baked: the .snap complete, compressed, and the index upserted (the runner is stopped once its .snap is complete); NOT a verdict on the probe's Lean messages",
+      1: "after the bake started: the runner exited non-zero, was killed by a signal this bake did not send or could not start; no .snap was produced (a failure line and then --quiet-ms of quiet, or nothing complete within --give-up-ms); compressing failed; or the index could not be written (unreadable, corrupt, foreign or unpaired under the lock, its lock held past the wait, or a failed write): a written .snapz is kept and its entry printed (unindexed entry <json>)",
+      2: "refused before the runner: no --artifact, QED64_LEAN_ARTIFACT or deprecated default; no lean.wasm under the artifact, --out inside public/, an index paired with another runtime or with none, a malformed --roots, --initial-bytes, --stable-ms, --quiet-ms or --give-up-ms, a --runner (or QED64_RUNNER) script that does not exist, an unreadable or corrupt index.json (only a missing one is a new index), a bad --name or --entry-fields, a --lib that is not a directory, or a <work>/.bake.lock that is held or cannot be created",
       129: "SIGHUP received before the index was written: forwarded to the runner (SIGKILL 10 s later), no index write",
       130: "SIGINT, likewise",
       143: "SIGTERM, likewise",
     },
+    classifier: { template: "const FAILURE = /^(?:\\S*\\/)?probe\\.lean:\\d+:\\d+: error[:( ]|PANIC|ABORT:|RuntimeError|object compactor:|uncaught exception/;",
+      doc: "a runner output line matching this regex is a failure line: probe.lean's own error diagnostics (supervised-run's rule, scoped to the probe) and the runtime's failure lines" },
     markers: [
       { id: "baking", stream: "stdout", template: ["baking ${name}.snap for runtime ${buildId} (probe: ${JSON.stringify(probe)}; compactor reserve ${(Number(reserve) / 1024 ** 3).toFixed(1)} GiB) → ${out}"],
         regex: /^baking (\S+)\.snap for runtime (\S+) \(probe: (.*); compactor reserve (\d+\.\d) GiB\) → (.+)$/,
         example: 'baking init.snap for runtime wasm64-0123456789abcdef (probe: "#check (2 + 2 : Nat)"; compactor reserve 3.5 GiB) → /repo/work/staging/wasm64-0123456789abcdef/snapshots' },
-      { id: "reaped", stream: "stdout", template: ["bake output stable (${size} bytes) with runner quiet — reaping the wedged exit"],
-        regex: /^bake output stable \((\d+) bytes\) with runner quiet — reaping the wedged exit$/,
-        example: "bake output stable (342000000 bytes) with runner quiet — reaping the wedged exit" },
+      { id: "completed", stream: "stdout", template: ["bake output complete (${size} bytes, unchanged across two polls ${stableMs} ms apart) — stopping the runner"],
+        regex: /^bake output complete \((\d+) bytes, unchanged across two polls (\d+) ms apart\) — stopping the runner$/,
+        example: "bake output complete (116893325 bytes, unchanged across two polls 5000 ms apart) — stopping the runner" },
+      { id: "failed-quiet", stream: "stderr",
+        template: ["${TOOL}: the runner printed a failure line (${failure.kind}, ${failure.stream} line ${failure.line}) and, after ${quietMs} ms of quiet, wrote no ${name}.snap and began no save (--quiet-ms) — stopping it"],
+        regex: /^bake-snapshot: the runner printed a failure line \(([a-z-]+), (stdout|stderr) line (\d+)\) and, after (\d+) ms of quiet, wrote no (\S+)\.snap and began no save \(--quiet-ms\) — stopping it$/,
+        example: "bake-snapshot: the runner printed a failure line (lean-error, stdout line 3) and, after 120000 ms of quiet, wrote no init.snap and began no save (--quiet-ms) — stopping it" },
+      { id: "gave-up", stream: "stderr",
+        template: ["${TOOL}: no complete ${name}.snap within ${giveUpMs} ms (--give-up-ms) — the runner is stopped, nothing compressed, the index is not written"],
+        regex: /^bake-snapshot: no complete (\S+)\.snap within (\d+) ms \(--give-up-ms\) — the runner is stopped, nothing compressed, the index is not written$/,
+        example: "bake-snapshot: no complete mathlib.snap within 21600000 ms (--give-up-ms) — the runner is stopped, nothing compressed, the index is not written" },
       { id: "compressing", stream: "stdout", template: ["compressing ${name}.snapz …"],
         regex: /^compressing (\S+)\.snapz …$/, example: "compressing init.snapz …" },
       { id: "baked", stream: "stdout",

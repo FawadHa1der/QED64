@@ -12,6 +12,13 @@
 // the pairing is a datum rather than prose (review C6). `--out` inside
 // public/ is refused before the runner starts; promotion is a separate step.
 //
+// The runner never exits by itself (patches 0020/0031). The bake is done once
+// <work>/<name>.snap has the same nonzero size at two polls --stable-ms apart
+// (the runtime writes <name>.snap.tmp.<pid> and renames it, after probe.lean's
+// whole log), and then stops it (architecture review R5a). A failure line with
+// no .snap and no save in progress, then --quiet-ms without output, or no
+// complete .snap within --give-up-ms: exit 1.
+//
 // Stop it with SIGTERM, SIGINT or SIGHUP: it forwards the signal to its runner,
 // writes no index and exits 128+n. The runner gets only PATH, HOME, TMPDIR and
 // the bake's own variables (runnerEnv below).
@@ -22,7 +29,7 @@
 // no bake uses --work). QED64 owns the bake and the snapshot index (architecture
 // review D4 a); the writer rules are docs/SNAPSHOT-INDEX.md.
 //
-// Usage: node pipeline/snapshot/bake-snapshot.mjs [--name init] [--probe '#check 2+2'] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--roots <A,B,…>] [--label <text>] [--initial-bytes <bytes>] [--entry-fields <json object>] [--allow-legacy-imports] [--runner <script>]
+// Usage: node pipeline/snapshot/bake-snapshot.mjs [--name init] [--probe '#check 2+2'] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--roots <A,B,…>] [--label <text>] [--initial-bytes <bytes>] [--entry-fields <json object>] [--allow-legacy-imports] [--runner <script>] [--stable-ms <ms>] [--quiet-ms <ms>] [--give-up-ms <ms>]
 // Paths: each flag, else its variable (QED64_LEAN_ARTIFACT, QED64_WORK,
 // QED64_STAGING), else the deprecated repo-relative default with one WARNING
 // (docs/CLI-CONTRACT.md "Path resolution").
@@ -33,6 +40,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
+import { StringDecoder } from "node:string_decoder";
 import { createGzip } from "node:zlib";
 import { fileURLToPath } from "node:url";
 import { buildIdOfArtifact, refuseInsidePublic, resolveToolPath, stagingDir, toolPath } from "../toolchain/artifact-paths.mjs";
@@ -45,10 +53,10 @@ import { buildIdOfArtifact, refuseInsidePublic, resolveToolPath, stagingDir, too
 // --flag=value is rewritten to the two-token form this script reads, with the later values
 // of a repeated flag dropped so the first wins here too (docs/CLI-CONTRACT.md).
 {
-  const spec = {"tool":"bake-snapshot","usage":"bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--roots <A,B,…>] [--label <text>] [--initial-bytes <bytes>] [--entry-fields <json object>] [--allow-legacy-imports] [--runner <script>]","flags":{"name":1,"probe":1,"artifact":1,"lib":1,"reserve":1,"work":1,"out":1,"roots":1,"label":1,"initial-bytes":1,"entry-fields":1,"allow-legacy-imports":0,"runner":1},"required":[],"passthrough":null,"passthroughRequired":false};
+  const spec = {"tool":"bake-snapshot","usage":"bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--roots <A,B,…>] [--label <text>] [--initial-bytes <bytes>] [--entry-fields <json object>] [--allow-legacy-imports] [--runner <script>] [--stable-ms <ms>] [--quiet-ms <ms>] [--give-up-ms <ms>]","flags":{"name":1,"probe":1,"artifact":1,"lib":1,"reserve":1,"work":1,"out":1,"roots":1,"label":1,"initial-bytes":1,"entry-fields":1,"allow-legacy-imports":0,"runner":1,"stable-ms":1,"quiet-ms":1,"give-up-ms":1},"required":[],"passthrough":null,"passthroughRequired":false};
   spec.help = [
-    "usage: bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--roots <A,B,…>] [--label <text>] [--initial-bytes <bytes>] [--entry-fields <json object>] [--allow-legacy-imports] [--runner <script>]",
-    "Bake an environment snapshot with the exact wasm64 runtime under Node (the runner is supervised and reaped), gzip it content-addressed into the staging dir and upsert its index entry; the index's per-build copy index.<buildId>.json is written beside it with the same bytes.",
+    "usage: bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--roots <A,B,…>] [--label <text>] [--initial-bytes <bytes>] [--entry-fields <json object>] [--allow-legacy-imports] [--runner <script>] [--stable-ms <ms>] [--quiet-ms <ms>] [--give-up-ms <ms>]",
+    "Bake an environment snapshot with the exact wasm64 runtime under Node: the runner, which never exits by itself, is stopped once <work>/<name>.snap is complete; gzip it content-addressed into the staging dir and upsert its index entry (docs/SNAPSHOT-INDEX.md); the index's per-build copy index.<buildId>.json is written beside it with the same bytes.",
     "run as: node pipeline/snapshot/bake-snapshot.mjs (or npm run bake:snapshot -- …)",
     "",
     "flags:",
@@ -66,6 +74,9 @@ import { buildIdOfArtifact, refuseInsidePublic, resolveToolPath, stagingDir, too
     "                            more entry fields after the core keys and roots/label/initialBytes, in the object's order; refused: not a JSON object, a core key, roots/label/initialBytes (their flags validate them), and the reserved raw, lib and bakedBy (docs/SNAPSHOT-INDEX.md) (default: none)",
     "  --allow-legacy-imports    let the runner's env cache load legacy non-module packages (patch 0030): sets QED64_ALLOW_LEGACY_IMPORTS=1 for the runner; an inherited QED64_ALLOW_LEGACY_IMPORTS does the same",
     "  --runner <script>         the runner script, spawned as <this node> --stack-size=8192 <script> --work <dir> --artifact <dir> [--lib <tree>] -- …; a relative path resolves against the cwd (default: $QED64_RUNNER, else QED64's own pipeline/snapshot/node-runner.mjs (not deprecated))",
+    "  --stable-ms <ms>          the poll interval: the bake is done once <work>/<name>.snap has the same size at two polls this far apart; the runner is then stopped (default: 5000)",
+    "  --quiet-ms <ms>           after a failure line in the runner's output: this long without output, with no <name>.snap and no save in progress, ends the bake (exit 1) (default: 120000)",
+    "  --give-up-ms <ms>         no complete <name>.snap by then ends the bake (exit 1) (default: 21600000 (6 h))",
     "  -h, --help                print this help and exit 0, before any side effect",
     "",
     "environment:",
@@ -79,9 +90,9 @@ import { buildIdOfArtifact, refuseInsidePublic, resolveToolPath, stagingDir, too
     "  QED64_PROFILE_INIT        when set, forwarded into the wasm environment to profile the [init] replay",
     "",
     "exit codes:",
-    "  0    baked and the index upserted (also when the wedged runner was reaped); NOT a verdict on the probe's Lean messages",
-    "  1    after the bake started: the runner exited non-zero, was killed by a signal this bake did not send or could not start; no .snap was produced; compressing failed; or the index could not be written (unreadable, corrupt, foreign or unpaired under the lock, its lock held past the wait, or a failed write): a written .snapz is kept and its entry printed (unindexed entry <json>)",
-    "  2    refused before the runner: no --artifact, QED64_LEAN_ARTIFACT or deprecated default; no lean.wasm under the artifact, --out inside public/, an index paired with another runtime or with none, a malformed --roots or --initial-bytes, a --runner (or QED64_RUNNER) script that does not exist, an unreadable or corrupt index.json (only a missing one is a new index), a bad --name or --entry-fields, a --lib that is not a directory, or a <work>/.bake.lock that is held or cannot be created",
+    "  0    baked: the .snap complete, compressed, and the index upserted (the runner is stopped once its .snap is complete); NOT a verdict on the probe's Lean messages",
+    "  1    after the bake started: the runner exited non-zero, was killed by a signal this bake did not send or could not start; no .snap was produced (a failure line and then --quiet-ms of quiet, or nothing complete within --give-up-ms); compressing failed; or the index could not be written (unreadable, corrupt, foreign or unpaired under the lock, its lock held past the wait, or a failed write): a written .snapz is kept and its entry printed (unindexed entry <json>)",
+    "  2    refused before the runner: no --artifact, QED64_LEAN_ARTIFACT or deprecated default; no lean.wasm under the artifact, --out inside public/, an index paired with another runtime or with none, a malformed --roots, --initial-bytes, --stable-ms, --quiet-ms or --give-up-ms, a --runner (or QED64_RUNNER) script that does not exist, an unreadable or corrupt index.json (only a missing one is a new index), a bad --name or --entry-fields, a --lib that is not a directory, or a <work>/.bake.lock that is held or cannot be created",
     "  129  SIGHUP received before the index was written: forwarded to the runner (SIGKILL 10 s later), no index write",
     "  130  SIGINT, likewise",
     "  143  SIGTERM, likewise",
@@ -199,7 +210,25 @@ function arg(name, fallback) {
   const i = process.argv.indexOf(`--${name}`);
   return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : fallback;
 }
-const USAGE = "bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--roots <A,B,…>] [--label <text>] [--initial-bytes <bytes>] [--entry-fields <json object>] [--allow-legacy-imports] [--runner <script>]";
+const USAGE = "bake-snapshot.mjs [--name <name>] [--probe <lean source>] [--artifact <dir>] [--lib <olean tree>] [--reserve <bytes>] [--work <dir>] [--out <dir>] [--roots <A,B,…>] [--label <text>] [--initial-bytes <bytes>] [--entry-fields <json object>] [--allow-legacy-imports] [--runner <script>] [--stable-ms <ms>] [--quiet-ms <ms>] [--give-up-ms <ms>]";
+// The supervision's clock (R5a; supervised-run's names): the poll interval of the completion rule,
+// the failure guard's quiet window and the give-up deadline (6 h, a backstop only).
+const TIMING = [["stable-ms", 5000], ["quiet-ms", 120000], ["give-up-ms", 21600000]];
+// D6/R5a: a failure line (docs/CLI-CONTRACT.md, bake-snapshot): supervised-run's `: error` rule scoped to
+// probe.lean's own diagnostics, plus the runtime's failure lines. SPECS["bake-snapshot"].classifier pins this source line.
+const FAILURE = /^(?:\S*\/)?probe\.lean:\d+:\d+: error[:( ]|PANIC|ABORT:|RuntimeError|object compactor:|uncaught exception/;
+// A failure line's kind, the first match in this order (no kind name holds a reserved substring).
+const FAILURE_KINDS = [
+  ["lean-error", /^(?:\S*\/)?probe\.lean:\d+:\d+: error[:( ]/],
+  ["compactor", /object compactor:/],
+  ["abort", /ABORT:/],
+  ["panic", /PANIC/],
+  ["runtime-trap", /RuntimeError/],
+  ["exception", /uncaught exception/],
+];
+const failureKind = (line) => FAILURE_KINDS.find(([, re]) => re.test(line))[0];
+// A runner line is judged by its first 64 KiB (the scan's memory bound; a diagnostic's position comes first).
+const LINE_MAX = 65536;
 // Overlay metadata (docs/EMBEDDING.md §8), written into the entry only when
 // given: the module roots the environment serves, a label, an initial commit.
 const ROOT = /^[A-Za-z_][\w']*(?:\.[A-Za-z_][\w']*)*$/;
@@ -355,16 +384,27 @@ function takeWorkLock(lockPath, work) {
   }
 }
 
+/** True while the runtime has a save of `name` open: its <name>.snap.tmp.<pid> (stale ones were removed under the --work lock). */
+function saveInProgress(work, name) {
+  try { return fs.readdirSync(work).some((f) => f.startsWith(`${name}.snap.tmp.`)); } catch { return false; }
+}
+
 /**
- * Run the runner and supervise it. spawn, not execFile: no output buffer whose limit kills the
- * runner (execFile's 64 MiB maxBuffer did). Patch 0031 (PROXY_TO_PTHREAD): the runner's process
- * EXIT wedges (the proxied exit is swallowed by the 0020 mailbox keepalive) while the actual bake
- * (save + probe) completes fine, so once the target .snap has been stable for a while after the
- * runner goes quiet, the bake SIGKILLs it. Resolves once, on 'close' (the process exited and both
- * pipes closed): { code, signal, reaped }, or { error } when it could not start. `onSpawn(pid)`
- * runs as soon as the runner has a pid.
+ * Run the runner and supervise it until its .snap is complete (R5a). spawn, not execFile: no
+ * output buffer whose limit kills the runner (execFile's 64 MiB maxBuffer did). Since patches
+ * 0020/0031 the runner never exits by itself. The runtime writes the region to
+ * <name>.snap.tmp.<pid> and renames it into place after every message of probe.lean has been
+ * printed (fork module.cpp:316-423, Frontend.lean:370-405), so the bake is done once `target` has
+ * the same nonzero size at two polls `stableMs` apart: it prints `completed` and SIGKILLs the
+ * runner. Two guards end a run that cannot finish: a failure line (FAILURE) with no .snap, no
+ * <name>.snap.tmp.* (no save in progress) and `quietMs` without output (a header Lean rejects
+ * never saves); and `giveUpMs`. The target was unlinked before, so a stale file never counts.
+ * Resolves once, on 'close' (the process exited and both pipes closed): { code, signal, stopped,
+ * failure } with `stopped` null (the runner exited by itself), "completed", "failure" or
+ * "give-up" and `failure` the first failure line ({ kind, stream, line }) or null; or { error }
+ * when it could not start.
  */
-function supervise(runnerArgs, runnerEnv, target, onSpawn) {
+function supervise({ args, env, target, work, name, stableMs, quietMs, giveUpMs }) {
   return new Promise((resolve) => {
     let done = false;
     let watch = null;
@@ -375,38 +415,68 @@ function supervise(runnerArgs, runnerEnv, target, onSpawn) {
       state.child = null;
       resolve(result);
     };
-    const child = spawn(process.execPath, ["--stack-size=8192", ...runnerArgs], { env: runnerEnv, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(process.execPath, ["--stack-size=8192", ...args], { env, stdio: ["ignore", "pipe", "pipe"] });
     state.child = child;
-    if (child.pid) onSpawn(child.pid);
+    if (child.pid) {
+      try {
+        state.workLock?.addPid(child.pid);
+      } catch (e) {
+        console.error(`${TOOL}: WARNING — could not record the runner's pid ${child.pid} in ${state.workLock.path} (${e?.code ?? e?.message})`);
+      }
+    }
     child.on("error", (error) => finish({ error }));
-    // The runner's output goes to the bake's; if that reader is gone the runner is drained instead.
-    for (const [from, to] of [[child.stdout, process.stdout], [child.stderr, process.stderr]]) {
+    const started = Date.now();
+    let lastActivity = started;
+    let lastSize = -1;
+    let stopped = null;
+    let failure = null;
+    // The runner's output goes to the bake's (if that reader is gone the runner is drained instead)
+    // and is scanned line by line, per stream, for the first failure line.
+    for (const [stream, from, to] of [["stdout", child.stdout, process.stdout], ["stderr", child.stderr, process.stderr]]) {
       from.pipe(to);
       to.once("error", () => { from.unpipe(to); from.resume(); });
+      const decoder = new StringDecoder("utf8");
+      let carry = "";
+      let n = 0;
+      const scan = (line) => {
+        n += 1;
+        if (!failure && FAILURE.test(line)) failure = { kind: failureKind(line), stream, line: n };
+      };
+      from.on("data", (chunk) => {
+        lastActivity = Date.now();
+        const lines = (carry + decoder.write(chunk)).split("\n");
+        carry = lines.pop().slice(0, LINE_MAX);
+        for (const line of lines) scan(line.slice(0, LINE_MAX));
+      });
+      from.on("end", () => {
+        const rest = (carry + decoder.end()).slice(0, LINE_MAX);
+        if (rest) scan(rest);
+      });
     }
-    let lastActivity = Date.now();
-    child.stdout.on("data", () => { lastActivity = Date.now(); });
-    child.stderr.on("data", () => { lastActivity = Date.now(); });
-    let lastSize = -1;
-    let stableSince = 0;
-    let reaped = false;
+    const stop = (why) => {
+      stopped = why;
+      clearInterval(watch);
+      child.kill("SIGKILL");
+    };
     watch = setInterval(() => {
-      if (reaped || state.signal) return;
+      if (stopped || state.signal) return;
       let size = -1;
       try { size = fs.statSync(target).size; } catch { /* not yet */ }
-      if (size !== lastSize) { lastSize = size; stableSince = Date.now(); }
-      // The compactor is CPU-silent for many minutes between the last import
-      // line and the finished save — quiet alone means nothing, and stability
-      // only counts because the target was unlinked at bake start.
-      const quiet = Date.now() - lastActivity > 300000;
-      const stable = size > 0 && Date.now() - stableSince > 120000;
-      if (quiet && stable) {
-        reaped = true;
-        console.log(`bake output stable (${size} bytes) with runner quiet — reaping the wedged exit`);
-        child.kill("SIGKILL");
+      if (size > 0 && size === lastSize) {
+        console.log(`bake output complete (${size} bytes, unchanged across two polls ${stableMs} ms apart) — stopping the runner`);
+        return stop("completed");
       }
-    }, 5000);
-    child.on("close", (code, signal) => finish({ code, signal, reaped }));
+      lastSize = size;
+      if (failure && size < 0 && Date.now() - lastActivity > quietMs && !saveInProgress(work, name)) {
+        console.error(`${TOOL}: the runner printed a failure line (${failure.kind}, ${failure.stream} line ${failure.line}) and, after ${quietMs} ms of quiet, wrote no ${name}.snap and began no save (--quiet-ms) — stopping it`);
+        return stop("failure");
+      }
+      if (Date.now() - started > giveUpMs) {
+        console.error(`${TOOL}: no complete ${name}.snap within ${giveUpMs} ms (--give-up-ms) — the runner is stopped, nothing compressed, the index is not written`);
+        return stop("give-up");
+      }
+    }, stableMs);
+    child.on("close", (code, signal) => finish({ code, signal, stopped, failure }));
   });
 }
 
@@ -439,6 +509,16 @@ async function main() {
       return 2;
     }
     fields = r.fields;
+  }
+  const timing = {};
+  for (const [flag, fallback] of TIMING) {
+    const text = arg(flag, null);
+    const ms = text === null ? fallback : /^\d+$/.test(text) ? Number(text) : NaN;
+    if (!(Number.isSafeInteger(ms) && ms > 0)) {
+      console.error(`bake-snapshot: refusing --${flag} ${JSON.stringify(text)}: expected a positive whole number of milliseconds`);
+      return 2;
+    }
+    timing[flag] = ms;
   }
   // The runtime identity comes from the artifact that will do the baking,
   // never from a manifest in public/ — a bake must not inherit whatever the
@@ -551,30 +631,35 @@ async function main() {
   // before the new save even begins (it cost two silently-skipped bakes).
   const snap = path.join(work, `${name}.snap`);
   try { fs.rmSync(snap); } catch { /* absent */ }
-  const run = await supervise(runnerArgs, runnerEnv, snap, (pid) => {
-    try {
-      state.workLock.addPid(pid);
-    } catch (e) {
-      console.error(`bake-snapshot: WARNING — could not record the runner's pid ${pid} in ${workLockPath} (${e?.code ?? e?.message})`);
-    }
+  const run = await supervise({
+    args: runnerArgs, env: runnerEnv, target: snap, work, name,
+    stableMs: timing["stable-ms"], quietMs: timing["quiet-ms"], giveUpMs: timing["give-up-ms"],
   });
+  // Judged only now: the runner has exited and both its pipes have closed.
   if (state.signal) return SIGNAL_EXIT[state.signal];
   if (run.error) {
     console.error(`${TOOL}: cannot start the runner (${run.error.code ?? run.error.message})`);
     return 1;
   }
-  const { code, signal, reaped } = run;
-  if (code === null && !reaped) {
+  const { code, signal, stopped } = run;
+  if (stopped === "failure") {
+    console.error("FAIL: snapshot file was not produced"); // after the failed-quiet line
+    return 1;
+  }
+  if (stopped === "give-up") return 1; // after the gave-up line
+  if (stopped === null && code === null) {
     // A terminal's Ctrl-C reaches the runner and the bake together: the bake's own handler may still be queued.
     await new Promise((resolve) => setImmediate(resolve));
     if (state.signal) return SIGNAL_EXIT[state.signal];
     console.error(`${TOOL}: the runner was killed by ${signal}, a signal this bake did not send — nothing compressed, the index is not written`);
     return 1;
   }
-  if (code !== 0 && code !== null && !reaped) {
+  if (stopped === null && code !== 0) {
     console.error(`${TOOL}: runner exited ${code}`);
     return 1;
   }
+  // Completed, or the runner exited 0 by itself. run.failure (the first failure line) is not a
+  // verdict yet: exit 0 still means "baked" (docs/CLI-CONTRACT.md, bake-snapshot).
 
   if (!fs.existsSync(snap)) {
     console.error("FAIL: snapshot file was not produced");
