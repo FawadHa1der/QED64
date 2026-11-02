@@ -40,7 +40,10 @@ const work = a[a.indexOf("--work") + 1];
 const save = a.find((x) => x.startsWith("--incr-header-save=")).split("=")[1].replace(/^\/work\//, "");
 const cfgFile = path.join(work, "fake.json");
 const cfg = fs.existsSync(cfgFile) ? JSON.parse(fs.readFileSync(cfgFile, "utf8")) : {};
-fs.writeFileSync(path.join(work, "runner.json"), JSON.stringify({ pid: process.pid, argv: a, env: process.env }));
+// A temp name, then a rename: the lifecycle cases poll for the file and then parse it.
+const recordTmp = path.join(work, "runner.json.tmp");
+fs.writeFileSync(recordTmp, JSON.stringify({ pid: process.pid, argv: a, env: process.env }));
+fs.renameSync(recordTmp, path.join(work, "runner.json"));
 for (const [stream, line] of cfg.print ?? []) fs.writeSync(stream === "stderr" ? 2 : 1, line + "\n");
 for (let i = 0; i < (cfg.bigStdoutMiB ?? 0); i++) fs.writeSync(1, "x".repeat(1 << 20) + "\n");
 if (cfg.corrupt) fs.writeFileSync(cfg.corrupt, cfg.corruptWith ?? "{ not json");

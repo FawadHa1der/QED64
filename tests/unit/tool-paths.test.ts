@@ -2,7 +2,9 @@
 // "Path resolution", plan step A3) and the --stack-size re-exec ("Runtime"),
 // pinned without booting a runtime.
 //
-// Safety: no test here loads a lean.js or a lean.wasm. The tools run from a
+// Safety: no test here loads a real lean.js or any lean.wasm; the R10 block
+// runs resident-probe to completion against a fake Emscripten glue at
+// bin/lean.js. The tools run from a
 // SCRATCH CHECKOUT (the script and pipeline/toolchain/artifact-paths.mjs
 // copied into a temp dir, so "the repo root" and its deprecated defaults are
 // the test's), every environment variable of the rule is cleared, and each

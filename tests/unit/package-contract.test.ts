@@ -249,16 +249,22 @@ describe("the worker protocol ledger (docs/EMBEDDING.md §7.7)", () => {
   // Architecture review M3 (the format guard): the worker refuses any other schema before it fetches a byte, and
   // a consumer's staging check compares its runtime's schema with closure.json's list. The full list is not
   // hard-coded here, so a schema that joins it changes no test in this file.
-  it("the runtime manifest schemas the worker reads: closure.json, the worker and the release generator agree; v1 stays readable; the pinned runtime is one of them", () => {
+  it("the runtime manifest schemas the worker reads: closure.json, the worker, the release generator, verify-release and fetch-artifacts agree; v1 stays readable; the pinned runtime is one of them", () => {
     expect(c.runtime.manifestSchemas).toContain("org.lean-browser64.runtime/v1");
     expect(read("public/workers/lean.worker.js")).toContain(`const RUNTIME_MANIFEST_SCHEMAS = Object.freeze(${JSON.stringify(c.runtime.manifestSchemas).replace(/,/g, ", ")});`);
     expect([...RUNTIME_MANIFEST_SCHEMAS]).toEqual(c.runtime.manifestSchemas);
     expect(c.runtime.manifestSchemas).toContain(record.runtime.schema ?? "org.lean-browser64.runtime/v1");
     expect(c.runtime.manifestSchemas).toContain(JSON.parse(read("public/runtime/runtime-manifest.json")).schema);
-    // verify-release (built-ins only: lean4game vendors it) and fetch-artifacts keep module-private copies
+    // verify-release (built-ins only: lean4game vendors it) and fetch-artifacts keep module-private copies: the consts,
+    // the encodings table's keys, and no other schema literal anywhere in the file
     for (const file of ["pipeline/release/verify-release.mjs", "pipeline/release/fetch-artifacts.mjs"]) {
-      const declared = [...read(file).matchAll(/^const RUNTIME_V\d+ = "(org\.lean-browser64\.runtime\/v\d+)";$/gm)].map((m) => m[1]);
-      expect(declared, file).toEqual(c.runtime.manifestSchemas);
+      const source = read(file);
+      const declared = [...source.matchAll(/^const (RUNTIME_V\d+) = "(org\.lean-browser64\.runtime\/v\d+)";$/gm)];
+      expect(declared.map((m) => m[2]), file).toEqual(c.runtime.manifestSchemas);
+      const encodings = source.match(/^const RUNTIME_ENCODINGS = .*$/m);
+      expect(encodings, file).not.toBeNull();
+      expect([...encodings![0].matchAll(/\[(RUNTIME_V\d+)\]/g)].map((m) => m[1]), file).toEqual(declared.map((m) => m[1]));
+      expect(new Set(source.match(/org\.lean-browser64\.runtime\/v\d+/g)), file).toEqual(new Set(c.runtime.manifestSchemas));
     }
   });
   // The floor is checked against the pinned release record (toolchain/lean4-wasm64-release.json, a

@@ -159,6 +159,7 @@ describe("promote-staging.mjs", () => {
     expect(JSON.parse(fs.readFileSync(path.join(pub, "runtime/runtime-manifest.json"), "utf8")).buildId).toBe(old.manifest.buildId);
     expect(fs.readdirSync(path.join(pub, "runtime/chunks"))).toEqual(oldChunks);
     const leftover = path.join(pub, "snapshots", `index.${old.manifest.buildId}.json`);
+    expect(fs.existsSync(leftover)).toBe(false); // the first promote wrote no copy either (D2)
     fs.writeFileSync(leftover, "an earlier promote's copy\n");
     const real = run(promote, ["--staging", newStage, "--public", pub]);
     expect(real.status).toBe(0);
