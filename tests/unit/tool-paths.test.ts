@@ -246,7 +246,7 @@ describe("the tools in a scratch checkout: the variable is honoured", () => {
     expect(io.code).toBe(2);
     expect(io.err).toEqual([
       `compiler-battery: no --snap given and QED64_MATHLIB_SNAP is unset; the deprecated default ${path.join(s, "work/snapshot/mathlib.snap")} is absent — pass --snap <file> or set QED64_MATHLIB_SNAP`,
-      `usage: compiler-battery.mjs [--corpus <file>] [--jobs 3] [--run-dir <dir>] [--snap <mathlib.snap>] [--artifact <stage1>] [--lib <tree>] [--probe <snapshot-probe.mjs>] [--messages-dir <dir>] [--transport compile|fileworker]`,
+      `usage: compiler-battery.mjs [--corpus <file>] [--jobs 3] [--run-dir <dir>] [--snap <mathlib.snap>] [--artifact <stage1>] [--lib <tree>] [--probe <snapshot-probe.mjs>] [--messages-dir <dir>] [--transport compile|fileworker [--settle-ms 5000]]`,
     ]);
     io.err.length = 0; io.code = null;
     const env = { QED64_MATHLIB_SNAP: "/e/m.snap", QED64_LEAN_ARTIFACT: "/e/stage1", QED64_LIB_TREE: "/e/slim" };
@@ -406,13 +406,14 @@ describe("compiler-battery's CLI refusal leaves a record (no stale or missing re
     return { s, corpus, runDir: path.join(s, "runs/r1") };
   }
   const readJson = (f: string) => JSON.parse(fs.readFileSync(f, "utf8"));
+  const USAGE_BATTERY = "compiler-battery.mjs [--corpus <file>] [--jobs 3] [--run-dir <dir>] [--snap <mathlib.snap>] [--artifact <stage1>] [--lib <tree>] [--probe <snapshot-probe.mjs>] [--messages-dir <dir>] [--transport compile|fileworker [--settle-ms 5000]]";
 
   test("nothing resolves: exit 2, the no-path line in compiler.log, a fresh all-infra report in work/adversarial/ and the run dir, nothing spawned", () => {
     const { s, corpus, runDir } = batteryCheckout();
     const r = run(s, "tests/adversarial/compiler-battery.mjs", ["--corpus", corpus, "--run-dir", runDir]);
     expect(r.status, r.stderr).toBe(2);
     const why = `compiler-battery: no --snap given and QED64_MATHLIB_SNAP is unset; the deprecated default ${path.join(s, "work/snapshot/mathlib.snap")} is absent — pass --snap <file> or set QED64_MATHLIB_SNAP`;
-    const usage = "usage: compiler-battery.mjs [--corpus <file>] [--jobs 3] [--run-dir <dir>] [--snap <mathlib.snap>] [--artifact <stage1>] [--lib <tree>] [--probe <snapshot-probe.mjs>] [--messages-dir <dir>] [--transport compile|fileworker]";
+    const usage = `usage: ${USAGE_BATTERY}`;
     expect(r.lines).toEqual([why, usage, `compiler battery: REFUSED — ${why}`]);
     expect(r.lines[0]).toMatch(NO_PATH);
     expect(fs.readFileSync(path.join(runDir, "compiler.log"), "utf8").split("\n").filter(Boolean)).toEqual(r.lines);
@@ -473,7 +474,7 @@ console.log('{"caption":"","severity":"information","pos":{"line":2,"column":0},
 console.log("compile: tag=0 elapsed=900ms errors=0");
 console.log('RESIDENT PROBE PASS {"ok":true,"why":"progress drained (file probe)"}');
 `;
-  test("--transport fileworker: an unknown transport and --probe exit 2 with a record; a missing init.snap beside --snap is the all-infra refusal (exit 3)", () => {
+  test("--transport fileworker: an unknown transport, --probe and a bad --settle-ms exit 2 with a record, as does --settle-ms under --transport compile; a missing init.snap beside --snap is the all-infra refusal (exit 3)", () => {
     const { s, corpus, runDir } = batteryCheckout();
     const art = fakeStage1(path.join(s, "art"), { wasm: true });
     fs.writeFileSync(path.join(s, "m.snap"), "a snapshot");
@@ -487,6 +488,20 @@ console.log('RESIDENT PROBE PASS {"ok":true,"why":"progress drained (file probe)
     const why = "compiler-battery: --probe names a snapshot-probe; the FileWorker lane runs resident-probe";
     expect(probe.lines.at(-1)).toBe(`compiler battery: REFUSED — ${why}`);
     expect(readJson(path.join(runDir, "compiler-report.json"))).toMatchObject({ total: 2, infra: 2, refused: why, transport: "fileworker" });
+    // --settle-ms is the FileWorker lane's (resident-probe's settle): the compile lane refuses it, and a value must be a number >= 0.
+    for (const [args, refused, transport] of [
+      [["--settle-ms", "1000"], "compiler-battery: --settle-ms is resident-probe's stable-drain settle; it applies to --transport fileworker only", "compile"],
+      [["--transport", "compile", "--settle-ms", "1000"], "compiler-battery: --settle-ms is resident-probe's stable-drain settle; it applies to --transport fileworker only", "compile"],
+      [["--transport", "fileworker", "--settle-ms", "soon"], "compiler-battery: --settle-ms must be a number of milliseconds >= 0 (got soon)", "fileworker"],
+      [["--transport", "fileworker", "--settle-ms", "-1"], "compiler-battery: --settle-ms must be a number of milliseconds >= 0 (got -1)", "fileworker"],
+      [["--transport", "fileworker", "--settle-ms"], "compiler-battery: --settle-ms must be a number of milliseconds >= 0 (got no value)", "fileworker"],
+    ] as const) {
+      const r = run(s, "tests/adversarial/compiler-battery.mjs", [...pairing, ...args]);
+      expect(r.status, args.join(" ")).toBe(2);
+      expect(r.lines, args.join(" ")).toEqual([refused, `usage: ${USAGE_BATTERY}`, `compiler battery: REFUSED — ${refused}`]);
+      expect(readJson(path.join(runDir, "compiler-report.json")), args.join(" ")).toMatchObject({ total: 2, failed: 2, infra: 2, refused, transport });
+      expect(fs.readdirSync(path.join(s, "work")), args.join(" ")).toEqual(["adversarial"]); // no probe scratch dir: nothing was spawned
+    }
     fs.mkdirSync(path.join(s, "pipeline/snapshot"), { recursive: true });
     fs.writeFileSync(path.join(s, "pipeline/snapshot/resident-probe.mjs"), FAKE_RESIDENT);
     const noInit = run(s, "tests/adversarial/compiler-battery.mjs", [...pairing, "--transport", "fileworker"]);
@@ -496,7 +511,7 @@ console.log('RESIDENT PROBE PASS {"ok":true,"why":"progress drained (file probe)
     expect(fs.existsSync(path.join(s, "pipeline/snapshot/calls.jsonl"))).toBe(false); // nothing was spawned
   });
 
-  test("--transport fileworker runs resident-probe on the item as written (no alias rewrite), seeding init and --snap from its directory; COMPILE_ONLY items are skipped", () => {
+  test("--transport fileworker runs resident-probe on the item as written (no alias rewrite), seeding init and --snap from its directory; COMPILE_ONLY items are skipped; --settle-ms is forwarded", () => {
     const { s, runDir } = batteryCheckout();
     const corpus = path.join(s, "fw-corpus.json");
     fs.writeFileSync(corpus, JSON.stringify({ items: [
@@ -512,17 +527,26 @@ console.log('RESIDENT PROBE PASS {"ok":true,"why":"progress drained (file probe)
     fs.mkdirSync(path.join(s, "pipeline/snapshot"), { recursive: true });
     fs.writeFileSync(path.join(s, "pipeline/snapshot/resident-probe.mjs"), FAKE_RESIDENT);
     const msgs = path.join(s, "msgs");
-    const r = run(s, "tests/adversarial/compiler-battery.mjs", ["--corpus", corpus, "--run-dir", runDir, "--snap", path.join(snaps, "umbrella.snap"), "--artifact", art, "--lib", path.join(s, "tree"), "--transport", "fileworker", "--messages-dir", msgs, "--jobs", "1"]);
+    const battery = ["--corpus", corpus, "--run-dir", runDir, "--snap", path.join(snaps, "umbrella.snap"), "--artifact", art, "--lib", path.join(s, "tree"), "--transport", "fileworker", "--messages-dir", msgs, "--jobs", "1"];
+    const r = run(s, "tests/adversarial/compiler-battery.mjs", battery);
     expect(r.status, r.stderr + r.stdout).toBe(0);
     expect(r.stdout).toContain("skip mathlib-name-shadow-faithful-compile (compile path only)");
     expect(r.stdout).toContain("compiler battery (fileworker): 1/1 passed");
     const calls = fs.readFileSync(path.join(s, "pipeline/snapshot/calls.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
     expect(calls).toHaveLength(1);
     const file = calls[0].argv[calls[0].argv.indexOf("--probe-file") + 1];
-    expect(calls[0].argv).toEqual(["--artifact", art, "--lib", path.join(s, "tree"), "--snap-dir", snaps, "--snapshots", "init,umbrella", "--probe-file", file, "--budget-ms", "50000", "--dump-messages"]);
+    const argv = ["--artifact", art, "--lib", path.join(s, "tree"), "--snap-dir", snaps, "--snapshots", "init,umbrella", "--probe-file", file, "--budget-ms", "50000", "--dump-messages"];
+    expect(calls[0].argv).toEqual(argv); // no --settle-ms: resident-probe's own default (5000)
     expect(calls[0].text).toBe("import Mathlib\n#check 1\n");
     expect(fs.readFileSync(path.join(msgs, "alias.jsonl"), "utf8")).toBe('{"caption":"","severity":"information","pos":{"line":2,"column":0},"endPos":{"line":2,"column":6},"data":"1 : Nat"}\n');
     expect(readJson(path.join(runDir, "compiler-report.json"))).toMatchObject({ total: 1, failed: 0, infra: 0, transport: "fileworker" });
+    // --settle-ms <ms> reaches resident-probe as given (R4 follow-up: L4 times the lane without the fixed 5 s wait).
+    const settled = run(s, "tests/adversarial/compiler-battery.mjs", [...battery, "--settle-ms", "1500"]);
+    expect(settled.status, settled.stderr + settled.stdout).toBe(0);
+    const again = fs.readFileSync(path.join(s, "pipeline/snapshot/calls.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    expect(again).toHaveLength(2);
+    const file2 = again[1].argv[again[1].argv.indexOf("--probe-file") + 1];
+    expect(again[1].argv).toEqual([...argv.map((a) => (a === file ? file2 : a)), "--settle-ms", "1500"]);
   });
 
   test("the snapshot resolves by its variable but no runtime does: the refusal names --artifact / QED64_LEAN_ARTIFACT", () => {

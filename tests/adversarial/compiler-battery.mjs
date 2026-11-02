@@ -17,12 +17,15 @@
 // its first compile line without a wasm panic. An infra-only battery exits 3
 // (refused), never 1 (product failure).
 // Usage: node tests/adversarial/compiler-battery.mjs [--corpus <file>] [--jobs 3] [--run-dir <dir>]
-//          [--snap <mathlib.snap>] [--artifact <stage1>] [--lib <tree>] [--transport compile|fileworker]
+//          [--snap <mathlib.snap>] [--artifact <stage1>] [--lib <tree>] [--transport compile|fileworker [--settle-ms 5000]]
 // --transport fileworker (tier 3, architecture review R4) runs each item as the
 // page does instead: the resident FileWorker (pipeline/snapshot/resident-probe.mjs
 // --probe-file) on the worker's argv and thread setup, init.snap (beside --snap)
 // and --snap seeded, no alias rewrite (headers are served covered or refused),
-// a 5 s stable-drain settle; COMPILE_ONLY items are skipped, --probe is refused.
+// a stable-drain settle (resident-probe's 5 s default, or --settle-ms <ms>, which
+// is forwarded: the settle is part of each item's wall time and of the probe's
+// budget); COMPILE_ONLY items are skipped, --probe is refused, and so is
+// --settle-ms under --transport compile or with a value that is not a number >= 0.
 // The pairing under test: each flag, else QED64_MATHLIB_SNAP / QED64_LEAN_ARTIFACT /
 // QED64_LIB_TREE, else (deprecated, one WARNING each) this checkout's
 // work/snapshot/mathlib.snap, pipeline/toolchain/work/build/stage1 and
@@ -39,7 +42,7 @@ import { fileURLToPath } from "node:url";
 import { resolveToolPath } from "../../pipeline/toolchain/artifact-paths.mjs";
 import { arg, root, teeLog } from "./harness.mjs";
 
-const USAGE = "compiler-battery.mjs [--corpus <file>] [--jobs 3] [--run-dir <dir>] [--snap <mathlib.snap>] [--artifact <stage1>] [--lib <tree>] [--probe <snapshot-probe.mjs>] [--messages-dir <dir>] [--transport compile|fileworker]";
+const USAGE = "compiler-battery.mjs [--corpus <file>] [--jobs 3] [--run-dir <dir>] [--snap <mathlib.snap>] [--artifact <stage1>] [--lib <tree>] [--probe <snapshot-probe.mjs>] [--messages-dir <dir>] [--transport compile|fileworker [--settle-ms 5000]]";
 
 /** Items the FileWorker lane skips: their point is the exact (compile) path. #43: covered, this header's names collide ("already declared"). */
 export const COMPILE_ONLY = new Set(["mathlib-name-shadow-faithful-compile"]);
@@ -163,6 +166,12 @@ async function main() {
   };
   if (!["compile", "fileworker"].includes(transport)) refuse(`compiler-battery: --transport must be compile or fileworker (got ${transport})`);
   if (fileworker && process.argv.includes("--probe")) refuse("compiler-battery: --probe names a snapshot-probe; the FileWorker lane runs resident-probe", { transport });
+  // --settle-ms: resident-probe's stable-drain settle, forwarded as given (null = its default, 5000). The compile lane has none.
+  const settleMs = process.argv.includes("--settle-ms") ? arg("settle-ms", "") : null;
+  if (settleMs !== null && !fileworker) refuse("compiler-battery: --settle-ms is resident-probe's stable-drain settle; it applies to --transport fileworker only", { transport });
+  if (settleMs !== null && !(settleMs !== "" && Number.isFinite(Number(settleMs)) && Number(settleMs) >= 0)) {
+    refuse(`compiler-battery: --settle-ms must be a number of milliseconds >= 0 (got ${settleMs || "no value"})`, { transport });
+  }
   if (fileworker) {
     for (const it of corpus) if (COMPILE_ONLY.has(it.name)) console.log(`skip ${it.name} (compile path only)`);
     corpus = corpus.filter((it) => !COMPILE_ONLY.has(it.name));
@@ -201,7 +210,7 @@ async function main() {
       const t0 = Date.now();
       const child = spawn("node", fileworker
         ? ["--stack-size=8192", probe, "--artifact", artifact, "--lib", lib, "--snap-dir", snapDir, "--snapshots", seeds,
-          "--probe-file", file, "--budget-ms", String(budget + 30000), "--dump-messages"]
+          "--probe-file", file, "--budget-ms", String(budget + 30000), "--dump-messages", ...(settleMs === null ? [] : ["--settle-ms", settleMs])]
         : ["--stack-size=8192", probe,
           "--snap", snap, "--probe-file", file, "--budget-ms", String(budget + 30000),
           "--via-mem", "--init-flags", "1", "--artifact", artifact,
