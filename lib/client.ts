@@ -166,11 +166,9 @@ export interface WorkerStatus {
   version: number | null;
   header: HeaderStatus | null;
   ring: { bytesQueued: number; refused: number };
-  /** `grown`: how often the pool grew past its preallocated Workers since the runtime initialised; `starts`: pthread
-   * starts in that time (HARDENING #55 addendum). */
+  /** `grown`, `starts`, `lifetimes`: the pool-growth diagnostic's fields (HARDENING #55 addendum), reported until 2026-11 and never set since its removal (R7b); kept declared so v1 readers still type-check. */
   pool: {
     unused: number; running: number; parked?: number; grown?: number; starts?: number;
-    /** Thread lifetimes (start to return) in buckets: every thread, and those whose start grew the pool. */
     lifetimes?: Record<"all" | "grown", { lt100: number; lt1000: number; lt5000: number; ge5000: number }>;
   };
   dropped: number;

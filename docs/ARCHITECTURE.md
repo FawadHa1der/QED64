@@ -221,7 +221,6 @@ are this worker's globals; a MODULARIZE build hides them (`lean.worker.js`
 | `waitAsyncPolyfilled`, `checkMailbox` | the same | message mode off: the glue's single waitAsync waiter stays (#52 layer 2); a `[boot] WARNING` |
 | `__emscripten_check_mailbox` (a global; on b081e7c also `Module.__emscripten_check_mailbox`) | `kickMailbox`, every liveness tick | no kick, the only heal for a lost wakeup; silent |
 | `PThread.unusedWorkers`, `PThread.pthreads` (`Module.PThread` or the global) | `poolSample` | pool sample −1: #59's pool hold never engages (`lib/edit-coalescer.ts`) |
-| `PThread.getNewWorker`, `returnWorkerToPool`, `allocateUnusedWorker`, `runningWorkers`, `finishedThreads` | `instrumentPoolGrowth` (a diagnostic; R7b) | no `[pool] grew` lines |
 | `TTY.ttys` (or `Module.TTY`) | `installStdoutTap` | the boot fails loudly |
 | `runtimeKeepalivePush` | `onRuntimeInitialized` | `[boot] WARNING: runtimeKeepalivePush not in scope`; the first proxied call exits the runtime |
 | `ABORT` | `kickMailbox` guard | none (a guard) |

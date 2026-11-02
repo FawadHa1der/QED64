@@ -2526,3 +2526,9 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   before 1.1.0, with `RUNTIME_FETCH_FAILED`. No served manifest can reach it
   (release-manifest validates them). `EMBED_API_REVISION` and the worker
   `REVISION` are unchanged.
+- **`status().pool` loses the pool-growth diagnostic's fields (2026-11,
+  R7b):** the worker no longer reports `grown`, `starts` or `lifetimes`, and
+  its `[pool]` log lines are gone (docs/HARDENING.md #55). The three fields
+  stay declared optional on `WorkerStatus`, so v1 readers still type-check;
+  `unused`, `running` and `parked` are unchanged. No API change:
+  `EMBED_API_REVISION` is unchanged.

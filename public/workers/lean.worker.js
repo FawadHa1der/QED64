@@ -565,74 +565,6 @@ function poolThreads() {
   return M && M.PThread ? M.PThread : typeof PThread !== "undefined" ? PThread : null;
 }
 
-// HARDENING #55 addendum (2026-10-10): the renderer's cage fills when the pool grows past its preallocated size
-// (Emscripten allocates a Worker whenever none is unused at a pthread_create, and never terminates it: every crash
-// on record had 31-43 DedicatedWorkers against a session's 26). Each growth is logged with what was live at that
-// moment, so the two kinds can be told apart: finished threads not yet returned (a cleanup that lost the race to a
-// create, which a few ms of deferral absorbs) or live threads at the pool size (a real burst: #59's cap, parking).
-// Each line carries its time since the runtime was ready and the thread starts so far. Diagnostic only: the
-// allocation and the start are unchanged.
-let poolGrowths = 0;
-let poolStarts = 0;
-let poolSince = 0;
-// Thread lifetimes, start (getNewWorker) to return (returnWorkerToPool), bucketed: whether a burst's threads finish
-// in ms (a deferral at the pool's ceiling drains them) or sit waiting (only a bound on demand helps). `grown`
-// counts the threads whose start grew the pool; each of those also logs its return.
-const newLifetimes = () => ({ lt100: 0, lt1000: 0, lt5000: 0, ge5000: 0 });
-const poolLifetimes = { all: newLifetimes(), grown: newLifetimes() };
-function countLifetime(b, ms) {
-  if (ms < 100) b.lt100 += 1; else if (ms < 1000) b.lt1000 += 1; else if (ms < 5000) b.lt5000 += 1; else b.ge5000 += 1;
-}
-function instrumentPoolGrowth(PT, log, now = () => performance.now()) {
-  if (!PT || typeof PT.allocateUnusedWorker !== "function" || PT.__qed64PoolGrowth) return false;
-  poolSince = now();
-  // Thread starts: the glue's spawnThread calls getNewWorker through the object once per pthread start, so
-  // growths ÷ starts (with F at each growth) tells a create/cleanup race from a burst.
-  const started = new WeakMap(); // Worker → { t, growth: the growth its start made, or 0 }
-  if (typeof PT.getNewWorker === "function") {
-    const getNew = PT.getNewWorker;
-    PT.getNewWorker = function () {
-      poolStarts += 1;
-      const growthsBefore = poolGrowths;
-      const worker = getNew.apply(this, arguments);
-      if (worker && typeof worker === "object") started.set(worker, { t: now(), growth: poolGrowths > growthsBefore ? poolGrowths : 0 });
-      return worker;
-    };
-  }
-  if (typeof PT.returnWorkerToPool === "function") {
-    const giveBack = PT.returnWorkerToPool;
-    PT.returnWorkerToPool = function (worker) {
-      const rec = worker && typeof worker === "object" ? started.get(worker) : undefined;
-      if (rec) {
-        started.delete(worker);
-        const ms = now() - rec.t;
-        countLifetime(poolLifetimes.all, ms);
-        if (rec.growth) {
-          countLifetime(poolLifetimes.grown, ms);
-          log(`[pool] thread from growth ${rec.growth} returned after ${Math.round(ms)} ms`);
-        }
-      }
-      return giveBack.apply(this, arguments);
-    };
-  }
-  const allocate = PT.allocateUnusedWorker;
-  PT.allocateUnusedWorker = function () {
-    const result = allocate.apply(this, arguments);
-    poolGrowths += 1;
-    const unused = PT.unusedWorkers ? PT.unusedWorkers.length : -1;
-    const busy = PT.runningWorkers ? PT.runningWorkers.length : -1;
-    const live = PT.pthreads ? Object.keys(PT.pthreads).length : -1;
-    const finished = PT.finishedThreads && typeof PT.finishedThreads.size === "number" ? PT.finishedThreads.size : -1;
-    const parkedFn = M && typeof M._lean_wasm_task_manager_parked_threads === "function" ? M._lean_wasm_task_manager_parked_threads : null;
-    // This glue (e1a79c1) has no runningWorkers array: a Worker is unused or carries a thread in `pthreads`.
-    const total = unused < 0 ? -1 : busy >= 0 ? unused + busy : live >= 0 ? unused + live : -1;
-    log(`[pool] grew to ${total} Workers at ${Math.round(now() - poolSince)} ms (live ${live}, finished-unreturned ${finished}, unused ${unused}, parked ${parkedFn ? Number(parkedFn()) : -1}; growth ${poolGrowths}, starts ${poolStarts})`);
-    return result;
-  };
-  PT.__qed64PoolGrowth = true;
-  return true;
-}
-
 function poolSample() {
   // Report -1 (not measured) when the pool is not reachable, so the §6 attack-3 gauntlet can tell "≤ 20 running"
   // from "never sampled".
@@ -645,9 +577,6 @@ function poolSample() {
     unused: PT && PT.unusedWorkers ? PT.unusedWorkers.length : -1,
     running: PT ? Object.keys(PT.pthreads || {}).length : -1,
     parked: parkedFn ? Number(parkedFn()) : -1,
-    grown: poolGrowths,
-    starts: poolStarts,
-    lifetimes: { all: { ...poolLifetimes.all }, grown: { ...poolLifetimes.grown } },
   };
 }
 
@@ -1684,8 +1613,6 @@ async function boot(msg) {
           // After initRuntime's FS.init (the standard streams exist) and
           // before any Lean output: the per-byte stdout sink (W1).
           installStdoutTap();
-          // From here on every growth of the pthread pool past its preallocated Workers is logged (#55 addendum).
-          instrumentPoolGrowth(poolThreads(), (text) => event(null, "log", { stream: "stderr", text }));
           // Persistent embedding: no main() ever runs, so the runtime
           // keepalive counter is 0 and the FIRST event-loop-serviced proxied
           // call from a pthread would end in maybeExit() → _exit(): the glue's
@@ -2254,8 +2181,6 @@ self.__qed64TestExports = {
   // The raw snapshot cache's busy-handle retry under test (tests/unit/raw-cache-busy.test.ts, review R2): the
   // bound is mutable so a test shortens it in its own sandbox.
   rawCache: { RAW_BUSY, openRawSnapshot },
-  // Pool-growth diagnostic under test (tests/unit/pool-growth.test.ts, HARDENING #55 addendum).
-  pool: { instrumentPoolGrowth, poolSample, growths: () => poolGrowths, starts: () => poolStarts, lifetimes: () => poolLifetimes },
   // Front-door host wiring under test (tests/unit/front-door.test.ts): the
   // machine's state and the merged status, read-only.
   frontDoor: {
