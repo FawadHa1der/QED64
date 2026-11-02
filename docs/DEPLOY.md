@@ -336,7 +336,13 @@ Promote checklist, in order:
    manifests), `embedding/base-tree.json` and, when the umbrella was
    rebuilt, `embedding/umbrella/QED64/Essential.olean*`,
    `public/runtime/runtime-manifest.json`, the profile manifests, and both
-   indexes. Do not push yet.
+   indexes. Do not push yet. Push nothing to `main` from this commit until
+   step 3 has finished: a push is the deploy (step 5), and it would deploy
+   this commit's shell and indexes before their snapshots are in R2. The
+   deploy's guard (the one step 4 runs by hand) refuses such a deploy, so
+   nothing deploys, the push's other changes included, until the upload and
+   a 'Run workflow' on `main`. When to adopt a release at all: the cadence
+   in docs/REBUILD.md §3.
 2. For a new release: its owner has uploaded `lean4-wasm64/<id>/`.
 3. Run `DRY_RUN=1 scripts/upload-artifacts.sh`, then
    `scripts/upload-artifacts.sh`, from a checkout whose `public/` holds the

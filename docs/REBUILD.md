@@ -97,6 +97,53 @@ is enforced by the SHA-256 manifests instead). Two options:
 
 ## 3. The snapshots (init + the Mathlib umbrella): adopting a release
 
+**When to adopt (the cadence: the user's decision of 2026-11-01,
+architecture review D5).** Every new runtime costs a rebake here and in each
+consumer, so QED64 adopts a lean4-wasm64 release only at one of two moments:
+
+- a Lean/Mathlib import (§3b);
+- a kernel release cut for a visitor-visible or wrong-verdict fix (a crash,
+  hang or failed boot a visitor meets, or a proof judged wrongly).
+
+A release cut for anything else (tools only, riders, a fix no visitor
+meets) waits for the next of these and is adopted then, with its riders, in
+one rebake. Consumers take QED64 pins at the same moments, or for a QED64
+fix that is visitor-visible or a wrong verdict for them (the showcase also
+at a monthly refresh; the proof sheets are exempt until their site's first
+launch); their own docs keep their copy of the rule.
+
+- **A candidate not adopted yet still gets the cheap headless checks.**
+  Checks of pins that were never deployed have caught real defects (HARDENING
+  #67, #68 and #76; the regressions kernel 0037 and 0041 fixed). Run
+  `adopt-release.sh --dry-run`, then a real run into an isolated tree (its
+  bake, pairing and promote checks; at a packs change the slim-bake audit),
+  then the compiler battery (`node tests/adversarial/compiler-battery.mjs
+  --artifact $W/artifact --snap $W/snapshot/mathlib.snap --lib
+  $W/lib-tree-slim`) and the integration tier
+  (`QED64_LEAN_ARTIFACT=$W/artifact QED64_INIT_SNAP=$W/snapshot/init.snap
+  npm run test:integration`) against that run. No browser lane, nothing
+  landed or uploaded, one heavy wasm lane at a time. A failure goes to the
+  kernel session.
+- **A batched adoption carries more change at once.** Once lean4game's
+  rebuilt sweep exists (its R12(b), due at the next Lean import), it runs
+  on a ten-game rebake of the candidate before a batched adoption lands.
+- **One approval per adoption, in this order:** (1) the kernel release is
+  published (its owner's `lean4-wasm64/<id>/` upload and GitHub release);
+  (2) the landing commit (docs/DEPLOY.md, promote checklist step 1); (3) the
+  upload (`scripts/upload-artifacts.sh`, step 3); (4) the push of `main`,
+  which is the deploy (step 5). Nothing is pushed to `main` between (2) and
+  (3): a push deploys the landing commit's shell and indexes, whose
+  snapshots are not in R2 yet. The deploy guard (`scripts/deploy-guard.mjs`)
+  refuses that deploy, so nothing deploys, that push's other changes
+  included, until the upload and a 'Run workflow' on `main`. A consumer
+  pins only a pushed QED64 commit, so its re-pin follows (4).
+- **What it buys:** about 3 of QED64's 9 runtime adoptions in October 2026
+  would have waited (8 rebakes would have been 5), but only about 1 of the 6
+  runtime switches visitors saw. The gain is fewer rebakes and approvals, not
+  fewer outages. The cost: a CLI deprecation window, counted in re-pins,
+  lasts longer, and the previous pairing stays the rollback target until
+  the next adoption.
+
 `pipeline/release/adopt-release.sh` adopts a lean4-wasm64 release end to
 end into a STAGING tree and an ISOLATED served tree. It calls the package
 only as a process (`node <tools>/cli.mjs …`; `<tools>` is `--tools`, else
