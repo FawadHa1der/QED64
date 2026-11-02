@@ -1,7 +1,9 @@
 # Embedding QED64 — contract v1
 
-Status: **v1 release candidate, 2026-10-04** (branch `feature/embedding-api`).
-The draft (daf9b63) was reviewed by both downstream consumers:
+Status: **v1, final.** The page API is `1.0.0` (`frontend/src/page-api.ts`
+`API_REVISION`), and `qed64/embed` is `EMBED_API_REVISION` `1.0.0`, declared
+2026-11-01 (architecture review D13).
+The v1 draft (daf9b63) was reviewed by the two consumers of the time:
 - the widgets showcase: `qed64-showcase/docs/QED64-EMBEDDING-V1-REVIEW.md`;
 - lean4game: 24 items, adversarially verified.
 
@@ -12,20 +14,35 @@ QED64 is consumed in two ways, and this document is the contract for both:
 | Tier | Who | What they use | Where |
 |------|-----|---------------|-------|
 | **Page API** | an embedder of the QED64 *page*. The widgets showcase frames QED64's own `dist/` on its origin. | `globalThis.qed64.api`, boot parameters, embed mode, the dist layout | §2 – §5 |
-| **Library** | an embedder of QED64's *modules*. lean4game builds its own page on the runtime. | the npm package's `qed64/embed`, `qed64/edge`, `qed64/workers/*`, `qed64/pipeline/*` | §6 – §8 |
+| **Library** | an embedder of QED64's *modules*. lean4game and the proof sheets build their own pages on the runtime. | the npm package's `qed64/embed`, `qed64/edge`, `qed64/workers/*`, `qed64/pipeline/*` | §6 – §8 |
 
-§6 says how each of the two consumers holds QED64 today, and §6.1 is the
+§6 says how each of the three consumers holds QED64 today, and §6.1 is the
 recipe for a new one (a Vite page with or without the editor).
 
 Everything not named here is internal and may change in any commit (§9).
+For `qed64/embed` the barrel agrees: §7.0 names every export of
+`lib/index.ts` except those marked `@internal`.
 
 ---
 
 ## 1. Principles and versioning
 
 1. **Additive within a major.** v1 only ever gains optional fields, new events,
-   new methods and new capability flags. A breaking change is `version: 2`,
-   shipped alongside v1 for at least one release.
+   new methods and new capability flags. A break is handled per tier:
+   - **page API** (§2 – §5): a breaking change is `version: 2`, shipped
+     alongside v1 until the page-tier consumer has re-pinned past it: one
+     re-pin cycle, since QED64 has no release tags yet (principle 6).
+   - **library** (`qed64/embed`, §6 – §8, final at `1.0.0`): a break is the
+     next major (`2.0.0`) with a migration note in §12, and no 1.x ships
+     beside it. Both library consumers pin full commit SHAs and compile the
+     barrel, so a break reaches them only at their own re-pin (a removed or
+     retyped name fails their build there), never in a deployed page. QED64
+     tells them before such a commit lands.
+   - **workers** (§7.7): tabs cross deploys, so the worker protocol keeps its
+     own rules: additive messages, the revision check, and a removal
+     deprecated one release ahead. A changed policy value (§7.7) keeps
+     `REVISION` and `EMBED_API_REVISION`: it is a semantics change with a
+     §12 row, not a break.
 2. **Feature-detect with `capabilities`** (page tier) and with
    `capabilities().requests` (worker tier). Never compare versions or
    commits. `api.version === 1` has existed since 47f50e8 with only
@@ -480,17 +497,18 @@ v1.1 adds:
 
 ## 6. The library: the `qed64` npm package
 
-The two consumers hold QED64 in two different ways (checked 2026-10-06 in
-their repositories, and lean4game's cells again on 2026-11-01):
+The three consumers hold QED64 in these ways (checked 2026-10-06 in their
+repositories, lean4game's cells again on 2026-11-01, and the proof sheets'
+cells on 2026-11-01 at `website-v4.35` 5468694):
 
-| | lean4game (library tier) | the widgets showcase (page tier, and the tools) |
-|---|---|---|
-| holds QED64 as | an npm **git dependency** pinned by a full SHA: `"qed64": "github:FawadHa1der/QED64#<40-hex>"` in `client/package.json` (branch `wasm64-port`). npm fetches the codeload tarball, with no git or SSH needed, and honours `files`. | a **git submodule**, `deps/qed64`, checked out at the pinned commit (`pins/<id>/QED64.lock.json`); a pin under test is a worktree of that submodule |
-| imports | `qed64/embed` only: every runtime name it uses is in §7.0 (`tests/unit/embed-barrel.test.ts` pins the list). Its tsconfig maps `qed64/embed` to closure.json `entry`, and `scripts/stage-workers.sh` checks that mapping against the installed package. | nothing from `qed64/embed`. Its Cloudflare Worker reuses QED64's edge code: `qed64/edge` (§6 exports, docs/DEPLOY.md "Using qed64/edge in your own Worker") was cut for it; today the Worker imports `isImmutable` from the submodule's `infra/worker.js`. |
-| workers | `scripts/stage-workers.sh` copies closure.json `workers` into `client/public/workers/` (exactly that set) and compares `runtime.minKernelPatch` with its own kernel pin | the shell's `dist/workers/` |
-| editor | its own page: lean4monaco's client, behind its translation layer, on `LspRelay.clientPort` (§7.9) | QED64's own page in an iframe, `?embed=1` (§3) |
-| pipeline CLIs (docs/CLI-CONTRACT.md) | `wasm/build-from-source.sh` runs bake-snapshot and snapshot-probe from `node_modules/qed64` (or `$QED64_DIR`); its trees and runtime come from the lean4-wasm64 package | bake-snapshot, snapshot-probe, supervised-run, preflight and olean-imports, from the submodule |
-| Vite | a COOP/COEP middleware, `optimizeDeps.exclude: ["qed64"]`, `__QED64_BUILD_ID__` defined from its runtime manifest | — (it builds QED64's own `frontend/`) |
+| | lean4game (library tier) | the proof sheets (library tier) | the widgets showcase (page tier, and the tools) |
+|---|---|---|---|
+| holds QED64 as | an npm **git dependency** pinned by a full SHA: `"qed64": "github:FawadHa1der/QED64#<40-hex>"` in `client/package.json` (branch `wasm64-port`). npm fetches the codeload tarball, with no git or SSH needed, and honours `files`. | the same kind of **git dependency**, in `website/site/package.json`; `website/build.sh` refuses a `sources.json` QED64 commit that the lockfile does not resolve | a **git submodule**, `deps/qed64`, checked out at the pinned commit (`pins/<id>/QED64.lock.json`); a pin under test is a worktree of that submodule |
+| imports | `qed64/embed` only: every runtime name it uses is in §7.0 (`tests/unit/embed-barrel.test.ts` pins the list). Its tsconfig maps `qed64/embed` to closure.json `entry`, and `scripts/stage-workers.sh` checks that mapping against the installed package. | `qed64/embed`: twelve runtime names, among them `chooseSnapshots`, `importedModulesOf`, `initialBytesForEntries` and `DEFAULT_MAXIMUM_BYTES` (§7.0; `tests/unit/embed-barrel.test.ts` pins the list), under `moduleResolution: "bundler"`; and `qed64/edge`: its Cloudflare Worker is `createWorker` with its release record | nothing from `qed64/embed`. Its Cloudflare Worker reuses QED64's edge code: `qed64/edge` (§6 exports, docs/DEPLOY.md "Using qed64/edge in your own Worker") was cut for it; today the Worker imports `isImmutable` from the submodule's `infra/worker.js`. |
+| workers | `scripts/stage-workers.sh` copies closure.json `workers` into `client/public/workers/` (exactly that set) and compares `runtime.minKernelPatch` with its own kernel pin | `website/site/scripts/stage.mjs` copies closure.json `workers` into `public/workers/` before every dev start and build, and adds the course's Lean options to the staged `lean.worker.js` | the shell's `dist/workers/` |
+| editor | its own page: lean4monaco's client, behind its translation layer, on `LspRelay.clientPort` (§7.9) | its own page: the Waterproof editor (CodeMirror) and `@leanprover/infoview`, on `LspRelay.clientPort` | QED64's own page in an iframe, `?embed=1` (§3) |
+| pipeline CLIs (docs/CLI-CONTRACT.md) | `wasm/build-from-source.sh` runs bake-snapshot and snapshot-probe from `node_modules/qed64` (or `$QED64_DIR`); its trees and runtime come from the lean4-wasm64 package | `website/build.sh` runs bake-snapshot from `node_modules/qed64` (or `$QED64_DIR`); its bake fingerprint hashes that package's `pipeline/snapshot/node-runner.mjs`, so a change there means a rebake | bake-snapshot, snapshot-probe, supervised-run, preflight and olean-imports, from the submodule |
+| Vite | a COOP/COEP middleware, `optimizeDeps.exclude: ["qed64"]`, `__QED64_BUILD_ID__` defined from its runtime manifest | a COOP/COEP middleware and `optimizeDeps.exclude: ["qed64"]`; its dev and preview servers serve `/runtime/` and `/snapshots/` from its build output | — (it builds QED64's own `frontend/`) |
 
 The package:
 
@@ -758,12 +776,18 @@ document, or one step before the loop opens, passes `files` /
 
 ## 7. The library API: `qed64/embed`
 
-`EMBED_API_REVISION` is the semver of this section (minor = additive). A
-built shell records it as `embedApiRevision` in `dist/qed64-build.json`
-(beside the page API's `apiRevision`), so a deploy or pin tool reads which
-library contract a dist was built from without opening the bundle.
+`EMBED_API_REVISION` is the semver of this section (minor = additive; a
+break is the next major, with a migration note in §12; §1). A built shell
+records it as `embedApiRevision` in `dist/qed64-build.json` (beside the page
+API's `apiRevision`), so a deploy or pin tool reads which library contract a
+dist was built from without opening the bundle.
 
 ### 7.0 Exports
+
+Every export of `qed64/embed` is named below (and `EMBED_API_REVISION`
+above); one marked `@internal` is outside the contract (§9).
+`tests/unit/embed-barrel.test.ts` checks this and pins the names lean4game,
+the proof sheets and the stock page import.
 
 - **runtime:** `LeanSession`, `probeMemory64`, `MEMORY64_PROBE`
   (the 13 probe bytes `probeMemory64` and the worker validate; a fixed-shape
@@ -803,7 +827,28 @@ library contract a dist was built from without opening the bundle.
     off-site refusal (`SNAPSHOT_URL_REFUSED`) to raise its own coded SEC1
     refusal. The option reads a copy only where the site publishes one
     (§4);
-  - the overlay helpers of §8.
+  - the overlay helpers of §8, pure functions of an index (`base` defaults
+    to `BASE_SNAPSHOTS`, `["init"]`, the entries every session loads first;
+    an entry's roots are read as §8 says, so a rootless `mathlib` has the
+    umbrella's):
+    - `chooseSnapshots(index, modules, base?)`: the boot list for a header's
+      modules, by §8's "Boots" rule: the base plus the smallest entry whose
+      roots cover every module the base does not (`Init` needs none), else
+      the one covering the most (ties: the smaller), else the base alone. It
+      matches roots, not the order of the imports;
+    - `widenTarget(index, missing, loaded, headerModules?, base?)`: the entry
+      §8's "Widens" rule restarts a session onto after the kernel refused
+      `missing` with `loaded` loaded (the smallest entry not loaded that
+      covers every missing module and every header module some entry claims
+      and the base does not), or null;
+    - `initialBytesForEntries(index, names, base?)`: §8's "Sizes" rule: the
+      largest `initialBytes` an entry among `names` declares (capped at
+      6 GiB), else 2 GiB with any non-base entry, else 256 MiB; `index` may
+      be null;
+    - `coversModule(roots, module)`: whether `module` is a root or lies
+      under one on a component boundary;
+    - `entryLabel(entry)`: the pill and card name: `label`, else `Mathlib`
+      for `mathlib`, else the name.
 - **raw cache (§7.4):** `prefetchRaw`, `isRawCached`, `removeRawRegion`,
   `isCacheKeyOf`, `SNAPSHOT_CACHE_DIR` and `PREFETCH_SILENCE_MS`.
 - **boot:** `installArtifacts`, `resolveRuntimeManifest`,
@@ -811,7 +856,13 @@ library contract a dist was built from without opening the bundle.
 - **parameters:** `validateBootOverrides` and `BootParamError` (`code:
   "BOOT_PARAM_REFUSED"`, `param`).
 - **session:** `ResidentSession`, `ResidentPolicy`, `ResidentHost`,
-  `SessionFile`, `makeEditorPolicy(index)` and `importedModulesOf`.
+  `SessionFile`, `makeEditorPolicy(index)` (the stock page's policy over a
+  served index, §8; `null` gives the policy without one),
+  `DEFAULT_MAXIMUM_BYTES` (6 GiB: the reservation ceiling, `maximumBytes`,
+  that policy sets and a `ResidentSession` uses when its policy sets none)
+  and `importedModulesOf(headerText)` (the module each import line names,
+  the first if a line names several, in order; an `import` with nothing
+  after it yields nothing).
 - **relay:** `LspRelay` (its contract members in §7.9: `clientPort`,
   `unload()`, `status()`, `rearm()`, `restart()`), `RelaySession`,
   `RelayStatus`, `RestartOptions` and `Death`.
@@ -820,7 +871,11 @@ library contract a dist was built from without opening the bundle.
   code is the string `"WORKER_DEP_MISMATCH"`, §7.2: compare with the
   literal).
 - **offline:** `runtimeUrls(manifest)` and `WORKER_URLS`.
-- **internal re-exports** (`/** @internal */` in the barrel): none. The
+- **internal re-exports** (`/** @internal */` in the barrel):
+  `LEGACY_UMBRELLA_ROOTS`, the roots the stock page gives a rootless index
+  entry named `mathlib` (§8). It stays in the barrel but outside the
+  contract: its contents follow the served umbrella (R1). It is also the
+  editor's policy without an index, so it does not leave with D10. The
   eleven that `1.0.0-pre.5` marked left the barrel: three with D1 in
   `1.0.0-pre.10`, the other eight in `1.0.0-pre.11` (§12).
 
@@ -1438,8 +1493,9 @@ An entry may have **any name**. The page then:
   the entry (the header changed, then a crash) widens again.
 
 It is **opt-in.** Without `roots`, the entry named `mathlib` serves the
-umbrella roots, `LEGACY_UMBRELLA_ROOTS`: `Mathlib`, `Batteries`, `MIL` and
-`QED64` (the aliases' roots and the umbrella module), and `Lean`, `Std`,
+umbrella roots (the stock page's list, `LEGACY_UMBRELLA_ROOTS` in
+`lib/snapshots.ts`, an internal re-export, §7.0): `Mathlib`, `Batteries`,
+`MIL` and `QED64` (the aliases' roots and the umbrella module), and `Lean`, `Std`,
 `Aesop`, `Qq`, `Plausible` and `LeanSearchClient` (packages whose root module
 is in the umbrella's closure; since 2026-11, HARDENING #82). `ProofWidgets`,
 `Lake` and `ImportGraph` are not claimed: the umbrella holds some of their
@@ -2357,3 +2413,30 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
     for the header helpers.
   - A removal under "-pre", like A2c's:
     `EMBED_API_REVISION` → `1.0.0-pre.11`.
+- **`qed64/embed` v1 is final (architecture review D13, option (b),
+  2026-11-01):**
+  - From here a minor is additive, and a break is `2.0.0` with a migration
+    note in this section and no 1.x beside it (§1). Both library consumers
+    pin full SHAs and compile the barrel, so a break reaches them at their
+    own re-pin.
+  - §1's principle 1 states the break rule per tier: the page API's
+    `version: 2` ships beside v1 for one re-pin cycle (it said "at least one
+    release"; QED64 has no release tags), and the workers keep §7.7's rules.
+    A worker-policy value change (a Lean option or the thread budget) keeps
+    `REVISION` and `EMBED_API_REVISION` and gets a dated row here (§7.7).
+  - §7.0 now names every export: the seven it did not are
+    `chooseSnapshots`, `widenTarget`, `initialBytesForEntries`,
+    `coversModule`, `entryLabel`, `BASE_SNAPSHOTS` and
+    `DEFAULT_MAXIMUM_BYTES`, each with a prose contract, and
+    `importedModulesOf` (named since `1.0.0-pre.11`) gains one.
+  - `LEGACY_UMBRELLA_ROOTS` is marked `@internal`: still exported, outside
+    the contract, because its contents follow the served umbrella (R1). It
+    stays as the editor's policy without an index (§8); no consumer imports
+    it through the barrel.
+  - `tests/unit/embed-barrel.test.ts` pins the proof sheets' twelve runtime
+    imports beside lean4game's and the stock page's, and checks that §7
+    names every export not marked `@internal`. §6 gains the proof sheets'
+    column.
+  - No code behaviour changes. A built shell's `dist/qed64-build.json`
+    records `embedApiRevision` `1.0.0` from its next build.
+  - `EMBED_API_REVISION` → `1.0.0`.

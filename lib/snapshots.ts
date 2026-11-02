@@ -203,8 +203,9 @@ export function snapshotCacheKey(entry: SnapshotEntry): string {
  *   them is served there (HARDENING #82: a light session refused it for good).
  * Not `ProofWidgets`, `Lake` or `ImportGraph`: essential holds some of their
  * modules but not their roots, and a claim would stream the umbrella at a
- * 2 GiB commit for a header the kernel still refuses. The name is the public
- * export's (lib/index.ts); a served index's `roots` replace it per entry. */
+ * 2 GiB commit for a header the kernel still refuses. The name is the one
+ * lib/index.ts re-exports (`@internal`, outside the qed64/embed contract) and
+ * adopt-release.sh reads; a served index's `roots` replace it per entry. */
 export const LEGACY_UMBRELLA_ROOTS: readonly string[] = Object.freeze(["Mathlib", "Batteries", "MIL", "QED64", "Lean", "Std", "Aesop", "Qq", "Plausible", "LeanSearchClient"]);
 /** The four whole-library aliases the kernel's resolver serves as covered by
  * `QED64.Essential` (patch 0032 K1 `aliasOk`; frozen, kernel K3). The page's
