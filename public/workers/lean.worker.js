@@ -967,26 +967,52 @@ function capabilities() {
 }
 
 // ---------------------------------------------------------------------------
-// Verified runtime materialization (chunks → SHA-256 → Blob URLs)
+// Verified runtime materialization (chunks → SHA-256 → a v2 gzip part inflated → Blob URLs)
 // ---------------------------------------------------------------------------
 
 /** The runtime manifest schemas this worker reads (embedding/closure.json runtime.manifestSchemas; pinned equal by
- * tests/unit/package-contract.test.ts; docs/EMBEDDING.md §7.7), and the file encodings each allows. A manifest without
- * `schema` (an embedder's own object; every served one carries it) is read as v1. */
-const RUNTIME_MANIFEST_SCHEMAS = Object.freeze(["org.lean-browser64.runtime/v1"]);
-const RUNTIME_PART_ENCODINGS = Object.freeze({ "org.lean-browser64.runtime/v1": Object.freeze(["identity"]) });
+ * tests/unit/package-contract.test.ts; docs/EMBEDDING.md §7.7), and the file encodings each allows, a closed set
+ * (absent: identity in v1, refused in v2). A manifest without `schema` (an embedder's own object; every served one
+ * carries it) is read as v1, never v2. v2 (the fork's formats/runtime-manifest.md, architecture review M3): a file's
+ * bytes/sha256 are the decoded file's, a part's bytes/sha256 are as served, and its decodedBytes is its inflated size. */
+const RUNTIME_MANIFEST_SCHEMAS = Object.freeze(["org.lean-browser64.runtime/v1", "org.lean-browser64.runtime/v2"]);
+const RUNTIME_PART_ENCODINGS = Object.freeze({
+  "org.lean-browser64.runtime/v1": Object.freeze(["identity"]),
+  "org.lean-browser64.runtime/v2": Object.freeze(["identity", "gzip"]),
+});
+/** A v2 part's decoded size, every part but the last (the v1 chunk size); the last decodes to at most that. */
+const RUNTIME_DECODED_SLICE = 16 * 1024 * 1024;
 
 /** null when this worker reads the manifest's format, else why not. Refused before anything is fetched
  * (RUNTIME_MANIFEST_MISMATCH): a worker that cannot read a format would download its parts and fail every boot on
- * the whole-file size (materialize). */
+ * the whole-file size (materialize). v2 adds the part rules: every part has a positive integer decodedBytes (its
+ * bytes, for identity), exactly RUNTIME_DECODED_SLICE but the last, and they sum to the file's bytes. */
 function runtimeFormatFault(runtime) {
   const schema = runtime.schema ?? RUNTIME_MANIFEST_SCHEMAS[0];
   if (!RUNTIME_MANIFEST_SCHEMAS.includes(schema)) {
     return `runtime manifest schema ${JSON.stringify(runtime.schema)} is not one this worker reads (${RUNTIME_MANIFEST_SCHEMAS.join(", ")}): pair the runtime with QED64 workers that read it`;
   }
+  const v1 = schema === RUNTIME_MANIFEST_SCHEMAS[0];
   for (const name of ["lean.js", "lean.wasm"]) {
-    const encoding = runtime.files[name].encoding ?? "identity";
-    if (!RUNTIME_PART_ENCODINGS[schema].includes(encoding)) return `runtime manifest ${name}: encoding ${JSON.stringify(runtime.files[name].encoding)} is not one this worker reads in ${schema}`;
+    const f = runtime.files[name];
+    const encoding = f.encoding ?? (v1 ? "identity" : undefined);
+    if (!RUNTIME_PART_ENCODINGS[schema].includes(encoding)) {
+      return `runtime manifest ${name}: encoding ${f.encoding === undefined ? "(none)" : JSON.stringify(f.encoding)} is not one this worker reads in ${schema}`;
+    }
+    if (v1) continue;
+    let decoded = 0;
+    for (let i = 0; i < f.chunks.length; i += 1) {
+      const c = f.chunks[i];
+      const d = c && c.decodedBytes;
+      if (!Number.isSafeInteger(d) || d <= 0 || (encoding === "identity" && d !== c.bytes)) {
+        return `runtime manifest ${name}: part ${i}'s decodedBytes ${JSON.stringify(d) ?? "(none)"} is malformed`;
+      }
+      if (i < f.chunks.length - 1 ? d !== RUNTIME_DECODED_SLICE : d > RUNTIME_DECODED_SLICE) {
+        return `runtime manifest ${name}: part ${i} decodes to ${d} bytes; every part but the last decodes to exactly ${RUNTIME_DECODED_SLICE}, the last to at most that`;
+      }
+      decoded += d;
+    }
+    if (decoded !== f.bytes) return `runtime manifest ${name}: its parts decode to ${decoded} bytes, the file is ${f.bytes}`;
   }
   return null;
 }
@@ -1011,7 +1037,7 @@ async function fetchChunkOnce(chunk, index, label, cacheMode, onBytes) {
   // Read the body as it arrives so the page can show bytes INSIDE a chunk:
   // one 16 MiB chunk is ~56 s at 300 kB/s, and a count that moves only at
   // chunk boundaries reads as stuck (HARDENING #54). Verification is
-  // unchanged: exact length, then SHA-256 over the whole chunk.
+  // unchanged: exact length, then SHA-256 over the whole chunk as served.
   let bytes;
   if (response.body) {
     bytes = new Uint8Array(chunk.bytes);
@@ -1043,7 +1069,36 @@ async function fetchChunkOnce(chunk, index, label, cacheMode, onBytes) {
   return bytes;
 }
 
-async function fetchChunk(chunk, index, label, requestId, running) {
+/** One gzip member (a v2 runtime part, already verified as served) → exactly `decodedBytes` bytes, or an error that
+ * lib/failure.ts classifies corrupt (its words: "gzip inflate", "bytes, expected"). */
+async function inflatePart(wire, decodedBytes, index, label) {
+  const out = new Uint8Array(decodedBytes);
+  let n = 0;
+  let over = false;
+  const reader = new Blob([wire]).stream().pipeThrough(new DecompressionStream("gzip")).getReader();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (n + value.byteLength > decodedBytes) {
+        over = true;
+        break;
+      }
+      out.set(value, n);
+      n += value.byteLength;
+    }
+  } catch (error) {
+    throw new Error(`${label} chunk ${index}: gzip inflate failed (${error && error.message ? error.message : error}).`);
+  }
+  if (over) {
+    reader.cancel().catch(() => {});
+    throw new Error(`${label} chunk ${index} inflates to more than ${decodedBytes} bytes, expected ${decodedBytes}.`);
+  }
+  if (n !== decodedBytes) throw new Error(`${label} chunk ${index} inflates to ${n} bytes, expected ${decodedBytes}.`);
+  return out;
+}
+
+async function fetchChunk(chunk, index, label, requestId, running, encoding = "identity") {
   // In-chunk progress, every 500 ms while bytes arrive (the chunk-boundary
   // report below stays: it is the verified count, so a complete chunk is
   // left to it).
@@ -1063,16 +1118,21 @@ async function fetchChunk(chunk, index, label, requestId, running) {
     // addressing makes the retry safe: bypass the cache once and re-verify.
     bytes = await fetchChunkOnce(chunk, index, label, "reload", onBytes);
   }
-  running.loaded += bytes.byteLength;
+  // A v2 gzip part is verified as served (above), then inflated: the decoder never sees an unverified byte, and a
+  // part that fails here was served as pinned, so a cache-bypassing refetch cannot fix it and none is made.
+  if (encoding === "gzip") bytes = await inflatePart(bytes, chunk.decodedBytes, index, label);
+  running.loaded += chunk.bytes; // progress counts the bytes that crossed the wire
   progress(requestId, "runtime", `Verifying ${label}`, running.loaded, running.total, "bytes");
   return bytes;
 }
 
+// The name and argument order stay: pipeline/snapshot/fileworker-exit-probe.mjs replaces it by name.
 async function materialize(file, label, mime, requestId, running) {
   const pieces = [];
   for (let i = 0; i < file.chunks.length; i += 1) {
-    pieces.push(await fetchChunk(file.chunks[i], i, label, requestId, running));
+    pieces.push(await fetchChunk(file.chunks[i], i, label, requestId, running, file.encoding ?? "identity"));
   }
+  // Over the decoded parts: a v2 file's bytes/sha256 are the decoded file's (a v1 file's parts are the file).
   const whole = new Blob(pieces, { type: mime });
   if (whole.size !== file.bytes) {
     throw new Error(`${label}: reconstructed ${whole.size} bytes, expected ${file.bytes}.`);
@@ -1433,16 +1493,16 @@ async function boot(msg) {
     state = "dead";
     return;
   }
-  // The format (docs/EMBEDDING.md §7.7): a schema or file encoding this worker does not read is refused before the
-  // buildId rule and before any fetch.
+  // The format (docs/EMBEDDING.md §7.7): a schema or file encoding this worker does not read, or v2 parts whose
+  // decodedBytes break the format's rules, are refused before the buildId rule and before any fetch.
   const formatFault = runtimeFormatFault(cfg.runtime);
   if (formatFault) {
     fail(msg.requestId, new Error(formatFault), "RUNTIME_MANIFEST_MISMATCH", false);
     state = "dead";
     return;
   }
-  // Pairing (phase 0; runtime/v1 invariant, docs/EMBEDDING.md §7.2): a
-  // manifest's buildId IS "wasm64-" + sha256(lean.wasm)[:16]. materialize()
+  // Pairing (phase 0; runtime/v1 and v2 invariant, over the decoded lean.wasm,
+  // docs/EMBEDDING.md §7.2): a manifest's buildId IS "wasm64-" + sha256(lean.wasm)[:16]. materialize()
   // verifies the bytes against files["lean.wasm"].sha256, so this string
   // check ties the id snapshots are paired by (SNAPSHOT_UNPAIRED) to the
   // verified hash with no extra hashing. A manifest that fails it was edited
@@ -1480,9 +1540,12 @@ async function boot(msg) {
   bootConfig = msg.config;
   const requestId = msg.requestId;
   const files = bootConfig.runtime.files;
+  // Progress counts the bytes that cross the wire: the parts as served (a v1 file's parts sum to its bytes, so the
+  // total is unchanged there; a v2 gzip file's are fewer than its decoded bytes).
+  const wireBytes = (file) => file.chunks.reduce((n, c) => n + c.bytes, 0);
   const running = {
     loaded: 0,
-    total: files["lean.js"].bytes + files["lean.wasm"].bytes,
+    total: wireBytes(files["lean.js"]) + wireBytes(files["lean.wasm"]),
   };
   // HARDENING #55: measured while the chunks download and verify.
   const instanceId = msg.instance && typeof msg.instance.id === "string" ? msg.instance.id : null;
@@ -2154,7 +2217,8 @@ self.__qed64TestExports = {
   capabilities,
   createSharedMemory64,
   // Runtime chunk fetch under test (tests/unit/runtime-chunk-progress.test.ts):
-  // in-chunk progress over a scripted body, verification unchanged.
+  // in-chunk progress over a scripted body, verification unchanged, a v2
+  // gzip part verified as served, then inflated.
   fetchChunk,
   // Ring writer under test (tests/unit/ring-writer.test.ts): a fake shared
   // memory stands in for the wasm heap, and `residentMode` is forced so the

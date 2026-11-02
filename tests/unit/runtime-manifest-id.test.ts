@@ -156,8 +156,7 @@ describe("lean.worker.js boot (the real worker source in a VM)", () => {
     expect(w.posted.map((m) => m.error?.code)).not.toContain("INVALID_MESSAGE");
   });
   // The format guard (architecture review M3; embedding/closure.json runtime.manifestSchemas, docs/EMBEDDING.md
-  // §7.7). Object.assign: RuntimeManifest has no `schema` or `encoding` field. The list after "reads" is not
-  // pinned, so a schema that joins it changes no regex here.
+  // §7.7). The list after "reads" is not pinned, so a schema that joins it changes no regex here.
   it("refuses a manifest of a schema, or a file of an encoding, it does not read, before fetching anything, unrecoverably", () => {
     const gzipWasm = () => { const m = good(); Object.assign(m.files["lean.wasm"], { encoding: "gzip" }); return m; };
     for (const [runtime, words] of [
@@ -180,6 +179,55 @@ describe("lean.worker.js boot (the real worker source in a VM)", () => {
       await new Promise((r) => setTimeout(r, 20));
       expect(w.posted.map((m) => m.error?.code)).not.toContain("RUNTIME_MANIFEST_MISMATCH");
       expect(w.posted.map((m) => m.error?.code)).not.toContain("INVALID_MESSAGE");
+    }
+  });
+  // v2 (org.lean-browser64.runtime/v2, accepted by the kernel 2026-11-01): each file names its encoding, each part
+  // its decodedBytes. good()'s files are one part each, so a part's decodedBytes is its file's bytes.
+  const V2 = "org.lean-browser64.runtime/v2";
+  const goodV2 = (): RuntimeManifest => {
+    const m: RuntimeManifest = { ...good(), schema: V2 };
+    for (const f of Object.values(m.files)) Object.assign(f, { encoding: "gzip", chunks: f.chunks.map((c) => ({ ...c, decodedBytes: f.bytes })) });
+    return m;
+  };
+  const SLICE = 16 * 1024 * 1024;
+  /** A v2 lean.wasm of `parts` parts decoding to `decoded` bytes each (the file's bytes their sum). */
+  const v2Wasm = (decoded: number[]) => {
+    const m = goodV2();
+    const f = m.files["lean.wasm"];
+    f.chunks = decoded.map((d, i) => ({ url: `/runtime/chunks/${sha}.${i}`, bytes: 1000 + i, sha256: sha, decodedBytes: d }));
+    f.bytes = decoded.reduce((n, d) => n + d, 0);
+    return m;
+  };
+  it("lets a v2 manifest (gzip or identity parts, every part but the last one 16 MiB slice) through to the fetch stage", async () => {
+    const identity = goodV2();
+    for (const f of Object.values(identity.files)) Object.assign(f, { encoding: "identity", chunks: f.chunks.map((c) => ({ ...c, decodedBytes: c.bytes })) });
+    for (const runtime of [goodV2(), identity, v2Wasm([SLICE, SLICE, 5494315]), v2Wasm([SLICE])]) {
+      const w = worker();
+      w.dispatch(boot(runtime));
+      await new Promise((r) => setTimeout(r, 20));
+      expect(w.posted.map((m) => m.error?.code)).not.toContain("RUNTIME_MANIFEST_MISMATCH");
+      expect(w.posted.map((m) => m.error?.code)).not.toContain("INVALID_MESSAGE");
+    }
+  });
+  it("refuses a v2 manifest whose encoding or decodedBytes break the format, before fetching anything, unrecoverably", () => {
+    const edit = (fn: (m: RuntimeManifest) => void) => { const m = goodV2(); fn(m); return m; };
+    for (const [runtime, words] of [
+      [edit((m) => { m.files["lean.wasm"].chunks[0]!.decodedBytes! += 1; }), /lean\.wasm: its parts decode to 21 bytes, the file is 20/],
+      [edit((m) => { Object.assign(m.files["lean.js"], { encoding: "br" }); }), /lean\.js: encoding "br" is not one this worker reads in org\.lean-browser64\.runtime\/v2/],
+      [edit((m) => { delete m.files["lean.wasm"].encoding; }), /lean\.wasm: encoding \(none\) is not one this worker reads in org\.lean-browser64\.runtime\/v2/],
+      [edit((m) => { m.files["lean.js"].encoding = "identity"; m.files["lean.js"].chunks[0]!.decodedBytes = 11; m.files["lean.js"].bytes = 11; }), /lean\.js: part 0's decodedBytes 11 is malformed/],
+      [edit((m) => { delete m.files["lean.js"].chunks[0]!.decodedBytes; }), /lean\.js: part 0's decodedBytes \(none\) is malformed/],
+      [edit((m) => { m.files["lean.js"].chunks[0]!.decodedBytes = 0; m.files["lean.js"].bytes = 0; }), /lean\.js: part 0's decodedBytes 0 is malformed/],
+      [v2Wasm([SLICE - 1, SLICE]), /lean\.wasm: part 0 decodes to 16777215 bytes; every part but the last decodes to exactly 16777216/],
+      [v2Wasm([SLICE, SLICE + 1]), /lean\.wasm: part 1 decodes to 16777217 bytes; every part but the last decodes to exactly 16777216, the last to at most that/],
+    ] as const) {
+      const w = worker();
+      w.dispatch(boot(runtime));
+      expect(w.posted).toHaveLength(1);
+      expect(w.posted[0]).toMatchObject({ type: "error", requestId: "r1", error: { code: "RUNTIME_MANIFEST_MISMATCH", recoverable: false } });
+      const { code, message } = w.posted[0]!.error!;
+      expect(message).toMatch(words);
+      expect(failureCauseOf(Object.assign(new Error(message), { code }), { stage: "runtime" }).kind).toBe("corrupt");
     }
   });
 });

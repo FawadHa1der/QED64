@@ -63,7 +63,7 @@ HEAD's manifest is about 30 KB, or 41 KB with the shell section (59 files,
 | `toolchain` | `{releaseId, digest, record {path, sha256, gitBlob}, kernel {commit, patch}, runtimeBuildId, packs [{id, rawSha256}], tools {package, version, tgz}}`: the pinned lean4-wasm64 release (`toolchain/lean4-wasm64-release.json`): its `id`, its self-digest, the file's identity, `kernel.commit`/`kernel.patch`, `runtime.buildId`, every pack's raw (gunzipped) sha256, and the tools package it ships |
 | `hosting` | `{toolchainPrefix: "lean4-wasm64/<releaseId>/", siteOwned (the record's hosting.siteOwned, URL paths), rule}`: where each path is stored in R2 (below) |
 | `baseTree` | `{path, sha256, gitBlob, schema, releaseId, releaseDigest, runtime, packs [{id, release, rawSha256}], slim, umbrella [{path, sha256, bytes}], umbrellaSource, initLib, digestRule, trees {<name>: {slim, packs, umbrella, files, bytes, digest}}, umbrellaFiles [{path, sha256, bytes}]}`: `embedding/base-tree.json` (`qed64.base-tree/v1`, written by `adopt-helper.mjs base-tree`), built field by field, plus `umbrellaFiles`, the union of the umbrella files the trees carry (the files committed at `embedding/umbrella/<path>`). `releaseDigest` and `runtime` are the record's `digest` and `runtime.buildId` when `releaseId` is the record's `id` (anything else is refused), and `null` when it names another release |
-| `runtime` | `{buildId, manifest {path, sha256, gitBlob, pinnedPath}, files [{name, bytes, sha256, chunks [{path, bytes, sha256}]}]}` |
+| `runtime` | `{buildId, manifest {path, sha256, gitBlob, pinnedPath}, files [{name, bytes, sha256, encoding?, chunks [{path, bytes, sha256, decodedBytes?}]}]}` |
 | `snapshots` | `{index {path, sha256, gitBlob}, entries [{name, path, sha256, transferBytes, rawBytes, imports, runtime}]}` |
 | `profiles` | `{index {…}, packs [{id, release, modules, manifest {path, sha256, gitBlob, contentDigest}, lean {version, gitRevision}, pack {sha256, bytes}, transport {sha256, bytes, parts [{path, sha256, bytes}]}}]}` |
 | `shell` | `null`, or with `--dist`: `{shellId, listingSha256, bytes, apiRevision, embedApiRevision, bundle {entries, buildIds}, files [{path, sha256, bytes}]}`. `apiRevision` (the page API, `globalThis.qed64.api.revision`) and `embedApiRevision` (the `qed64/embed` barrel's `EMBED_API_REVISION`) come from `dist/qed64-build.json`; `null` when the build wrote none |
@@ -99,6 +99,10 @@ Conventions:
 - `runtime.manifest.pinnedPath` is the immutable per-build copy. The shell
   fetches it first (`lib/qed64-boot.ts`), and it must be
   byte-identical to `runtime.manifest`.
+- A runtime file's `encoding` and its chunks' `decodedBytes` appear only for
+  a v2 runtime (`org.lean-browser64.runtime/v2`: gzip runtime parts). A
+  file's `bytes`/`sha256` are the decoded file's and a chunk's are the part
+  as served. A v1 runtime's section, and so `artifactSetId`, is unchanged.
 - A snapshot's `sha256`/`transferBytes` describe the served `.snapz`;
   `rawBytes` is the inflated size. A pack's `transport` describes the served
   gzip parts; `pack` describes the raw stream after gunzip.
@@ -171,7 +175,7 @@ checked here instead:
 | Refusal | Why it matters |
 |---|---|
 | The toolchain record is not `lean4-wasm64.release/v1`, its `digest` is not `"sha256:" + sha256(JSON.stringify(record without digest, null, 2))` (recomputed with `node:crypto`; lean4-wasm64 is never imported, decision 10), or a field the manifest reads is malformed (`id`, `kernel.commit`/`patch`/`repo`/`branch`, `runtime.buildId`, the packs' raw digests, `tools`, `hosting`, `files`) | The record was edited after the release cut it, or is not the kind this generator describes |
-| The record's `runtime.buildId` is not the served `buildId` | The pinned release and the served runtime are different builds (land the adoption's runtime manifest with its record) |
+| The record's `runtime.buildId` is not the served `buildId`, or its `runtime.schema` (additive in `lean4-wasm64.release/v1`; absent = `org.lean-browser64.runtime/v1`) is not the served runtime manifest's `schema` | The pinned release and the served runtime are different builds (land the adoption's runtime manifest with its record); a buildId is never re-chunked in another format |
 | The commit prefix in the runtime manifest's `sourceRevision` (`qed64-wasm64@<commit>`) is not a prefix of the record's `kernel.commit`, or there is no commit in it | The record and the served binary disagree, so a rebuild from the pin will not reproduce what is served (REBUILD.md) |
 | A file the hosting rule stores under the toolchain prefix (the runtime manifest and its per-build copy `runtime/runtime-manifest.<buildId>.json`, always, whether or not the record lists it; every profile manifest except `profiles/index.json`; every chunk and part) is not in the record's `files` with that sha256 and size | The Worker serves that path from `lean4-wasm64/<id>/`, where the release's bytes are, not QED64's. The pinned shell fetches the per-build copy first |
 | `base-tree.json` lists a pack, at the top or in any `trees.<name>.packs`, that the record does not carry, or with another raw digest (or another `release`, when given) than the record's, whatever release it names; it names the record's own release id with another `releaseDigest` or `runtime` than the record's; its top-level `packs` are not exactly the served packs (matched by the record's pack `manifest` path); the top-level `umbrella` lacks `QED64/Essential.olean` or lists `.olean.private`; a tree other than `core-lib-slim` does not carry exactly the top's umbrella files (a fat tree may add `.olean.private`, a slim one may not); or it lists one umbrella file with two contents | The snapshots were baked from trees the served packs do not make, and `baseTree` would hand a downstream wrong rebuild facts. When it names another release (a runtime-only successor that kept the trees, its packs the record's raw bytes), `baseTree.releaseDigest` and `baseTree.runtime` are `null`: the record cannot vouch for that release's digest or runtime |
@@ -189,9 +193,11 @@ served URLs spelled `/runtime/chunks/<file>`,
 `/snapshots/<file>` or `/profiles/<file>`; content-addressed names (the file
 name carries the first 16 hex digits of its sha256, which is what makes
 `rclone copy` and the year-long immutable cache sound); chunk and part sizes
-that add up to the whole; index entries that describe their manifests
-(release, module count); and each profile manifest's `digest` equal to
-`sha256(JSON.stringify(content))`.
+that add up to the whole (a v2 runtime's chunks by their `decodedBytes`, with
+the file's `encoding` one v2 allows, every chunk but the last exactly
+16,777,216 bytes decoded, and no `encoding` in a v1 file); index entries
+that describe their manifests (release, module count); and each profile
+manifest's `digest` equal to `sha256(JSON.stringify(content))`.
 
 Nothing in this tool reads artifact bytes. It checks the facts the tracked
 files state about each other. `npm run verify:release` remains the job that

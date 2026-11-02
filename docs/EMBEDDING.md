@@ -1,8 +1,9 @@
 # Embedding QED64 — contract v1
 
 Status: **v1, final.** The page API is `1.0.0` (`frontend/src/page-api.ts`
-`API_REVISION`), and `qed64/embed` is `EMBED_API_REVISION` `1.0.0`, declared
-2026-11-01 (architecture review D13).
+`API_REVISION`), and `qed64/embed` is `EMBED_API_REVISION` `1.1.0` (final
+at `1.0.0`, declared 2026-11-01, architecture review D13; `1.1.0` adds the
+v2 runtime manifest's fields, §12).
 The v1 draft (daf9b63) was reviewed by the two consumers of the time:
 - the widgets showcase: `qed64-showcase/docs/QED64-EMBEDDING-V1-REVIEW.md`;
 - lean4game: 24 items, adversarially verified.
@@ -478,7 +479,11 @@ These hold already:
 - **One QED64 per top-level page** (HARDENING #55).
 - **Encoding and ranges.**
   - No `Content-Encoding` on runtime chunks or `.snapz`. They are hashed and
-    sized as served, and `.snapz` is already gzip.
+    sized as served. `.snapz` and a v2 runtime's parts
+    (`org.lean-browser64.runtime/v2`) are already gzip, and the worker
+    inflates them after the check. Serve them as `application/octet-stream`
+    under their own names (`.part-NNN`, `.snapz`), never renamed `.gz`
+    (HARDENING #19).
   - `Range` support on `.snapz` is recommended, so an interrupted first visit
     can resume.
 - **Missing artifacts 404.** A missing `index.json` or manifest must 404,
@@ -587,8 +592,9 @@ Notes for consumers:
   optional lowercase suffix; QED64 pins its own in
   `toolchain/lean4-wasm64-release.json`);
 - `runtime.manifestSchemas`: the runtime manifest schemas the worker reads,
-  today `["org.lean-browser64.runtime/v1"]`. It refuses any other schema, or
-  a file `encoding` it does not read, before it fetches a byte
+  today `["org.lean-browser64.runtime/v1", "org.lean-browser64.runtime/v2"]`
+  (v2: gzip runtime parts, §7.7). It refuses any other schema, or a file
+  `encoding` it does not read, before it fetches a byte
   (`RUNTIME_MANIFEST_MISMATCH`, §7.2). A consumer pairing these workers with
   its own runtime compares that runtime's schema with this list at staging,
   as it compares `kernel.patch` with `runtime.minKernelPatch`: release.json
@@ -895,7 +901,9 @@ the proof sheets and the stock page import.
 
 Units:
 - `loaded`/`total` cover **the whole stage**. The runtime reports one combined
-  total across `lean.js` and `lean.wasm`; `subject` names the current file.
+  total across `lean.js` and `lean.wasm`, in bytes as served (a v2 runtime's
+  gzip parts count their wire bytes, not the decoded size); `subject` names
+  the current file.
 - For a snapshot, `loaded` is the bytes of the **inflated** region written so
   far and `total` is the entry's raw size.
 - `step: "inflate"` means the source is a local compressed copy (no network).
@@ -911,7 +919,7 @@ interface FailureCause { kind: FailureKind; httpStatus?: number; stage?: BootSta
 |------|---------|------|
 | `network` | the fetch was rejected, the stream was cut, the body ended before the bytes it announced, or 5xx/429 (retrying can help) | `Failed to fetch`, `HTTP 503`, `the transfer of <file> ended early: received <n> of <expected> bytes` |
 | `missing` | the server does not have it: a deploy problem, so retrying cannot help | every 4xx except 408/425/429; an HTML answer where JSON or binary belongs (the workers and the index loader sniff it); `SNAPSHOT_NOT_IN_INDEX` |
-| `corrupt` | it arrived in full but is wrong | chunk length or SHA-256 mismatch; a gzip/DecompressionStream error of a body that arrived in full; "not a compacted-region file"; a size the index does not declare; "raw size mismatch"; `SNAPSHOT_LOAD_RESULT` (the Lean loader refused the region); `RUNTIME_MANIFEST_MISMATCH` (a runtime manifest whose `buildId` is not `wasm64-` + the first 16 hex digits of its own `files["lean.wasm"].sha256`: the runtime/v1 invariant every reader may check; the page refuses it before fetching, the worker before booting; also a manifest whose `schema`, or a file's `encoding`, this worker does not read (`closure.json` `runtime.manifestSchemas`, §7.7), refused before anything is fetched) |
+| `corrupt` | it arrived in full but is wrong | chunk length or SHA-256 mismatch; a gzip/DecompressionStream error of a body that arrived in full; "not a compacted-region file"; a size the index does not declare; "raw size mismatch"; `SNAPSHOT_LOAD_RESULT` (the Lean loader refused the region); `RUNTIME_MANIFEST_MISMATCH` (a runtime manifest whose `buildId` is not `wasm64-` + the first 16 hex digits of its own `files["lean.wasm"].sha256`: the runtime/v1 invariant every reader may check; the page refuses it before fetching, the worker before booting; also a manifest whose `schema`, or a file's `encoding`, this worker does not read (`closure.json` `runtime.manifestSchemas`, §7.7), or a v2 manifest whose parts' `decodedBytes` break the format, refused before anything is fetched); a v2 runtime part that passed its SHA-256 but does not inflate, or inflates to another size than its `decodedBytes` (`RUNTIME_FETCH_FAILED`; not refetched: it was served as pinned) |
 | `unpaired` | a snapshot baked by another runtime build | `SNAPSHOT_UNPAIRED` |
 | `oom` | an allocation or reservation failed | `MEMORY_FAILED`, `could not allocate`, `Cannot enlarge memory` |
 | `storage` | OPFS or quota | `QuotaExceededError` |
@@ -1257,13 +1265,23 @@ itself).
   one more release: a tab of an older release reboots onto the new worker
   and still sends both.
 - **Runtime manifest formats.** The worker reads the schemas `closure.json`
-  lists under `runtime.manifestSchemas` and refuses any other, or a file
-  `encoding` the schema does not allow it, before any fetch
-  (`RUNTIME_MANIFEST_MISMATCH`, `corrupt`). A worker older than this check
-  has no list: on another format it downloads the parts and fails every
-  boot on the whole-file size, so consumers check the list at staging
-  (§6). A schema joins the list in a QED64 commit before any runtime uses
-  it, and leaves it the way a request does (`workerProtocol.deprecated`).
+  lists under `runtime.manifestSchemas` (today v1 and v2) and refuses any
+  other, or a file `encoding` the schema does not allow it, before any fetch
+  (`RUNTIME_MANIFEST_MISMATCH`, `corrupt`). v2 (the fork's
+  `formats/runtime-manifest.md`): each file names its `encoding` (`gzip` or
+  `identity`, a closed set) and its `bytes`/`sha256` are the decoded
+  file's; each part keeps `url`, `bytes` and `sha256` as served and adds
+  `decodedBytes`. Every part but the last decodes to exactly 16,777,216
+  bytes, the `decodedBytes` sum to the file's `bytes`, and an `identity`
+  part's `decodedBytes` is its `bytes`; the worker refuses a v2 manifest
+  that breaks these before any fetch. It verifies each part as served,
+  then inflates a gzip part (DecompressionStream) and checks the whole file
+  over the decoded bytes, so the buildId rule (§7.2) is unchanged. A worker
+  older than this check has no list: on another format it downloads the
+  parts and fails every boot on the whole-file size, so consumers check the
+  list at staging (§6). A schema joins the list in a QED64 commit before
+  any runtime uses it, and leaves it the way a request does
+  (`workerProtocol.deprecated`).
 - **A `telemetry` request may be answered after a `status` event.** The
   worker re-samples its status before replying and emits the event when
   the status changed (the pool sample included); an unchanged status emits
@@ -2440,3 +2458,43 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   - No code behaviour changes. A built shell's `dist/qed64-build.json`
     records `embedApiRevision` `1.0.0` from its next build.
   - `EMBED_API_REVISION` → `1.0.0`.
+- **Gzip runtime parts: the worker reads `org.lean-browser64.runtime/v2`
+  (architecture review M3, 2026-11):**
+  - The kernel, which owns the format (the fork's
+    `formats/runtime-manifest.md`), accepted QED64's proposed v2 shape
+    verbatim on 2026-11-01. closure.json `runtime.manifestSchemas` lists v1
+    and v2 (§6), and `lean.worker.js` reads both (§7.7).
+  - The worker refuses before any fetch (`RUNTIME_MANIFEST_MISMATCH`,
+    `corrupt`) a v2 file that names no `encoding` or one outside
+    `gzip`/`identity`, a part without a positive integer `decodedBytes`, a
+    part but the last that does not decode to exactly 16,777,216 bytes (or a
+    last one that decodes to more), `decodedBytes` that do not sum to the
+    file's `bytes`, and an `identity` part whose `decodedBytes` is not its
+    `bytes`.
+  - It verifies each part as served (length, SHA-256, the cache-bypassing
+    retry), then inflates a gzip part through DecompressionStream to exactly
+    its `decodedBytes`. A part that does not inflate, or inflates to another
+    size, fails the boot `corrupt` and is not refetched (it was served as
+    pinned). The whole-file check, and so the buildId rule, is over the
+    decoded file.
+  - Progress counts the bytes that cross the wire: the runtime stage's
+    `total` is the sum of the parts' served bytes, which for v1 is the
+    files' `bytes` as before (§7.1).
+  - `RuntimeManifest` gains optional `schema`, a file's `encoding` and a
+    chunk's `decodedBytes` (additive).
+  - `pipeline/release/release-manifest.mjs` describes a v2 runtime with each
+    file's `encoding` and each chunk's `decodedBytes`, only for v2: a v1
+    runtime's section, and so `artifactSetId`, are byte-identical. It
+    refuses a record whose `runtime.schema` (additive in
+    `lean4-wasm64.release/v1`, absent = v1) is not the served manifest's.
+    fetch-artifacts and verify-release read v2 too (docs/CLI-CONTRACT.md,
+    contract 4).
+  - Gzip bytes depend on the zlib that wrote them, so nothing in QED64
+    compares served gzip parts across builds: only the decoded identity
+    (each file's `sha256`, and so the buildId) is compared.
+  - Nothing served changes yet: QED64 serves a v1 runtime, and the kernel
+    publishes no v2 runtime before this reader is on QED64's main. A
+    consumer that pairs these workers with a v2 runtime takes a worker bump,
+    no rebake.
+  - The worker scripts keep `REVISION` "1", and `PROTOCOL` is unchanged.
+  - `EMBED_API_REVISION` → `1.1.0`.

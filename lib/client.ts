@@ -55,13 +55,30 @@ export interface ProgressEvent {
   unit?: string;
 }
 
+/** A runtime manifest (the fork's formats/runtime-manifest.md). A file's `bytes`/`sha256` describe the decoded file;
+ * a chunk's `bytes`/`sha256` the part as served. The worker reads the schemas closure.json lists under
+ * `runtime.manifestSchemas` and refuses any other before it fetches a byte (docs/EMBEDDING.md §7.7). */
 export interface RuntimeManifest {
+  /** org.lean-browser64.runtime/v1 or /v2; absent = v1. */
+  schema?: string;
   buildId: string;
   leanVersion: string;
   sourceRevision?: string;
   files: Record<
     "lean.js" | "lean.wasm",
-    { bytes: number; sha256: string; chunks: { url: string; bytes: number; sha256: string }[] }
+    {
+      bytes: number;
+      sha256: string;
+      /** v2: how the parts are served (required there); absent in v1. */
+      encoding?: "identity" | "gzip";
+      chunks: {
+        url: string;
+        bytes: number;
+        sha256: string;
+        /** v2: the part's inflated size (required there). */
+        decodedBytes?: number;
+      }[];
+    }
   >;
 }
 

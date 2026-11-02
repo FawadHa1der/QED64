@@ -74,7 +74,9 @@ export interface ReleaseManifest {
   runtime: {
     buildId: string;
     manifest: TrackedFile & { pinnedPath: string };
-    files: { name: string; bytes: number; sha256: string; chunks: { path: string; bytes: number; sha256: string }[] }[];
+    /** A file's bytes/sha256 are the decoded file's, a chunk's the part as served. `encoding` and `decodedBytes`
+     * appear only for an org.lean-browser64.runtime/v2 runtime (a v1 runtime's section is unchanged). */
+    files: { name: string; bytes: number; sha256: string; encoding?: "identity" | "gzip"; chunks: { path: string; bytes: number; sha256: string; decodedBytes?: number }[] }[];
   };
   snapshots: {
     index: TrackedFile;

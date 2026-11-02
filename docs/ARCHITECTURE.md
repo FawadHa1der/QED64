@@ -24,9 +24,11 @@ One persistent Worker owns one Lean process for the whole session:
 
 1. **Capability gate** — Memory64 probe (a 13-byte module validation),
    SharedArrayBuffer, Atomics, `crossOriginIsolated`. Fail-closed.
-2. **Verified materialization** — lean.js/lean.wasm are fetched as ≤16 MiB
-   chunks, each SHA-256-checked, then whole-file-checked, then served to
-   Emscripten as private object URLs. Content-Encoding transforms are refused.
+2. **Verified materialization** — lean.js/lean.wasm are fetched as chunks of
+   ≤16 MiB decoded, each SHA-256-checked as served (a v2 runtime's gzip parts,
+   `org.lean-browser64.runtime/v2`, then inflated through DecompressionStream),
+   then whole-file-checked over the decoded file, then served to Emscripten as
+   private object URLs. Content-Encoding transforms are refused.
    A manifest whose schema or file encoding the worker does not read
    (closure.json `runtime.manifestSchemas`) is refused before any fetch.
 3. **Memory** — one shared `WebAssembly.Memory({address:"i64"})`, 256 MiB

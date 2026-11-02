@@ -332,8 +332,95 @@ describe.skipIf(!hasGit)("cross-checks refuse doctored inputs", () => {
 
   test("a runtime manifest of a schema the worker does not read (RUNTIME_MANIFEST_SCHEMAS, architecture review M3)", () => {
     doctored("public/runtime/runtime-manifest.json", editJson((rt) => { rt.schema = "org.lean-browser64.runtime/v9"; }), () => {
-      expect(refusal(build)).toMatch(/runtime manifest: schema is "org\.lean-browser64\.runtime\/v9", expected org\.lean-browser64\.runtime\/v1/);
+      expect(refusal(build)).toMatch(/runtime manifest: schema is "org\.lean-browser64\.runtime\/v9", expected org\.lean-browser64\.runtime\/v1 or org\.lean-browser64\.runtime\/v2/);
     });
+  });
+
+  // org.lean-browser64.runtime/v2 (architecture review M3, accepted by the kernel 2026-11-01): HEAD's tracked
+  // manifest doctored to v2 in place (every file gzip, each part's decodedBytes its bytes: HEAD's parts are 16 MiB
+  // slices but the last), with the record re-cut to carry it (its runtime.schema, and the new manifest bytes at the
+  // two paths the hosting rule stores under the release prefix) and base-tree.json naming the re-cut record's
+  // digest. Chunk paths, sizes and digests are unchanged.
+  const RUNTIME = "public/runtime/runtime-manifest.json";
+  const V2 = "org.lean-browser64.runtime/v2";
+  const v2Text = (edit: (rt: any) => void = () => {}) => {
+    const rt = JSON.parse(fs.readFileSync(treeFile(RUNTIME), "utf8"));
+    rt.schema = V2;
+    for (const [name, f] of Object.entries<any>(rt.files)) {
+      rt.files[name] = { bytes: f.bytes, sha256: f.sha256, encoding: "gzip", chunks: f.chunks.map((c: any) => ({ ...c, decodedBytes: c.bytes })) };
+    }
+    edit(rt);
+    return JSON.stringify(rt, null, 2);
+  };
+  /** The record edited and re-cut, and base-tree.json naming its new digest: a build that passes on it. */
+  function recut(record: (r: any) => void, body: () => void) {
+    const r = JSON.parse(fs.readFileSync(treeFile(RECORD), "utf8"));
+    record(r);
+    r.digest = recordDigest(r);
+    doctored(RECORD, () => JSON.stringify(r, null, 2), () => doctored(BASE_TREE, editJson((bt) => { bt.releaseDigest = r.digest; }), body));
+  }
+  function asV2(edit: (rt: any) => void, body: () => void, record: (r: any) => void = (r) => { r.runtime.schema = V2; }) {
+    const text = v2Text(edit);
+    const bytes = Buffer.from(text);
+    doctored(RUNTIME, () => text, () => recut((r) => {
+      record(r);
+      for (const p of ["runtime/runtime-manifest.json", `runtime/runtime-manifest.${buildId}.json`]) Object.assign(r.files.find((f: any) => f.path === p), { sha256: sha(bytes), bytes: bytes.length });
+    }, body));
+  }
+
+  test("a v2 runtime manifest is described with each file's encoding and each chunk's decodedBytes; a v1 runtime's section has neither", () => {
+    const pristine = build();
+    for (const f of pristine.runtime.files) {
+      expect(Object.keys(f)).toEqual(["name", "bytes", "sha256", "chunks"]);
+      for (const c of f.chunks) expect(Object.keys(c)).toEqual(["path", "bytes", "sha256"]);
+    }
+    const rt = json(fs.readFileSync(treeFile(RUNTIME)));
+    asV2(() => {}, () => {
+      const m = build();
+      expect(m.runtime.files.map((f) => f.name)).toEqual(Object.keys(rt.files).sort());
+      for (const f of m.runtime.files) {
+        expect(Object.keys(f)).toEqual(["name", "bytes", "sha256", "encoding", "chunks"]);
+        expect(f).toMatchObject({ bytes: rt.files[f.name].bytes, sha256: rt.files[f.name].sha256, encoding: "gzip" });
+        expect(f.chunks).toEqual(rt.files[f.name].chunks.map((c: any) => ({ path: c.url.slice(1), bytes: c.bytes, sha256: c.sha256, decodedBytes: c.bytes })));
+      }
+      expect(m.artifactSetId).not.toBe(pristine.artifactSetId);
+      expect(m.artifactSetId).toBe(artifactSetIdOf(m));
+    });
+  });
+
+  test("a v2 runtime manifest whose encoding or decodedBytes break the format; a v1 one that names an encoding", () => {
+    const last = json(fs.readFileSync(treeFile(RUNTIME))).files["lean.wasm"].chunks.length - 1;
+    asV2((rt) => { rt.files["lean.wasm"].chunks[last].decodedBytes += 1; }, () => {
+      expect(refusal(build)).toMatch(/runtime lean\.wasm: chunks decode to \d+ bytes, the manifest says \d+/);
+    });
+    asV2((rt) => { rt.files["lean.wasm"].chunks[0].decodedBytes -= 1; rt.files["lean.wasm"].chunks[last].decodedBytes += 1; }, () => {
+      expect(refusal(build)).toMatch(/runtime lean\.wasm chunk runtime\/chunks\/lean\.wasm\.\S+: decodedBytes malformed \(16777215; every part but the last decodes to exactly 16777216 bytes/);
+    });
+    asV2((rt) => { delete rt.files["lean.js"].chunks[0].decodedBytes; }, () => {
+      expect(refusal(build)).toMatch(/runtime lean\.js chunk runtime\/chunks\/lean\.js\.\S+: decodedBytes malformed \(none;/);
+    });
+    asV2((rt) => { rt.files["lean.js"].encoding = "identity"; rt.files["lean.js"].chunks[0].decodedBytes += 1; rt.files["lean.js"].bytes += 1; }, () => {
+      expect(refusal(build)).toMatch(/runtime lean\.js chunk \S+: decodedBytes malformed/);
+    });
+    asV2((rt) => { rt.files["lean.wasm"].encoding = "br"; }, () => {
+      expect(refusal(build)).toMatch(/runtime lean\.wasm: encoding "br" is not one org\.lean-browser64\.runtime\/v2 allows/);
+    });
+    asV2((rt) => { delete rt.files["lean.js"].encoding; }, () => {
+      expect(refusal(build)).toMatch(/runtime lean\.js: encoding \(none\) is not one org\.lean-browser64\.runtime\/v2 allows/);
+    });
+    doctored(RUNTIME, editJson((rt) => { rt.files["lean.js"].encoding = "identity"; }), () => {
+      expect(refusal(build)).toMatch(/runtime lean\.js: encoding "identity" is not one org\.lean-browser64\.runtime\/v1 allows/);
+    });
+  });
+
+  test("a record whose runtime.schema (absent = v1) is not the served runtime manifest's", () => {
+    asV2(() => {}, () => {
+      expect(refusal(build)).toMatch(/names a runtime of schema org\.lean-browser64\.runtime\/v1, the served runtime manifest's is org\.lean-browser64\.runtime\/v2 — the record and the served manifest disagree/);
+    }, () => {});
+    doctored(RECORD, editRecord((r) => { r.runtime.schema = V2; }), () => {
+      expect(refusal(build)).toMatch(/names a runtime of schema org\.lean-browser64\.runtime\/v2, the served runtime manifest's is org\.lean-browser64\.runtime\/v1/);
+    });
+    recut((r) => { r.runtime.schema = "org.lean-browser64.runtime/v1"; }, () => { expect(build().runtime.buildId).toBe(buildId); });
   });
 
   test("the toolchain record: schema, its own digest, the fields read", () => {

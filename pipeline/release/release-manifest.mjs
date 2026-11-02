@@ -36,7 +36,8 @@
 // REFUSALS (exit 1, one line on stderr): the pairing facts the browser cannot
 // check are checked here — the toolchain record is not a self-consistent
 // lean4-wasm64.release/v1 (schema, its own digest, the fields read); it names
-// another runtime than the served buildId; the runtime manifest's
+// another runtime than the served buildId, or another runtime.schema (absent =
+// org.lean-browser64.runtime/v1) than the served manifest's; the runtime manifest's
 // sourceRevision commit is not a prefix of the record's kernel.commit; a
 // runtime/ or profiles/ file the hosting rule stores under the toolchain
 // prefix (the runtime manifest and its per-build copy
@@ -58,8 +59,9 @@
 // runtime/, profiles/ or snapshots/ other than profiles/index.json and
 // snapshots/index.json, or those two differ from the tracked indexes. Plus
 // the structural checks a manifest must pass to be described
-// at all (schemas, content-addressed names, sizes that add up, pack.mjs's
-// content digest). Usage errors exit 2.
+// at all (schemas, content-addressed names, sizes that add up — a v2
+// runtime's chunks by their decodedBytes —, pack.mjs's content digest).
+// Usage errors exit 2.
 //
 // Usage: node pipeline/release/release-manifest.mjs --help
 
@@ -76,7 +78,11 @@ export const KERNEL_BRANCH = "qed64-wasm64";
 export const RECORD_SCHEMA = "lean4-wasm64.release/v1";
 export const BASE_TREE_SCHEMA = "qed64.base-tree/v1";
 /** The runtime manifest schemas this generator describes: the ones QED64's worker reads (embedding/closure.json runtime.manifestSchemas; tests/unit/package-contract.test.ts pins them equal). */
-export const RUNTIME_MANIFEST_SCHEMAS = Object.freeze(["org.lean-browser64.runtime/v1"]);
+export const RUNTIME_MANIFEST_SCHEMAS = Object.freeze(["org.lean-browser64.runtime/v1", "org.lean-browser64.runtime/v2"]);
+/** A v2 runtime file's encodings, a closed set (the fork's formats/runtime-manifest.md); a v1 file names none. */
+const RUNTIME_V2_ENCODINGS = Object.freeze(["identity", "gzip"]);
+/** A v2 part's decoded size, every part but the last (the v1 chunk size); the last decodes to at most that. */
+const RUNTIME_DECODED_SLICE = 16 * 1024 * 1024;
 /** The R2 key rule of decision 3 (docs/DEPLOY.md, "The toolchain release prefix"), recorded verbatim as hosting.rule. */
 export const HOSTING_RULE = "a path under runtime/ or profiles/ that is not site-owned is stored at <toolchainPrefix><path>; every other path at <path>";
 /** Repo-relative paths of the tracked inputs (the per-pack manifests are
@@ -505,22 +511,41 @@ export function buildReleaseManifest(source, { dist = null } = {}) {
   if (record.runtime.buildId !== buildId) {
     refuse(`${INPUTS.toolchainRecord} (${record.id}) names runtime ${record.runtime.buildId}, the served runtime is ${buildId} — land the adoption's runtime manifest with its record (docs/REBUILD.md §3)`);
   }
+  // runtime.schema: additive in lean4-wasm64.release/v1, absent = v1. A buildId is never re-chunked in another format.
+  const recordSchema = record.runtime.schema ?? RUNTIME_MANIFEST_SCHEMAS[0];
+  if (recordSchema !== rt.schema) {
+    refuse(`${INPUTS.toolchainRecord} (${record.id}) names a runtime of schema ${recordSchema}, the served runtime manifest's is ${rt.schema} — the record and the served manifest disagree`);
+  }
   if (!kernelCommit.startsWith(built[1])) {
     refuse(`runtime ${buildId} was built from kernel ${built[1]} (sourceRevision), ${record.id} names kernel ${kernelCommit.slice(0, 12)} — the record and the served binary disagree`);
   }
   const fileNames = Object.keys(rt.files ?? {}).sort(byteOrder);
   if (fileNames.length === 0) refuse("runtime manifest lists no files");
+  // v2 (architecture review M3): a file's bytes/sha256 are the decoded file's, a chunk's are the part as served, and
+  // encoding and decodedBytes are emitted for v2 only, so a v1 runtime's section (and artifactSetId) is unchanged.
+  const v2 = rt.schema === RUNTIME_MANIFEST_SCHEMAS[1];
   const files = fileNames.map((name) => {
     const f = rt.files[name];
     const what = `runtime ${name}`;
     if (!HEX64.test(f?.sha256 ?? "") || !isSize(f.bytes)) refuse(`${what}: whole-file sha256/bytes malformed`);
     if (!Array.isArray(f.chunks) || f.chunks.length === 0) refuse(`${what}: no chunks`);
+    if (v2 ? !RUNTIME_V2_ENCODINGS.includes(f.encoding) : f.encoding !== undefined) refuse(`${what}: encoding ${JSON.stringify(f.encoding) ?? "(none)"} is not one ${rt.schema} allows`);
     const chunks = f.chunks.map((c, i) => {
       const p = servedPath(c?.url, "runtime/chunks", `${what} chunk ${i}`);
       if (!HEX64.test(c.sha256 ?? "") || !isSize(c.bytes)) refuse(`${what} chunk ${p}: sha256/bytes malformed`);
       requireContentAddressed(p, c.sha256, `${what} chunk`);
-      return { path: p, bytes: c.bytes, sha256: c.sha256 };
+      if (!v2) return { path: p, bytes: c.bytes, sha256: c.sha256 };
+      const d = c.decodedBytes;
+      if (!isSize(d) || (f.encoding === "identity" && d !== c.bytes) || (i < f.chunks.length - 1 ? d !== RUNTIME_DECODED_SLICE : d > RUNTIME_DECODED_SLICE)) {
+        refuse(`${what} chunk ${p}: decodedBytes malformed (${JSON.stringify(d) ?? "none"}; every part but the last decodes to exactly ${RUNTIME_DECODED_SLICE} bytes, the last to at most that, an identity part to its bytes)`);
+      }
+      return { path: p, bytes: c.bytes, sha256: c.sha256, decodedBytes: d };
     });
+    if (v2) {
+      const decoded = chunks.reduce((n, c) => n + c.decodedBytes, 0);
+      if (decoded !== f.bytes) refuse(`${what}: chunks decode to ${decoded} bytes, the manifest says ${f.bytes}`);
+      return { name, bytes: f.bytes, sha256: f.sha256, encoding: f.encoding, chunks };
+    }
     const sum = chunks.reduce((n, c) => n + c.bytes, 0);
     if (sum !== f.bytes) refuse(`${what}: chunks sum to ${sum} bytes, the manifest says ${f.bytes}`);
     return { name, bytes: f.bytes, sha256: f.sha256, chunks };

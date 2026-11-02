@@ -4,16 +4,21 @@
 // ~56 s per chunk while bytes flowed. It now reports every 500 ms inside a
 // chunk too, and verification (exact length, SHA-256) is unchanged. Runs the
 // REAL worker source in a vm sandbox with a scripted fetch body and a fake
-// clock (`performance.now`).
+// clock (`performance.now`). A v2 runtime's gzip part
+// (org.lean-browser64.runtime/v2, architecture review M3) is verified as
+// served, then inflated through DecompressionStream; progress counts the
+// bytes that crossed the wire.
 import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
+import { gzipSync } from "node:zlib";
+import { failureKindOf } from "../../lib/failure";
 
 type Posted = { type?: string; kind?: string; phase?: string; label?: string; loaded?: number; total?: number; unit?: string };
-type Chunk = { url: string; bytes: number; sha256: string };
-type FetchChunk = (chunk: Chunk, index: number, label: string, requestId: string, running: { loaded: number; total: number }) => Promise<Uint8Array>;
+type Chunk = { url: string; bytes: number; sha256: string; decodedBytes?: number };
+type FetchChunk = (chunk: Chunk, index: number, label: string, requestId: string, running: { loaded: number; total: number }, encoding?: "identity" | "gzip") => Promise<Uint8Array>;
 
 /** The worker in a sandbox whose fetch serves `parts` one read at a time, each read advancing the clock by `msPerPart`. */
 function loadWorker(parts: Uint8Array[], msPerPart: number) {
@@ -22,7 +27,7 @@ function loadWorker(parts: Uint8Array[], msPerPart: number) {
   const fetches: string[] = [];
   const workers = path.resolve(__dirname, "../../public/workers");
   const sandbox: Record<string, unknown> = {
-    crypto, Blob, URL, WebAssembly, SharedArrayBuffer, Atomics, TextEncoder, TextDecoder, BigInt, console,
+    crypto, Blob, URL, WebAssembly, SharedArrayBuffer, Atomics, TextEncoder, TextDecoder, BigInt, console, DecompressionStream,
     performance: { now: () => clock },
     setTimeout, clearTimeout, clearInterval,
     setInterval: (fn: () => void, ms: number) => { const t = setInterval(fn, ms); t.unref(); return t; },
@@ -96,5 +101,61 @@ describe("runtime chunk download progress", () => {
     await expect(long.fetchChunk({ ...chunk, bytes: (1 << 16) - 1 }, 3, "lean.wasm", "r4", { loaded: 0, total: 1 << 16 })).rejects.toThrow(/lean\.wasm chunk 3: more than 65535 bytes/);
     const short = loadWorker(parts, 10);
     await expect(short.fetchChunk({ ...chunk, bytes: (1 << 16) + 1 }, 4, "lean.wasm", "r5", { loaded: 0, total: 1 << 16 })).rejects.toThrow(/lean\.wasm chunk 4: 65536 bytes, expected 65537/);
+  });
+});
+
+describe("a v2 runtime's gzip part (org.lean-browser64.runtime/v2, architecture review M3)", () => {
+  const sha = (b: Uint8Array) => createHash("sha256").update(b).digest("hex");
+  /** `whole` gzipped (level 9) and served in `pieces` reads; the chunk pins the served bytes and the decoded size. */
+  function gzipChunkOf(size: number, pieces: number) {
+    const { whole } = chunkOf(size, 1);
+    const wire = new Uint8Array(gzipSync(whole, { level: 9 }));
+    const step = Math.ceil(wire.length / pieces);
+    const parts: Uint8Array[] = [];
+    for (let o = 0; o < wire.length; o += step) parts.push(wire.slice(o, Math.min(wire.length, o + step)));
+    return { whole, wire, parts, chunk: { url: "/runtime/chunks/lean.wasm.y.part-001", bytes: wire.length, sha256: sha(wire), decodedBytes: whole.length } };
+  }
+
+  it("a gzip part is verified as served, then inflated; progress counts wire bytes", async () => {
+    const { whole, wire, parts, chunk } = gzipChunkOf(1 << 20, 16);
+    expect(wire.length).toBeLessThan(whole.length); // the fixture compresses
+    const { fetchChunk, posted, fetches } = loadWorker(parts, 250);
+    const running = { loaded: 3 << 20, total: 8 << 20 };
+    const bytes = await fetchChunk(chunk, 1, "lean.wasm", "r1", running, "gzip");
+    expect(Buffer.from(bytes).equals(Buffer.from(whole))).toBe(true);
+    expect(fetches).toHaveLength(1);
+    const loaded = progressOf(posted).map((m) => m.loaded!);
+    expect(loaded.length).toBeGreaterThan(1); // in-chunk reports, then the verified one
+    for (const v of loaded) expect(v).toBeLessThanOrEqual((3 << 20) + wire.length);
+    expect(loaded.at(-1)).toBe((3 << 20) + wire.length);
+    expect(running.loaded).toBe((3 << 20) + wire.length);
+  });
+
+  it("a part that inflates to another size, or is not gzip, fails corrupt and is fetched once", async () => {
+    const { whole, parts, chunk } = gzipChunkOf(1 << 20, 4);
+    const raw = chunkOf(1 << 16, 4);
+    for (const [served, pinned, words] of [
+      [parts, { ...chunk, decodedBytes: chunk.decodedBytes - 1 }, /lean\.wasm chunk 2 inflates to more than 1048575 bytes/],
+      [parts, { ...chunk, decodedBytes: chunk.decodedBytes + 1 }, /lean\.wasm chunk 2 inflates to 1048576 bytes, expected 1048577/],
+      [raw.parts, { ...raw.chunk, decodedBytes: raw.whole.length }, /lean\.wasm chunk 2: gzip inflate failed/],
+    ] as const) {
+      const w = loadWorker([...served], 10);
+      // The sandbox's Error is another realm's: read the message, not the prototype.
+      const message = await w.fetchChunk(pinned, 2, "lean.wasm", "r2", { loaded: 0, total: whole.length }, "gzip").then(() => "resolved", (e: { message: string }) => e.message);
+      expect(message).toMatch(words);
+      expect(w.fetches).toHaveLength(1); // served as pinned: a cache-bypassing refetch cannot fix it
+      expect(failureKindOf("RUNTIME_FETCH_FAILED", message)).toBe("corrupt");
+    }
+  });
+
+  it("the SHA-256 is checked over the served bytes before the decoder runs", async () => {
+    const { parts, chunk } = gzipChunkOf(1 << 16, 4);
+    const w = loadWorker(parts, 10);
+    await expect(w.fetchChunk({ ...chunk, sha256: "0".repeat(64) }, 0, "lean.wasm", "r3", { loaded: 0, total: chunk.bytes }, "gzip")).rejects.toThrow(/lean\.wasm chunk 0 failed SHA-256 verification/);
+    expect(w.fetches.map((f) => f.split(" ")[1])).toEqual(["force-cache", "reload"]); // as for identity: both attempts
+    // The decoded bytes' digest is not the part's: a manifest pinning it (as a v1 tool would) is refused as served.
+    const d = gzipChunkOf(1 << 16, 4);
+    const v = loadWorker(d.parts, 10);
+    await expect(v.fetchChunk({ ...d.chunk, sha256: sha(d.whole) }, 0, "lean.wasm", "r4", { loaded: 0, total: d.chunk.bytes }, "gzip")).rejects.toThrow(/failed SHA-256 verification/);
   });
 });
