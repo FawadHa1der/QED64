@@ -70,7 +70,7 @@ export interface IndexOptions {
   pairedBuildId?: string;
 }
 
-/** @internal The shape of a buildId a pinned read accepts (runtime/v1). */
+/** @internal The shape of a buildId a pinned read accepts (runtime/v1 and v2). */
 export const PAIRABLE_BUILD_ID = /^wasm64-[0-9a-f]{16}$/;
 
 /** @internal The per-build copy of the index at `url`: `index.<buildId>.json`

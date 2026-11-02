@@ -162,15 +162,16 @@ const publicRuntime = path.join(publicDir, "runtime");
 const publicSnapshots = path.join(publicDir, "snapshots");
 const publicProfiles = path.join(publicDir, "profiles");
 const PROFILE_INDEX_SCHEMA = "qed64.profile-index/v1";
-// What the browser would reject anyway (lib/profiles.ts
-// validateManifest): refuse it here, before it is served.
+// What the browser's installer refused (lib/profiles.ts validateManifest,
+// removed with D1): still refused here, before it is served.
 const MAX_PART_BYTES = 64 * 1024 * 1024;
 const promotedRuntime = { buildId: manifest.buildId, leanVersion: manifest.leanVersion };
 
-/** `/profiles/<basename>` → basename. The page fetches these URLs verbatim
- * (fetch(entry.manifest), fetch(part.url)) and this script installs the file
+/** `/profiles/<basename>` → basename. These URLs are served verbatim (the
+ * import completion fetches the core and essential manifests by them; before
+ * D1 the installer fetched every part) and this script installs the file
  * at public/profiles/<basename>: any other spelling — pack.mjs's bare
- * basenames included — would be promoted fine and 404 in the browser. */
+ * basenames included — would be promoted fine and 404. */
 const servedProfileBase = (url, what) => {
   const m = typeof url === "string" ? /^\/profiles\/([^/]+)$/.exec(url) : null;
   if (!m || m[1] === "index.json") fail(`${what}: url ${JSON.stringify(url)} is not /profiles/<file> — the page fetches it verbatim and the promote installs it under public/profiles`);
@@ -209,8 +210,9 @@ function verifyStagedProfiles() {
   // rename throws with the served tree half-switched (review, reproduced).
   const manifestNames = profileIndex.profiles.map((p) => (typeof p?.manifest === "string" ? path.basename(p.manifest) : ""));
   if (new Set(manifestNames).size !== manifestNames.length) fail(`staged profile index: two profiles name the same manifest (${JSON.stringify(manifestNames)})`);
-  // qed64-boot.ts installs `core` at boot and throws without it.
-  if (!ids.includes("core")) fail("staged profile index has no `core` profile — the page cannot boot without it");
+  // Every site still serves a `core` profile (D1 kept the served packs; the import
+  // completion reads its manifest, and preflight refuses an index without one).
+  if (!ids.includes("core")) fail("staged profile index has no `core` profile — preflight refuses a site without one");
 
   const parts = new Map(); // basename → { from, sha }
   const manifests = [];
@@ -226,7 +228,7 @@ function verifyStagedProfiles() {
     if (pm?.format !== "browser64.artifact-manifest") fail(`${what}: manifest format is ${JSON.stringify(pm?.format)}`);
     const content = pm.content;
     const transport = content?.pack?.transport;
-    if (transport?.encoding !== "gzip") fail(`${what}: transport encoding is ${JSON.stringify(transport?.encoding)}, the installer only inflates gzip`);
+    if (transport?.encoding !== "gzip") fail(`${what}: transport encoding is ${JSON.stringify(transport?.encoding)}, expected gzip`);
     if (!Array.isArray(transport.parts) || transport.parts.length === 0) fail(`${what}: manifest lists no transport parts`);
     // The manifest's own identity, as pack.mjs defines it: sha256 over
     // JSON.stringify(content) (key order survives a parse/stringify round

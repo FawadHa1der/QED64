@@ -11,7 +11,8 @@
 //   4. pairing: every index entry's `runtime` equals the manifest buildId
 //      (an entry without the field is reported as "no pairing fact", the
 //      pre-field indexes; the resident adapter treats that as unknown);
-//   5. the profile index names a core profile (boot needs it);
+//   5. the profile index names a core profile (every site still serves one,
+//      D1: the import completion reads its manifest; no boot installs it);
 //   6. one boot smoke in headless Chromium (or Firefox: `browserName`): the pill reaches `ready` within
 //      the budget (skip with --no-boot for fetch-only checks).
 // Exit 3 with one line `PREFLIGHT REFUSED: <reason>` on any failure (a

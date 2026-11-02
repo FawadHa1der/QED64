@@ -379,10 +379,12 @@ touches, in this order:
    index) will legitimately change. Both are baked from slim trees (no
    `*.olean.private`), proved harmless at one Mathlib pin only: the
    SLIM-BAKE AUDIT adopt-release prints as landing step 0 (the umbrella
-   import log, the `import all` audit, and a fat-versus-slim differential
-   bake compared with `snapshot-probe.mjs`) is required at every new pin and
-   recorded in docs/SERVER-SLIM-REBAKE.md; if the messages differ, ship
-   the fat bake.
+   import log, the `import all` audit, and a differential of the slim
+   snapshot against a fresh import of the fat tree, both through
+   `snapshot-probe.mjs`) is required at every new pin and recorded in
+   docs/SERVER-SLIM-REBAKE.md; if the messages differ, the adoption does not
+   land and the way out is the user's call (a fat snapshot no longer bakes
+   on this runtime).
 4. Page: the import-completion list and the covered-module set read the
    manifests, so they follow; the compiler battery's golden messages and the
    e2e corpus may need re-goldening where upstream changed message text.

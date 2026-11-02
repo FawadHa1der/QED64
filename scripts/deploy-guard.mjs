@@ -22,8 +22,10 @@
 // One HEAD per entry (redirects not followed, 20 s each); a 5xx, a network
 // error or a timeout is retried after 2 s and again after 4 s (three tries).
 // It reads no body. A 200 with a Content-Length must carry the index's size
-// (transfer, else bytes); the live legacy Worker sends no Content-Length on
-// HEAD (artifactHead "get"), so there the check is the status alone. The
+// (transfer, else bytes); a Worker from before 2026-11 (QED64_LEGACY,
+// artifactHead "get") sends none on HEAD, so against it the check is the
+// status alone; the hardened Worker answers HEAD with the length, so the
+// sizes are checked (docs/DEPLOY.md). The
 // first refusal stops the check.
 //
 // Usage: [QED64_DEPLOY_ORIGIN=<url>|none] node scripts/deploy-guard.mjs [--index <file>] [--origin <url>]

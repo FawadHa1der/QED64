@@ -4,7 +4,8 @@
 // wasm worker doesn't have, and the front door fails a completion request on
 // an import line fast (-32801) rather than let the worker hold it — exactly
 // when completions help most. So this is a plain Monaco provider over data
-// every client already downloads: the pack manifests list one `.olean` per
+// the site already serves: the pack manifests (fetched once, on the first
+// import completion; no boot fetches them since D1) list one `.olean` per
 // module, and module names are just those paths with dots. No worker, no
 // toolchain, no new artifacts; Monaco merges these with the LSP's identifier
 // completions.

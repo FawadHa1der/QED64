@@ -88,7 +88,7 @@ describe("checkLiveSnapshots", () => {
     expect(seen).toEqual([{ method: "HEAD", path: INIT }, { method: "HEAD", path: MATHLIB }]);
   });
 
-  test("2: a 200 without Content-Length (the live legacy Worker's HEAD) passes on the status alone", async () => {
+  test("2: a 200 without Content-Length (a pre-2026-11 Worker's HEAD, QED64_LEGACY) passes on the status alone", async () => {
     answers.set(INIT, { statuses: [200], length: null });
     answers.set(MATHLIB, { statuses: [200], length: null });
     const r = await check(twoEntries());

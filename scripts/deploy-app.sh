@@ -14,9 +14,10 @@
 #      and dist/snapshots/ but index.json (the deploy carries QED64's two
 #      indexes with the shell: docs/DEPLOY.md "Atomic deploys")
 #   5. the size check: refuse (exit 1, one line) when dist/ still holds a
-#      runtime/ path, lacks dist/profiles/index.json or dist/snapshots/index.json
-#      or holds one that is not byte-identical to the tracked public/ file,
-#      holds any other profiles/ or snapshots/ path, or any file over 25 MiB
+#      runtime/ path, holds a symlinked dist/profiles or dist/snapshots, lacks
+#      dist/profiles/index.json or dist/snapshots/index.json or holds one that
+#      is not byte-identical to the tracked public/ file, holds any other
+#      profiles/ or snapshots/ path, or any file over 25 MiB
 #   6. the guard: node scripts/deploy-guard.mjs (architecture review R19a):
 #      refuse (exit 1) unless every .snapz public/snapshots/index.json names
 #      already answers on the live origin
@@ -76,6 +77,9 @@ refuse() { echo "deploy-app: REFUSED: $*" >&2; exit 1; }
 if [ -e dist/runtime ] || [ -L dist/runtime ]; then
   refuse "dist/runtime is still present after the prune (the runtime is the toolchain release's, served from R2, never bundled)"
 fi
+for dir in profiles snapshots; do
+  [ ! -L "dist/$dir" ] || refuse "dist/$dir is a symlink: the deploy carries a plain dist/$dir/ holding only index.json"
+done
 for idx in profiles/index.json snapshots/index.json; do
   { [ -f "dist/$idx" ] && [ ! -L "dist/$idx" ]; } || refuse "dist/$idx is missing: the deploy serves QED64's tracked public/$idx with the shell (npm run build:site copies it)"
   cmp -s "dist/$idx" "public/$idx" || refuse "dist/$idx is not byte-identical to the tracked public/$idx"

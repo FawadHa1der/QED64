@@ -82,7 +82,7 @@ export interface RuntimeManifest {
   >;
 }
 
-/** The build id a runtime manifest must carry (runtime/v1 invariant): "wasm64-" + sha256(lean.wasm)[:16].
+/** The build id a runtime manifest must carry (the runtime/v1 and v2 invariant, over the decoded lean.wasm): "wasm64-" + sha256(lean.wasm)[:16].
  * The toolchain writes it from the bytes; readers compare strings only (the worker verifies the bytes). */
 export function runtimeIdOf(manifest: Pick<RuntimeManifest, "files">): string | null {
   const sha = manifest.files?.["lean.wasm"]?.sha256;

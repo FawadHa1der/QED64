@@ -173,8 +173,9 @@ retries a busy one for about 3 s (another tab's or a predecessor's worker
 mid-read), then logs `[boot] raw cache busy` and streams. A missing,
 unopenable or busy `.raw` streams the `.snapz` from the network and inflates
 it in the Lean worker (one of the wrong size is discarded first). A `.raw`
-that opens at its size but cannot be read whole, or is not a compacted region,
-fails the load as `corrupt`.
+that opens at its size but comes back short, or is not a compacted region,
+fails the load as `corrupt`; a read the browser itself throws on fails it too,
+classified by its message (often `other`).
 
 Long preparation steps are rendered live by the page (frontend/src/main.ts
 `ui.progress` from the worker's `progress` events): the boot overlay and the

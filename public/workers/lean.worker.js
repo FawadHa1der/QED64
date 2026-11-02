@@ -1541,8 +1541,10 @@ async function boot(msg) {
   const requestId = msg.requestId;
   const files = bootConfig.runtime.files;
   // Progress counts the bytes that cross the wire: the parts as served (a v1 file's parts sum to its bytes, so the
-  // total is unchanged there; a v2 gzip file's are fewer than its decoded bytes).
-  const wireBytes = (file) => file.chunks.reduce((n, c) => n + c.bytes, 0);
+  // total is unchanged there; a v2 gzip file's are fewer than its decoded bytes). A malformed chunk entry counts 0
+  // here and then fails in materialize, which posts the boot's one error reply (RUNTIME_FETCH_FAILED, as before
+  // ef7a0d7).
+  const wireBytes = (file) => file.chunks.reduce((n, c) => n + (c && Number.isSafeInteger(c.bytes) ? c.bytes : 0), 0);
   const running = {
     loaded: 0,
     total: wireBytes(files["lean.js"]) + wireBytes(files["lean.wasm"]),
@@ -1862,8 +1864,10 @@ function compile(msg) {
 // file, and the `_lean_wasm_load_snapshot` path-loader branch. A raw region
 // another context holds open is retried for RAW_BUSY.waitMs first
 // (architecture review R2), then logged. A missing, unopenable, wrong-sized
-// (discarded) or busy `.raw` ends in a network boot; one that fails mid-read
-// or is not a compacted region fails the load (`corrupt`).
+// (discarded) or busy `.raw` ends in a network boot; one that comes back
+// short mid-read or is not a compacted region fails the load (`corrupt`),
+// and so does a read the browser itself throws on (classified by its
+// message, often `other`).
 
 async function snapshotCacheDir() {
   try {

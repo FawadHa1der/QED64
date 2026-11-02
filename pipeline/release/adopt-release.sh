@@ -73,7 +73,7 @@ W="$Q/work/adopt/$ID"; SERVED=${QED64_PUBLIC_DIR:-$Q/public}; FLOOR=$(node -p 'r
 BT=${QED64_BASE_TREE:-$Q/embedding/base-tree.json}
 # The roots the stock umbrella entry declares (docs/EMBEDDING.md §8; review D10): the shared list the page falls back to, read from its one definition.
 UROOTS=$(node --input-type=module -e 'const { pathToFileURL } = await import("node:url"); console.log((await import(pathToFileURL(process.argv[1]).href)).LEGACY_UMBRELLA_ROOTS.join(","))' "$Q/lib/snapshots.ts" 2>/dev/null) && [ -n "$UROOTS" ] \
-  || refuse "cannot read LEGACY_UMBRELLA_ROOTS from $Q/lib/snapshots.ts (Node strips its types by default from 22.18 and 23.6 on; this is $(node --version))"
+  || refuse "cannot read LEGACY_UMBRELLA_ROOTS from $Q/lib/snapshots.ts (the file must stay import-free and export the list, and Node must strip its types: by default from 22.18 and 23.6 on; this is $(node --version))"
 patch_ge() { echo "$1 $2" | awk '{ if ($1 !~ /^[0-9][0-9][0-9][0-9][a-z]?$/ || $2 !~ /^[0-9][0-9][0-9][0-9][a-z]?$/) exit 2;
   na = substr($1, 1, 4) + 0; nb = substr($2, 1, 4) + 0; exit (na > nb || (na == nb && substr($1, 5) >= substr($2, 5))) ? 0 : 1 }'; }
 realdir() { # <dir under work/>: absent, or a real dir with no link 3 levels down (rm -rf, unpack and cp would go through it)
@@ -137,7 +137,7 @@ plan for $ID: runtime $BID, Lean $LEANVER, kernel $KCOMMIT (patch $PATCH, floor 
   base-tree       node pipeline/release/adopt-helper.mjs base-tree → $W/base-tree.json (packs, umbrella sha256/bytes, tree digests of: $TREES)
   gate            $([ $GATE = 1 ] && echo "node $T/cli.mjs gate --artifact $W/artifact > $W/logs/gate.log (' ok ' lines and GATE PASSED)" || echo "skipped (no --gate; recommended for an unpublished release)")
   bake-init       ${BAKE[*]} --name init --lib $W/core-lib-slim --reserve 1073741824
-  bake-mathlib    ${BAKE[*]} --name mathlib --lib $W/lib-tree-slim --reserve 3221225472 --probe 'import QED64.Essential' --roots $UROOTS
+  bake-mathlib    ${BAKE[*]} --name mathlib --lib $W/lib-tree-slim --reserve 3221225472 --probe 'import QED64.Essential' --roots $UROOTS  (a 'bake-snapshot: verdict' line in either bake log fails the adoption: the D6 notice)
   stage-runtime   cp $W/release/runtime/runtime-manifest.json + chunks/ → $STAGING/runtime/ (no chunker, no restamp)
   stage-profiles  $([ "$MODE" = packs-change ] && echo "node pipeline/release/stage-profiles.mjs --packs $R --build-id $BID --lean-version $LEANVER --expect-modules $W/release/lists/essential-modules.txt --out $STAGING/profiles" || echo "none: the served packs stay (a kernel-only promote re-points profiles/index.json)")
   pairing         the staged runtime manifest and both snapshot entries name $BID, Lean $LEANVER
@@ -224,12 +224,12 @@ EOF
     a. $L/bake-mathlib.log: every module of the umbrella imported (a Lean failure line already failed the bake step).
     b. $L/audit.log: the \`import all\` edges; new ones outside Init/Std/Lean reach into private facets (\`import all M\` fails on slim).
     c. Differential (kernel reduction, rfl / decide / simp unfolding a non-@[expose] def, is where slim and fat disagree: "unknown
-       constant"): bake a FAT umbrella and compare messages byte for byte on the battery's Mathlib cases and a stress file:
-         node --stack-size=8192 pipeline/snapshot/bake-snapshot.mjs --name mathlib --lib $W/lib-tree --reserve 4294967296 --probe 'import QED64.Essential' --roots $UROOTS --artifact $W/artifact --work $W/snapshot-fat --out $W/fat-snapshots
+       constant"): compare the slim snapshot with a FRESH IMPORT of the fat tree (a fat snapshot no longer bakes on this runtime:
+       docs/SERVER-SLIM-REBAKE.md), messages byte for byte, on the battery's Mathlib cases and a stress file:
          node --stack-size=8192 pipeline/snapshot/snapshot-probe.mjs --via-mem --artifact $W/artifact --lib $W/lib-tree-slim --snap $W/snapshot/mathlib.snap --probe-file <stress.lean>
-         node --stack-size=8192 pipeline/snapshot/snapshot-probe.mjs --via-mem --artifact $W/artifact --lib $W/lib-tree --snap $W/snapshot-fat/mathlib.snap --probe-file <stress.lean>
-       Identical: ship slim and record the audit (pin, date, counts) in docs/SERVER-SLIM-REBAKE.md. Different: ship the fat bake
-       (copy $W/fat-snapshots over $STAGING/snapshots and promote again; 2.5x the download, resize the page's pre-commit).
+         node --stack-size=8192 pipeline/snapshot/snapshot-probe.mjs --fresh-import --budget-ms <large: the import's> --artifact $W/artifact --lib $W/lib-tree --probe-file <stress.lean>
+       Identical: ship slim and record the audit (pin, date, counts) in docs/SERVER-SLIM-REBAKE.md. Different: do not land; record
+       both outputs there and take it to the user (the fat-bake fallback went with the fat snapshot).
 EOF
 UPDIR=$(dirname "$PUB"); if [ "$(basename "$PUB")" = public ] && [ -x "$UPDIR/scripts/upload-artifacts.sh" ]; then UPLOAD="(cd $UPDIR && scripts/upload-artifacts.sh)"
 else UPLOAD="first promote the same staging into the uploading checkout's own real public/ (node pipeline/release/promote-staging.mjs --staging $STAGING --public <checkout>/public: verified, additive), then scripts/upload-artifacts.sh there"; fi

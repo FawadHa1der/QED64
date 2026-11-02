@@ -133,7 +133,7 @@ export async function resolveRuntimeManifest(overrides: BootOverrides, opts: { p
     if (!r.ok) throw new Error(`runtime manifest: HTTP ${r.status}`);
     manifest = (await r.json()) as RuntimeManifest;
   }
-  // runtime/v1 invariant (§7.2): buildId is "wasm64-" + sha256(lean.wasm)[:16]. The worker refuses it too
+  // runtime/v1 and v2 invariant (§7.2), over the decoded lean.wasm: buildId is "wasm64-" + sha256(lean.wasm)[:16]. The worker refuses it too
   // (RUNTIME_MANIFEST_MISMATCH); checking here fails the boot before any chunk is fetched, with a cause.
   const fault = runtimeManifestIdFault(manifest);
   if (fault) throw Object.assign(new Error(`runtime manifest: ${fault}`), { code: "RUNTIME_MANIFEST_MISMATCH" }); // failureCauseOf reads the code: kind "corrupt"

@@ -136,8 +136,9 @@ describe("scripts/deploy-app.sh against stubbed npm/npx/node", () => {
     fs.writeFileSync(path.join(repo, "public/snapshots/index.json"), '{"schema":"qed64.snapshot-index/v1","snapshots":[]}\n');
     // `npm run build:site` writes a dist/ with the artifacts the prune must remove and the two indexes it
     // must keep (copied from public/, as vite's build does; STUB_NO_INDEX=<dir> skips that one,
-    // STUB_INDEX_DRIFT=1 appends a byte to the profile index's copy), plus STUB_BIG_BYTES of one sparse
-    // file; STUB_FAIL names a script that exits STUB_FAIL_CODE (default 7).
+    // STUB_INDEX_DRIFT=1 appends a byte to the profile index's copy, STUB_SYMLINK=1 makes dist/snapshots a
+    // symlink to the real directory), plus STUB_BIG_BYTES of one sparse file; STUB_FAIL names a script that
+    // exits STUB_FAIL_CODE (default 7).
     fs.writeFileSync(path.join(bin, "npm"), [
       "#!/bin/sh",
       'printf "npm %s\\n" "$*" >> "$STUB_LOG"',
@@ -146,6 +147,7 @@ describe("scripts/deploy-app.sh against stubbed npm/npx/node", () => {
       "  rm -rf dist && mkdir -p dist/assets dist/runtime dist/profiles/mathlib dist/snapshots",
       "  echo shell > dist/index.html; echo chunk > dist/runtime/lean.wasm.0; echo pack > dist/profiles/mathlib/p.pack; echo snap > dist/snapshots/init.0.snapz",
       '  for d in profiles snapshots; do [ "$STUB_NO_INDEX" = "$d" ] || cp "public/$d/index.json" "dist/$d/"; done',
+      '  if [ "$STUB_SYMLINK" = 1 ]; then mv dist/snapshots dist/snapshots-real && ln -s snapshots-real dist/snapshots; fi',
       '  if [ "$STUB_INDEX_DRIFT" = 1 ]; then printf x >> dist/profiles/index.json; fi',
       '  if [ -n "$STUB_BIG_BYTES" ]; then dd if=/dev/zero of=dist/assets/big.bin bs=1 count=0 seek="$STUB_BIG_BYTES" 2>/dev/null; fi',
       "fi",
@@ -166,7 +168,7 @@ describe("scripts/deploy-app.sh against stubbed npm/npx/node", () => {
     fs.rmSync(log, { force: true });
     fs.rmSync(path.join(repo, "dist"), { recursive: true, force: true });
     // An explicit environment: the stubs first, then only the system tools; nothing inherited (no tokens).
-    const env = { PATH: `${bin}:/usr/bin:/bin`, STUB_LOG: log, STUB_FAIL: "", STUB_BIG_BYTES: "", STUB_GUARD_EXIT: "", STUB_NO_INDEX: "", STUB_INDEX_DRIFT: "", HOME: tmp, ...extra };
+    const env = { PATH: `${bin}:/usr/bin:/bin`, STUB_LOG: log, STUB_FAIL: "", STUB_BIG_BYTES: "", STUB_GUARD_EXIT: "", STUB_NO_INDEX: "", STUB_INDEX_DRIFT: "", STUB_SYMLINK: "", HOME: tmp, ...extra };
     const r = spawnSync("/bin/bash", [path.join(repo, SCRIPT), ...args], { cwd: elsewhere, env, encoding: "utf8", timeout: 30_000 });
     const argv = fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n") : [];
     return { ...r, argv };
@@ -197,6 +199,7 @@ describe("scripts/deploy-app.sh against stubbed npm/npx/node", () => {
       [{ STUB_NO_INDEX: "snapshots" }, "deploy-app: REFUSED: dist/snapshots/index.json is missing: the deploy serves QED64's tracked public/snapshots/index.json with the shell (npm run build:site copies it)"],
       [{ STUB_NO_INDEX: "profiles" }, "deploy-app: REFUSED: dist/profiles/index.json is missing: the deploy serves QED64's tracked public/profiles/index.json with the shell (npm run build:site copies it)"],
       [{ STUB_INDEX_DRIFT: "1" }, "deploy-app: REFUSED: dist/profiles/index.json is not byte-identical to the tracked public/profiles/index.json"],
+      [{ STUB_SYMLINK: "1" }, "deploy-app: REFUSED: dist/snapshots is a symlink: the deploy carries a plain dist/snapshots/ holding only index.json"],
     ] as [Record<string, string>, string][]) {
       for (const args of [[], ["--dry-run"]]) {
         const r = run(args, extra);

@@ -181,6 +181,15 @@ describe("lean.worker.js boot (the real worker source in a VM)", () => {
       expect(w.posted.map((m) => m.error?.code)).not.toContain("INVALID_MESSAGE");
     }
   });
+  it("a v1 manifest with a malformed chunk entry still gets its one error reply (no silent hang)", async () => {
+    const runtime = good();
+    runtime.files["lean.wasm"].chunks = [null as never];
+    const w = worker();
+    w.dispatch(boot(runtime));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(w.posted).toHaveLength(1);
+    expect(w.posted[0]).toMatchObject({ type: "error", requestId: "r1" });
+  });
   // v2 (org.lean-browser64.runtime/v2, accepted by the kernel 2026-11-01): each file names its encoding, each part
   // its decodedBytes. good()'s files are one part each, so a part's decodedBytes is its file's bytes.
   const V2 = "org.lean-browser64.runtime/v2";

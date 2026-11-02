@@ -924,7 +924,7 @@ interface FailureCause { kind: FailureKind; httpStatus?: number; stage?: BootSta
 |------|---------|------|
 | `network` | the fetch was rejected, the stream was cut, the body ended before the bytes it announced, or 5xx/429 (retrying can help) | `Failed to fetch`, `HTTP 503`, `the transfer of <file> ended early: received <n> of <expected> bytes` |
 | `missing` | the server does not have it: a deploy problem, so retrying cannot help | every 4xx except 408/425/429; an HTML answer where JSON or binary belongs (the workers and the index loader sniff it); `SNAPSHOT_NOT_IN_INDEX` |
-| `corrupt` | it arrived in full but is wrong | chunk length or SHA-256 mismatch; a gzip/DecompressionStream error of a body that arrived in full; "not a compacted-region file"; a size the index does not declare; "raw size mismatch"; `SNAPSHOT_LOAD_RESULT` (the Lean loader refused the region); `RUNTIME_MANIFEST_MISMATCH` (a runtime manifest whose `buildId` is not `wasm64-` + the first 16 hex digits of its own `files["lean.wasm"].sha256`: the runtime/v1 invariant every reader may check; the page refuses it before fetching, the worker before booting; also a manifest whose `schema`, or a file's `encoding`, this worker does not read (`closure.json` `runtime.manifestSchemas`, §7.7), or a v2 manifest whose parts' `decodedBytes` break the format, refused before anything is fetched); a v2 runtime part that passed its SHA-256 but does not inflate, or inflates to another size than its `decodedBytes` (`RUNTIME_FETCH_FAILED`; not refetched: it was served as pinned) |
+| `corrupt` | it arrived in full but is wrong | chunk length or SHA-256 mismatch; a gzip/DecompressionStream error of a body that arrived in full; "not a compacted-region file"; a size the index does not declare; "raw size mismatch"; `SNAPSHOT_LOAD_RESULT` (the Lean loader refused the region); `RUNTIME_MANIFEST_MISMATCH` (a runtime manifest whose `buildId` is not `wasm64-` + the first 16 hex digits of its own `files["lean.wasm"].sha256`: the runtime/v1 and v2 invariant (over the decoded `lean.wasm`) every reader may check; the page refuses it before fetching, the worker before booting; also a manifest whose `schema`, or a file's `encoding`, this worker does not read (`closure.json` `runtime.manifestSchemas`, §7.7), or a v2 manifest whose parts' `decodedBytes` break the format, refused before anything is fetched); a v2 runtime part that passed its SHA-256 but does not inflate, or inflates to another size than its `decodedBytes` (`RUNTIME_FETCH_FAILED`; not refetched: it was served as pinned) |
 | `unpaired` | a snapshot baked by another runtime build | `SNAPSHOT_UNPAIRED` |
 | `oom` | an allocation or reservation failed | `MEMORY_FAILED`, `could not allocate`, `Cannot enlarge memory` |
 | `storage` | OPFS or quota | `QuotaExceededError` |
@@ -2519,3 +2519,10 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   signatures use, so a change to `SnapshotEntry`, `Qed64Artifacts`,
   `StatusSink` or another such type is a break like any other (§1). No code
   change: `EMBED_API_REVISION` is unchanged.
+- **A malformed runtime manifest gets its one error reply again (2026-11,
+  review of the v2 reader):** a chunk entry that is not an object with a
+  whole `bytes` (for example `chunks: [null]`) no longer throws in the
+  boot's wire-byte total, which left the boot with no reply; it fails as
+  before 1.1.0, with `RUNTIME_FETCH_FAILED`. No served manifest can reach it
+  (release-manifest validates them). `EMBED_API_REVISION` and the worker
+  `REVISION` are unchanged.
