@@ -720,6 +720,22 @@ What it is not:
 
 Measured: (pending the restart-overlap lane)
 
+**Measured (2026-11-02, R16; runtime wasm64-36d7f415, QED64 9a9b052, chrome-headless-shell 151, stock page; restart-overlap, 4 modes, 24 + 24 interleaved runs, ABBA in block 2):**
+
+| Mode | Runs per rule | Crashed: tolerance / own | T0→ready median, tolerance / own (ms) | own − tolerance | Waited median, tolerance / own (ms) | Max old Workers alive at allocation (tolerance) |
+|---|---|---|---|---|---|---|
+| frozen | 8 | 0/8 / 0/8 | 3,033.5 / 5,326.5 | +2,293 | 765 / 2,776 | 10 |
+| frozen-card | 8 | 0/8 / 0/8 | 2,982 / 5,360 | +2,378 | 766.5 / 2,788 | 11 |
+| idle | 4 | 0/4 / 0/4 | 2,485 / 3,015.5 | +530.5 | 1 / 526 | 10 |
+| busy | 4 | 0/4 / 0/4 | 2,472 / 3,093 | +621 | 1 / 518.5 | 13 |
+| pooled | 24 | **0/24 / 0/24** (one-sided upper 95% bound 11.7% per restart) | **2,982 / 5,307** | **+2,325** | | 13 Workers, 12 alive locks |
+
+- The tolerance alone gave 0/24 start-up crashes (one-sided upper 95% bound 11.7%), and own gave 0/24, with up to 12 alive locks and 13 Workers of the replaced runtime open at the new allocation.
+- The named wait cost +0.53 s (idle), +0.62 s (busy), +2.29 s (frozen) and +2.38 s (frozen-card) of T0 → ready, +2.33 s pooled.
+- Own waits out the replaced runtime's lifetime: about +4.25 s frozen, about +2.0 s idle and busy.
+- The 2026-10-23 figure of 524 ms is reproduced (526 ms, idle).
+- **Decision: F1.** The named-predecessor wait is deleted and `tests/adversarial/restart-overlap.mjs` retired (restore from git `57f1f96`). With F2, the tolerance goes too: a restart then waits for nothing. A frozen restart used to wait about 0.76 s under the tolerance; that wait is gone. The `Tests:` paragraph and the `Rule:` below record what shipped on 2026-10-09; those tests left with the wait.
+
 Tests: `tests/unit/runtime-locks.test.ts` (the `[boot] waited` line, `waitedLine`, pinned against a verbatim copy of the showcase's BOOT_WAITED_RE: the suffix LAST, after " — budget spent", printed when a named runtime had a Worker alive at the first or the last count; `boot()` passing the page's `instance.predecessors` into the wait, run through the real worker in a vm with a named runtime's one alive Worker keeping the poll going and none without the field; a named predecessor is waited for to its last Worker even at 9 ≤ 12; one already gone costs nothing and the others keep the tolerance; others above it still wait and exactly 12 releases, with nothing named too; a named runtime that is still wanted is never waited for; one that never dies spends the budget and says so; never itself; the validation), `tests/unit/replaced-runtimes.test.ts` (a document's first runtime names none; a replacement names the runtime the document disposed, never itself; recorded once, the last 4, not after 10 s), `tests/unit/relay.test.ts` (restart, a death reboot and rearm each build the replacement after the predecessor's dispose, the order the page-side list relies on). Mutation: each of eight one-line reversals (the loop's named condition; self, dedupe and the newest 8 in the validation; the record-once guard, self in the boot list, the cap and the expiry in client.ts) fails at least one test. Review follow-ups, each reverted in place: `boot()` not passing the named list fails 1; the suffix moved ahead of " — budget spent" fails 2; the suffix printed on the first count only fails 1.
 
 Rule: a tolerance bought for one path's latency belongs to that path only. Where the wait is mostly paid already and the predecessor is known by id, wait for all of it.

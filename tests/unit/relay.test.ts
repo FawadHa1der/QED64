@@ -342,7 +342,7 @@ describe("relay: RestartRequested (§2.3; §3 row 8)", () => {
   });
 });
 
-describe("relay: replacement order (HARDENING #68 — a disposed LeanSession records its runtime for the next boot to name)", () => {
+describe("relay: replacement order", () => {
   it("every replacement's factory runs after its predecessor's dispose: restart(), a death reboot, rearm()", async () => {
     // A relay whose factory notes, per call, whether the session being replaced is disposed already.
     relay.clientPort.close();

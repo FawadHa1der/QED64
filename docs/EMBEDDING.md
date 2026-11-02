@@ -2532,3 +2532,13 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   stay declared optional on `WorkerStatus`, so v1 readers still type-check;
   `unused`, `running` and `parked` are unchanged. No API change:
   `EMBED_API_REVISION` is unchanged.
+- **A replacement no longer names or waits for its predecessors (2026-11,
+  HARDENING #68, R16):** a relay restart or reboot no longer waits for every
+  Worker of the runtime it replaced; the tolerance of 12 applies to restarts
+  as to reloads (0/24 start-up crashes with the tolerance alone; the wait
+  cost 0.53-2.38 s per restart). `LeanSession` no longer sends
+  `instance.predecessors`, newer workers ignore it, and an older worker reads
+  the missing field as none. The `[boot] waited` line loses its "; a → b of
+  them replaced by this page" suffix; its start and the " — budget spent"
+  group are unchanged. No API change: `EMBED_API_REVISION` and the worker
+  `REVISION` are unchanged.

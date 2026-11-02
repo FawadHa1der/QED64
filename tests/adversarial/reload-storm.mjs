@@ -119,9 +119,9 @@ const hostState = () => ({
 
 /** Init script, every frame (--wait-ms): each `boot` the page posts to a Worker
  * goes out with instance.waitMs = ms, the same transfer list, and a record
- * {wall, from, to} in globalThis.__qed64StormBoots (at most 32). The same
- * mechanism as restart-overlap's laneProbes. Serialized into the page: it must
- * be self-contained, and nothing in it may throw into the page. */
+ * {wall, from, to} in globalThis.__qed64StormBoots (at most 32). Serialized
+ * into the page: it must be self-contained, and nothing in it may throw into
+ * the page. */
 function bootWaitProbe(ms) {
   try {
     const W = globalThis.Worker;
