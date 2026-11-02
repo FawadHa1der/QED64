@@ -184,8 +184,15 @@ fetching and writing nothing):
    node --stack-size=8192 pipeline/snapshot/bake-snapshot.mjs --artifact $W/artifact --work $W/snapshot \
      --out work/staging/$BID/snapshots --name init --lib $W/core-lib-slim --reserve 1073741824
    node --stack-size=8192 pipeline/snapshot/bake-snapshot.mjs --artifact $W/artifact --work $W/snapshot \
-     --out work/staging/$BID/snapshots --name mathlib --lib $W/lib-tree-slim --reserve 3221225472 --probe 'import QED64.Essential'
+     --out work/staging/$BID/snapshots --name mathlib --lib $W/lib-tree-slim --reserve 3221225472 --probe 'import QED64.Essential' \
+     --roots <LEGACY_UMBRELLA_ROOTS of lib/snapshots.ts, comma-separated>
    ```
+
+   The mathlib entry thereby declares the umbrella's roots (docs/EMBEDDING.md
+   §8; review D10, from the first adoption after 2026-11-01 on); they change
+   only `index.json`, not the region. adopt-release reads the list from
+   `lib/snapshots.ts` at run time and refuses if it cannot (Node ≥ 22.18 or
+   23.6 strips the types).
 
    The raw `.snap` files land in `$W/snapshot`, never `work/snapshot` (the
    set paired to the served runtime). The raw sizes in the served

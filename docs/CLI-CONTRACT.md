@@ -568,9 +568,9 @@ Older `.snapz` files are never deleted.
   entry also with `--roots --label --allow-legacy-imports`, and the default
   runner; it greps `^baked ` from each overlay entry's bake log (under
   `set -euo pipefail`, so the line is required) and dies on a non-zero exit.
-- In QED64: `pipeline/release/adopt-release.sh` (it greps `^baked`, and
-  fails on a `verdict` line since 2026-11-01), and
-  `tests/unit/artifact-discipline.test.ts`.
+- In QED64: `pipeline/release/adopt-release.sh` (it greps `^baked`, fails
+  on a `verdict` line since 2026-11-01, and its mathlib bake passes
+  `--roots`, review D10), and `tests/unit/artifact-discipline.test.ts`.
 
 ### snapshot-probe
 

@@ -1463,9 +1463,12 @@ header also names, say, `Aesop` never widens to it (the umbrella claims
 `Aesop`, the overlay does not, so no entry is known to serve the whole
 header). An index without `roots` therefore decides exactly as the editor's
 policy does; the unit tests pin this parity on the stock index and drive the
-page's self-widen (`frontend/src/self-widen.ts`) over the real relay. The
-roots are claims, not membership: the kernel's header verdict stays
-authoritative.
+page's self-widen (`frontend/src/self-widen.ts`) over the real relay.
+QED64's own index declares the stock entry's roots, these ten, from its next
+adoption on (`pipeline/release/adopt-release.sh` passes `bake-snapshot
+--roots`, read from `LEGACY_UMBRELLA_ROOTS`; review D10); until then that
+entry relies on the fallback above, with the same verdicts. The roots are
+claims, not membership: the kernel's header verdict stays authoritative.
 
 ---
 
@@ -2325,3 +2328,11 @@ terms. Fault injection (`inject`/`freeze`) and mailbox/pool hooks are v1.1.
   - No export, type or behaviour change in `qed64/embed`, `qed64/edge` or
     the workers: `EMBED_API_REVISION`, the page API's `API_REVISION` and
     the workers' `WORKER_REVISION` are unchanged.
+- **Served umbrella roots (architecture review D10, 2026-11):** docs only.
+  QED64's adoption (`adopt-release.sh`) bakes its `mathlib` entry with
+  `--roots` = the ten shared roots (§8), so the served index declares them
+  from QED64's next adoption on; until then the entry has none and the name
+  fallback gives the same answer. The served index is not rebaked or edited
+  for this. `LEGACY_UMBRELLA_ROOTS` and the fallback stay (the list is also
+  the editor's policy without an index). No library change:
+  `EMBED_API_REVISION` is unchanged.

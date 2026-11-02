@@ -5,8 +5,9 @@
 // (QED64_PUBLIC_DIR), a fake served base tree (QED64_BASE_TREE) and an
 // isolated --public. Nothing here fetches, unpacks,
 // bakes or boots a runtime; a dry run calls the package for --version only.
-// Plus adopt-helper.mjs's tree digest and base-tree.json, and the committed
-// umbrella (embedding/umbrella, review D9).
+// Plus adopt-helper.mjs's tree digest and base-tree.json, the committed
+// umbrella (embedding/umbrella, review D9) and the mathlib bake's --roots
+// (lib/snapshots.ts's shared list, review D10).
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -14,6 +15,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { TREE_DIGEST_RULE, releaseDigest, treeDigest } from "../../pipeline/release/adopt-helper.mjs";
+import { LEGACY_UMBRELLA_ROOTS } from "../../lib/snapshots";
 
 const root = path.resolve(__dirname, "../..");
 const script = path.join(root, "pipeline/release/adopt-release.sh");
@@ -23,6 +25,7 @@ const SERVED_ID = "wasm64-00000000000000aa";
 const NEW_ID = "wasm64-0123456789abcdef";
 const RAW = { "lean-core": sha("core"), "mathlib-essential": sha("essential"), "lean-lib": sha("lean-lib") };
 const ID = "lean-v9.9.9-abc1234";
+const ROOTS = LEGACY_UMBRELLA_ROOTS.join(","); // what the mathlib bake declares (D10)
 
 let tmp: string;
 let tools: string;
@@ -158,7 +161,7 @@ describe("adopt-release.sh --dry-run", () => {
     expect(plan).toContain(`node ${tools}/cli.mjs gate --artifact ${W}/artifact > ${W}/logs/gate.log`);
     const staging = path.join(root, "work/staging", NEW_ID);
     expect(plan).toContain(`node --stack-size=8192 pipeline/snapshot/bake-snapshot.mjs --artifact ${W}/artifact --work ${W}/snapshot --out ${staging}/snapshots --name init --lib ${W}/core-lib-slim --reserve 1073741824`);
-    expect(plan).toContain(`--name mathlib --lib ${W}/lib-tree-slim --reserve 3221225472 --probe 'import QED64.Essential'`);
+    expect(plan).toContain(`--name mathlib --lib ${W}/lib-tree-slim --reserve 3221225472 --probe 'import QED64.Essential' --roots ${ROOTS}\n`);
     expect(plan).toMatch(/stage-profiles +none: the served packs stay/);
     expect(plan).toContain(`node pipeline/release/promote-staging.mjs --staging ${staging} --public ${pub} --dry-run`);
     expect(plan).toContain(`node pipeline/release/verify-release.mjs --public ${pub}; cmp ${pub}/runtime/runtime-manifest.json ${W}/release/runtime/runtime-manifest.json`);
@@ -281,6 +284,7 @@ describe("adopt-release.sh --dry-run", () => {
     expect(stepNames(r.stdout)).toEqual(STEPS);
     const W = path.join(root, "work/adopt", ID);
     expect(r.stdout).toMatch(/packs-change/);
+    expect(r.stdout).toContain(`--name mathlib --lib ${W}/lib-tree-slim --reserve 3221225472 --probe 'import QED64.Essential' --roots ${ROOTS}\n`);
     expect(r.stdout).toContain(`node ${tools}/cli.mjs verify --release ${changed.dir}\n`);
     expect(r.stdout).toContain(`node pipeline/snapshot/supervised-run.mjs --target ${W}/umbrella/Essential.olean -- --artifact ${W}/artifact --work ${W}/umbrella --lib ${W}/lib-tree -- -o /work/Essential.olean /work/Essential.lean`);
     expect(r.stdout).toContain(`node ${tools}/cli.mjs olean-imports --audit ${W}/lib-tree`);
@@ -350,11 +354,12 @@ describe("adopt-release.sh --dry-run", () => {
   });
 });
 
-/** A throwaway checkout holding only what the script reads (itself, its helper, closure.json; not a
- * git repo, no work/ unless a test makes one), so writes and symlinks under work/ stay in os.tmpdir(). */
+/** A throwaway checkout holding only what the script reads (itself, its helper, closure.json, the
+ * umbrella roots' lib/snapshots.ts; not a git repo, no work/ unless a test makes one), so writes and
+ * symlinks under work/ stay in os.tmpdir(). */
 function fakeRepo(name: string) {
   const q = path.join(tmp, name);
-  for (const f of ["pipeline/release/adopt-release.sh", "pipeline/release/adopt-helper.mjs", "embedding/closure.json"]) {
+  for (const f of ["pipeline/release/adopt-release.sh", "pipeline/release/adopt-helper.mjs", "embedding/closure.json", "lib/snapshots.ts"]) {
     fs.mkdirSync(path.dirname(path.join(q, f)), { recursive: true });
     fs.copyFileSync(path.join(root, f), path.join(q, f));
   }
@@ -453,6 +458,19 @@ describe("adopt-release.sh: its own work dirs, the URL record and the patch orde
     const r = repo.run(args);
     refusedLine(r, /\/embedding\/umbrella \(the default --umbrella: the committed copy of the served umbrella\) has no QED64\/Essential\.olean — restore it \(git checkout -- embedding\/umbrella\) or pass --umbrella <dir>/);
     expect(r.stdout).toBe("");
+  });
+
+  test("a checkout whose lib/snapshots.ts cannot be read refuses before the plan: the mathlib bake's --roots come from it (D10)", () => {
+    const repo = fakeRepo("repo-no-roots");
+    const rel = fakeRelease("rel-no-roots");
+    expect(repo.run(valid(rel)).status).toBe(0);
+    fs.rmSync(path.join(repo.q, "lib/snapshots.ts"));
+    for (const args of [valid(rel), valid(rel).filter((a) => a !== "--dry-run")]) {
+      const r = repo.run(args);
+      refusedLine(r, /cannot read LEGACY_UMBRELLA_ROOTS from .*\/lib\/snapshots\.ts \(Node strips its types by default from 22\.18 and 23\.6 on; this is v\d+\./);
+      expect(r.stdout).toBe("");
+    }
+    expect(fs.existsSync(repo.W)).toBe(false);
   });
 
   test("copy_umbrella puts Essential.olean and the facets its source has into the lib trees (HARDENING #79)", () => {
@@ -594,6 +612,9 @@ describe("adopt-helper.mjs: the tree digest and base-tree.json", () => {
     expect(landing).toContain(" 2. cp $W/base-tree.json embedding/base-tree.json");
     expect(landing).toContain("cp $USRC/Essential.olean* embedding/umbrella/QED64/"); // a rebuilt umbrella refreshes its committed copy (D9)
     expect(landing).toContain("node pipeline/release/release-manifest.mjs --worktree");
+    // the slim audit's fat bake declares the same roots as the shipped one: it may replace it (D10)
+    expect(landing).toContain("--name mathlib --lib $W/lib-tree --reserve 4294967296 --probe 'import QED64.Essential' --roots $UROOTS --artifact");
+    expect(text).toContain(`--probe 'import QED64.Essential' --roots "$UROOTS"\n`); // the real bake
     expect(landing).not.toMatch(/write-bundle|release bundle/);
     expect(fs.existsSync(path.join(root, "pipeline/release/write-bundle.mjs"))).toBe(false);
     expect(text).not.toMatch(/KERNEL-PIN|kernel-pin/);
