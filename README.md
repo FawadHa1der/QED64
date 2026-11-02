@@ -71,9 +71,9 @@ and `/snapshots/` beside it. Then frame `/?embed=1`:
   share link that opens behind a consent gate,
   [docs/HARDENING.md](docs/HARDENING.md) #77),
   `snapshots=<dir>` (an overlay set on this origin), `profiles=<dir>`
-  (validated, then ignored since D1), `runtime=<buildId>`, `memory=<GiB>`
-  and `edithold=<n>`. A refused value fails the boot and names the
-  parameter.
+  (validated, then ignored since 2026-11: no library pack is read),
+  `runtime=<buildId>`, `memory=<GiB>` and `edithold=<n>`. A refused value
+  fails the boot and names the parameter.
 - **The page API** is `globalThis.qed64.api` (§2): `setDocument`,
   `settled`, `status`, `restart`, and the `boot`, `ready`, `diagnostics`,
   `document`, `death` and `reboot` events. Feature-detect with

@@ -211,7 +211,9 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   has stayed drained that long, and the probe exits 500 ms later, so the
   default adds about 5.5 s to every item's wall time, which a wall-time
   comparison with the compile lane has to allow for. The settle also runs
-  inside the probe's budget (the item's plus 30 s). A value that is
+  inside the probe's budget (the item's plus 30 s). A shorter settle can end
+  an item on a momentary drain, so keep it long enough that verdicts match a
+  default run. A value that is
   not a number of milliseconds >= 0, and `--settle-ms` under
   `--transport compile` (which has no settle), are refused (exit 2, a fresh
   all-infra report). Measured 2026-11-02 against the compile lane (review R4,

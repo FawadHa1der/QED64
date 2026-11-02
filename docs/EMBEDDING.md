@@ -797,8 +797,8 @@ signatures use (lean4game imports `SnapshotEntry`, `Qed64Artifacts`,
 `PrefetchRawResult`, `StatusSink`, `ProgressInfo`, `BootOverrides` and
 `FailureCause`; the proof sheets `SnapshotEntry`, `Qed64Artifacts`,
 `StatusSink` and `ProgressInfo`); one marked `@internal` is outside the
-contract (§9). `tests/unit/embed-barrel.test.ts` checks this and pins the
-names lean4game, the proof sheets and the stock page import.
+contract (§9). `tests/unit/embed-barrel.test.ts` checks the value exports and
+pins the names lean4game, the proof sheets and the stock page import.
 
 - **runtime:** `LeanSession`, `probeMemory64`, `MEMORY64_PROBE`
   (the 13 probe bytes `probeMemory64` and the worker validate; a fixed-shape
@@ -2423,7 +2423,8 @@ terms. Its `liveness` member holds the mailbox internals; no fault injection
     `httpStatusOf`, `NO_OVERRIDES`, `parseBootParams` and `isImport` (the
     other three that `1.0.0-pre.5` marked, `installProfile`,
     `ensureProfile` and `fetchProfileIndex`, left with D1 in
-    `1.0.0-pre.10`). The barrel has no `@internal` re-export left.
+    `1.0.0-pre.10`). The barrel has no `@internal` re-export left (until the
+    `1.0.0` row below marks `LEGACY_UMBRELLA_ROOTS`).
   - Removed, eleven values no consumer imports through the barrel:
     `PROTOCOL`, `fetchSnapshotIndex`, `entryRoots`, `WORKER_DEP_MISMATCH`,
     `EDITOR_POLICY`, `importLinesOf`, `initialBytesForHeader`,
@@ -2518,14 +2519,14 @@ terms. Its `liveness` member holds the mailbox internals; no fault injection
   - `EMBED_API_REVISION` → `1.1.0`.
 - **The v1 contract names its types (docs, 2026-11):** `qed64/embed`'s
   contract is every value export §7.0 names and every type those exports'
-  signatures use, so a change to `SnapshotEntry`, `Qed64Artifacts`,
-  `StatusSink` or another such type is a break like any other (§1). No code
-  change: `EMBED_API_REVISION` is unchanged.
+  signatures use, so a breaking change to `SnapshotEntry`, `Qed64Artifacts`,
+  `StatusSink` or another such type is a break like any other (§1); an
+  additive one is a minor. No code change: `EMBED_API_REVISION` is unchanged.
 - **A malformed runtime manifest gets its one error reply again (2026-11,
-  review of the v2 reader):** a chunk entry that is not an object with a
-  whole `bytes` (for example `chunks: [null]`) no longer throws in the
-  boot's wire-byte total, which left the boot with no reply; it fails as
-  before 1.1.0, with `RUNTIME_FETCH_FAILED`. No served manifest can reach it
+  review of the v2 reader):** a v1 chunk entry that is null (for example
+  `chunks: [null]`) no longer throws in the boot's wire-byte total, which
+  left the boot with no reply; it fails as before 1.1.0, with
+  `RUNTIME_FETCH_FAILED`. No served manifest can reach it
   (release-manifest validates them). `EMBED_API_REVISION` and the worker
   `REVISION` are unchanged.
 - **`status().pool` loses the pool-growth diagnostic's fields (2026-11,

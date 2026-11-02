@@ -236,16 +236,16 @@ fetching and writing nothing):
      --roots <LEGACY_UMBRELLA_ROOTS of lib/snapshots.ts, comma-separated>
    ```
 
-   A `bake-snapshot: verdict` line in either bake log (the D6 notice) fails
-   the adoption (`ADOPT-FAIL`; docs/CLI-CONTRACT.md, bake-snapshot, "Lean
-   failure lines").
-
    The mathlib entry thereby declares the umbrella's roots (docs/EMBEDDING.md
    §8; review D10, from the first adoption after 2026-11-01 on); they change
    only `index.json`, not the region. adopt-release reads the list from
    `lib/snapshots.ts` at run time and refuses if it cannot (Node strips the
    types by default from 22.18 on the 22 line and from 23.6 on; the repo's
    floor, Node 24, does).
+
+   A `bake-snapshot: verdict` line in either bake log (the D6 notice) fails
+   the adoption (`ADOPT-FAIL`; docs/CLI-CONTRACT.md, bake-snapshot, "Lean
+   failure lines").
 
    The raw `.snap` files land in `$W/snapshot`, never `work/snapshot` (the
    set paired to the served runtime). The raw sizes in the served
@@ -377,10 +377,10 @@ touches, in this order:
    (its module list is the essential manifest's).
 3. Snapshots: both bakes as above; the raw sizes (`bytes` in the snapshot
    index) will legitimately change. Both are baked from slim trees (no
-   `*.olean.private`), proved harmless at one Mathlib pin only: the
-   SLIM-BAKE AUDIT adopt-release prints as landing step 0 (the umbrella
-   import log, the `import all` audit, and a differential of the slim
-   snapshot against a fresh import of the fat tree, both through
+   `*.olean.private`), proved harmless only at the Mathlib pins audited so
+   far: the SLIM-BAKE AUDIT adopt-release prints as landing step 0 (the
+   umbrella import log, the `import all` audit, and a differential of the
+   slim snapshot against a fresh import of the fat tree, both through
    `snapshot-probe.mjs`) is required at every new pin and recorded in
    docs/SERVER-SLIM-REBAKE.md; if the messages differ, the adoption does not
    land and the way out is the user's call (a fat snapshot no longer bakes

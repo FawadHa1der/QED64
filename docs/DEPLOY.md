@@ -100,7 +100,8 @@ From the repository root, whatever the cwd, under `set -euo pipefail`:
    and never bundled (Vite's `publicDir` is off for builds and the build
    copies only those two, so this is a defensive invariant);
 5. the size and index check: if `dist/` still holds a `runtime/` path,
-   lacks `dist/profiles/index.json` or `dist/snapshots/index.json`, holds
+   holds a symlinked `dist/profiles` or `dist/snapshots`, lacks
+   `dist/profiles/index.json` or `dist/snapshots/index.json`, holds
    one that is not byte-identical to the tracked `public/` file, holds any
    other `profiles/` or `snapshots/` path, or holds any file over 25 MiB
    (the Workers static-assets cap per file), the script prints one
@@ -310,9 +311,10 @@ What R2 holds for QED64:
   `snapshots/index.wasm64-*.json` and `snapshots/profiles-index.wasm64-*.json`.
   Only a Worker version from before 2026-11 reads the two bucket-root
   indexes (it served both from R2); the hardened Worker still serves the
-  per-build copies, to a tab left open across a runtime deploy ("Old
-  shells"). Nothing writes them any more, and they stay while such a
-  version is a rollback target ("R2 clean-up" below).
+  per-build copies, to an old shell that boots after a runtime deploy (a
+  page restored from a cache; "Old shells"). Nothing writes them any more,
+  and they stay while such a version is a rollback target ("R2 clean-up"
+  below).
 
 The pinned runtime manifest is unchanged: the shell build injects the
 `buildId` of the committed `public/runtime/runtime-manifest.json` and asks
@@ -321,8 +323,8 @@ mutable path (dev, an embedder without the define). Both are the toolchain
 release's (`lean4-wasm64/<id>/runtime/`), and the Worker reads `/runtime/*`
 only from the release its record pins (no fallback to the bucket root since
 2026-10-25), so the runtime pairing was already atomic; D2 makes the
-indexes so too. A tab left open across a deploy is another matter: see "Old
-shells" under "The toolchain release prefix".
+indexes so too. An old shell that boots after a deploy is another matter:
+see "Old shells" under "The toolchain release prefix".
 
 The reader rule of HARDENING #64 stays in the library: when the mutable
 snapshot index names another runtime than the one the shell pins, the shell
@@ -406,7 +408,7 @@ is step 5 alone.
   and `snapshots/profiles-index.wasm64-*.json`, plus the 5650321f grace
   keys (`work/r2-gc-2026-10-23/` in the main checkout, not tracked), and
   remove `serve-dist.mjs`'s `legacy` mode in the same change. Deleting the
-  per-build copies also changes what an old tab does: one left open across
+  per-build copies also changes what an old shell does: one that boots after
   the next runtime deploy then gets a 404 for its copy and pairs with the
   new snapshots instead of being refused `unpaired` ("Old shells"). QED64's
   root then holds only `.snapz`. Superseded `.snapz` are garbage-collected the
