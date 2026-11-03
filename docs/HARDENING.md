@@ -1055,3 +1055,35 @@ Also: the `.snapz` temp is `<name>.snapz.<pid>.tmp`, so two bakes of one name ne
 Not fixed here: a SIGKILLed bake still orphans its runner (no handler runs). The kernel's node-runner watches its parent (`--exit-with-parent`); QED64's will get that with the next runtime adoption, since an edit to `node-runner.mjs` rebakes the proof sheets.
 
 Tests: tests/unit/bake-snapshot.test.ts, with a fake runner and a fake stage1 only (no wasm): the corrupt and unreadable indexes before the runner and under the lock, a foreign sibling under the lock, the runner's environment, 70 MiB of runner output, a runner that kills itself, a non-zero exit, SIGTERM, SIGINT and SIGHUP (the runner is gone and no index is written), and a closed stdout. All eleven fail on the previous script. tests/unit/tool-paths.test.ts: the copy-first case now fails the index's rename with a preload (an `index.json` that is a directory is refused up front), and its fake runner takes its no-snapshot switch from a file in `--work`, since the environment no longer reaches it.
+
+### 84. A bake with a rejected header had no way to finish (fixed 2026-11-01 by R5a)
+
+Found on 2026-10-28 by the architecture review (R5a), reading `pipeline/snapshot/bake-snapshot.mjs`; no field report is on record, and the review marked the hang INFERRED. Fixed by b33f43c. This entry was written on 2026-11-03, with the two real runs below.
+
+Since patches 0020/0031 the runner does its work and never exits, so the bake has to stop it. From 34b302a (2026-09-01) until the fix, one rule did that: 300 s without output and 120 s of a stable size, with the size above zero.
+
+- **A rejected header never finished.** Lean reports the header's error and returns before any save, so no `.snap` appears. `size > 0` stayed false, the rule never fired and the bake had no deadline. Its `FAIL: snapshot file was not produced` check ran only after a runner that exited.
+- **Every good bake paid for the same rule.** Completion was guessed from silence, so a bake whose `.snap` was already on disk sat out the rest of the 300 s, about 4.5 min per bake.
+
+Measured:
+- **The hang, up to a bound (2026-11-03).** The script as it was before the fix (`b33f43c^`, in a scratch copy), the adopted lean-v4.35.0-b081e7c runtime, `--probe 'import Nope.Missing'`. The error came at 1.4 s and nothing followed it. At 420 s, about 119 s past the 300 s of quiet, the bake and its runner were both still running at 0% CPU, with no `.snap` and no `<name>.snap.tmp.*` in `--work`. A SIGTERM ended the run (exit 143, the runner gone).
+- **The cost.** The review's figure is 270-300 s per bake; its sources include the proof sheets' 14 × 270 s. Both 4.35 adoption bakes ended `reaping the wedged exit`. By file times their `.snap` was on disk 3 s (init) and 30 s (mathlib) after the log began, and each bake ended 305 s later, compression included: 308 s and 335 s in all. The same init bake on the new finish took 13 s, and its raw `.snap` is byte-identical (`cmp`, repeated on 2026-11-03), so that one saved 295 s. The showcase's w8 bake falls a little under the review's range: the review reads its memory trace as flat from about 55 s, with the runner killed at about 309 s, about 255 s.
+
+Read from source, not measured:
+- **"Forever".** Past the 420 s this is reasoning: the old script's only ways out of that wait were the runner exiting, a signal, and the rule, which needs `size > 0` (`b33f43c^:pipeline/snapshot/bake-snapshot.mjs:401-403`). No recorded run waited longer, and this one used only the adopted runtime.
+- **That a rejected header never saves.** `Frontend.lean:371-374`: `runAndReport`, then `waitForFinalCmdState? | return none`, ahead of `saveSnap` (read on 2026-11-03 in a local fork checkout at 53cb11e; the P4 spec cites `:370-405` at b081e7c). The real runs on b081e7c's runtime agree: no `.snap` and no temp file in `--work`.
+- **"Never under 120 s".** That is the rule's stability window. No measured bake came near it.
+
+The fix: `supervise()` polls every `--stable-ms` (default 5000). Once `<work>/<name>.snap` has the same nonzero size at two polls, the bake prints `completed` (the marker `reaped` is gone, contract 4), SIGKILLs the runner and judges only after `close`. This is safe because the runtime writes `<name>.snap.tmp.<pid>` and renames it after probe.lean's whole log (the kernel confirmed the rename, `module.cpp:321-423`). Two guards end a run that cannot finish:
+- a failure line (the classifier in CLI-CONTRACT, bake-snapshot), no `.snap`, no `<name>.snap.tmp.*` and `--quiet-ms` (default 120000) without output: `failed-quiet`, then `no-snap`, exit 1;
+- `--give-up-ms` (default 21600000, 6 h): `gave-up`, exit 1.
+
+R5a first proposed failing at the first error line. The guard waits instead, because a probe with an error in its body prints it and then saves, and that bake must still complete during D6's notice window. So a rejected header now costs about 2 min. A later review added a re-check of the `.snap` just before the guard stops the runner (bbb2f4c).
+
+The guard at work, on the real runtime:
+- **At c8d1d81 (2026-11-03), default flags, the same probe:** the error at 1.4 s, `failed-quiet` and `no-snap` at 125.2 s (120 s of quiet and the next poll), exit 1. The runner was gone, `--work` held only `probe.lean`, and `--out` was never created. The first such run, on the tree that became b33f43c, with `--quiet-ms 20000`, ended the same way in about 26 s (`work/arch-impl-2026-11-01/scratch/P4-C4/bake-verify/nope.log`).
+- **The exemption, in a review's run of b33f43c:** a probe with `#check fooNope` in its body printed the error, `body.snap.tmp.42` was present for about 2 s and was renamed, and the bake completed with exit 0 (`work/arch-impl-2026-11-01/scratch/review-p4c4/bv/`).
+
+Not fixed: the runner still never exits. A runner that prints no failure line and writes no `.snap` waits for `--give-up-ms`, 6 h. A probe that prints a failure line and then stays silent past `--quiet-ms` before its save opens the temp file is cut short; bake probes are a header and a `#check` (CLI-CONTRACT). QED64's own logs hold no mathlib bake through the new finish yet; expect one at the next adoption.
+
+Tests: tests/unit/bake-snapshot.test.ts, with a fake runner and a fake stage1 only (no wasm): completion with a runner that never exits, a growing `.snap`, the failure guard, out-of-scope lines running on to the deadline, the save-in-progress exemption, give-up, and the refusals of the three flags. tests/unit/cli-contract.test.ts pins the classifier against supervised-run's. No test or lane runs a real rejected header; the real runs above were by hand.
