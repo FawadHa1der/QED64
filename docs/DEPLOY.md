@@ -332,7 +332,8 @@ reads that runtime's per-build copy `snapshots/index.<buildId>.json` and
 uses it when it is an index paired with that runtime (`pairedBuildId`,
 docs/EMBEDDING.md §4). lean4game's and the showcase's sites still publish
 copies. On QED64's own site the index always pairs with the shell deployed
-with it, so the stock page never asks for one.
+with it, so a shell deployed with the index never asks for one; an older
+shell that boots after a deploy does ("Old shells").
 
 A same-runtime rebake is visible at its deploy, no longer at its upload:
 the new `.snapz` are inert in R2 until the push deploys the index that
@@ -505,23 +506,12 @@ Worker routes by the release record (`infra/worker.js`:
   not cached for a year under a digest-named URL. Before that, only
   release-mapped paths were no-store, and a missing snapshot got the path
   rule (`immutable`).
-- **The fork's cache rule is stale (relay, HARDENING #64).** The fork's
-  `formats/HOSTING.md` rule 8 calls QED64's `isImmutable` the rule every
-  consumer shares and quotes it, but quotes the version before #64
-  (`/\/index\.json$/`); its Python reference server's `MUTABLE` regex has
-  the same gap. A site that copies either serves the per-build index copies
-  `immutable` for a year (their names carry 16 hex), so a shared cache can
-  keep a copy a same-runtime rebake rewrote (browsers revalidate anyway: the
-  shell fetches indexes with `cache: "no-cache"`). The copies now exist on
-  the showcase's and lean4game's sites, and as QED64's frozen ones (QED64
-  publishes none since 2026-11). The fork is not QED64's
-  to edit: its owner, with the next release-format change, makes rule 8's
-  mutable test
-  `/\/runtime-manifest(\.[^/]*)?\.json$/.test(p) || /\/(?:profiles-)?index(\.[^/]*)?\.json$/.test(p)`
-  and the Python one
-  `r"/runtime-manifest(\.[^/]*)?\.json$|/(?:profiles-)?index(\.[^/]*)?\.json$"`.
-  Until then, consumers import `isImmutable` from `qed64/edge` (the
-  showcase does) rather than copy the snippet.
+- **The fork's cache rule (HARDENING #64; relay closed 2026-11-03).** The
+  fork's `formats/HOSTING.md` rule 8 and its Python reference server's
+  `MUTABLE` carry the same test as `infra/edge-worker.js`, so a site that
+  copies either revalidates the per-build index copies. Consumers still import
+  `isImmutable` from `qed64/edge` (the showcase does) rather than copy the
+  snippet.
 - **Adoption order.** (1) The release's owner uploads
   `lean4-wasm64/<id>/` (HOSTING.md's three rclone passes) and confirms it
   complete. (2) QED64 runs `scripts/upload-artifacts.sh`, `.snapz` only: it
@@ -723,7 +713,9 @@ export default createWorker({
   with `Allow: GET, HEAD` without asking R2.
 - The deploy must refuse a build without the files (QED64's
   `scripts/deploy-app.sh` refuses a missing one and one that is not
-  byte-identical to the tracked file): without them every boot fails.
+  byte-identical to the tracked file). Without `/snapshots/index.json` every
+  boot fails. QED64's pages read no profile index since D1 (`lib/qed64-boot.ts`),
+  so a missing `/profiles/index.json` fails no boot on them.
 
 ### Legacy vs hardened
 
