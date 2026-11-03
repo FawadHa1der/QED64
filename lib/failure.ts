@@ -68,7 +68,7 @@ export function failureKindOf(code: string | undefined, message: string): Failur
   // "truncated" and "expected N bytes" would otherwise claim it.
   if (TRANSFER_ENDED_EARLY.test(message)) return "network";
   if (/SHA-256 verification|sha256|digest mismatch|checksum|integrity|bad magic|magic|not a compacted-region|index declares|raw size mismatch|compressed data was not valid|Junk found|truncated|short (?:read|region)|unexpected end|incorrect header check|invalid (?:block|stored|distance|code|literal)|gzip|inflate|corrupt|expected \d+ bytes|bytes, expected|empty (?:body|snapshot source)|transformed by Content-Encoding/i.test(message)) return "corrupt";
-  if (code === "RUNTIME_FETCH_FAILED" || /\bHTTP \d{3}\b|Failed to fetch|NetworkError|network error|fetch failed|net::ERR_|ERR_NETWORK|ERR_CONNECTION|connection (?:reset|closed|refused)|socket hang up|terminated|The operation was aborted|body stream/i.test(message)) return "network";
+  if (code === "RUNTIME_FETCH_FAILED" || /\bHTTP \d{3}\b|Failed to fetch|error loading dynamically imported module|NetworkError|network error|fetch failed|net::ERR_|ERR_NETWORK|ERR_CONNECTION|connection (?:reset|closed|refused)|socket hang up|terminated|The operation was aborted|body stream/i.test(message)) return "network";
   if (/QuotaExceeded|quota|NoModificationAllowed|NotReadableError|getDirectory|createWritable|createSyncAccessHandle|OPFS/i.test(message)) return "storage";
   return "other";
 }
@@ -88,14 +88,16 @@ export const WORKER_DEP_MISMATCH = "WORKER_DEP_MISMATCH";
  * browser's words for a lazily imported chunk of the page's own bundle (Vite's
  * `/assets/<name>-<hash>.js`) that a deploy replaced under the open page
  * (Chrome "Failed to fetch dynamically imported module: <url>", Firefox "error
- * loading dynamically imported module: <url>"; observed live 2026-10-16,
- * HARDENING #74). Checked before the network rule: the words contain "Failed to
- * fetch". The words do not say why the fetch failed: a connection cut during
+ * loading dynamically imported module: <url>"; the event observed live on
+ * 2026-10-16, HARDENING #74, in Chrome's words; Firefox's measured 2026-11-03).
+ * Checked before the network rule, which matches both browsers'
+ * words. The words do not say why the fetch failed: a connection cut during
  * that import reads the same and is called stale too; accepted, since the
  * module map keeps a failed fetch for the document, so retrying in place helps
  * in neither case and a reload is right for both. A module whose URL has no
- * /assets/ segment stays the network's (/assets/ is Vite's default assetsDir,
- * so a Vite-default embedder's own chunk is covered as well). */
+ * /assets/ segment is not stale, so that rule reads it as network, in either
+ * browser's words (/assets/ is Vite's default assetsDir, so a Vite-default
+ * embedder's own chunk is covered as well). */
 const STALE_MESSAGE = /\ba deploy mixed versions\b|\b(?:Failed to fetch|error loading) dynamically imported module\b.*\/assets\//i;
 
 /** A Lean thread ran out of the browser's engine stack (HARDENING #72): the

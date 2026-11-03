@@ -46,10 +46,11 @@ describe("failureKindOf: the worker's real messages", () => {
     ["WORKER_DEP_MISMATCH", "lsp-front-door.js is revision \"2\", lean.worker.js needs 1 (a deploy mixed versions; reload)", "stale"],
     [undefined, "Uncaught Error: lsp-frames.js is revision missing, lean.worker.js needs 1 (a deploy mixed versions; reload)", "stale"],
     // The page's own lazily imported chunk, gone because a deploy replaced /assets/ under the open page (HARDENING #74):
-    // stale, before the network rule its "Failed to fetch" would match; a module from another path stays the network's.
+    // stale, before the network rule, which has both browsers' words; a module from another path reaches that rule.
     [undefined, "Failed to fetch dynamically imported module: https://qed64.fawadworkaddress.workers.dev/assets/index-C5EkvTK_.js", "stale"],
     [undefined, "error loading dynamically imported module: https://qed64.example/assets/editor-Ab12Cd34.js", "stale"],
     [undefined, "Failed to fetch dynamically imported module: https://cdn.example/lib/index.js", "network"],
+    [undefined, "error loading dynamically imported module: https://cdn.example/lib/index.js", "network"],
   ] as const)("%s %s → %s", (code, message, kind) => {
     expect(failureKindOf(code, message)).toBe(kind);
   });
@@ -84,6 +85,16 @@ describe("failureKindOf: the worker's real messages", () => {
     // catch classifies it (main.ts: failureCauseOf(err, { stage: "failed" })).
     const chunk = "Failed to fetch dynamically imported module: https://qed64.example/assets/index-C5EkvTK_.js"; // the live message (window-smoke.log)
     expect(failureCauseOf(new Error(chunk), { stage: "failed" })).toEqual({ kind: "stale", stage: "failed", code: "WORKER_DEP_MISMATCH", message: chunk });
+    // The same catch, in Firefox's words: stale under /assets/, and off it network, with no stale code, as Chrome's words.
+    const firefoxChunk = "error loading dynamically imported module: https://qed64.example/assets/editor-Ab12Cd34.js";
+    expect(failureCauseOf(new Error(firefoxChunk), { stage: "failed" })).toEqual({ kind: "stale", stage: "failed", code: "WORKER_DEP_MISMATCH", message: firefoxChunk });
+    expect(deathCause("crash", firefoxChunk)).toEqual({ kind: "stale", code: "WORKER_DEP_MISMATCH", message: firefoxChunk });
+    for (const lost of ["Failed to fetch", "error loading"].map((words) => `${words} dynamically imported module: https://cdn.example/lib/index.js`)) {
+      expect(failureCauseOf(new Error(lost), { stage: "failed" })).toEqual({ kind: "network", stage: "failed", message: lost });
+      // A death in the same words: a code goes through the table; with none, that path takes only oom from it.
+      expect(deathCause("WORKER_CRASHED", lost, { errorCode: "WORKER_CRASHED" })).toEqual({ kind: "network", code: "WORKER_CRASHED", message: lost });
+      expect(deathCause("crash", lost)).toEqual({ kind: "other", code: "crash", message: lost });
+    }
     expect(deathCause("RUNTIME_FETCH_FAILED", "lean.wasm chunk 3: HTTP 404", { errorCode: "RUNTIME_FETCH_FAILED" }, { stage: "runtime" }))
       .toEqual({ kind: "missing", httpStatus: 404, stage: "runtime", code: "RUNTIME_FETCH_FAILED", message: "lean.wasm chunk 3: HTTP 404" });
     expect(deathCause("RUNTIME_FETCH_FAILED", "lean.wasm chunk 3 failed SHA-256 verification.", { errorCode: "RUNTIME_FETCH_FAILED" })).toMatchObject({ kind: "corrupt" });

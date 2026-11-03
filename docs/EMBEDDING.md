@@ -971,8 +971,13 @@ Classification is per throw, from the error code **and** message:
 classifies, so the same table holds against every worker version.
 
 A lost chunk is `stale` only when its URL has an `/assets/` segment (Vite's
-default `assetsDir`). A module under another path is not `stale`: Chrome's
-words read `network`, Firefox's read `other`.
+default `assetsDir`). A module under another path is `network`, in Chrome's
+words and in Firefox's (`error loading dynamically imported module: <url>`),
+unless its URL holds a word an earlier rule matches: the classifier reads the
+whole message, so `/lib/gzip.js` reads `corrupt`. A 404 reads `network` too,
+because its words are the same as a cut's. This `network` is the exception to
+"retrying can help": the module map keeps the failure for the document, so only
+a reload recovers it.
 
 **Deaths.**
 - `cause` **null or absent = no evidence**. This happens only for a bare
@@ -1785,4 +1790,13 @@ reads them there, because `docs/history/` is not in the package's `files`.
   `LeanSession`'s last runtime step (§7.3), Firefox's persistent-storage prompt
   (§7.4), a headless driver's thread setup and linters under `Elab.async=false`
   (§7.7). No code change: `EMBED_API_REVISION` and the worker `REVISION` are
+  unchanged.
+- **A lost module outside `/assets/` on Firefox is `network` (2026-11-03):**
+  Firefox's words for it, `error loading dynamically imported module: <url>`,
+  read `other`, which §7.2 defines as the checker's own failure, while Chrome's
+  words for the same event read `network`. `failureKindOf`, `failureCauseOf` and
+  a coded `deathCause`, which goes through the table, now read `network` for both
+  (§7.2). Under `/assets/` both stay `stale`. Off `/assets/`, an uncoded
+  `deathCause` still reads `other` for both: that path takes only `oom` from the
+  table. No API change: `EMBED_API_REVISION` and the worker `REVISION` are
   unchanged.
