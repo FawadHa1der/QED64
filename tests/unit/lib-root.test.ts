@@ -1,4 +1,5 @@
-// One library root (plan A7, docs/EMBEDDING.md §6 and §12): the `qed64/embed`
+// One library root (plan A7, docs/EMBEDDING.md §6; its row is in
+// docs/history/EMBEDDING-PRE-V1.md): the `qed64/embed`
 // library lives in lib/, flat, and nowhere else. The one-line re-exports that
 // stood at its old paths (frontend/src/embed/*, frontend/src/{qed64-boot,
 // resident-session,lsp-relay}.ts, src/install/profiles.ts and

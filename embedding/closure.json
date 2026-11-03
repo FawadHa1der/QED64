@@ -100,7 +100,7 @@
     "deprecated": [
       {
         "request": "compile",
-        "unusedSince": "the first deployed release with D1 (2026-11; docs/EMBEDDING.md §12)",
+        "unusedSince": "the first deployed release with D1 (2026-11; docs/EMBEDDING.md §7.7)",
         "removal": "the release after it (D1 phase 2)"
       }
     ],

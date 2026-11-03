@@ -4,9 +4,9 @@ These are the reasoning trail behind QED64. None describes the current
 system, and none is updated any more: line numbers, file paths and runtime ids
 inside them are as they were on the day each was written. What is true now is
 in [README.md](../../README.md), [ARCHITECTURE.md](../ARCHITECTURE.md),
-[HARDENING.md](../HARDENING.md) and the contracts the README links to. They
-moved here from `docs/` (and `e2e/`) in plan step A5 (2026-10-06); git history
-has them at their old paths.
+[HARDENING.md](../HARDENING.md) and the contracts the README links to. All but
+the last moved here from `docs/` (and `e2e/`) in plan step A5 (2026-10-06); git
+history has them at their old paths.
 
 **[ARCHITECTURE-REEVALUATION-2026-09-02.md](ARCHITECTURE-REEVALUATION-2026-09-02.md)**:
 the first architecture review (2026-09-02, a 12-agent read-only review), which
@@ -81,3 +81,11 @@ tracked it.
 of the manual ten-step browser checklist against the 2026-08 CodeMirror shell,
 which was last executed on 2026-08-25. It moved here from `e2e/`. Superseded by the
 adversarial suite (`tests/adversarial/`, [TESTING.md](../TESTING.md)).
+
+**[EMBEDDING-PRE-V1.md](EMBEDDING-PRE-V1.md)**: §10 (the migration notes for the
+widgets showcase and lean4game) of [EMBEDDING.md](../EMBEDDING.md) and the rows
+of its §12 from the v1 draft (daf9b63) to `1.0.0-pre.11`, verbatim. They moved
+here from `docs/EMBEDDING.md` on 2026-11-03 (architecture review R9a), after
+`1.0.0` was declared final (2026-11-01, D13) and lean4game agreed to read its
+re-pin's rows here. Superseded by that document, whose §12 goes on from the
+`1.0.0` row. Like the rest of this directory, it is not in the package's `files`.
