@@ -7,9 +7,11 @@
 // sending only request ids across; the HOST registers the raw `EditorRpcApi`.
 // lean4monaco hands the raw RPC proxy to the InfoView and wraps on the page,
 // and the messages are JSON.stringify'd, so an AbortSignal arrives on the page
-// as `{}`: every ProofWidgets `mk_rpc_widget%` panel (Mathlib's `conv?`, the
-// SelectionPanel family, user widgets) fails with
+// as `{}`: a ProofWidgets `mk_rpc_widget%` panel that passes an `abortSignal`
+// (Mathlib's `conv?`) fails with
 // "r.abortSignal.addEventListener is not a function" and cancellation is lost.
+// A request without a signal resolves; ProofWidgets' `ofRpcMethod` passes one
+// except on its Cancellable branch (HARDENING #56's 2026-11-02 note).
 //
 // The two halves move together (with one changed, `startClientRequest` has no
 // receiver):

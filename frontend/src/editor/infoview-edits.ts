@@ -5,7 +5,9 @@
 // ProofWidgets MakeEditLink, `conv?`'s "Generate conv"), `insertText` and
 // `showDocument` through the vscode API (`window.showTextDocument`,
 // `workspace.applyEdit`); lean4monaco's editor-service stub throws
-// "unsupported" for `showTextDocument`, so every one of them failed. QED64 has
+// "unsupported" for `showTextDocument`. Only `applyEdit` loses its edit: read
+// from source, `insertText` edits first and rejects afterwards, and
+// `showDocument` has no edit to lose (HARDENING #56's 2026-11-02 note). QED64 has
 // exactly one document — the editor's model — so the three actions are done
 // on it directly, with vscode-lean4's semantics:
 //   * applyEdit: one document only (an edit touching any other URI is ignored,

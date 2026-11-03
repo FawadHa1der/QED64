@@ -66,7 +66,8 @@ function startProxy(upstream, mbps, rttMs) {
   const pipe = (src, dst, shaped) => {
     // One FIFO per pipe, drained by one timer: a timer per slice can invert two close
     // expiries, and a slice written out of order fails the worker's SHA-256 check, so the
-    // part is fetched again and the link's byte count reads one part high.
+    // part is fetched again and the link's byte count reads one part high. (The retry is
+    // inferred from the worker's code and the request log: the worker logs nothing on it.)
     const fifo = [];
     let timer = null;
     let queued = 0;
