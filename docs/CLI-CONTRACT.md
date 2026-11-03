@@ -122,8 +122,10 @@ log lines, the verdict's other keys) stays tier 3.
 surface") pins the surface as the gate runs it, with a fake glue and no
 wasm, and adds a `--snapshots` list naming a missing `.snap`. The same file pins
 `--lean-option`'s refusals, and `tests/integration/lean-options.test.ts` runs
-that flag on real wasm. `--lib` has no unit pin (the fake glue mounts nothing);
-the compiler battery's FileWorker lane passes it.
+that flag on real wasm. What Lean does with a wrong type or an unknown name
+(that flag's row) is Lean's own, seen on real wasm on Lean 4.35, and no test
+pins it. `--lib` has no unit pin (the fake glue mounts nothing); the compiler
+battery's FileWorker lane passes it.
 
 **Ownership (architecture review D4, option a; 2026-11-01).**
 
@@ -1178,7 +1180,7 @@ usage: resident-probe.mjs [--artifact <stage1>] [--lib <tree>] [--budget-ms 1800
 | `--probe-file <file>` | none | Runs that document as the page does (act 1, no extra requests) and exits 0 whatever its errors are: the caller judges them. Refused with `--mathlib`, `--act2`, `--act4` and `--option-check`. |
 | `--dump-messages` | off | With `--probe-file`: one `{"caption":"",…}` line per final diagnostic. |
 | `--settle-ms <ms>` | `5000` | With `--probe-file`: how long progress must stay drained before the result. A number >= 0. |
-| `--lean-option <name=value>` | none | An extra Lean option (repeatable), merged into the page's command line by name: it replaces a default in place or is appended, and the verdict's `argv` shows the result. A malformed entry or a name given twice exits 2. Lean judges the rest: an unknown name that is not `weak.`-prefixed is an error diagnostic (under `--probe-file`, exit 0 and PASS), and a value of the wrong type never starts the session (one stderr log line, then FAIL, `budget exceeded`, when `--budget-ms` runs out). |
+| `--lean-option <name=value>` | none | An extra Lean option (repeatable), merged into the page's command line by name: it replaces a default in place or is appended, and the verdict's `argv` shows the result. A malformed entry or a name given twice exits 2. Lean judges the rest. A value of the wrong type for a name it knows when `--worker` starts (built in, or declared by a seeded snapshot) never starts the session: one log line on stdout echoing Lean's stderr, then FAIL, `budget exceeded`, when `--budget-ms` runs out. A `weak.` prefix, the form the proof sheets' `weak.verso.code.warnLineLength` takes, moves that check to after the imports: the same value is one error diagnostic at line 1 and the document is not elaborated (under `--probe-file`, exit 0 and PASS). An unknown name without the prefix ends the same way. A `weak.` name nothing declares is ignored: no diagnostic, and the document runs. |
 | `--act2` | off | Tier 3. After act 1, a header change and an in-process session replacement (Init only). |
 | `--act4` | off | Tier 3. A full-text header switch mid-elaboration. |
 | `--act4-ms <ms>` | `500` | Tier 3. How long after the first non-empty progress `--act4` switches. |
@@ -1206,7 +1208,7 @@ usage: resident-probe.mjs [--artifact <stage1>] [--lib <tree>] [--budget-ms 1800
 | Exit | Meaning |
 |---|---|
 | 0 | `RESIDENT PROBE PASS`. Require that line as well as the exit, as the gate does: a `bin/lean.js` that never starts the runtime (an empty file) also exits 0, with no verdict line. |
-| 1 | `RESIDENT PROBE FAIL` (a missing `bin/lean.wasm`; a non-numeric `--budget-ms`, at once, `why` `budget exceeded`), or a crash of the probe itself: an unhandled throw with no verdict line and nothing on stdout, which an absent `--lib` tree causes (Node's `UnhandledPromiseRejection`, naming no path). |
+| 1 | `RESIDENT PROBE FAIL` (a missing `bin/lean.wasm`; a non-numeric `--budget-ms`, at once, `why` `budget exceeded`), or a crash of the probe itself: an unhandled throw with no verdict line. An absent `--lib` tree causes one, with nothing on stdout (Node's `UnhandledPromiseRejection`, naming no path). |
 | 2 | Refused before the run, with no verdict line: no `--artifact` or `--snap-dir` resolved, a missing `bin/lean.js` or `--probe-file`, a refused flag combination, a bad `--settle-ms`, or a `--lean-option` that is malformed or names an option twice. |
 
 **A missing `.snap` is not refused.** A `<name>.snap` absent from `--snap-dir`,
@@ -1222,8 +1224,12 @@ needs the files checks for them first, as the gate does.
 fileworker`; planned, not adopted yet, the proof sheets' `website/build.sh`,
 whose `browser-check.mjs` call would become `--artifact`, `--lib`, `--snap-dir`,
 `--snapshots init,<entry>`, `--probe-file` (its `--sheet`), `--dump-messages`
-and one `--lean-option` per `--opt`. The probe refuses neither an absent tree
-nor a missing `.snap`, so those checks stay theirs.
+and one `--lean-option` per `--opt`. Two of their settings need more than that
+call: the argv keeps the page's `-DElab.async=false` unless they pass
+`--lean-option Elab.async=true` (their site removes the flag, which leaves
+Lean's default, on), and their 900 s budget needs `--budget-ms` (the default
+is 180 s). The probe refuses neither an absent tree nor a missing `.snap`, so
+those checks stay theirs.
 
 ### pack
 
@@ -1309,7 +1315,7 @@ script by `tests/unit/cli-contract.test.ts`); each flag is in its SPEC.
 | the `baked` line, and exit 0 meaning "baked" (not yet a Lean verdict: the `notice` and `verdict` lines announce D6's exit 1 after one re-pin cycle) | bake-snapshot | the showcase's `scripts/judge-bake.mjs` J3; QED64's `adopt-release.sh` (`^baked`); the proof sheets' `website/build.sh` (`grep -E '^baked '` under pipefail, and `\|\| die` on the exit) |
 | `--snap --fresh-import --probe-file --probe --lib --artifact --budget-ms --via-mem --init-flags --workspace --dump-messages`, and `--watchdog-ms` | snapshot-probe | the showcase's `scripts/headless/exact-header.mjs`; lean4game `--verify-snapshots`; the compiler battery (the first eleven; none passes `--watchdog-ms` yet) |
 | `SNAPSHOT PROBE PASS` (exit 0), `SNAPSHOT PROBE FAIL: …`, `load:`, `compile:`, `[lean:stdout] …`, `ABORT: …` | snapshot-probe | `exact-header.mjs` (verdict, fail reason, load and compile times, the JSON messages, the abort); the compiler battery; lean4game |
-| `--artifact --lib --snap-dir --budget-ms --mathlib --probe-file --dump-messages --settle-ms`, `--lean-option` (repeatable), and `--snapshots` with any list | resident-probe | the lean4-wasm64 gate (block 7; of these it passes no `--lib`, `--lean-option` or `--settle-ms`, and `--snapshots init` only); the compiler battery's FileWorker lane (`--snapshots init,<name>`, no `--lean-option`); planned, not adopted yet, the proof sheets' `website/build.sh` (`--artifact --lib --snap-dir --probe-file --dump-messages`, `--snapshots init,<entry>`, and its options as `--lean-option`) |
+| `--artifact --lib --snap-dir --budget-ms --mathlib --probe-file --dump-messages --settle-ms`, `--lean-option` (repeatable), and `--snapshots` with any list | resident-probe | the lean4-wasm64 gate (block 7; of these it passes no `--lib`, `--lean-option` or `--settle-ms`, and `--snapshots init` only); the compiler battery's FileWorker lane (`--snapshots init,<name>`, no `--lean-option`); planned, not adopted yet, the proof sheets' `website/build.sh` (`--artifact --lib --snap-dir --probe-file --dump-messages`, `--snapshots init,<entry>`, its options as `--lean-option`, and `--budget-ms` to keep its budget) |
 | the `{"caption":"",…}` and `compile: tag=0 …` lines, `RESIDENT PROBE PASS\|FAIL <json>` and its keys ("Tiers"), exits 0 / 1 / 2 as [its section](#resident-probe) words them (no refusal for a missing `.snap`) | resident-probe | the same |
 | `--target --quiet-ms --stable-ms --give-up-ms --`, and the runner arguments after `--` verbatim | supervised-run | the showcase's `scripts/headless/run-e2.sh`; `adopt-release.sh --rebuild-umbrella`; `runtime-smoke.test.ts` |
 | the last line `supervised-run: <why> (<n> s)` (`^supervised-run: `) and exits 0 / 1 / 2 | supervised-run | `run-e2.sh` (`grep -E '^supervised-run: ' … \| tail -1`); `runtime-smoke.test.ts` |
