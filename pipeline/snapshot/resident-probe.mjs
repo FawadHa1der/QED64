@@ -71,9 +71,10 @@
 //                --act2, --act4 and --option-check (exit 2); --lean-option
 //                applies to it
 //
-// Tier 1 (R4): the surface the lean4-wasm64 gate runs and parses (kernel R10) and --settle-ms: its flags,
-// the --dump-messages and `compile:` lines, the verdict line's keys and the exits. The rest is tier 3. Tell the
-// kernel session before changing any of the surface (docs/CLI-CONTRACT.md "Tiers"; tests/unit/tool-paths.test.ts).
+// Tier 1 (R4): the surface the lean4-wasm64 gate runs and parses (kernel R10), --settle-ms, and what the proof
+// sheets' planned call adds (--lib, --lean-option, any --snapshots list): those flags, the --dump-messages and
+// `compile:` lines, the verdict line's keys and the exits. The rest is tier 3. Tell the kernel session before
+// changing any of the gate's surface (docs/CLI-CONTRACT.md "Tiers"; tests/unit/tool-paths.test.ts).
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -108,7 +109,7 @@ const ACT4 = process.argv.includes("--act4");
 const ACT4_MS = Number(arg("act4-ms", process.env.ACT4_MS || "500"));
 if (MATHLIB && ACT2) { console.error("error: --act2 needs the Init probe's deliberate error; it cannot judge --mathlib (use --mathlib --act4 for a Mathlib header switch)"); process.exit(2); }
 if (ACT2 && ACT4) { console.error("error: --act2 and --act4 are separate experiments; pass one"); process.exit(2); }
-// Repeatable (tier 3); a --lean-option with no value is the empty, malformed entry.
+// Repeatable; a --lean-option with no value is the empty, malformed entry.
 const LEAN_OPTIONS = process.argv.flatMap((a, i) => (a === "--lean-option" ? [process.argv[i + 1] ?? ""] : []));
 const OPTION_CHECK = process.argv.includes("--option-check");
 let ARGV; // the page's command line with LEAN_OPTIONS merged by name (worker-constants.js residentArgv)

@@ -75,13 +75,14 @@ resident-probe, was folded into it on 2026-10-05 as `--snapshots <a,b>`,
 
 **resident-probe's surface is tier 1** (architecture review R4 item 4,
 2026-11-02: the gate's surface, tier 2 since kernel review R10, accepted
-2026-11-01, and `--settle-ms`). The lean4-wasm64 gate (block 7, in the fork's
-tools from the v4.36 cut on) runs `resident-probe.mjs` from QED64's
+2026-11-01, `--settle-ms`, and what the proof sheets' call adds: `--lib`,
+`--lean-option` and any `--snapshots` list). The lean4-wasm64 gate (block 7, in
+the fork's tools from the v4.36 cut on) runs `resident-probe.mjs` from QED64's
 checkout when an adoption passes it in (`--resident-probe`) and parses what
-it prints. The proof sheets plan to adopt it; their call would also pass
-`--lib`, `--lean-option` and other `--snapshots` lists, which are tier 3, so
-it carries no promise yet. A change to any of the following is told to the
-kernel session before it lands:
+it prints. The proof sheets plan to adopt it: `website/build.sh`'s browser
+check passes `--lib`, `--snapshots init,<entry>` and its options through
+`--opt`, which map to `--lean-option`. They have not adopted it yet. A change
+to any of the following is told to the kernel session before it lands:
 
 - the flags `--artifact <dir>`, `--snap-dir <dir>`, `--budget-ms <ms>`,
   `--mathlib`, `--snapshots init`, and the `--snapshots` defaults (`init`;
@@ -105,6 +106,12 @@ kernel session before it lands:
 - the Init run (neither `--mathlib` nor `--probe-file`) writes only LSP
   frames on the runtime's stdout: the gate requires `nonFrameStdoutBytes` 0.
 
+`--lib <tree>`, `--lean-option <name=value>` (repeatable) and any `--snapshots`
+list are tier 1 for the proof sheets' planned call; the gate passes none of them
+(of the lists, only `init`). [The tool's section](#resident-probe) words what each
+really does, including what it does not refuse: an absent `--lib` tree is an
+exit-1 crash with no verdict line.
+
 `[WASM LSP] header <mode>: key=#[…]` is information only, with no promise:
 the runtime prints it (stderr, which resident-probe echoes in its log), and
 the gate shows it when it is there. As for every tool under the path rule,
@@ -113,7 +120,10 @@ the gate shows it when it is there. As for every tool under the path rule,
 log lines, the verdict's other keys) stays tier 3.
 `tests/unit/tool-paths.test.ts` ("resident-probe: the kernel gate's
 surface") pins the surface as the gate runs it, with a fake glue and no
-wasm.
+wasm, and adds a `--snapshots` list naming a missing `.snap`. The same file pins
+`--lean-option`'s refusals, and `tests/integration/lean-options.test.ts` runs
+that flag on real wasm. `--lib` has no unit pin (the fake glue mounts nothing);
+the compiler battery's FileWorker lane passes it.
 
 **Ownership (architecture review D4, option a; 2026-11-01).**
 
@@ -1159,28 +1169,29 @@ usage: resident-probe.mjs [--artifact <stage1>] [--lib <tree>] [--budget-ms 1800
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--artifact <dir>` | `$QED64_LEAN_ARTIFACT`, else (deprecated) `pipeline/toolchain/work/build/stage1` under the repo root when it has `bin/lean.js`, else exit 2 | The stage1 dir. Its `lib/lean` is mounted at `/lib/lean`. |
+| `--artifact <dir>` | `$QED64_LEAN_ARTIFACT`, else (deprecated) `pipeline/toolchain/work/build/stage1` under the repo root when it has `bin/lean.js`, else exit 2 | The stage1 dir. Its `lib/lean` is mounted at `/lib/lean` unless `--lib` names a tree. |
+| `--lib <tree>` | `<artifact>/lib/lean` | The olean tree mounted at `/lib/lean`, which is `LEAN_PATH`. A runtime-only artifact has none, so it needs this flag. Not checked before the run: an absent tree, the default included, is an exit-1 crash with no verdict line and no path named (the exits, below). A present tree's contents are not checked: a header a snapshot covers runs even on an empty one. |
 | `--snap-dir <dir>` | `$QED64_SNAP_DIR` (tier 3), else (deprecated) `work/snapshot` under the repo root when it exists, else exit 2 | The directory holding `<name>.snap`. |
-| `--snapshots <a,b>` | `init`; `init,mathlib` with `--mathlib` or `--probe-file` | The files seeded into the env cache, in load order. `init` and the defaults are tier 1; any other list works and is tier 3. |
+| `--snapshots <a,b>` | `init`; `init,mathlib` with `--mathlib` or `--probe-file` | Any comma-separated list of names (each trimmed, empty ones dropped): the `<name>.snap` files under `--snap-dir` seeded into the env cache, in load order. Nothing adds `init` (the page loads it first). A missing one is no refusal (below). |
 | `--budget-ms <ms>` | `180000` | The run's budget; past it, a FAIL verdict. |
 | `--mathlib` | off | The built-in Mathlib probe instead of the Init one: PASS when progress drains with no error diagnostic. |
 | `--probe-file <file>` | none | Runs that document as the page does (act 1, no extra requests) and exits 0 whatever its errors are: the caller judges them. Refused with `--mathlib`, `--act2`, `--act4` and `--option-check`. |
 | `--dump-messages` | off | With `--probe-file`: one `{"caption":"",…}` line per final diagnostic. |
 | `--settle-ms <ms>` | `5000` | With `--probe-file`: how long progress must stay drained before the result. A number >= 0. |
-| `--lib <tree>` | `<artifact>/lib/lean` | Tier 3. The olean tree mounted at `/lib/lean`. |
+| `--lean-option <name=value>` | none | An extra Lean option (repeatable), merged into the page's command line by name: it replaces a default in place or is appended, and the verdict's `argv` shows the result. A malformed entry or a name given twice exits 2. Lean judges the rest: an unknown name that is not `weak.`-prefixed is an error diagnostic (under `--probe-file`, exit 0 and PASS), and a value of the wrong type never starts the session (one stderr log line, then FAIL, `budget exceeded`, when `--budget-ms` runs out). |
 | `--act2` | off | Tier 3. After act 1, a header change and an in-process session replacement (Init only). |
 | `--act4` | off | Tier 3. A full-text header switch mid-elaboration. |
 | `--act4-ms <ms>` | `500` | Tier 3. How long after the first non-empty progress `--act4` switches. |
-| `--lean-option <name=value>` | none | Tier 3. An extra Lean option (repeatable), merged into the page's command line by name. |
 | `--option-check` | off | Tier 3. One Init document that passes only when `--lean-option autoImplicit=false` reached Lean. |
 
 - **Environment:** `QED64_LEAN_ARTIFACT` (the path rule). Tier 3: `QED64_SNAP_DIR`
   and the experiment switches (`PROBE_HEADER`, `PROBE_MINIMAL`,
   `SKIP_TASK_MANAGER`, `DUMP_MSGS`, `RAW_TAP`, `ACT4_MS`).
-- **Inputs:** the artifact (`bin/lean.js`, `bin/lean.wasm`, `lib/lean`), the
-  `.snap` files, `--probe-file`, and `public/workers/lean.worker.js` (its ring
-  size is checked at startup). Of the paths a caller names, only `bin/lean.js`
-  and `--probe-file` are checked before the run (the exits, below).
+- **Inputs:** the artifact (`bin/lean.js`, `bin/lean.wasm`, and `lib/lean`
+  unless `--lib` names a tree), the `.snap` files, `--probe-file`, and
+  `public/workers/lean.worker.js` (its ring size is checked at startup). Of the
+  paths a caller names, only `bin/lean.js` and `--probe-file` are checked before
+  the run (the exits, below).
 - **Outputs:** stdout and stderr only. Its other log lines, such as
   `resident: reached elaboration`, are tier 3.
 
@@ -1195,8 +1206,8 @@ usage: resident-probe.mjs [--artifact <stage1>] [--lib <tree>] [--budget-ms 1800
 | Exit | Meaning |
 |---|---|
 | 0 | `RESIDENT PROBE PASS`. Require that line as well as the exit, as the gate does: a `bin/lean.js` that never starts the runtime (an empty file) also exits 0, with no verdict line. |
-| 1 | `RESIDENT PROBE FAIL` (a missing `bin/lean.wasm`; a non-numeric `--budget-ms`, at once, `why` `budget exceeded`), or a crash of the probe itself: an unhandled throw with no verdict line, which a missing olean tree causes without naming the path. |
-| 2 | Refused before the run, with no verdict line: no `--artifact` or `--snap-dir` resolved, a missing `bin/lean.js` or `--probe-file`, a refused flag combination, a bad `--settle-ms` or a malformed `--lean-option`. |
+| 1 | `RESIDENT PROBE FAIL` (a missing `bin/lean.wasm`; a non-numeric `--budget-ms`, at once, `why` `budget exceeded`), or a crash of the probe itself: an unhandled throw with no verdict line and nothing on stdout, which an absent `--lib` tree causes (Node's `UnhandledPromiseRejection`, naming no path). |
+| 2 | Refused before the run, with no verdict line: no `--artifact` or `--snap-dir` resolved, a missing `bin/lean.js` or `--probe-file`, a refused flag combination, a bad `--settle-ms`, or a `--lean-option` that is malformed or names an option twice. |
 
 **A missing `.snap` is not refused.** A `<name>.snap` absent from `--snap-dir`,
 or a named `--snap-dir` that does not exist, gets one tier-3 log line
@@ -1208,9 +1219,11 @@ needs the files checks for them first, as the gate does.
 **Side effects:** boots wasm. It writes no files.
 
 **Consumers:** the lean4-wasm64 gate; the compiler battery's `--transport
-fileworker`; the proof sheets' `browser-check.mjs`, if they adopt it as planned.
-Their call would also pass `--lib`, `--lean-option` and other `--snapshots`
-lists, which are tier 3 today.
+fileworker`; planned, not adopted yet, the proof sheets' `website/build.sh`,
+whose `browser-check.mjs` call would become `--artifact`, `--lib`, `--snap-dir`,
+`--snapshots init,<entry>`, `--probe-file` (its `--sheet`), `--dump-messages`
+and one `--lean-option` per `--opt`. The probe refuses neither an absent tree
+nor a missing `.snap`, so those checks stay theirs.
 
 ### pack
 
@@ -1296,7 +1309,7 @@ script by `tests/unit/cli-contract.test.ts`); each flag is in its SPEC.
 | the `baked` line, and exit 0 meaning "baked" (not yet a Lean verdict: the `notice` and `verdict` lines announce D6's exit 1 after one re-pin cycle) | bake-snapshot | the showcase's `scripts/judge-bake.mjs` J3; QED64's `adopt-release.sh` (`^baked`); the proof sheets' `website/build.sh` (`grep -E '^baked '` under pipefail, and `\|\| die` on the exit) |
 | `--snap --fresh-import --probe-file --probe --lib --artifact --budget-ms --via-mem --init-flags --workspace --dump-messages`, and `--watchdog-ms` | snapshot-probe | the showcase's `scripts/headless/exact-header.mjs`; lean4game `--verify-snapshots`; the compiler battery (the first eleven; none passes `--watchdog-ms` yet) |
 | `SNAPSHOT PROBE PASS` (exit 0), `SNAPSHOT PROBE FAIL: …`, `load:`, `compile:`, `[lean:stdout] …`, `ABORT: …` | snapshot-probe | `exact-header.mjs` (verdict, fail reason, load and compile times, the JSON messages, the abort); the compiler battery; lean4game |
-| `--artifact --snap-dir --budget-ms --mathlib --probe-file --dump-messages`, `--snapshots init`, and `--settle-ms` | resident-probe | the lean4-wasm64 gate (block 7; it passes no `--settle-ms`); the compiler battery's FileWorker lane |
+| `--artifact --lib --snap-dir --budget-ms --mathlib --probe-file --dump-messages --settle-ms`, `--lean-option` (repeatable), and `--snapshots` with any list | resident-probe | the lean4-wasm64 gate (block 7; of these it passes no `--lib`, `--lean-option` or `--settle-ms`, and `--snapshots init` only); the compiler battery's FileWorker lane (`--snapshots init,<name>`, no `--lean-option`); planned, not adopted yet, the proof sheets' `website/build.sh` (`--artifact --lib --snap-dir --probe-file --dump-messages`, `--snapshots init,<entry>`, and its options as `--lean-option`) |
 | the `{"caption":"",…}` and `compile: tag=0 …` lines, `RESIDENT PROBE PASS\|FAIL <json>` and its keys ("Tiers"), exits 0 / 1 / 2 as [its section](#resident-probe) words them (no refusal for a missing `.snap`) | resident-probe | the same |
 | `--target --quiet-ms --stable-ms --give-up-ms --`, and the runner arguments after `--` verbatim | supervised-run | the showcase's `scripts/headless/run-e2.sh`; `adopt-release.sh --rebuild-umbrella`; `runtime-smoke.test.ts` |
 | the last line `supervised-run: <why> (<n> s)` (`^supervised-run: `) and exits 0 / 1 / 2 | supervised-run | `run-e2.sh` (`grep -E '^supervised-run: ' … \| tail -1`); `runtime-smoke.test.ts` |
@@ -1416,7 +1429,7 @@ output, as QED64's own gate did.
 | 4 | 2026-11-02 | Recorded late (architecture review D1, 8e0f9a7), tier 3: **fileworker-exit-probe** drops `--scenario batch-eval-exit` (the page's only batch compile, the warm header, left the library); `exit`, `eval-exit` and `shutdown-exit` are unchanged. | tier 3, no promise |
 | 4 | 2026-11-02 | Recorded late (architecture review D2, 14562fa), tier 3: **release-manifest** `--dist` accepts `profiles/index.json` and `snapshots/index.json`, the two indexes the deploy carries, when each is byte-identical to the tracked `public/` file, and refuses one that is not ("the deploy would serve another pairing's index"); any other `runtime/`, `profiles/` or `snapshots/` path is still refused. | tier 3; a refusal added |
 | 4 | 2026-11-02 | Review fix (R16, lane L2), tier 3: the **compiler battery**'s `--messages-dir` files no longer carry snapshot-probe's failure tail (its last Lean lines again, indented and cut short), so two runs of one transport diff with no dedupe. | tier 3, no promise |
-| 4 | 2026-11-02 | Architecture review R4 item 4: **resident-probe's surface is tier 1 and the tool ships in the package** (SPECS, `files`, closure.json `pipeline`). The surface is the gate's (kernel R10, tier 2 until now), `--settle-ms` and, as for every tool under the path rule, `QED64_LEAN_ARTIFACT` and the rule's two stderr lines; `--lib`, `--act2`, `--act4`, `--act4-ms`, `--lean-option`, `--option-check`, `QED64_SNAP_DIR`, any other `--snapshots` list and the log lines stay tier 3, and `--help` labels the flags. No flag, line, verdict key or exit changed: `--help`/`-h` is the one addition, and the tool keeps its own parser ("How the tools bind"). The tool's section words exit 2 as what is really refused; "a missing file" overclaimed, because a missing `.snap` never was. The proof sheets' planned call would also pass `--lib`, `--lean-option` and other `--snapshots` lists, so it stays on tier-3 flags. The battery's R4 lane stays opt-in and tier 3; thread-storm-probe stays tier 3. | additive |
+| 4 | 2026-11-02 | Architecture review R4 item 4: **resident-probe's surface is tier 1 and the tool ships in the package** (SPECS, `files`, closure.json `pipeline`). The surface is the gate's (kernel R10, tier 2 until now), `--settle-ms`, what the proof sheets' planned call adds (`--lib`, `--lean-option`, any `--snapshots` list: a relabel) and, as for every tool under the path rule, `QED64_LEAN_ARTIFACT` and the rule's two stderr lines; `--act2`, `--act4`, `--act4-ms`, `--option-check`, `QED64_SNAP_DIR` and the log lines stay tier 3, and `--help` labels the flags. No flag, line, verdict key or exit changed: `--help`/`-h` is the one addition, and the tool keeps its own parser ("How the tools bind"). The tool's section words exit 2 as what is really refused; "a missing file" overclaimed, because a missing `.snap` never was, and it names an absent `--lib` tree as what it is, an exit-1 crash with no verdict line. The proof sheets have not adopted the tool yet. The battery's R4 lane stays opt-in and tier 3; thread-storm-probe stays tier 3. | additive |
 
 ## Open decisions
 

@@ -408,8 +408,8 @@ describe("the real scripts", () => {
 
   test("resident-probe (R4): --help is all it takes from the grammar; the flags outside its tier-1 surface are labelled tier 3", () => {
     const flags = SPECS["resident-probe"]!.flags;
-    expect(flags.filter((f) => f.doc.startsWith("tier 3, no promise: ")).map((f) => f.name).sort()).toEqual(["act2", "act4", "act4-ms", "lean-option", "lib", "option-check"]);
-    expect(flags.filter((f) => !f.doc.startsWith("tier 3")).map((f) => f.name).sort()).toEqual(["artifact", "budget-ms", "dump-messages", "mathlib", "probe-file", "settle-ms", "snap-dir", "snapshots"]);
+    expect(flags.filter((f) => f.doc.startsWith("tier 3, no promise: ")).map((f) => f.name).sort()).toEqual(["act2", "act4", "act4-ms", "option-check"]);
+    expect(flags.filter((f) => !f.doc.startsWith("tier 3")).map((f) => f.name).sort()).toEqual(["artifact", "budget-ms", "dump-messages", "lean-option", "lib", "mathlib", "probe-file", "settle-ms", "snap-dir", "snapshots"]);
     // Silent as before: an unknown flag, a stray argument, and --flag=value, which its own parser does not read (the variable's path is used).
     const d = sandbox("resident");
     const before = tree(d);
