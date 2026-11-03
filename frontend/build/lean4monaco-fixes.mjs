@@ -28,6 +28,9 @@
 //     stub throws "unsupported" for them).
 // Every patch asserts its anchor occurs exactly once; a lean4monaco upgrade
 // that moves an anchor fails the build instead of shipping unpatched.
+// By user decision (2026-11-03, HARDENING #56) these patches stay until our
+// fixes are verifiably accepted upstream; #56 reads that as merged on upstream
+// main AND in the release QED64 pins, checked against that release's files.
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";

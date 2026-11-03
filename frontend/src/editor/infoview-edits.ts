@@ -22,6 +22,9 @@
 // The page installs the wrapper through `globalThis.__qed64InfoviewEditorApi`,
 // which the patched lean4monaco page module (frontend/build/lean4monaco-fixes.mjs)
 // calls when it registers the API for the InfoView iframe.
+// By user decision (2026-11-03, HARDENING #56) this stays until our fixes are
+// verifiably accepted upstream; #56 reads that as merged on upstream main AND
+// in the release QED64 pins, checked against that release's files.
 
 interface LspPosition { line: number; character: number }
 interface LspRange { start: LspPosition; end: LspPosition }
