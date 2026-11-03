@@ -18,7 +18,8 @@ export type BootStep = "check" | "download" | "inflate" | "commit" | "verify" | 
  * have it — 404/410, an HTML page where a binary or script belongs, a
  * snapshot the index does not list (a deploy problem: retrying cannot help);
  * corrupt: it arrived IN FULL but is wrong (length, SHA-256, gzip, magic, a
- * runtime chunk with a Content-Encoding, a region the loader refuses);
+ * region the loader refuses), or a runtime chunk came with a Content-Encoding
+ * (refused on its response headers, before the body is read);
  * unpaired: a snapshot of another runtime build; oom: an
  * allocation or memory reservation failed; storage: OPFS/quota; stale: the
  * site was updated under this page (its worker scripts are of another
