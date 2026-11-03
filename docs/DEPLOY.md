@@ -341,7 +341,10 @@ names them.
 Promote checklist, in order:
 
 0. Adoption: `pipeline/release/adopt-release.sh … --public <isolated tree>`
-   (run `--dry-run` first), then its printed landing steps.
+   (run `--dry-run` first), then its printed landing steps. Use the release's
+   own tools (its tgz installed in a scratch dir,
+   `--tools <scratch dir>/node_modules/lean4-wasm64`): an older package
+   refuses a v2 record whole (docs/REBUILD.md §3).
 1. Make one commit with the record (`toolchain/lean4-wasm64-release.json`;
    release-manifest checks its `kernel.commit` against the runtime's
    `sourceRevision`, and its `runtime.buildId` and files against the served

@@ -15,6 +15,8 @@
 # lean4-wasm64 runs only as a process: node <tools>/cli.mjs … (<tools>: --tools, else
 # $LEAN4_WASM64_DIR, else node_modules/lean4-wasm64). Writes go to work/adopt/<id>/ ($W),
 # work/staging/<buildId>/ and --public, never under the release dir, this checkout's or main's public/.
+# An older package refuses a v2 release record whole (it fails closed), so such a release is adopted with
+# its own tools: a version difference is a note, a failed record fetch hints at the tgz; nothing is installed here.
 # A runtime-only release (every served pack's raw digest is in release.packs) reuses the umbrella
 # (--umbrella; default embedding/umbrella, the committed copy of the served one, review D9); otherwise
 # --rebuild-umbrella recompiles it and the packs are staged too. The umbrella
@@ -83,7 +85,7 @@ realdir() { # <dir under work/>: absent, or a real dir with no link 3 levels dow
 }
 checkrecord() { # <release.json>: the pin, the floor, the served check and the umbrella mode
   LINE=$("${H[@]}" record --release "$1" --id "$ID" --digest "$DIG" --served "$SERVED" --init-lib "$INITLIB" ${ALLOW[@]+"${ALLOW[@]}"}) || exit 2
-  IFS=$'\t' read -r _ _ BID PATCH KCOMMIT LEANVER MODE <<< "$LINE"
+  IFS=$'\t' read -r _ _ BID PATCH KCOMMIT LEANVER MODE RTV <<< "$LINE" # RTV, the record's tools.version, may be empty: last, as tab is IFS whitespace
   patch_ge "$PATCH" "$FLOOR" || refuse "the release's kernel.patch $PATCH is below embedding/closure.json runtime.minKernelPatch $FLOOR"
   if [ "$MODE" = runtime-only ]; then
     [ $REBUILD = 0 ] || refuse "a runtime-only release reuses the served umbrella: pass --umbrella <dir>, not --rebuild-umbrella (a recompile changes the base tree's bytes)"
@@ -91,6 +93,15 @@ checkrecord() { # <release.json>: the pin, the floor, the served check and the u
     [ $REBUILD = 1 ] || refuse "the release's packs are not the served ones: pass --rebuild-umbrella (the umbrella is compiled from the new packs)"
     FAT=1
   fi
+}
+own_tools() { # <version>: how to run a release's own tools, printed and never run here. Where its tgz lies is the package's layout
+  # rule: a GitHub release's assets are flat, a served tree keeps tools/, and a local dir is served when it holds runtime/
+  local d=tools/
+  if [ $FROMDIR = 1 ]; then [ -d "$SRC/runtime" ] || d=; else case "$SRC" in */releases/download/*) d=;; esac; fi
+  echo "install the release's own tgz in a scratch dir (npm install --prefix <scratch dir> ${SRC%/}/${d}lean4-wasm64-$1.tgz) and pass --tools <scratch dir>/node_modules/lean4-wasm64"
+}
+tools_note() { # a note, not a refusal: older tools still read a v1 record, and an adoption may use another tools version
+  [ -z "$RTV" ] || [ "$RTV" = "$TV" ] || echo "note: the tools here are lean4-wasm64 $TV, the record names $RTV (an older package refuses a v2 record whole): to run those, $(own_tools "$RTV")"
 }
 copy_umbrella() { # <src> <W> <fat 0|1> <notes>: the umbrella into each lib tree's QED64/ (HARDENING #79): Essential.olean,
   # its .olean.server when the source has one (a split `module` compile), and into the fat tree its .olean.private
@@ -105,7 +116,7 @@ copy_umbrella() { # <src> <W> <fat 0|1> <notes>: the umbrella into each lib tree
   if [ -f "$src/Essential.olean.private" ]; then cp "$src/Essential.olean.private" "$w/lib-tree/QED64/" || { echo "umbrella: the copy into $w/lib-tree failed"; return 1; }
   else echo "note: $src has no Essential.olean.private: $w/lib-tree carries the slim tree's umbrella files only" | tee -a "$notes"; fi
 }
-BID="?"; PATCH="?"; KCOMMIT="?"; LEANVER="?"; MODE="?"
+BID="?"; PATCH="?"; KCOMMIT="?"; LEANVER="?"; MODE="?"; RTV=""
 if [ $FROMDIR = 1 ]; then checkrecord "$SRC/release.json"; fi
 if [ -n "$UMBD" ]; then [ -s "$UMBD/QED64/Essential.olean" ] || refuse "$([ $UMB_DEFAULT = 1 ] && echo "$UMBD (the default --umbrella: the committed copy of the served umbrella) has no QED64/Essential.olean — restore it (git checkout -- embedding/umbrella) or pass --umbrella <dir>" || echo "--umbrella $UMBD has no QED64/Essential.olean")"; UMBD=$(cd "$UMBD" && pwd -P)
   case "$UMBD/" in "$Q/work/adopt/"*|"$Q/work/staging/"*) refuse "--umbrella $UMBD lies inside $Q/work/adopt or work/staging, which an adoption deletes and rewrites: copy the umbrella out first";; esac
@@ -145,6 +156,7 @@ plan for $ID: runtime $BID, Lean $LEANVER, kernel $KCOMMIT (patch $PATCH, floor 
                   node pipeline/release/verify-release.mjs --public $PUB; cmp $PUB/runtime/runtime-manifest.json $W/release/runtime/runtime-manifest.json
   next            print the operator's landing steps (not performed)$([ "$MODE" = packs-change ] && echo ", led by the required slim-bake audit")
 EOF
+[ $FROMDIR = 0 ] || tools_note # after every refusal of the plan: a refusal prints nothing on stdout
 if [ $DRY = 1 ]; then echo "DRY RUN — inputs valid, nothing was fetched or written"; exit 0; fi
 pkg() { node "$T/cli.mjs" "$@"; }
 RECLOG=""
@@ -152,8 +164,12 @@ if [ $FROMDIR = 0 ]; then # the record first: the package writes nothing before 
   say fetch-record
   RECLOG=$(pkg fetch --from "$SRC" --out "$W/release" --only lists --id "$ID" --digest "$DIG" 2>&1) || {
     E=$(printf '%s\n' "$RECLOG" | grep -E '^fetch: (release is |release\.json digest is )' | head -1); [ -z "$E" ] || refuse "$E"
-    printf '%s\n' "$RECLOG" | tail -8; fail "fetch-record (the release record at $SRC)"; }
-  checkrecord "$W/release/release.json"; derive; FREE_KB=$(free_kb); echo "record: runtime $BID, kernel.patch $PATCH, $MODE"
+    printf '%s\n' "$RECLOG" | tail -8
+    # The record went unread, so its tools.version is unknown; the id carries the same version (the kernel's rule S5, formats/release.md).
+    # Tools already of that version have nothing to install: the failure is something else, so no hint.
+    [ "$TV" = "${ID#lean-v}" ] || echo "hint: an older package refuses a newer release record whole: if that is what failed here (these tools are lean4-wasm64 $TV), $(own_tools "${ID#lean-v}")"
+    fail "fetch-record (the release record at $SRC)"; }
+  checkrecord "$W/release/release.json"; derive; FREE_KB=$(free_kb); echo "record: runtime $BID, kernel.patch $PATCH, $MODE"; tools_note
 fi
 [ "${FREE_KB:-0}" -ge $((NEED_GB * 1048576)) ] || [ -n "${QED64_ADOPT_IGNORE_DISK:-}" ] || fail "disk: less than $NEED_GB GB free under $Q/work (set QED64_ADOPT_IGNORE_DISK=1 to override)"
 mkdir -p "$W/logs" || fail "cannot create $W"; L="$W/logs"; [ -z "$RECLOG" ] || printf '%s\n' "$RECLOG" > "$L/fetch-record.log"
@@ -238,7 +254,7 @@ cat <<EOF
  2. cp $W/base-tree.json embedding/base-tree.json   (release-manifest.mjs reads both; the record's kernel.commit is the kernel pin)
 $([ $REBUILD = 1 ] && echo "    and the umbrella's committed copy, its only off-host one once pushed (D9): rm -f embedding/umbrella/QED64/Essential.olean*; cp $USRC/Essential.olean* embedding/umbrella/QED64/" || echo "    (embedding/umbrella/QED64/ stays: the reused umbrella was checked against embedding/base-tree.json)")
  3. cp $PUB/runtime/runtime-manifest.json public/runtime/; cp $PUB/snapshots/index.json public/snapshots/; cp $PUB/profiles/index.json public/profiles/$([ "$MODE" = runtime-only ] || echo " (+ the two pack manifests)")
- 4. once published: npm install --package-lock-only -D https://github.com/FawadHa1der/lean4/releases/download/$ID/lean4-wasm64-$TV.tgz
+ 4. once published: npm install --package-lock-only -D https://github.com/FawadHa1der/lean4/releases/download/$ID/lean4-wasm64-${RTV:-$TV}.tgz
  5. nothing more for the Worker: infra/worker.js imports the record of step 1 (plan B2b); check: npx vitest run tests/unit/toolchain-pin.test.ts
     and node pipeline/release/release-manifest.mjs --worktree > /dev/null (refuses a record, base tree and served manifests that disagree)
  6. USER: the release's owner uploads lean4-wasm64/$ID/ to R2 first; then upload, then push and deploy. scripts/upload-artifacts.sh

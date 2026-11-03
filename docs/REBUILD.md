@@ -164,6 +164,12 @@ pipeline/release/adopt-release.sh --id <lean-vX.Y.Z-hash> --digest sha256:<hex> 
 Without either flag a runtime-only release reuses `embedding/umbrella`, the
 committed copy of the served umbrella.
 
+Run a release's own tools: an older package refuses a newer record whole
+(`runtime: unknown keys schema` for a v2 runtime, `--only tools` included), so
+install the release's tgz in a scratch dir and pass `--tools`; adopt-release
+notes a version difference and hints on a failed record fetch, and installs
+nothing itself.
+
 In order (`--dry-run` validates the inputs and prints exactly this plan,
 fetching and writing nothing):
 

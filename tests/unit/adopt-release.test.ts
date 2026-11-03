@@ -45,6 +45,8 @@ beforeAll(() => {
     'if (process.argv[2] === "--version") console.log("0.0.0-fake");',
     // FAKE_FETCH_FAIL: every fetch fails the way fetch-release.mjs does (one stderr line, exit 1), before writing
     'if (process.argv[2] === "fetch" && process.env.FAKE_FETCH_FAIL) { console.error(process.env.FAKE_FETCH_FAIL); process.exit(1); }',
+    // FAKE_FETCH_RECORD: a fetch writes this record where the package would, under --out
+    'if (process.argv[2] === "fetch" && process.env.FAKE_FETCH_RECORD) { const out = process.argv[process.argv.indexOf("--out") + 1]; fs.mkdirSync(out, { recursive: true }); fs.copyFileSync(process.env.FAKE_FETCH_RECORD, `${out}/release.json`); }',
     "",
   ].join("\n"));
   // The served tree adopt-release compares against (QED64's public/, here a fake).
@@ -513,6 +515,124 @@ describe("adopt-release.sh: its own work dirs, the URL record and the patch orde
     for (const [a, b, want] of table) expect(ge(a, b), `${a} >= ${b}`).toBe(want);
     const malformed: [string, string][] = [["35", "0032"], ["0035B", "0032"], ["0035ab", "0032"], ["0035", ""]];
     for (const [a, b] of malformed) expect(ge(a, b), `${a} vs ${b}`).toBe(2);
+  });
+});
+
+describe("adopt-release.sh: a release's own tools (M3)", () => {
+  // An older package refuses a v2 record whole (`runtime: unknown keys schema`). The fixture tools are
+  // 0.0.0-fake; fakeRelease's record names 9.9.9-abc1234.
+  const URL_ROOT = `https://github.com/FawadHa1der/lean4/releases/download/${ID}`;
+  const install = (tgz: string) => `install the release's own tgz in a scratch dir (npm install --prefix <scratch dir> ${tgz}) and pass --tools <scratch dir>/node_modules/lean4-wasm64`;
+  const noteFor = (tgz: string) => `note: the tools here are lean4-wasm64 0.0.0-fake, the record names 9.9.9-abc1234 (an older package refuses a v2 record whole): to run those, ${install(tgz)}`;
+  const notes = (stdout: string) => stdout.split("\n").filter((l) => l.startsWith("note: "));
+  const live = (rel: { dir: string; digest: string }, from: string) => valid(rel).filter((a) => a !== "--dry-run").map((a) => (a === "--from-dir" ? "--from" : a === rel.dir ? from : a));
+  /** A PATH whose npm only leaves a mark: the script prints npm commands and never runs one. */
+  const npmShim = (name: string) => {
+    const bin = path.join(tmp, name);
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, "npm"), `#!/bin/sh\ntouch "${bin}/ran"\n`, { mode: 0o755 });
+    return { ran: path.join(bin, "ran"), env: { PATH: `${bin}:${process.env.PATH}` } };
+  };
+
+  test("a record naming other tools: one note line with both versions, the tgz and --tools, and the dry run is otherwise the same", () => {
+    const rel = fakeRelease("rel-note");
+    const r = adopt(valid(rel));
+    expect(r.stderr).toBe("");
+    expect(r.status).toBe(0);
+    expect(notes(r.stdout)).toEqual([noteFor(`${rel.dir}/lean4-wasm64-9.9.9-abc1234.tgz`)]);
+    expect(r.stdout.trimEnd().split("\n").at(-1)).toBe("DRY RUN — inputs valid, nothing was fetched or written");
+    expect(stepNames(r.stdout)).toEqual(STEPS);
+    expect(r.calls).toEqual([["--version"]]);
+    // A release dir in the served layout keeps its tgz under tools/ (a dir without runtime/ is flat, like GitHub's assets).
+    const served2 = fakeRelease("rel-note-served");
+    fs.mkdirSync(path.join(served2.dir, "runtime"));
+    expect(notes(adopt(valid(served2)).stdout)).toEqual([noteFor(`${served2.dir}/tools/lean4-wasm64-9.9.9-abc1234.tgz`)]);
+    // A refusal stays one stderr line with nothing on stdout, the note included.
+    refused(adopt(valid(rel).map((a) => (a === umbrella ? tools : a))), /--umbrella .* has no QED64\/Essential\.olean/);
+  });
+
+  test("no note when the record's tools are the running ones, or when the record names none; the mode field stays in place", () => {
+    const same = adopt(valid(fakeRelease("rel-note-same", (r) => { (r.tools as { version: string }).version = "0.0.0-fake"; })));
+    expect(same.status, same.stderr).toBe(0);
+    expect(notes(same.stdout)).toEqual([]);
+    const none = adopt(valid(fakeRelease("rel-note-none", (r) => { delete r.tools; })));
+    expect(none.status, none.stderr).toBe(0);
+    expect(notes(none.stdout)).toEqual([]);
+    expect(none.stdout).toMatch(/^plan for .*, runtime-only; lean4-wasm64 0\.0\.0-fake at /m);
+  });
+
+  test("--from <URL>: a dry run has no record to compare; a real run notes the difference once, after the fetched record's line", () => {
+    const rel = fakeRelease("rel-note-url");
+    const dry = adopt(valid(rel).map((a) => (a === "--from-dir" ? "--from" : a === rel.dir ? `${URL_ROOT}/` : a)));
+    expect(dry.status, dry.stderr).toBe(0);
+    expect(notes(dry.stdout)).toEqual([]);
+    const repo = fakeRepo("repo-note-url");
+    const npm = npmShim("bin-note-url");
+    // The run stops at verify-public: a fake repo has no verify-release.mjs. The record's checks and the note come before it.
+    const r = repo.run(live(rel, `${URL_ROOT}/`), { FAKE_FETCH_RECORD: path.join(rel.dir, "release.json"), QED64_ADOPT_IGNORE_DISK: "1", ...npm.env });
+    expect(notes(r.stdout)).toEqual([noteFor(`${URL_ROOT}/lean4-wasm64-9.9.9-abc1234.tgz`)]);
+    expect(r.stdout.indexOf("\nnote: ")).toBeGreaterThan(r.stdout.indexOf(`\nrecord: runtime ${NEW_ID}, kernel.patch 0036, runtime-only\n`));
+    expect(r.stdout).not.toMatch(/^hint: /m);
+    refusedLine(r, /--public .* fails verify-release\.mjs/);
+    expect(fs.existsSync(npm.ran)).toBe(false);
+  });
+
+  test("a failed record fetch that is no pin refusal keeps ADOPT-FAIL fetch-record and hints at the release's tgz; the script runs no npm", () => {
+    const rel = fakeRelease("rel-hint");
+    const refusal = "fetch: release.json refused — 1 problem(s):\n  runtime: unknown keys schema";
+    const hint = (tgz: string) => `hint: an older package refuses a newer release record whole: if that is what failed here (these tools are lean4-wasm64 0.0.0-fake), ${install(tgz)}`;
+    const sources = [
+      [`${URL_ROOT}/`, `${URL_ROOT}/lean4-wasm64-9.9.9-abc1234.tgz`], // GitHub's assets are flat
+      [URL_ROOT, `${URL_ROOT}/lean4-wasm64-9.9.9-abc1234.tgz`], // no double slash, with or without the trailing one
+      [`https://example.invalid/lean4-wasm64/${ID}/`, `https://example.invalid/lean4-wasm64/${ID}/tools/lean4-wasm64-9.9.9-abc1234.tgz`], // a served mirror
+    ] as const;
+    for (const [i, [from, tgz]] of sources.entries()) {
+      const repo = fakeRepo(`repo-hint-${i}`);
+      const npm = npmShim(`bin-hint-${i}`);
+      const r = repo.run(live(rel, from), { FAKE_FETCH_FAIL: refusal, ...npm.env });
+      expect(r.status).toBe(1);
+      expect(r.stderr).toBe("");
+      const tail = r.stdout.trimEnd().split("\n").slice(-4);
+      expect(tail.slice(0, 2)).toEqual(refusal.split("\n"));
+      expect(tail[2]).toBe(hint(tgz));
+      expect(tail[3]).toBe(`ADOPT-FAIL fetch-record (the release record at ${from})`);
+      expect(fs.existsSync(repo.W)).toBe(false);
+      expect(fs.existsSync(npm.ran)).toBe(false);
+    }
+    // A pin mismatch stays the one-line refusal, with no hint.
+    const repo = fakeRepo("repo-hint-pin");
+    const pin = repo.run(live(rel, `${URL_ROOT}/`), { FAKE_FETCH_FAIL: `fetch: release is lean-v9.9.9-0000000, expected ${ID}` });
+    refusedLine(pin, /^adopt-release: fetch: release is lean-v9\.9\.9-0000000/);
+    expect(pin.stdout).not.toMatch(/^hint: /m);
+    // Tools already of the id's version (the kernel's rule S5) have nothing to install: the failure stays, with no hint.
+    const own = fakeRepo("repo-hint-own").run(live(rel, `${URL_ROOT}/`).map((a) => (a === ID ? "lean-v0.0.0-fake" : a)), { FAKE_FETCH_FAIL: refusal });
+    expect(own.status).toBe(1);
+    expect(own.stdout.trimEnd().split("\n").slice(-3)).toEqual([...refusal.split("\n"), `ADOPT-FAIL fetch-record (the release record at ${URL_ROOT}/)`]);
+  });
+
+  test("landing step 4 prints the npm command with the record's tools version, else the running tools'", () => {
+    const text = fs.readFileSync(script, "utf8");
+    const line = spawnSync("sed", ["-n", "/^ 4\\. once published/p", script], { encoding: "utf8" }).stdout;
+    expect(text.indexOf(line)).toBeGreaterThan(text.indexOf("Landing, by the operator")); // inside the printed list
+    const step4 = (rtv: string) => spawnSync("bash", ["-c", `set -u; ID=$1; TV=$2; RTV=$3; cat <<EOF\n${line}EOF\n`, "_", ID, "0.0.0-fake", rtv], { encoding: "utf8" }).stdout;
+    const printed = (v: string) => ` 4. once published: npm install --package-lock-only -D ${URL_ROOT}/lean4-wasm64-${v}.tgz\n`;
+    expect(step4("9.9.9-abc1234")).toBe(printed("9.9.9-abc1234"));
+    expect(step4("")).toBe(printed("0.0.0-fake"));
+  });
+
+  test("adopt-helper record: tools.version is the last tab field, empty when absent (tab is IFS whitespace to the script's read); a malformed one refuses", () => {
+    const record = (rel: { dir: string; digest: string }) => spawnSync("node", [helper, "record", "--release", path.join(rel.dir, "release.json"), "--id", ID, "--digest", rel.digest, "--served", served], { encoding: "utf8" });
+    const fields = (digest: string, version: string) => `${[ID, digest, NEW_ID, "0036", "ab".repeat(20), "9.9.9", "runtime-only", version].join("\t")}\n`;
+    const has = fakeRelease("rel-line");
+    expect(record(has).stdout).toBe(fields(has.digest, "9.9.9-abc1234"));
+    const none = fakeRelease("rel-line-none", (r) => { delete r.tools; });
+    expect(record(none).stdout).toBe(fields(none.digest, ""));
+    for (const [i, bad] of ["1\t2", "1 2", "$(x)", "1\n", 7].entries()) {
+      const r = record(fakeRelease(`rel-line-bad-${i}`, (rec) => { (rec.tools as { version: unknown }).version = bad; }));
+      expect(r.stderr).toBe(`adopt-release: release.json tools.version ${JSON.stringify(bad)} is malformed\n`);
+      expect(r.status).toBe(2);
+      expect(r.stdout).toBe("");
+    }
   });
 });
 

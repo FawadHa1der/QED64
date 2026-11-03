@@ -7,8 +7,10 @@
 //   record     --release <release.json> --id <id> --digest sha256:<hex> --served <dir> [--allow-served] [--init-lib <pack id>]
 //              Validate a release record (schema, self-digest, the --id/--digest pin, the fields the
 //              adoption uses) and compare it with the served tree <dir> (QED64's public/). Prints one
-//              tab-separated line: id digest buildId kernel.patch kernel.commit lean.version mode, where
-//              mode is runtime-only (every served pack's raw digest is one of release.packs) or packs-change.
+//              tab-separated line: id digest buildId kernel.patch kernel.commit lean.version mode tools.version,
+//              where mode is runtime-only (every served pack's raw digest is one of release.packs) or packs-change,
+//              and tools.version, the one field that may be empty, stays last: tab is IFS whitespace to the
+//              script's read, so an empty field anywhere else would shift the fields after it.
 //   confine    --public <dir> --forbid <dir> [--forbid <dir> …]
 //              Refuse a --public that is (or lies inside) a forbidden tree once symlinks are resolved,
 //              that holds a symlink whose target leaves it, or that is not a filled served layout (the
@@ -119,6 +121,8 @@ function record(o) {
     ["lean.version", r.lean?.version, /^\d+\.\d+\.\d+(-[A-Za-z0-9.]+)?$/],
   ];
   for (const [name, v, re] of fields) if (typeof v !== "string" || !re.test(v)) refuse(`release.json ${name} ${JSON.stringify(v)} is malformed`);
+  const toolsVersion = r.tools?.version ?? ""; // absent is fine; present, it joins the tab line and a printed npm command
+  if (typeof toolsVersion !== "string" || !/^[A-Za-z0-9.+-]*$/.test(toolsVersion)) refuse(`release.json tools.version ${JSON.stringify(toolsVersion)} is malformed`);
   const packs = packsOf(r);
   for (const id of ["lean-core", "mathlib-essential", o["init-lib"] ?? "lean-lib"]) {
     if (!/^[0-9a-f]{64}$/.test(strip(packs.get(id)?.rawSha256))) refuse(`release.json lists no ${id} pack with a raw sha256`);
@@ -136,7 +140,7 @@ function record(o) {
     const file = path.join(o.served, "profiles", path.basename(String(e.manifest)));
     return fs.existsSync(file) && raw.has(strip(readJson(file, "served pack manifest").content?.pack?.digest));
   });
-  console.log([r.id, r.digest, r.runtime.buildId, r.kernel.patch, r.kernel.commit, r.lean.version, same ? "runtime-only" : "packs-change"].join("\t"));
+  console.log([r.id, r.digest, r.runtime.buildId, r.kernel.patch, r.kernel.commit, r.lean.version, same ? "runtime-only" : "packs-change", toolsVersion].join("\t"));
 }
 
 function confine(o) {
