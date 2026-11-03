@@ -529,13 +529,13 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   copy of the checkout with the rule's variables cleared, exits 2 with the
   `no-path` line and its usage line when nothing resolves, honours its
   variable, and prints exactly one WARNING per deprecated default it uses
-  while still resolving it. Each case stops at a cheap check (a missing lib
-  tree, a foreign index, a missing `--snap`, a `bin/lean.js` that is a
-  directory); the one bake that completes runs a fake node-runner. The
-  `--stack-size` re-exec keeps the PID, the stdio and the exit code, a SIGKILL
-  of that PID leaves nothing behind, and supervised-run's runner is not
-  re-exec'd. No tracked file but the two provenance notes names the sibling
-  codex checkout.
+  while still resolving it. Most cases that run a tool stop at a cheap check
+  (a missing lib tree, a foreign index, a missing `--snap`, a `bin/lean.js`
+  that is a directory, a bad flag); the bakes that complete run a fake
+  node-runner. The `--stack-size` re-exec keeps the PID, the stdio and the
+  exit code, a SIGKILL of that PID leaves nothing behind, and supervised-run's
+  runner is not re-exec'd. No tracked file but the two provenance notes names
+  the sibling codex checkout.
 
 ## Artifact discipline (pipeline/, tests/unit/artifact-discipline.test.ts)
 

@@ -90,7 +90,7 @@ max_bytes=$((25 * 1024 * 1024))
 big="$(find -L dist -type f -size +${max_bytes}c)"
 if [ -n "$big" ]; then
   count="$(printf '%s\n' "$big" | wc -l | tr -d ' ')"
-  first="$(printf '%s\n' "$big" | head -n 1)"
+  first=${big%%$'\n'*} # no pipe into head: a SIGPIPE under pipefail would end the script with 141, not this refusal
   refuse "dist/ holds $count file(s) over 25 MiB, the Workers assets cap; first: $first ($(wc -c < "$first" | tr -d ' ') bytes)"
 fi
 

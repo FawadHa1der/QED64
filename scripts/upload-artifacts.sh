@@ -93,7 +93,8 @@ PLAN=$(node -e '
   console.error("preflight ok: release " + rec.id + ", runtime " + buildId + ", " + (sn.snapshots ?? []).length + " snapshots");
   console.log([rec.id, ...files].join("\n"));
 ')
-RELEASE_ID=$(printf '%s\n' "$PLAN" | head -n 1)
+# No pipe into head: under pipefail, head's early exit can SIGPIPE printf, and set -e then ends the script with 141 and no message.
+RELEASE_ID=${PLAN%%$'\n'*}
 SNAPZ_FILES=$(printf '%s\n' "$PLAN" | tail -n +2)
 
 # The release must already be in R2: its owner uploads it (a read; DRY_RUN too).

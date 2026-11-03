@@ -66,7 +66,7 @@ describe("the alive lock (the worker's half)", () => {
     // The real boot wires the prelude in, both halves: pthreadUrl holds the prelude, and the pool's Workers start from
     // pthreadUrl. No lane reads `qed64-alive:` any more.
     const src = readFileSync(path.join(workers, "lean.worker.js"), "utf8");
-    expect(src).toContain("pthreadPrelude(instanceId, scriptUrl)");
+    expect(src).toMatch(/const pthreadUrl = instanceId\s*\?\s*URL\.createObjectURL\(new Blob\(\[pthreadPrelude\(instanceId, scriptUrl\)\]/);
     expect(src).toContain("mainScriptUrlOrBlob: pthreadUrl");
   });
 
