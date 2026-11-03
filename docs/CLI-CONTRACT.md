@@ -51,7 +51,7 @@ node pipeline/snapshot/cli.mjs --write-preludes  # regenerate the inline prelude
 | [bake-snapshot](#bake-snapshot) | `pipeline/snapshot/bake-snapshot.mjs` | `bake:snapshot` | 1 | inline prelude |
 | [snapshot-probe](#snapshot-probe) | `pipeline/snapshot/snapshot-probe.mjs` | — | 1 | inline prelude |
 | [supervised-run](#supervised-run) | `pipeline/snapshot/supervised-run.mjs` | — | 1 | imports `cli.mjs` |
-| [preflight](#preflight) | `pipeline/release/preflight.mjs` (shim at `tests/adversarial/preflight.mjs`) | — | 1 | imports `cli.mjs` |
+| [preflight](#preflight) | `pipeline/release/preflight.mjs` | — | 1 | imports `cli.mjs` |
 | [fetch-artifacts](#fetch-artifacts) | `pipeline/release/fetch-artifacts.mjs` | `fetch:artifacts` | 1 | imports `cli.mjs` |
 | [olean-imports](#olean-imports---audit----entries) | `pipeline/artifacts/olean-imports.mjs` | — | 1 | inline prelude (inside the main-module check) |
 | [resident-probe](#resident-probe) | `pipeline/snapshot/resident-probe.mjs` | — | 1, its surface below; the rest is tier 3 | imports `cli.mjs`, for `--help` only |
@@ -843,12 +843,10 @@ is folded to single spaces. As a module it exports `runPreflight(target, opts)`,
 the import. The target comes from `resolveTarget(url)` in
 `pipeline/release/page-target.mjs`.
 
-**Moved on 2026-10-06** from `tests/adversarial/preflight.mjs`. The old path is
-a shim with the same flags, output and exit codes that also prints
-`preflight: WARNING — tests/adversarial/preflight.mjs is deprecated; use
-pipeline/release/preflight.mjs (docs/CLI-CONTRACT.md)` on stderr before
-anything else. It goes after every consumer re-pins past it ("Stability
-policy").
+**Moved on 2026-10-06** from `tests/adversarial/preflight.mjs`. The shim at
+the old path, with its deprecation WARNING, was removed on 2026-11-03
+(changelog). A QED64 commit from before the move holds the script at the old
+path in its own tree.
 
 ```
 usage: preflight.mjs [--url <page url>] [--no-boot] [--boot-budget-ms 180000] [--run-dir <dir>]
@@ -893,9 +891,12 @@ usage: preflight.mjs [--url <page url>] [--no-boot] [--boot-budget-ms 180000] [-
 
 - `tests/adversarial/run.mjs` imports `runPreflight` (from the new path).
 - `tests/adversarial/resident-gate.sh` passes `--url --run-dir` (the new path).
-- The showcase's `scripts/preflight-overlays.sh` passes `--url [--no-boot]`
-  (old path, through the shim, until it re-pins).
-- The showcase's `tests/experiments/x1-preflight.mjs` (old path, likewise).
+- The showcase's `scripts/preflight-overlays.sh` passes `--url [--no-boot]`.
+  It runs the script in the target pin's own tree: this path where it exists
+  (its pins from `385a1ac` on), else the old path, which its pins up to
+  `bf9d947` hold.
+- The showcase's `tests/experiments/x1-preflight.mjs` (likewise, at the active
+  pin).
 
 ### fetch-artifacts
 
@@ -1436,6 +1437,7 @@ output, as QED64's own gate did.
 | 4 | 2026-11-02 | Recorded late (architecture review D2, 14562fa), tier 3: **release-manifest** `--dist` accepts `profiles/index.json` and `snapshots/index.json`, the two indexes the deploy carries, when each is byte-identical to the tracked `public/` file, and refuses one that is not ("the deploy would serve another pairing's index"); any other `runtime/`, `profiles/` or `snapshots/` path is still refused. | tier 3; a refusal added |
 | 4 | 2026-11-02 | Review fix (R16, lane L2), tier 3: the **compiler battery**'s `--messages-dir` files no longer carry snapshot-probe's failure tail (its last Lean lines again, indented and cut short), so two runs of one transport diff with no dedupe. | tier 3, no promise |
 | 4 | 2026-11-02 | Architecture review R4 item 4: **resident-probe's surface is tier 1 and the tool ships in the package** (SPECS, `files`, closure.json `pipeline`). The surface is the gate's (kernel R10, tier 2 until now), `--settle-ms`, what the proof sheets' planned call adds (`--lib`, `--lean-option`, any `--snapshots` list: a relabel) and, as for every tool under the path rule, `QED64_LEAN_ARTIFACT` and the rule's two stderr lines; `--act2`, `--act4`, `--act4-ms`, `--option-check`, `QED64_SNAP_DIR` and the log lines stay tier 3, and `--help` labels the flags. No flag, line, verdict key or exit changed: `--help`/`-h` is the one addition, and the tool keeps its own parser ("How the tools bind"). The tool's section words exit 2 as what is really refused; "a missing file" overclaimed, because a missing `.snap` never was, and it names an absent `--lib` tree as what it is, an exit-1 crash with no verdict line. The proof sheets have not adopted the tool yet. The battery's R4 lane stays opt-in and tier 3; thread-storm-probe stays tier 3. | additive |
+| 4 | 2026-11-03 | **The old-path preflight shim is removed** (the user's decision of 2026-11-03; deprecated since contract 1, 2026-10-06, b4ff462). `tests/adversarial/preflight.mjs` leaves the repository; it was never in `files`, closure.json or `exports`, so no installed package held it. Instead, run `node pipeline/release/preflight.mjs`, with the same flags, output and exit codes; that script and its `main()` export stay. Consumers (read 2026-11-03): lean4game `wasm64-port` and the proof sheets do not run this tool, and they pin 73d7f3b and 37ff491 (`website-v4.34`) or c512c21 (`website-v4.35`), which carry the WARNING. The showcase's `scripts/preflight-overlays.sh` and `tests/experiments/x1-preflight.mjs` take this path from each pin's own tree; its active pin O (521cf3f) has it. They fall back to the old path only for pins before 385a1ac, and each such pin's tree holds the real script there, so this removal cannot reach them. | breaking (a shim removed after its window; shares contract 4's bump) |
 
 ## Open decisions
 

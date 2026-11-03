@@ -22,8 +22,8 @@
 //        [--boot-budget-ms 180000] [--run-dir <dir>]
 // (--help; the argument grammar is the shared CLI contract's,
 // pipeline/snapshot/cli.mjs and docs/CLI-CONTRACT.md). Moved from
-// tests/adversarial/preflight.mjs on 2026-10-06 so it ships in the package;
-// that path is a shim for one deprecation cycle. The boot smoke imports
+// tests/adversarial/preflight.mjs on 2026-10-06 so it ships in the package
+// (the shim at that path was removed on 2026-11-03). The boot smoke imports
 // `playwright` (the caller's install) only when it runs; one that does not
 // resolve is a refusal (exit 3), not a crash. Types: preflight.d.mts.
 import fs from "node:fs";
@@ -180,8 +180,7 @@ export async function bootSmoke(url, budgetMs, { importPlaywright = () => import
   }
 }
 
-/** The CLI (process.argv, exit codes per docs/CLI-CONTRACT.md); the old
- * path's shim calls it too. */
+/** The CLI (process.argv, exit codes per docs/CLI-CONTRACT.md). */
 export async function main() {
   // Before any fetch: --help exits 0, unknown flags are WARNINGs on stderr.
   const cli = parseCli("preflight");

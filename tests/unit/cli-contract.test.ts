@@ -345,22 +345,15 @@ describe("the argument grammar (cliContract, the one implementation)", () => {
 });
 
 describe("the real scripts", () => {
-  test("tests/adversarial/preflight.mjs (moved 2026-10-06) is a shim: the same stdout, exit code and run dir, plus one stderr deprecation WARNING", () => {
-    const outputs = ["pipeline/release/preflight.mjs", "tests/adversarial/preflight.mjs"].map((script) => {
-      const d = sandbox("preflight-shim");
-      const r = run(script, ["--url", "http://127.0.0.1:9/", "--no-boot", "--run-dir", path.join(d, "run")], d);
-      const json = JSON.parse(fs.readFileSync(path.join(d, "run/preflight.json"), "utf8"));
-      return { ...r, json };
-    });
-    const [moved, shim] = outputs as [typeof outputs[0], typeof outputs[0]];
-    expect(moved.status).toBe(3);
-    expect(moved.stdout).toMatch(/^PREFLIGHT REFUSED: /m);
-    expect([shim.status, shim.stdout, shim.json]).toEqual([moved.status, moved.stdout, moved.json]);
-    expect(moved.stderr).toBe("");
-    expect(shim.stderr).toBe("preflight: WARNING — tests/adversarial/preflight.mjs is deprecated; use pipeline/release/preflight.mjs (docs/CLI-CONTRACT.md)\n");
-    expect(reservedHit(shim.stderr)).toBeNull();
-    const help = run("tests/adversarial/preflight.mjs", ["--help"], tmp);
-    expect([help.status, help.stdout]).toEqual([0, `${formatHelp("preflight")}\n`]);
+  test("preflight --no-boot on a page that does not answer: PREFLIGHT REFUSED, exit 3, nothing on stderr, and the verdict in --run-dir", () => {
+    const d = sandbox("preflight-run-dir");
+    const r = run("pipeline/release/preflight.mjs", ["--url", "http://127.0.0.1:9/", "--no-boot", "--run-dir", path.join(d, "run")], d);
+    expect(r.status).toBe(3);
+    expect(r.stdout).toMatch(/^PREFLIGHT REFUSED: /m);
+    expect(r.stderr).toBe("");
+    const json = JSON.parse(fs.readFileSync(path.join(d, "run/preflight.json"), "utf8"));
+    expect(json.ok).toBe(false);
+    expect(r.stdout).toContain(`PREFLIGHT REFUSED: ${json.reason}`);
   });
 
   for (const tool of Object.keys(ARGS)) {
