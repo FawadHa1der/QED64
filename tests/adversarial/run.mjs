@@ -12,7 +12,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { arg, batteryArgv, browserArgv, browserName, coolDown, has, laneSections, resolveTarget, root, runDir, strayBrowsers, suiteExitCode, teeLog } from "./harness.mjs";
+import { arg, batteryArgv, browserArgv, browserName, coolDown, has, laneSections, resolveTarget, root, runDir, suiteExitCode, teeLog } from "./harness.mjs";
 import { runPreflight } from "../../pipeline/release/preflight.mjs";
 
 fs.mkdirSync(path.join(root, "work/adversarial"), { recursive: true });
@@ -72,7 +72,7 @@ if (!has("--skip-e2e")) {
   // memory turned one dead page into "the product cannot boot" for every
   // later stage (HARDENING #34). Refuse to start a browser while one exists.
   console.log("=== cool-down ===");
-  if (!(await coolDown())) { stopVite(); refuse(`browser lane not started (${strayBrowsers().length} stray browser process(es))`); }
+  if (!(await coolDown())) { stopVite(); refuse("browser lane not started (the cool-down line above says why)"); }
   console.log(`=== e2e (headless ${browser}) ===`);
   e2eCode = spawnSync("node", [path.join(root, "tests/adversarial/e2e.mjs"), "--url", url, "--run-dir", dir, ...browserArgv()], { stdio: "inherit", cwd: root }).status ?? 1;
 }

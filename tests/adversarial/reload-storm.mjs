@@ -48,7 +48,7 @@ import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { arg, fetchJson, has, reclaimableBytes, resolveTarget, root, runDir, teeLog } from "./harness.mjs";
+import { arg, fetchJson, has, reclaimableBytes, resolveTarget, root, runDir, strayBrowsers, teeLog } from "./harness.mjs";
 
 const url = arg("url", "http://localhost:5198/");
 const RUNS = Number(arg("runs", "5"));
@@ -108,11 +108,13 @@ const { chromium } = await import("playwright");
 const oomKind = (t) => (/semi-space copy/.test(t) ? "V1" : /young object promotion failed/.test(t) ? "V2" : `other: ${t}`);
 const workerKind = (u) => (/lean\.worker\.js/.test(u) ? "lean" : /^blob:/.test(u) ? "blob" : /snapshot-prefetch/.test(u) ? "prefetch" : "other");
 const sh = (cmd, args) => (spawnSync(cmd, args, { encoding: "utf8" }).stdout || "").trim();
+// A recorded figure, no gate: null when the process list cannot be read.
+const foreignBrowsers = () => { try { return strayBrowsers().length; } catch { return null; } };
 const hostState = () => ({
   reclaimableGB: Math.round(reclaimableBytes() / 1e8) / 10,
   swapUsed: (/used = ([\d.]+\w)/.exec(sh("sysctl", ["vm.swapusage"])) || [])[1] ?? null,
   load1: Math.round(os.loadavg()[0] * 10) / 10,
-  foreignHeadlessShell: sh("pgrep", ["-f", "chrome-headless-shell"]).split("\n").filter(Boolean).length,
+  foreignHeadlessShell: foreignBrowsers(),
   wasmNode: sh("pgrep", ["-f", "node --stack-size=8192"]).split("\n").filter(Boolean).length,
 });
 

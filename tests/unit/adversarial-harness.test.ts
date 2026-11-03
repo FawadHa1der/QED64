@@ -1,11 +1,12 @@
 // Pins the pure helpers of the adversarial harness (review C7): `--only`
 // matches whole names, the page URL determines the pairing the run boots,
 // and the pill's terminal classes map onto the corpus's `expect.terminal`.
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { MODE, batteryArgv, browserArgv, browserName, coolDown, laneSections, memoryReading, onlyMatches, parseMeminfo, parseVmStat, resolveTarget, settleClass, settleClassFromPhase, suiteExitCode } from "../../tests/adversarial/harness.mjs";
+import { MODE, batteryArgv, browserArgv, browserName, coolDown, laneSections, memoryReading, onlyMatches, parseMeminfo, parseVmStat, resolveTarget, settleClass, settleClassFromPhase, strayBrowsers, suiteExitCode } from "../../tests/adversarial/harness.mjs";
 import { COMPILE_ONLY, classify, messageLines, missingInputs } from "../../tests/adversarial/compiler-battery.mjs";
 
 describe("onlyMatches", () => {
@@ -227,6 +228,8 @@ describe("run.mjs: the battery's argv, the merged report's lanes, the suite's ex
     expect(src).toContain("laneSections([");
     expect(src).toContain("process.exit(suiteExitCode(");
     expect(src).not.toContain("filter(Boolean)");
+    // Re-listing for its refusal line would throw on an unreadable list: exit 1, not the refusal's 3.
+    expect(src).not.toContain("strayBrowsers");
   });
 });
 
@@ -322,6 +325,180 @@ describe("the cool-down's memory reading", () => {
     log.length = 0;
     expect(await coolDown({ minFreeGB: 6, maxWaitS: 0, log: (l) => log.push(l), strays: () => ["123 chrome-headless-shell --x"], reading: () => { throw new Error("not read while a browser is alive"); } })).toBe(false);
     expect(log[0]).toMatch(/^cool-down: 1 browser process\(es\) alive .* refusing to start a browser lane:/);
+  });
+});
+
+describe("the stray-browser list: executables, never command text", () => {
+  const HEADLESS = "/Users/me/Library/Caches/ms-playwright/chromium_headless_shell-1234/chrome-headless-shell-mac-arm64/chrome-headless-shell";
+  const FIREFOX = "/Users/me/Library/Caches/ms-playwright/firefox-1538/firefox/Nightly.app/Contents/MacOS/firefox";
+  const pidOf = (line: string) => Number(/^\d+/.exec(line)?.[0]);
+  // Above every OS's pid range (Linux tops out at 4194304, macOS at 99999): a test that lost its injected kill gets ESRCH and hurts nothing on this shared host.
+  const [P1, P2, P3] = [5000001, 5000002, 5000003];
+  // Blocked in `read`, so it has no child to leave behind; its stdin pipe also ends it with the test process.
+  const sleepingShell = (text: string) => {
+    const shell = spawn("sh", ["-c", `read x; : ${text}`], { stdio: ["pipe", "ignore", "ignore"] });
+    const exit = new Promise<[number | null, string | null]>((r) => shell.once("exit", (code, signal) => r([code, signal])));
+    return { shell, pid: shell.pid!, exit };
+  };
+
+  test("a live sh whose text mentions the names is not listed (the old text match does see it)", async () => {
+    const { shell, pid, exit } = sleepingShell("chrome-headless-shell ms-playwright/firefox-");
+    try {
+      const text = spawnSync("pgrep", ["-f", "chrome-headless-shell"], { encoding: "utf8" });
+      if (!text.error) expect(text.stdout.split("\n")).toContain(String(pid));
+      // /bin/ps is setuid, so a sandboxed macOS shell cannot run it: there the reader must say so, and there is no listing to look at.
+      const ps = spawnSync("ps", ["-axo", "pid=,comm="]);
+      if (process.platform !== "linux" && (ps.error || ps.status !== 0)) expect(() => strayBrowsers()).toThrow("cannot read the process list");
+      else expect(strayBrowsers().map(pidOf)).not.toContain(pid);
+      expect(shell.exitCode).toBeNull();
+    } finally {
+      process.kill(pid, "SIGKILL");
+      await exit;
+    }
+  });
+
+  test("a ps listing: a matching executable is listed as `<pid> <executable>`; other programs are not", () => {
+    const stdout = `    1 /sbin/launchd\n 2811 ${HEADLESS}\n 2812 ${HEADLESS}\n  640 -zsh\n  641 /bin/sh\n  700 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome\n12345 ${FIREFOX}\n`;
+    expect(strayBrowsers({ platform: "darwin", ps: () => ({ stdout, status: 0 }) })).toEqual([`2811 ${HEADLESS}`, `2812 ${HEADLESS}`, `12345 ${FIREFOX}`]);
+    expect(strayBrowsers({ platform: "darwin", ps: () => ({ stdout: "  640 -zsh\n", status: 0 }) })).toEqual([]);
+  });
+
+  // A fake `ps` first on PATH: it only prints the path, so no live process is named like a browser (the lock would see one).
+  test("the default reader runs `ps -axo pid=,comm=` (every user's processes, the path each was started as) and lists what it prints", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "qed64-ps-"));
+    const savedPath = process.env.PATH;
+    try {
+      const args = path.join(tmp, "args");
+      fs.writeFileSync(path.join(tmp, "ps"), `#!/bin/sh\nprintf '%s\\n' "$@" > '${args}'\necho '  640 /bin/sh'\necho ' 2811 ${HEADLESS}'\n`, { mode: 0o755 });
+      process.env.PATH = `${tmp}${path.delimiter}${savedPath}`;
+      expect(strayBrowsers({ platform: "darwin" })).toEqual([`2811 ${HEADLESS}`]);
+      expect(fs.readFileSync(args, "utf8")).toBe("-axo\npid=,comm=\n");
+    } finally {
+      process.env.PATH = savedPath;
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("reload-storm's recorded figure takes an unreadable list as null: it must not end the run", () => {
+    const src = fs.readFileSync(path.resolve(__dirname, "../adversarial/reload-storm.mjs"), "utf8");
+    expect(src).toContain("const foreignBrowsers = () => { try { return strayBrowsers().length; } catch { return null; } };");
+    expect(src).toContain("foreignHeadlessShell: foreignBrowsers(),");
+  });
+
+  test("Linux reads /proc/<pid>/exe: an exe it cannot read is not listed, nor is a non-pid entry", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "qed64-proc-"));
+    try {
+      for (const [pid, exe] of [["41", HEADLESS], ["42", "/usr/bin/dash"], ["43", `${FIREFOX} (deleted)`], ["self", HEADLESS]] as const) {
+        fs.mkdirSync(path.join(tmp, pid));
+        fs.symlinkSync(exe, path.join(tmp, pid, "exe"));
+      }
+      fs.mkdirSync(path.join(tmp, "44")); // no exe link, as a process of another user or a kernel thread reads
+      const ps = () => { throw new Error("ps must not run on Linux"); };
+      expect(strayBrowsers({ platform: "linux", procRoot: tmp, ps }).sort()).toEqual([`41 ${HEADLESS}`, `43 ${FIREFOX} (deleted)`]);
+    } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+  });
+
+  test("a process list that cannot be read throws: it never reads as 'no browsers'", () => {
+    const eperm = Object.assign(new Error("spawnSync ps EPERM"), { code: "EPERM" });
+    expect(() => strayBrowsers({ platform: "darwin", ps: () => ({ stdout: null, status: null, error: eperm }) })).toThrow("cannot read the process list (ps EPERM)");
+    expect(() => strayBrowsers({ platform: "darwin", ps: () => ({ stdout: "", status: 1 }) })).toThrow("cannot read the process list (ps exit 1)");
+    expect(() => strayBrowsers({ platform: "darwin", ps: () => ({ stdout: "", status: 0 }) })).toThrow("cannot read the process list (it came back empty)");
+    const empty = fs.mkdtempSync(path.join(os.tmpdir(), "qed64-proc-"));
+    try {
+      expect(() => strayBrowsers({ platform: "linux", procRoot: empty })).toThrow("cannot read the process list (it came back empty)");
+      expect(() => strayBrowsers({ platform: "linux", procRoot: path.join(empty, "gone") })).toThrow(/cannot read the process list \(.*gone ENOENT\)/);
+    } finally { fs.rmSync(empty, { recursive: true, force: true }); }
+  });
+
+  const enough = () => ({ bytes: 7 * 1024 ** 3, source: "/proc/meminfo" });
+  // coolDown waits 2 s between the kill and the second listing.
+  const cool = async (opts: Parameters<typeof coolDown>[0]) => {
+    vi.useFakeTimers();
+    try {
+      const done = coolDown({ minFreeGB: 6, maxWaitS: 0, reading: enough, ...opts });
+      await vi.advanceTimersByTimeAsync(2000);
+      return await done;
+    } finally { vi.useRealTimers(); }
+  };
+
+  test("--kill-strays signals exactly the listed PIDs with SIGKILL, ESRCH is fine, then it lists again", async () => {
+    const lists = [[`${P1} ${HEADLESS}`, `${P2} ${HEADLESS}`, `${P3} ${FIREFOX}`], []];
+    const calls: [number, string][] = [];
+    const log: string[] = [];
+    const kill = (pid: number, signal: string) => {
+      calls.push([pid, signal]);
+      if (pid === P2) throw Object.assign(new Error("kill ESRCH"), { code: "ESRCH" });
+    };
+    expect(await cool({ killStrays: true, strays: () => lists.shift()!, kill, log: (l) => log.push(l) })).toBe(true);
+    expect(calls).toEqual([[P1, "SIGKILL"], [P2, "SIGKILL"], [P3, "SIGKILL"]]);
+    expect(lists).toEqual([]);
+    expect(log[0]).toBe(`cool-down: --kill-strays — SIGKILL 3 browser process(es):\n  ${`${P1} ${HEADLESS}`.slice(0, 160)}\n  ${`${P2} ${HEADLESS}`.slice(0, 160)}\n  ${`${P3} ${FIREFOX}`.slice(0, 160)}`);
+    expect(log.slice(1)).toEqual(["cool-down: memory from /proc/meminfo", "cool-down: 7.0 GB reclaimable (need 6) after 0 s — ok"]);
+    expect(fs.readFileSync(path.resolve(__dirname, "../adversarial/harness.mjs"), "utf8")).not.toMatch(/"(pkill|pgrep)"/);
+  });
+
+  test("the second listing waits 2 s after the kill: a process still dying must not read as a survivor", async () => {
+    const lists = [[`${P1} ${HEADLESS}`], []];
+    vi.useFakeTimers();
+    try {
+      const done = coolDown({ minFreeGB: 6, maxWaitS: 0, reading: enough, killStrays: true, strays: () => lists.shift()!, kill: () => {}, log: () => {} });
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(lists).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(lists).toHaveLength(0);
+      expect(await done).toBe(true);
+    } finally { vi.useRealTimers(); }
+  });
+
+  test("a survivor refuses after SIGKILL; a failed kill is named; pid 0, pid 1 and a line without a pid are never signalled", async () => {
+    const survivor = `${P1} ${HEADLESS}`;
+    const calls: number[] = [];
+    const log: string[] = [];
+    const kill = (pid: number) => { calls.push(pid); throw Object.assign(new Error("kill EPERM"), { code: "EPERM" }); };
+    const reading = () => { throw new Error("not read while a browser is alive"); };
+    expect(await cool({ killStrays: true, strays: () => [survivor, survivor, "0 x", "1 x", "x y"], kill, log: (l) => log.push(l), reading })).toBe(false);
+    expect(calls).toEqual([P1]);
+    expect(log[1]).toBe(`cool-down: SIGKILL ${P1} failed: EPERM`);
+    expect(log[2]).toMatch(/^cool-down: 5 browser process\(es\) alive after SIGKILL — refusing to start a browser lane:/);
+  });
+
+  test("without --kill-strays nothing is signalled; with nothing listed nothing is signalled", async () => {
+    const calls: number[] = [];
+    const kill = (pid: number) => { calls.push(pid); };
+    const log: string[] = [];
+    expect(await cool({ killStrays: false, strays: () => [`${P1} ${HEADLESS}`], kill, log: (l) => log.push(l) })).toBe(false);
+    expect(log[0]).toMatch(/alive \(another run's, or a leak — pass --kill-strays to kill leaks\) — refusing/);
+    log.length = 0;
+    expect(await cool({ killStrays: true, strays: () => [], kill, log: (l) => log.push(l) })).toBe(true);
+    expect(log.join("\n")).not.toContain("--kill-strays");
+    expect(calls).toEqual([]);
+  });
+
+  test("a list that cannot be read refuses, before a kill and after one", async () => {
+    const unreadable = () => { throw new Error("cannot read the process list (ps EPERM)"); };
+    const log: string[] = [];
+    expect(await cool({ killStrays: true, strays: unreadable, kill: () => { throw new Error("no kill expected"); }, log: (l) => log.push(l) })).toBe(false);
+    expect(log).toEqual(["cool-down: REFUSED — cannot read the process list (ps EPERM)"]);
+    log.length = 0;
+    const lists = [[`${P1} ${HEADLESS}`]];
+    const calls: number[] = [];
+    expect(await cool({ killStrays: true, strays: () => lists.shift() ?? unreadable(), kill: (pid) => { calls.push(pid); }, log: (l) => log.push(l) })).toBe(false);
+    expect(calls).toEqual([P1]);
+    expect(log[1]).toBe("cool-down: REFUSED — cannot read the process list (ps EPERM)");
+  });
+
+  test("the default kill SIGKILLs the listed PID, and only that one", async () => {
+    const victim = sleepingShell("victim");
+    const bystander = sleepingShell("bystander");
+    try {
+      const lists = [[`${victim.pid} fake-browser`], []];
+      expect(await cool({ killStrays: true, strays: () => lists.shift()!, log: () => {} })).toBe(true);
+      expect(await victim.exit).toEqual([null, "SIGKILL"]);
+      expect(bystander.shell.exitCode).toBeNull();
+    } finally {
+      process.kill(bystander.pid, "SIGKILL");
+      await bystander.exit;
+    }
   });
 });
 

@@ -12,16 +12,19 @@
 //     (default chromium), the engine the suite's browsers launch with
 //     (HARDENING #75); run.mjs forwards it to e2e.mjs;
 //   - coolDown(): the between-browser-lanes discipline of HARDENING #34
-//     (refuse while a chrome-headless-shell or a Playwright Firefox exists — `--kill-strays` to kill
-//     them instead — then wait for free+inactive memory). The memory reading
-//     is macOS vm_stat, else Linux /proc/meminfo, else os.freemem() (free
-//     pages only, so it waits longer); with none of them it prints
+//     (refuse while a chrome-headless-shell or a Playwright Firefox exists,
+//     counted by executable — `--kill-strays` to kill the listed PIDs instead
+//     — then wait for free+inactive memory; a process list it cannot read
+//     refuses too). The memory reading is macOS vm_stat, else Linux
+//     /proc/meminfo, else os.freemem() (free pages only, so it waits
+//     longer); with none of them it prints
 //     `cool-down: REFUSED — no memory reading (…)` and refuses.
 // CLI (for shell callers such as resident-gate.sh):
 //   node tests/adversarial/harness.mjs run-dir --url <url>     → prints the run dir
 //   node tests/adversarial/harness.mjs cooldown [--cooldown-gb 6] [--cooldown-max-s 180] [--kill-strays]
-//     exit 0: fit to start a browser; 3: refused (a stray browser, memory not
-//     back within --cooldown-max-s, or no memory reading); 2: usage.
+//     exit 0: fit to start a browser; 3: refused (a stray browser, a process
+//     list it cannot read, memory not back within --cooldown-max-s, or no
+//     memory reading); 2: usage.
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -156,28 +159,74 @@ export function reclaimableBytes() {
   return memoryReading().bytes ?? 0;
 }
 
-/** `pid cmdline` lines of every live chrome-headless-shell or Playwright Firefox
- * (its binary lives under ms-playwright/firefox-<build>/; the Firefox lane,
- * HARDENING #75) (pgrep -fl prints
- * the full argument list on both BSD and procps). */
-const STRAY_BROWSER = "chrome-headless-shell|ms-playwright/firefox-";
-export const strayBrowsers = () => (spawnSync("pgrep", ["-fl", STRAY_BROWSER], { encoding: "utf8" }).stdout || "").split("\n").filter(Boolean);
+/** `<pid> <executable>` lines of every live chrome-headless-shell or Playwright
+ * Firefox (its binary lives under ms-playwright/firefox-<build>/; the Firefox
+ * lane, HARDENING #75). Matched on the EXECUTABLE, never the command text: a text
+ * match also counts any shell whose command merely mentions the name, which
+ * refused a browser lane with no browser up. The same reading as the host lock's
+ * procs_by_exe (its scripts/lib/platform.sh): macOS `ps comm`, the path the
+ * process was started as; Linux /proc/<pid>/exe (`ps comm` there is a bare name
+ * cut to 15 characters; another user's process cannot be read, so it is not
+ * listed). The regex searches the whole path: a program under a directory named
+ * like it counts too. Not matched, here or by the lock: Playwright's linux-arm64
+ * headless shell (chromium_headless_shell-<build>/chrome-linux/headless_shell).
+ * THROWS when the process list cannot be read: "cannot tell"
+ * must not read as "no browsers". The probes are injectable for the unit test. */
+const STRAY_BROWSER = /chrome-headless-shell|ms-playwright\/firefox-/;
+export function strayBrowsers({
+  platform = process.platform,
+  ps = () => spawnSync("ps", ["-axo", "pid=,comm="], { encoding: "utf8" }),
+  procRoot = "/proc",
+} = {}) {
+  const unreadable = (why) => new Error(`cannot read the process list (${why})`);
+  let listing;
+  if (platform === "linux") {
+    let pids;
+    try { pids = fs.readdirSync(procRoot).filter((d) => /^\d+$/.test(d)); } catch (e) { throw unreadable(`${procRoot} ${e.code ?? e.message}`); }
+    listing = pids.flatMap((pid) => { try { return [`${pid} ${fs.readlinkSync(path.join(procRoot, pid, "exe"))}`]; } catch { return []; } });
+  } else {
+    const r = ps();
+    if (r.error || r.status !== 0) throw unreadable(`ps ${r.error ? (r.error.code ?? r.error.message) : `exit ${r.status}`}`);
+    listing = String(r.stdout ?? "").split("\n").map((l) => l.trim()).filter(Boolean);
+  }
+  // The reader is itself a process: a listing with nothing in it was not read.
+  if (!listing.length) throw unreadable("it came back empty");
+  return listing.flatMap((line) => {
+    const m = /^(\d+)\s+(.+)$/.exec(line);
+    return m && STRAY_BROWSER.test(m[2]) ? [`${m[1]} ${m[2]}`] : [];
+  });
+}
+
+/** The PIDs a strayBrowsers list names. Never 0 or 1: kill(0) is our own process
+ * group, and a line without a pid names nobody. */
+const listedPids = (lines) => [...new Set(lines.map((l) => Number(/^\d+/.exec(l)?.[0])))].filter((pid) => pid > 1);
 
 /** Between browser lanes: a headless browser that is not ours is either
  * a leak from a probe that died before browser.close() (HARDENING #34) or a
  * SIBLING RUN's live browser — parallel worktree tracks and interactive
  * sessions run Playwright on this machine at the same time, so the default
  * is to refuse (the spec's rule) and list what is there; `--kill-strays`
- * opts into SIGKILL for the unattended re-run case. Then wait for memory to
- * come back. Returns false (and logs why) when the machine is not fit to
- * start a browser. */
-export async function coolDown({ minFreeGB = Number(arg("cooldown-gb", "6")), maxWaitS = Number(arg("cooldown-max-s", "180")), killStrays = has("--kill-strays"), log = console.log, reading = memoryReading, strays: listStrays = strayBrowsers } = {}) {
-  let strays = listStrays();
-  if (strays.length && killStrays) {
-    log(`cool-down: --kill-strays — SIGKILL ${strays.length} browser process(es):\n  ${strays.map((s) => s.slice(0, 160)).join("\n  ")}`);
-    spawnSync("pkill", ["-9", "-f", STRAY_BROWSER]);
-    await new Promise((r) => setTimeout(r, 2000));
+ * opts into SIGKILL of the listed PIDs for the unattended re-run case (by PID,
+ * so a shell that mentions the name is safe; a sibling run's real browser is
+ * not: that is what the flag opts into). A process list that cannot be read
+ * refuses. Then wait for memory to come back. Returns false (and logs why) when
+ * the machine is not fit to start a browser. */
+export async function coolDown({ minFreeGB = Number(arg("cooldown-gb", "6")), maxWaitS = Number(arg("cooldown-max-s", "180")), killStrays = has("--kill-strays"), log = console.log, reading = memoryReading, strays: listStrays = strayBrowsers, kill = (pid, signal) => process.kill(pid, signal) } = {}) {
+  let strays;
+  try {
     strays = listStrays();
+    if (strays.length && killStrays) {
+      log(`cool-down: --kill-strays — SIGKILL ${strays.length} browser process(es):\n  ${strays.map((s) => s.slice(0, 160)).join("\n  ")}`);
+      for (const pid of listedPids(strays)) {
+        // ESRCH: it ended by itself since the listing. Any other failure leaves it listed below, which refuses.
+        try { kill(pid, "SIGKILL"); } catch (e) { if (e.code !== "ESRCH") log(`cool-down: SIGKILL ${pid} failed: ${e.code ?? e.message}`); }
+      }
+      await new Promise((r) => setTimeout(r, 2000));
+      strays = listStrays();
+    }
+  } catch (e) {
+    log(`cool-down: REFUSED — ${e.message}`);
+    return false;
   }
   if (strays.length) {
     log(`cool-down: ${strays.length} browser process(es) alive${killStrays ? " after SIGKILL" : " (another run's, or a leak — pass --kill-strays to kill leaks)"} — refusing to start a browser lane:\n  ${strays.map((s) => s.slice(0, 160)).join("\n  ")}`);

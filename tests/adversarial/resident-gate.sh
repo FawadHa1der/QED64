@@ -21,7 +21,7 @@ echo "=== preflight ==="; node pipeline/release/preflight.mjs --url "$URL" --run
 # --kill-strays: the preflight's own boot-smoke browser is the usual "stray" (a
 # refusal here skipped every resident lane on 2026-09-03); the memory floor is
 # an argument so a busy machine can still run with a lower bar.
-cool() { node tests/adversarial/harness.mjs cooldown --kill-strays --cooldown-gb "${QED64_COOLDOWN_GB:-6}" || { echo "GATE-REFUSED: cool-down (stray browsers / memory)"; exit 3; }; }
+cool() { node tests/adversarial/harness.mjs cooldown --kill-strays --cooldown-gb "${QED64_COOLDOWN_GB:-6}" || { echo "GATE-REFUSED: cool-down (the line above says why)"; exit 3; }; }
 cool
 echo "=== e2e ==="; node tests/adversarial/e2e.mjs --url "$URL" --run-dir "$RUN" > work/adversarial/e2e-resident.log 2>&1; echo "e2e-exit=$?"
 cp work/adversarial/e2e-report.json work/adversarial/e2e-resident-report.json

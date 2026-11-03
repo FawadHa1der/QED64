@@ -31,8 +31,13 @@ export function memoryReading(probes?: {
   freemem?: () => number;
 }): MemoryReading;
 export function reclaimableBytes(): number;
-export function strayBrowsers(): string[];
-export function coolDown(opts?: { minFreeGB?: number; maxWaitS?: number; killStrays?: boolean; log?: (s: string) => void; reading?: () => MemoryReading; strays?: () => string[] }): Promise<boolean>;
+/** `<pid> <executable>` lines of the live headless browsers, matched on the executable, never the command text. Throws when the process list cannot be read. */
+export function strayBrowsers(probes?: {
+  platform?: string;
+  ps?: () => { stdout?: string | null; status?: number | null; error?: (Error & { code?: string }) | undefined };
+  procRoot?: string;
+}): string[];
+export function coolDown(opts?: { minFreeGB?: number; maxWaitS?: number; killStrays?: boolean; log?: (s: string) => void; reading?: () => MemoryReading; strays?: () => string[]; kill?: (pid: number, signal: "SIGKILL") => void }): Promise<boolean>;
 export function batteryArgv(dir: string, get?: (flag: string, fallback: string) => string): string[];
 export function suiteExitCode(compilerCode: number, e2eCode: number): 0 | 1 | 3;
 export interface LaneReport {
