@@ -26,7 +26,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { ensureStackSize, resolveToolPath, runtimeBuildId, toolPath } from "../../pipeline/toolchain/artifact-paths.mjs";
-import { SPECS, reservedHit } from "../../pipeline/snapshot/cli.mjs";
+import { SPECS, formatHelp, reservedHit } from "../../pipeline/snapshot/cli.mjs";
 import { batteryInputs } from "../../tests/adversarial/compiler-battery.mjs";
 
 const root = path.resolve(__dirname, "../..");
@@ -56,7 +56,7 @@ const TOOLS: Record<string, string[]> = {
   "snapshot-probe": ["pipeline/snapshot/snapshot-probe.mjs"],
   "persistent-probe": ["pipeline/snapshot/persistent-probe.mjs"],
   "bake-snapshot": ["pipeline/snapshot/bake-snapshot.mjs"],
-  "resident-probe": ["pipeline/snapshot/resident-probe.mjs", "public/workers/lsp-frames.js", "public/workers/worker-constants.js", "public/workers/lean.worker.js"],
+  "resident-probe": ["pipeline/snapshot/resident-probe.mjs", "pipeline/snapshot/cli.mjs", "public/workers/lsp-frames.js", "public/workers/worker-constants.js", "public/workers/lean.worker.js"],
 };
 const toolCheckout = (tool: string) => checkout([...TOOLS[tool]!, "pipeline/toolchain/artifact-paths.mjs"]);
 
@@ -401,12 +401,12 @@ describe("resident-probe: the deprecated --snap-dir and QED64_SNAP_DIR", () => {
   });
 });
 
-// Kernel R10 (tier 2, docs/CLI-CONTRACT.md "Tiers"): the lean4-wasm64 gate's block 7 runs resident-probe from
+// Kernel R10 (tier 1 since R4, docs/CLI-CONTRACT.md "Tiers"): the lean4-wasm64 gate's block 7 runs resident-probe from
 // this checkout and parses what it prints. Pinned as the gate runs it (its argv shapes, its RESIDENT_ENV, its
 // regexes) with a FAKE glue at bin/lean.js, no wasm: the fake writes each snapshot handed to the loader to
 // FAKE_LOG and, after callMain, writes FAKE_LSP's messages as LSP frames (a string as raw bytes) through the
 // stdout TTY's put_char, byte by byte, as the real glue does.
-describe("resident-probe: the kernel gate's surface (R10, tier 2)", () => {
+describe("resident-probe: the kernel gate's surface (R10, tier 1 since R4)", () => {
   const FAKE_GLUE = `const fs = require("node:fs");
 const M = globalThis.Module;
 const mem = { buffer: new SharedArrayBuffer(80 << 20) }; // the probe's 64 MiB ring fits
@@ -522,9 +522,23 @@ setTimeout(() => M.onRuntimeInitialized(), 0);
         '{"caption":"","severity":"error","pos":{"line":4,"column":8},"endPos":{"line":4,"column":11},"data":"Type mismatch: rfl"}',
       ]);
       expect(r.compile[0]).toMatch(/^compile: tag=0 elapsed=\d+ms errors=1$/);
+      // The tier-1 markers (SPECS) match these real lines.
+      for (const line of r.messages) expect(line).toMatch(marker("resident-probe", "message"));
+      expect(r.compile[0]).toMatch(marker("resident-probe", "compile"));
+      expect(r.out.split("\n").find((l) => VERDICT.test(l))).toMatch(marker("resident-probe", "verdict"));
       expect(r.verdicts).toEqual([expect.objectContaining({ pass: true, ...KEYS, diagnostics: 2 })]);
       expect(r.loaded).toEqual(loaded);
     }
+  });
+
+  test("--help (R4) works with only the files the package ships for it, before any path resolves", () => {
+    const s = toolCheckout("resident-probe");
+    const before = tree(s);
+    for (const flag of ["--help", "-h"]) {
+      const r = run(s, "pipeline/snapshot/resident-probe.mjs", [flag]);
+      expect([r.status, r.stdout, r.stderr]).toEqual([0, `${formatHelp("resident-probe")}\n`, ""]);
+    }
+    expect(tree(s)).toEqual(before);
   });
 
   test("exits: a FAIL verdict is 1 (the budget, before any compile line); a refusal is 2, with no verdict", () => {
@@ -536,6 +550,31 @@ setTimeout(() => M.onRuntimeInitialized(), 0);
     const refused = probe(g, ["--snap-dir", g.snaps, "--probe-file", path.join(g.s, "none.lean"), "--dump-messages"], []);
     expect(refused.status, refused.out).toBe(2);
     expect(refused.order).toEqual([]);
+  });
+
+  test("a missing .snap or --snap-dir is no refusal (docs/CLI-CONTRACT.md, resident-probe): one log line, the run goes on, and file mode still ends in PASS, exit 0", () => {
+    const g = gateCheckout();
+    for (const [dir, snapshots, absent, loaded] of [
+      [g.snaps, "init,nosuch", "nosuch", ["init"]],
+      [path.join(g.s, "no-such-dir"), "init", "init", []],
+    ] as const) {
+      const r = probe(g, ["--snap-dir", dir, "--snapshots", snapshots, "--probe-file", g.doc, "--dump-messages", "--settle-ms", "0"], [progress(1), publish(ERROR), progress()]);
+      expect(r.status, r.out).toBe(0);
+      expect(r.out).toContain(`WARNING: ${path.join(dir, `${absent}.snap`)} missing`);
+      expect(r.order).toEqual(["message", "compile", "verdict"]);
+      expect(r.verdicts).toEqual([expect.objectContaining({ pass: true, ...KEYS })]);
+      expect(r.loaded).toEqual(loaded);
+    }
+  });
+
+  test("the exit table's other corners: a non-numeric --budget-ms is a FAIL at once; a bin/lean.js that never starts the runtime exits 0 with no verdict", () => {
+    const g = gateCheckout();
+    const nan = probe(g, ["--snap-dir", g.snaps, "--budget-ms", "abc", "--probe-file", g.doc], []);
+    expect(nan.status, nan.out).toBe(1);
+    expect(nan.verdicts).toEqual([expect.objectContaining({ pass: false, why: "budget exceeded" })]);
+    fs.writeFileSync(path.join(g.art, "bin/lean.js"), "");
+    const silent = probe(g, ["--snap-dir", g.snaps, "--probe-file", g.doc], []);
+    expect([silent.status, silent.order], silent.out).toEqual([0, []]);
   });
 });
 

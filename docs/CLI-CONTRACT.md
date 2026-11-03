@@ -43,7 +43,7 @@ node pipeline/snapshot/cli.mjs --write-preludes  # regenerate the inline prelude
 | Tier | Promise |
 |---|---|
 | **1: downstream-stable** | Flags, defaults, exit codes and the stable markers below change only under the stability policy (a deprecation window of one downstream re-pin cycle). |
-| **2: internal-stable** | Same rules, but the consumers are QED64's own scripts and, through bake-snapshot, the consumers' bakes (every one runs node-runner; the proof sheets also hash its bytes); and for resident-probe's gate surface (below), the lean4-wasm64 gate. A breaking change still needs a changelog row, and a re-pin of every consumer that runs it ("Stability policy"). |
+| **2: internal-stable** | Same rules, but the consumers are QED64's own scripts and, through bake-snapshot, the consumers' bakes (every one runs node-runner; the proof sheets also hash its bytes). A breaking change still needs a changelog row, and a re-pin of every consumer that runs it ("Stability policy"). |
 | **3: diagnostic** | No promise. They may change or disappear without notice. |
 
 | Tool | Script | npm alias | Tier | `--help` wiring |
@@ -54,14 +54,15 @@ node pipeline/snapshot/cli.mjs --write-preludes  # regenerate the inline prelude
 | [preflight](#preflight) | `pipeline/release/preflight.mjs` (shim at `tests/adversarial/preflight.mjs`) | — | 1 | imports `cli.mjs` |
 | [fetch-artifacts](#fetch-artifacts) | `pipeline/release/fetch-artifacts.mjs` | `fetch:artifacts` | 1 | imports `cli.mjs` |
 | [olean-imports](#olean-imports---audit----entries) | `pipeline/artifacts/olean-imports.mjs` | — | 1 | inline prelude (inside the main-module check) |
+| [resident-probe](#resident-probe) | `pipeline/snapshot/resident-probe.mjs` | — | 1, its surface below; the rest is tier 3 | imports `cli.mjs`, for `--help` only |
 | [node-runner](#node-runner) | `pipeline/snapshot/node-runner.mjs` | `runner` | 2 | inline prelude |
 | [persistent-probe](#persistent-probe) | `pipeline/snapshot/persistent-probe.mjs` | — | 2 | inline prelude |
 | [pack](#pack) | `pipeline/artifacts/pack.mjs` (leaving for the fork: `lean4-wasm64 pack`, later) | `pack` | 2 | inline prelude |
 
-Tier 3 tools: `pipeline/snapshot/{thread-storm-probe,fileworker-exit-probe,resident-probe}.mjs`
-(resident-probe's `--settle-ms` included: the compiler battery's FileWorker
-lane, `--transport fileworker`, R4; resident-probe's gate surface, below, is
-tier 2), and `pipeline/release/release-manifest.mjs` (shipped since plan
+Tier 3 tools: `pipeline/snapshot/{thread-storm-probe,fileworker-exit-probe}.mjs`,
+resident-probe outside its surface below (`--help` labels those flags; the
+compiler battery's FileWorker lane, `--transport fileworker`, R4, stays opt-in
+and tier 3), and `pipeline/release/release-manifest.mjs` (shipped since plan
 B2c), which writes `qed64.release/v1`, whose stable field paths are a
 contract of their own (docs/RELEASE-BUNDLE.md, "Stable field paths"); its
 flags are tier 3.
@@ -72,17 +73,21 @@ resident-probe, was folded into it on 2026-10-05 as `--snapshots <a,b>`,
 `gate.mjs` and the `gen-exports.py` stub were removed in contract 4:
 [the forwards](#lean4-wasm64-the-forwards) says what to run instead.)
 
-**resident-probe's gate surface is tier 2** (kernel review R10, accepted
-2026-11-01). Its consumer is the lean4-wasm64 gate (block 7, in the fork's
-tools from the v4.36 cut on), which runs `resident-probe.mjs` from QED64's
+**resident-probe's surface is tier 1** (architecture review R4 item 4,
+2026-11-02: the gate's surface, tier 2 since kernel review R10, accepted
+2026-11-01, and `--settle-ms`). The lean4-wasm64 gate (block 7, in the fork's
+tools from the v4.36 cut on) runs `resident-probe.mjs` from QED64's
 checkout when an adoption passes it in (`--resident-probe`) and parses what
-it prints. A change to any of the following is told to the kernel session
-before it lands:
+it prints. The proof sheets plan to adopt it; their call would also pass
+`--lib`, `--lean-option` and other `--snapshots` lists, which are tier 3, so
+it carries no promise yet. A change to any of the following is told to the
+kernel session before it lands:
 
 - the flags `--artifact <dir>`, `--snap-dir <dir>`, `--budget-ms <ms>`,
   `--mathlib`, `--snapshots init`, and the `--snapshots` defaults (`init`;
   `init,mathlib` with `--mathlib` or `--probe-file`);
-- `--probe-file <file>` with `--dump-messages`. The gate finds out whether
+- `--probe-file <file>` with `--dump-messages`, and `--settle-ms <ms>` (the
+  gate passes none). The gate finds out whether
   the probe has the file mode by the text `--probe-file` in the script;
 - on stdout, with `--dump-messages`, one line per final diagnostic,
   `{"caption":"","severity":<name>,"pos":{"line":<n>,"column":<n>},"endPos":{…},"data":<message>}`
@@ -94,16 +99,18 @@ before it lands:
 - one `RESIDENT PROBE PASS <json>` or `RESIDENT PROBE FAIL <json>` line,
   whose JSON has at least `why`, `diagnostics`, `frames`,
   `nonFrameStdoutBytes`, `wallMs` and `argv`; exit 0 for PASS, 1 for FAIL,
-  2 for a refusal before the run (a usage error or a missing file; no
-  verdict line); a crash of the probe itself (an uncaught throw) also exits
-  1, with no verdict line;
+  2 for a refusal before the run (no verdict line; [its section](#resident-probe)
+  lists what is refused, and a missing `.snap` is not); a crash of the probe
+  itself (an uncaught throw) also exits 1, with no verdict line;
 - the Init run (neither `--mathlib` nor `--probe-file`) writes only LSP
   frames on the runtime's stdout: the gate requires `nonFrameStdoutBytes` 0.
 
 `[WASM LSP] header <mode>: key=#[…]` is information only, with no promise:
 the runtime prints it (stderr, which resident-probe echoes in its log), and
-the gate shows it when it is there. The rest of resident-probe (its other
-flags, its log lines, the verdict's other keys) stays tier 3.
+the gate shows it when it is there. As for every tool under the path rule,
+`QED64_LEAN_ARTIFACT` and the rule's two stderr lines (`deprecated-default`,
+`no-path`) are tier 1 too. The rest of resident-probe (its other flags, its
+log lines, the verdict's other keys) stays tier 3.
 `tests/unit/tool-paths.test.ts` ("resident-probe: the kernel gate's
 surface") pins the surface as the gate runs it, with a fake glue and no
 wasm.
@@ -116,8 +123,8 @@ wasm.
   copies (`bake-snapshot.mjs`, `snapshot-index.mjs` and `.d.mts`,
   `snapshot-probe.mjs`) with its next runtime or import release. Its gate
   makes its own small raw `.snap` with its own `node-runner` (no index, no
-  gzip, nothing of QED64's), and runs QED64's `resident-probe.mjs` (its gate
-  surface tier 2, above) only when QED64's `adopt-release.sh` passes it in
+  gzip, nothing of QED64's), and runs QED64's `resident-probe.mjs` (its
+  surface tier 1, above) only when QED64's `adopt-release.sh` passes it in
   (otherwise it notes "skipped").
 - QED64 owns `olean-imports` (tier 1; the showcase's G5 and `pack.mjs` run
   it). The package drops its copy once `adopt-release.sh`'s
@@ -151,7 +158,8 @@ wasm.
   bake-snapshot and supervised-run start their runner with the flag
   themselves, so a plain `node` is enough for them; the re-exec is for direct
   runs, `npm run runner`, and any harness that spawns node-runner or
-  persistent-probe without it.
+  persistent-probe without it. resident-probe boots wasm too but does not
+  re-exec: its callers pass the flag (the gate, the compiler battery).
 - Since toolchain patches 0020 and 0031, the one-shot Lean CLI does its work
   and then **never exits** (HARDENING #47). Whatever runs node-runner judges
   the job by its output and stops the process: bake-snapshot once its `.snap`
@@ -161,7 +169,8 @@ wasm.
 ### Argument grammar
 
 There is one implementation of the grammar, `cliContract` in
-`pipeline/snapshot/cli.mjs`.
+`pipeline/snapshot/cli.mjs`. resident-probe takes only `--help`/`-h` from it
+("How the tools bind").
 
 - `--flag value` and `--flag=value` are the same thing. A value flag takes the
   next token verbatim, even when that token starts with `-`.
@@ -229,13 +238,20 @@ tool under the path rule imports. The prelude rewrites `--flag=value` into
 repeated value flag, so the script's own legacy parser reads it unchanged and
 sees only the first value.
 
-Only supervised-run, preflight and fetch-artifacts import `parseCli` at run
-time. No downstream copies any of them without `cli.mjs`: the showcase runs
+Only supervised-run, preflight and fetch-artifacts (and resident-probe, below)
+import `parseCli` at run time. No downstream copies any of them without `cli.mjs`: the showcase runs
 them from its submodule beside `cli.mjs`, and preflight and fetch-artifacts
 run in place from the QED64 checkout or the installed package (`cli.mjs`,
 `supervised-run.mjs`, `preflight.mjs` and `fetch-artifacts.mjs` are in `files`
 and in closure.json's `pipeline` list, with every Tier 1/2 tool;
 `tests/unit/package-contract.test.ts` checks it).
+
+resident-probe also imports `parseCli`, for `--help`/`-h` only, with the
+grammar's WARNINGs off, and reads its flags with its own parser, as before:
+`--flag=value` is not read, an unknown flag and a repeated value flag are
+silent (the first value wins), and `--lean-option` repeats. Promoting it
+(R4) changed none of that. It runs from a QED64 checkout or the package, never
+without `cli.mjs` beside it.
 
 After you edit SPECS, run `node pipeline/snapshot/cli.mjs --write-preludes`.
 The unit test fails on drift.
@@ -310,7 +326,7 @@ decisions".
 
 | Variable | Read by | Meaning |
 |---|---|---|
-| `QED64_LEAN_ARTIFACT` | bake-snapshot, node-runner, snapshot-probe, persistent-probe (and the compiler battery, resident-probe, the integration tests) | The stage1 artifact dir when `--artifact` is absent. An empty value counts as unset everywhere (before contract 2 bake-snapshot counted it as set, meaning the cwd). |
+| `QED64_LEAN_ARTIFACT` | bake-snapshot, node-runner, snapshot-probe, persistent-probe, resident-probe (and the compiler battery, the integration tests) | The stage1 artifact dir when `--artifact` is absent. An empty value counts as unset everywhere (before contract 2 bake-snapshot counted it as set, meaning the cwd). |
 | `QED64_WORK` | bake-snapshot, node-runner | The dir mounted at `/work` when `--work` is absent: bake-snapshot's raw `<name>.snap` and `probe.lean`, node-runner's Lean cwd. |
 | `QED64_STAGING` | bake-snapshot | A staging root when `--out` is absent: `--out` is `<QED64_STAGING>/<buildId>/snapshots`. `public/` is still refused. |
 | `QED64_LIB_TREE` | snapshot-probe (and the compiler battery) | The olean tree mounted at `/lib/lean` when `--lib` is absent: the tree the probed snapshot was baked from. |
@@ -324,7 +340,7 @@ The QED64 lanes outside SPECS use the same rule with their own variables:
 | Variable | Read by | Meaning |
 |---|---|---|
 | `QED64_MATHLIB_SNAP` | `tests/adversarial/compiler-battery.mjs` (`--snap`) | The raw Mathlib `.snap` under test (deprecated default `work/snapshot/mathlib.snap`). With `QED64_LEAN_ARTIFACT` and `QED64_LIB_TREE` (deprecated defaults `pipeline/toolchain/work/build/stage1`, `work/lib-tree-slim`) it is the battery's pairing; `run.mjs` forwards `--snap/--artifact/--lib`. |
-| `QED64_SNAP_DIR` | `pipeline/snapshot/resident-probe.mjs` (`--snap-dir`; the flag is on the tier-2 gate surface, the variable is tier 3), `tests/integration/lean-options.test.ts` | The dir holding `<name>.snap` (deprecated default `work/snapshot`). lean-options.test.ts passes it as `--snap-dir`; unset, it passes `QED64_INIT_SNAP`'s directory, and takes the deprecated default only when both are unset. |
+| `QED64_SNAP_DIR` | `pipeline/snapshot/resident-probe.mjs` (`--snap-dir`; the flag is tier 1, the variable is tier 3), `tests/integration/lean-options.test.ts` | The dir holding `<name>.snap` (deprecated default `work/snapshot`). lean-options.test.ts passes it as `--snap-dir`; unset, it passes `QED64_INIT_SNAP`'s directory, and takes the deprecated default only when both are unset. |
 | `QED64_INIT_SNAP` | `tests/integration/fileworker-exit.test.ts`, `tests/integration/lean-options.test.ts` (its directory, when `QED64_SNAP_DIR` is unset) | The init `.snap` (deprecated default `work/snapshot/init.snap`). The integration tests skip, naming the variable, when it or the artifact is absent. |
 
 Other `QED64_*` variables belong to shell lanes, not to these tools:
@@ -1133,6 +1149,69 @@ usage: persistent-probe.mjs [--artifact <dir>]
   `runtime defect is FIXED`.
 - `tests/integration/persistent-path.test.ts`.
 
+### resident-probe
+
+**Tier 1.** Its surface only ("Tiers"): the flags below not marked tier 3, the markers and the exits. `node --stack-size=8192 pipeline/snapshot/resident-probe.mjs …`
+
+```
+usage: resident-probe.mjs [--artifact <stage1>] [--lib <tree>] [--budget-ms 180000] [--snap-dir <dir>] [--snapshots init,mathlib] [--mathlib] [--act2 | --act4 [--act4-ms 500]] [--lean-option <name=value> ...] [--option-check] [--probe-file <file> [--dump-messages] [--settle-ms 5000]]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--artifact <dir>` | `$QED64_LEAN_ARTIFACT`, else (deprecated) `pipeline/toolchain/work/build/stage1` under the repo root when it has `bin/lean.js`, else exit 2 | The stage1 dir. Its `lib/lean` is mounted at `/lib/lean`. |
+| `--snap-dir <dir>` | `$QED64_SNAP_DIR` (tier 3), else (deprecated) `work/snapshot` under the repo root when it exists, else exit 2 | The directory holding `<name>.snap`. |
+| `--snapshots <a,b>` | `init`; `init,mathlib` with `--mathlib` or `--probe-file` | The files seeded into the env cache, in load order. `init` and the defaults are tier 1; any other list works and is tier 3. |
+| `--budget-ms <ms>` | `180000` | The run's budget; past it, a FAIL verdict. |
+| `--mathlib` | off | The built-in Mathlib probe instead of the Init one: PASS when progress drains with no error diagnostic. |
+| `--probe-file <file>` | none | Runs that document as the page does (act 1, no extra requests) and exits 0 whatever its errors are: the caller judges them. Refused with `--mathlib`, `--act2`, `--act4` and `--option-check`. |
+| `--dump-messages` | off | With `--probe-file`: one `{"caption":"",…}` line per final diagnostic. |
+| `--settle-ms <ms>` | `5000` | With `--probe-file`: how long progress must stay drained before the result. A number >= 0. |
+| `--lib <tree>` | `<artifact>/lib/lean` | Tier 3. The olean tree mounted at `/lib/lean`. |
+| `--act2` | off | Tier 3. After act 1, a header change and an in-process session replacement (Init only). |
+| `--act4` | off | Tier 3. A full-text header switch mid-elaboration. |
+| `--act4-ms <ms>` | `500` | Tier 3. How long after the first non-empty progress `--act4` switches. |
+| `--lean-option <name=value>` | none | Tier 3. An extra Lean option (repeatable), merged into the page's command line by name. |
+| `--option-check` | off | Tier 3. One Init document that passes only when `--lean-option autoImplicit=false` reached Lean. |
+
+- **Environment:** `QED64_LEAN_ARTIFACT` (the path rule). Tier 3: `QED64_SNAP_DIR`
+  and the experiment switches (`PROBE_HEADER`, `PROBE_MINIMAL`,
+  `SKIP_TASK_MANAGER`, `DUMP_MSGS`, `RAW_TAP`, `ACT4_MS`).
+- **Inputs:** the artifact (`bin/lean.js`, `bin/lean.wasm`, `lib/lean`), the
+  `.snap` files, `--probe-file`, and `public/workers/lean.worker.js` (its ring
+  size is checked at startup). Of the paths a caller names, only `bin/lean.js`
+  and `--probe-file` are checked before the run (the exits, below).
+- **Outputs:** stdout and stderr only. Its other log lines, such as
+  `resident: reached elaboration`, are tier 3.
+
+| Marker | Stream | Regex |
+|---|---|---|
+| message | stdout | `^\{"caption":"","severity":"[^"]+","pos":\{"line":\d+,"column":\d+\},"endPos":\{"line":\d+,"column":\d+\},"data":".*"\}$` |
+| compile | stdout | `^compile: tag=0 elapsed=(\d+)ms errors=(\d+)$` |
+| verdict | stdout | `^RESIDENT PROBE (PASS\|FAIL) (\{.*\})$` |
+| deprecated-default | stderr | `^(\S+): WARNING — the default --(\S+) (.+) \((.+)\) is deprecated; use --\S+ \S+ or set (\w+) \(docs\/CLI-CONTRACT\.md\)$` |
+| no-path | stderr | `^(\S+): no --(\S+) given and (\w+) is unset(; the deprecated default (.+) (has no \S+\|is absent))? — pass --\S+ \S+ or set \w+$` |
+
+| Exit | Meaning |
+|---|---|
+| 0 | `RESIDENT PROBE PASS`. Require that line as well as the exit, as the gate does: a `bin/lean.js` that never starts the runtime (an empty file) also exits 0, with no verdict line. |
+| 1 | `RESIDENT PROBE FAIL` (a missing `bin/lean.wasm`; a non-numeric `--budget-ms`, at once, `why` `budget exceeded`), or a crash of the probe itself: an unhandled throw with no verdict line, which a missing olean tree causes without naming the path. |
+| 2 | Refused before the run, with no verdict line: no `--artifact` or `--snap-dir` resolved, a missing `bin/lean.js` or `--probe-file`, a refused flag combination, a bad `--settle-ms` or a malformed `--lean-option`. |
+
+**A missing `.snap` is not refused.** A `<name>.snap` absent from `--snap-dir`,
+or a named `--snap-dir` that does not exist, gets one tier-3 log line
+(`WARNING: … missing`) and the run goes on. With `--probe-file`, a header that
+file would have covered comes back as an error diagnostic under exit 0 and a
+PASS verdict (`modules #[…] are not loaded in this session`), so a caller that
+needs the files checks for them first, as the gate does.
+
+**Side effects:** boots wasm. It writes no files.
+
+**Consumers:** the lean4-wasm64 gate; the compiler battery's `--transport
+fileworker`; the proof sheets' `browser-check.mjs`, if they adopt it as planned.
+Their call would also pass `--lib`, `--lean-option` and other `--snapshots`
+lists, which are tier 3 today.
+
 ### pack
 
 **Tier 2.** `node pipeline/artifacts/pack.mjs …` or `npm run pack -- …`
@@ -1217,6 +1296,8 @@ script by `tests/unit/cli-contract.test.ts`); each flag is in its SPEC.
 | the `baked` line, and exit 0 meaning "baked" (not yet a Lean verdict: the `notice` and `verdict` lines announce D6's exit 1 after one re-pin cycle) | bake-snapshot | the showcase's `scripts/judge-bake.mjs` J3; QED64's `adopt-release.sh` (`^baked`); the proof sheets' `website/build.sh` (`grep -E '^baked '` under pipefail, and `\|\| die` on the exit) |
 | `--snap --fresh-import --probe-file --probe --lib --artifact --budget-ms --via-mem --init-flags --workspace --dump-messages`, and `--watchdog-ms` | snapshot-probe | the showcase's `scripts/headless/exact-header.mjs`; lean4game `--verify-snapshots`; the compiler battery (the first eleven; none passes `--watchdog-ms` yet) |
 | `SNAPSHOT PROBE PASS` (exit 0), `SNAPSHOT PROBE FAIL: …`, `load:`, `compile:`, `[lean:stdout] …`, `ABORT: …` | snapshot-probe | `exact-header.mjs` (verdict, fail reason, load and compile times, the JSON messages, the abort); the compiler battery; lean4game |
+| `--artifact --snap-dir --budget-ms --mathlib --probe-file --dump-messages`, `--snapshots init`, and `--settle-ms` | resident-probe | the lean4-wasm64 gate (block 7; it passes no `--settle-ms`); the compiler battery's FileWorker lane |
+| the `{"caption":"",…}` and `compile: tag=0 …` lines, `RESIDENT PROBE PASS\|FAIL <json>` and its keys ("Tiers"), exits 0 / 1 / 2 as [its section](#resident-probe) words them (no refusal for a missing `.snap`) | resident-probe | the same |
 | `--target --quiet-ms --stable-ms --give-up-ms --`, and the runner arguments after `--` verbatim | supervised-run | the showcase's `scripts/headless/run-e2.sh`; `adopt-release.sh --rebuild-umbrella`; `runtime-smoke.test.ts` |
 | the last line `supervised-run: <why> (<n> s)` (`^supervised-run: `) and exits 0 / 1 / 2 | supervised-run | `run-e2.sh` (`grep -E '^supervised-run: ' … \| tail -1`); `runtime-smoke.test.ts` |
 | `--url --no-boot --boot-budget-ms --run-dir` | preflight | the showcase's `scripts/preflight-overlays.sh` and `tests/experiments/x1-preflight.mjs`; `resident-gate.sh` |
@@ -1335,6 +1416,7 @@ output, as QED64's own gate did.
 | 4 | 2026-11-02 | Recorded late (architecture review D1, 8e0f9a7), tier 3: **fileworker-exit-probe** drops `--scenario batch-eval-exit` (the page's only batch compile, the warm header, left the library); `exit`, `eval-exit` and `shutdown-exit` are unchanged. | tier 3, no promise |
 | 4 | 2026-11-02 | Recorded late (architecture review D2, 14562fa), tier 3: **release-manifest** `--dist` accepts `profiles/index.json` and `snapshots/index.json`, the two indexes the deploy carries, when each is byte-identical to the tracked `public/` file, and refuses one that is not ("the deploy would serve another pairing's index"); any other `runtime/`, `profiles/` or `snapshots/` path is still refused. | tier 3; a refusal added |
 | 4 | 2026-11-02 | Review fix (R16, lane L2), tier 3: the **compiler battery**'s `--messages-dir` files no longer carry snapshot-probe's failure tail (its last Lean lines again, indented and cut short), so two runs of one transport diff with no dedupe. | tier 3, no promise |
+| 4 | 2026-11-02 | Architecture review R4 item 4: **resident-probe's surface is tier 1 and the tool ships in the package** (SPECS, `files`, closure.json `pipeline`). The surface is the gate's (kernel R10, tier 2 until now), `--settle-ms` and, as for every tool under the path rule, `QED64_LEAN_ARTIFACT` and the rule's two stderr lines; `--lib`, `--act2`, `--act4`, `--act4-ms`, `--lean-option`, `--option-check`, `QED64_SNAP_DIR`, any other `--snapshots` list and the log lines stay tier 3, and `--help` labels the flags. No flag, line, verdict key or exit changed: `--help`/`-h` is the one addition, and the tool keeps its own parser ("How the tools bind"). The tool's section words exit 2 as what is really refused; "a missing file" overclaimed, because a missing `.snap` never was. The proof sheets' planned call would also pass `--lib`, `--lean-option` and other `--snapshots` lists, so it stays on tier-3 flags. The battery's R4 lane stays opt-in and tier 3; thread-storm-probe stays tier 3. | additive |
 
 ## Open decisions
 

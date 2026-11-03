@@ -71,9 +71,9 @@
 //                --act2, --act4 and --option-check (exit 2); --lean-option
 //                applies to it
 //
-// Tier 3, except the surface the lean4-wasm64 gate runs and parses (kernel R10, tier 2): its flags,
-// the --dump-messages and `compile:` lines, the verdict line's keys and the exits. Tell the kernel
-// session before changing any of it (docs/CLI-CONTRACT.md "Tiers"; tests/unit/tool-paths.test.ts).
+// Tier 1 (R4): the surface the lean4-wasm64 gate runs and parses (kernel R10) and --settle-ms: its flags,
+// the --dump-messages and `compile:` lines, the verdict line's keys and the exits. The rest is tier 3. Tell the
+// kernel session before changing any of the surface (docs/CLI-CONTRACT.md "Tiers"; tests/unit/tool-paths.test.ts).
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -83,6 +83,11 @@ import { fileURLToPath } from "node:url";
 import "../../public/workers/lsp-frames.js"; // publishes globalThis.Qed64LspFrames
 import "../../public/workers/worker-constants.js"; // globalThis.Qed64WorkerConstants: the page's argv and thread budget (R3)
 import { resolveToolPath } from "../toolchain/artifact-paths.mjs";
+import { parseCli } from "./cli.mjs";
+
+// --help/-h only, before any side effect. This tool keeps its own parser (arg, below): no --flag=value and no grammar
+// WARNINGs, so every other line and exit stays as it was (docs/CLI-CONTRACT.md "How the tools bind").
+parseCli("resident-probe", process.argv.slice(2), { out: (s) => console.log(s), err: () => {}, exit: (c) => process.exit(c) });
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const arg = (n, d) => { const i = process.argv.indexOf(`--${n}`); return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : d; };

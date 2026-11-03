@@ -44,6 +44,7 @@
     "pipeline/snapshot/bake-snapshot.mjs",
     "pipeline/snapshot/node-runner.mjs",
     "pipeline/snapshot/persistent-probe.mjs",
+    "pipeline/snapshot/resident-probe.mjs",
     "pipeline/snapshot/snapshot-probe.mjs",
     "pipeline/artifacts/olean-imports.mjs",
     "pipeline/artifacts/olean-imports.d.mts",

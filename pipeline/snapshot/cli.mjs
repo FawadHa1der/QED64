@@ -11,7 +11,8 @@
 //
 // Two ways a script binds to it (SPEC.binding):
 //   "import" — the script imports parseCli from this module (supervised-run,
-//              preflight, fetch-artifacts: they ship in the package beside this file);
+//              preflight, fetch-artifacts, and resident-probe for --help only: they
+//              ship in the package beside this file);
 //   "inline" — the script carries a generated prelude (renderPrelude) between
 //              `// <cli-contract>` and `// </cli-contract>`: the same
 //              cliContract source, the compact spec and the help text, so it
@@ -75,7 +76,7 @@ export const EXIT_CLASSES = {
 export const ENV = {
   QED64_LEAN_ARTIFACT: {
     doc: "stage1 artifact dir (bin/lean.js, bin/lean.wasm, lib/lean) used when --artifact is absent (empty = unset)",
-    readBy: ["bake-snapshot", "node-runner", "snapshot-probe", "persistent-probe"],
+    readBy: ["bake-snapshot", "node-runner", "snapshot-probe", "persistent-probe", "resident-probe"],
   },
   QED64_WORK: {
     doc: "the dir mounted at /work (bake-snapshot: where <name>.snap lands) used when --work is absent",
@@ -417,6 +418,51 @@ export const SPECS = {
     ],
   },
 
+  "resident-probe": {
+    script: "pipeline/snapshot/resident-probe.mjs",
+    npm: null,
+    tier: 1, // its surface: a flag whose doc starts "tier 3" and everything outside this SPEC carry no promise
+    binding: "import", // --help only: it keeps its own parser and prints no grammar WARNINGs (docs/CLI-CONTRACT.md "How the tools bind")
+    node: "node --stack-size=8192",
+    synopsis: "resident-probe.mjs [--artifact <stage1>] [--lib <tree>] [--budget-ms 180000] [--snap-dir <dir>] [--snapshots init,mathlib] [--mathlib] [--act2 | --act4 [--act4-ms 500]] [--lean-option <name=value> ...] [--option-check] [--probe-file <file> [--dump-messages] [--settle-ms 5000]]",
+    summary: "Drive the real resident FileWorker (--worker) under Node, on the page's command line and thread setup, through the stdin ring: one document (--probe-file), judged by the caller, or a built-in Init or Mathlib probe, judged here. Tier 1 is the flags not marked tier 3.",
+    flags: [
+      { name: "artifact", value: "<dir>", default: ARTIFACT_DEFAULT, doc: "stage1 dir holding bin/lean.js; its lib/lean is mounted at /lib/lean" },
+      { name: "snap-dir", value: "<dir>", default: viaEnv("QED64_SNAP_DIR (tier 3)", "work/snapshot under the repo root when it exists; nothing else: exit 2"), doc: "the directory holding <name>.snap" },
+      { name: "snapshots", value: "<a,b>", default: "init; init,mathlib with --mathlib or --probe-file", doc: "the <name>.snap files seeded into the env cache, in load order; init and the defaults are tier 1, any other list is tier 3" },
+      { name: "budget-ms", value: "<ms>", default: "180000", doc: "the run's budget; past it, a FAIL verdict" },
+      { name: "mathlib", doc: "the built-in Mathlib probe instead of the Init one: PASS when progress drains with no error diagnostic" },
+      { name: "probe-file", value: "<file>", doc: "run that document as the page does and exit 0 whatever its errors are (the caller judges them); refused with --mathlib, --act2, --act4 and --option-check" },
+      { name: "dump-messages", doc: "with --probe-file: one {\"caption\":\"\",…} JSON line per final diagnostic" },
+      { name: "settle-ms", value: "<ms>", default: "5000", doc: "with --probe-file: how long progress must stay drained before the result; a number >= 0" },
+      { name: "lib", value: "<tree>", default: "<artifact>/lib/lean", doc: "tier 3, no promise: the olean tree mounted at /lib/lean" },
+      { name: "act2", doc: "tier 3, no promise: after act 1, change the header and expect an in-process session replacement (Init only)" },
+      { name: "act4", doc: "tier 3, no promise: a full-text header switch mid-elaboration; PASS when progress drains with no abort" },
+      { name: "act4-ms", value: "<ms>", default: "500", doc: "tier 3, no promise: how long after the first non-empty progress --act4 switches" },
+      { name: "lean-option", value: "<name=value>", doc: "tier 3, no promise: an extra Lean option (repeatable), merged into the page's command line by name" },
+      { name: "option-check", doc: "tier 3, no promise: one Init document that passes only when --lean-option autoImplicit=false reached Lean" },
+    ],
+    env: ["QED64_LEAN_ARTIFACT"],
+    exits: {
+      0: "RESIDENT PROBE PASS. Require that line as well as the exit: a bin/lean.js that never starts the runtime (an empty file) also exits 0, with no verdict line",
+      1: "RESIDENT PROBE FAIL (a missing bin/lean.wasm; a non-numeric --budget-ms, at once), or a crash of the probe itself (an unhandled throw, with no verdict line, which a missing olean tree causes)",
+      2: "refused before the run, with no verdict line: no --artifact or --snap-dir resolved, a missing bin/lean.js or --probe-file, a refused flag combination, a bad --settle-ms or a malformed --lean-option. A missing .snap or --snap-dir is NOT refused: a tier-3 log line, the run goes on, and with --probe-file a header it would have covered comes back as an error diagnostic under exit 0",
+    },
+    markers: [
+      // This template only finds a comment in the script: the real line comes from a JSON.stringify with no format string.
+      // tests/unit/tool-paths.test.ts ("file mode") matches this regex against the real line.
+      { id: "message", stream: "stdout", template: ['{"caption":"",'], prefix: true,
+        regex: /^\{"caption":"","severity":"[^"]+","pos":\{"line":\d+,"column":\d+\},"endPos":\{"line":\d+,"column":\d+\},"data":".*"\}$/,
+        example: '{"caption":"","severity":"error","pos":{"line":4,"column":8},"endPos":{"line":4,"column":11},"data":"Type mismatch: rfl"}' },
+      { id: "compile", stream: "stdout", template: ["compile: tag=0 elapsed=${Date.now() - openedAt}ms errors=${errors}"],
+        regex: /^compile: tag=0 elapsed=(\d+)ms errors=(\d+)$/, example: "compile: tag=0 elapsed=71ms errors=1" },
+      { id: "verdict", stream: "stdout", template: ['RESIDENT PROBE ${ok ? "PASS" : "FAIL"} ${JSON.stringify(verdict)}'],
+        regex: /^RESIDENT PROBE (PASS|FAIL) (\{.*\})$/,
+        example: 'RESIDENT PROBE PASS {"ok":true,"why":"progress drained (file probe)","initializeResponse":false,"fileProgressEvents":3,"progressDrained":true,"diagnostics":1,"sawExpectedError":false,"errors":1,"evalInfo":false,"frames":11,"nonFrameStdoutBytes":0,"wallMs":1378,"argv":["--worker","-Dserver.reportDelayMs=0","-DElab.async=false"],"optionError":false}' },
+      ...pathMarkers("resident-probe", ARTIFACT_PATH),
+    ],
+  },
+
   preflight: {
     script: "pipeline/release/preflight.mjs",
     npm: null,
@@ -571,11 +617,11 @@ export const SPECS = {
   },
 };
 
-/** Tier 3 — diagnostic tools with no stability promise (no SPEC, no prelude). */
+/** Tier 3 — diagnostic tools with no stability promise (no SPEC, no prelude). resident-probe's
+ * flags marked tier 3 in its SPEC are the same (--act4 absorbed header-switch-probe.mjs, 2026-10). */
 export const DIAGNOSTIC = [
   "pipeline/snapshot/thread-storm-probe.mjs",
   "pipeline/snapshot/fileworker-exit-probe.mjs",
-  "pipeline/snapshot/resident-probe.mjs", // --snapshots/--mathlib/--act4 absorbed header-switch-probe.mjs (2026-10); the kernel gate's surface is tier 2 (R10, docs/CLI-CONTRACT.md "Tiers")
 ];
 
 /**

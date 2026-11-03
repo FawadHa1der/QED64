@@ -6,7 +6,8 @@
 //   * embedding/closure.json lists tracked files only, and each closure is
 //     self-contained: the embed TypeScript imports relative paths only, the
 //     pipeline relative paths and node: built-ins only, every import resolves
-//     inside its own list; lean.worker.js's importScripts targets and the
+//     inside its own list (resident-probe's two worker scripts ship in `workers`);
+//     lean.worker.js's importScripts targets and the
 //     workers the page spawns ship beside it, and WORKER_URLS is that list;
 //   * the edge-worker library (`qed64/edge`, closure.infra) imports nothing;
 //   * every Tier 1/2 pipeline tool (pipeline/snapshot/cli.mjs SPECS) ships;
@@ -144,6 +145,9 @@ describe("embedding/closure.json", () => {
     // The one bare specifier: preflight's boot smoke imports the CALLER's
     // playwright, dynamically and only when it runs (not with --no-boot).
     const OPTIONAL_PEERS: Record<string, string[]> = { "pipeline/release/preflight.mjs": ["playwright"] };
+    // The one pipeline tool that imports worker scripts: resident-probe runs the page's own decoder and constants.
+    const WORKER_IMPORTS: Record<string, string[]> = { "pipeline/snapshot/resident-probe.mjs": ["public/workers/lsp-frames.js", "public/workers/worker-constants.js"] };
+    for (const w of Object.values(WORKER_IMPORTS).flat()) expect(closure.workers.map((x) => x.path), w).toContain(w);
     for (const f of closure.pipeline.filter((p) => /\.m?js$/.test(p))) {
       const source = read(f);
       for (const peer of OPTIONAL_PEERS[f] ?? []) {
@@ -154,7 +158,7 @@ describe("embedding/closure.json", () => {
         if (s.startsWith("node:") || (OPTIONAL_PEERS[f] ?? []).includes(s)) continue;
         expect(s.startsWith("./") || s.startsWith("../"), `${f} imports ${s}`).toBe(true);
         const r = resolveRel(f, s);
-        expect(r !== null && listed.has(r), `${f}: ${s} → ${r}`).toBe(true);
+        expect(r !== null && (listed.has(r) || (WORKER_IMPORTS[f] ?? []).includes(r)), `${f}: ${s} → ${r}`).toBe(true);
       }
     }
   });
@@ -188,7 +192,7 @@ describe("embedding/closure.json", () => {
     const listed = new Set(closure.pipeline);
     const files = new Set(pkg.files as string[]);
     const tools = Object.entries(SPECS).filter(([, s]) => s.tier === 1 || s.tier === 2);
-    expect(tools.length).toBeGreaterThanOrEqual(9);
+    expect(tools.length).toBeGreaterThanOrEqual(10);
     for (const f of [...tools.map(([, s]) => s.script), "pipeline/snapshot/cli.mjs", "pipeline/snapshot/cli.d.mts", "pipeline/snapshot/supervised-run.mjs", "pipeline/snapshot/snapshot-probe.mjs"]) {
       expect(listed.has(f), `${f} is not in closure.pipeline`).toBe(true);
       expect(files.has(f), `${f} is not in package.json files`).toBe(true);
@@ -309,6 +313,12 @@ describe("npm pack", () => {
     for (const f of [...closureFiles(), "embedding/closure.json"]) {
       expect(packed.has(f), `${f} is in the closure but not packed`).toBe(true);
     }
+    // resident-probe (tier 1, R4) runs from the package: every file it imports, and the worker it reads by URL.
+    const probe = "pipeline/snapshot/resident-probe.mjs";
+    const reads = [...read(probe).matchAll(/new URL\("([^"]+)", import\.meta\.url\)/g)].map((m) => m[1]!);
+    const needs = [...specifiers(read(probe)).filter((s) => s.startsWith(".")), ...reads].map((s) => resolveRel(probe, s));
+    expect([...needs].sort()).toEqual(["pipeline/snapshot/cli.mjs", "pipeline/toolchain/artifact-paths.mjs", "public/workers/lean.worker.js", "public/workers/lsp-frames.js", "public/workers/worker-constants.js"]);
+    for (const f of [probe, ...needs]) expect(packed.has(f!), `${f} is not packed`).toBe(true);
     expect([...packed].filter((f) => f.startsWith("embedding/") && f !== "embedding/closure.json"), "only closure.json ships from embedding/ (base-tree.json and the umbrella olean stay in the repo)").toEqual([]);
   });
 });

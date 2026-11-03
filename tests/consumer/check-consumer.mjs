@@ -14,7 +14,7 @@
 //      globalThis.Qed64LspFrames, memory64-probe.js → globalThis.Qed64Memory64,
 //      worker-constants.js → globalThis.Qed64WorkerConstants) are loaded for
 //      real; every path closure.json lists is in the tarball;
-//      the shipped CLIs (preflight, olean-imports, fetch-artifacts, cli.mjs) run --help
+//      the shipped CLIs (preflight, olean-imports, fetch-artifacts, cli.mjs, resident-probe) run --help
 //      through the symlink and print their usage line, release-manifest --repo <this
 //      checkout> prints the repo's own manifest bytes, and fetch-artifacts
 //      without --manifests refuses (the package ships no tracked manifests);
@@ -200,12 +200,12 @@ if (JSON.stringify(loaded.workerConstants) !== JSON.stringify(wcWant)) fail(`qed
 ok(`loaded from the tarball: qed64/edge (${loaded.edge.length} exports, a worker answered 302 with COEP), olean-imports, artifact-paths (buildIdOfArtifact → ${loaded.buildId}), closure.json, lsp-frames.js (globalThis.Qed64LspFrames), memory64-probe.js (globalThis.Qed64Memory64, frozen, validates on this Node) and worker-constants.js (globalThis.Qed64WorkerConstants, frozen, the default argv), revision ${revision}`);
 // The shipped CLIs run through the symlink (Node loads the main module by its realpath while
 // argv[1] keeps the symlink path; a main guard that compares plain paths prints nothing, exit 0).
-for (const cli of ["pipeline/release/preflight.mjs", "pipeline/artifacts/olean-imports.mjs", "pipeline/release/fetch-artifacts.mjs", "pipeline/snapshot/cli.mjs"]) {
+for (const cli of ["pipeline/release/preflight.mjs", "pipeline/artifacts/olean-imports.mjs", "pipeline/release/fetch-artifacts.mjs", "pipeline/snapshot/cli.mjs", "pipeline/snapshot/resident-probe.mjs"]) {
   const via = `node_modules/qed64/${cli}`;
   const help = sh(process.execPath, [via, "--help"], { cwd: consumer });
   if (!help.startsWith(`usage: ${path.basename(cli)} `)) fail(`node ${via} --help (through the symlink) printed ${JSON.stringify(help.slice(0, 120))}, not its usage line`);
 }
-ok("the shipped CLIs run through the node_modules/qed64 symlink: preflight, olean-imports, fetch-artifacts, cli.mjs --help print their usage, exit 0");
+ok("the shipped CLIs run through the node_modules/qed64 symlink: preflight, olean-imports, fetch-artifacts, cli.mjs, resident-probe --help print their usage, exit 0");
 // release-manifest (plan B2c) ships too: the package holds no git objects, so it reads a QED64 clone named by --repo
 // (this checkout, read only) and must print the same qed64.release/v1 bytes as the repo's own copy.
 {

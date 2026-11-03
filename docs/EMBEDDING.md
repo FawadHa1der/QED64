@@ -2561,3 +2561,8 @@ terms. Its `liveness` member holds the mailbox internals; no fault injection
   headroom at a 3 s reload cadence on wasm64-36d7f415 (chrome-headless-shell;
   headed not measured); a heavy page reloaded mid-boot was not measured.
   No API change: `EMBED_API_REVISION` and the worker `REVISION` are unchanged.
+- **resident-probe ships (2026-11, architecture review R4 item 4):** no library
+  change. The package gains one tier-1 CLI, `pipeline/snapshot/resident-probe.mjs`
+  (in `files` and closure.json `pipeline`). Only its surface is tier 1
+  (docs/CLI-CONTRACT.md, "Tiers"). `EMBED_API_REVISION` and the worker `REVISION`
+  are unchanged.

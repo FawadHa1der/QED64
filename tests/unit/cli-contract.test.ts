@@ -78,6 +78,7 @@ const ARGS: Record<string, (d: string) => [string[], string[]]> = {
   "supervised-run": (d) => [["--target", path.join(d, "target.olean"), "--quiet-ms", "100", "--stable-ms", "100", "--give-up-ms", "1000"], ["--", "--artifact", missing, "--work", path.join(d, "work")]],
   "snapshot-probe": (d) => [["--snap", path.join(d, "work/init.snap"), "--probe", "#check 1", "--artifact", missing, "--lib", path.join(d, "lib"), "--budget-ms", "1000"], []],
   "persistent-probe": () => [["--artifact", missing], []],
+  "resident-probe": (d) => [["--artifact", missing, "--snap-dir", path.join(d, "work"), "--probe-file", path.join(d, "manifest.json"), "--dump-messages", "--settle-ms", "0", "--budget-ms", "1000"], []],
   preflight: (d) => [["--url", "http://127.0.0.1:9/", "--no-boot", "--run-dir", path.join(d, "run")], []],
   "fetch-artifacts": (d) => [["--out", path.join(d, "out"), "--manifests", d, "--origin", "http://127.0.0.1:9/", "--only", "runtime", "--with-manifests"], []],
   "olean-imports": (d) => [["--audit", path.join(d, "lib")], []],
@@ -404,6 +405,18 @@ describe("the real scripts", () => {
       });
     }
   }
+
+  test("resident-probe (R4): --help is all it takes from the grammar; the flags outside its tier-1 surface are labelled tier 3", () => {
+    const flags = SPECS["resident-probe"]!.flags;
+    expect(flags.filter((f) => f.doc.startsWith("tier 3, no promise: ")).map((f) => f.name).sort()).toEqual(["act2", "act4", "act4-ms", "lean-option", "lib", "option-check"]);
+    expect(flags.filter((f) => !f.doc.startsWith("tier 3")).map((f) => f.name).sort()).toEqual(["artifact", "budget-ms", "dump-messages", "mathlib", "probe-file", "settle-ms", "snap-dir", "snapshots"]);
+    // Silent as before: an unknown flag, a stray argument, and --flag=value, which its own parser does not read (the variable's path is used).
+    const d = sandbox("resident");
+    const before = tree(d);
+    const r = run(SPECS["resident-probe"]!.script, ["--bogus-flag", "stray", `--artifact=${path.join(d, "bin")}`], d);
+    expect([r.status, r.stdout, r.stderr]).toEqual([2, "", `error: ${path.join(missing, "bin/lean.js")} not found\n`]);
+    expect(tree(d)).toEqual(before);
+  });
 
   test("bake-snapshot: a typo'd flag is warned about, --artifact=<dir> is honoured, and a missing artifact refuses (exit 2) before the bake", () => {
     const d = sandbox("bake-typo");
