@@ -134,7 +134,7 @@ export const snapshotsForHeader = (headerText: string): string[] => (needsMathli
  * nondeterministic renderer crashes were observed; one large initial commit
  * sidesteps the repeated-grow path. Keyed on the snapshot list, not the
  * header: an explicit umbrella boot over an Init-only header (a restart that
- * names the umbrella) streams the same ~1.5 GB region. */
+ * names the umbrella) streams the same ~1.1 GB region. */
 export const initialBytesForSnapshots = (snapshots: readonly string[]): number => (snapshots.includes("mathlib") ? 2048 * MiB : 256 * MiB);
 /** The header form: what the editor's policy commits for a document it boots by its own snapshot choice. */
 export const initialBytesForHeader = (headerText: string): number => initialBytesForSnapshots(snapshotsForHeader(headerText));

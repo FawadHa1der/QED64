@@ -1,12 +1,13 @@
 #!/usr/bin/env node
-// Out-of-band release verification: recompute every digest the browser trusts.
+// Out-of-band release verification: recompute the served runtime's and
+// profiles' digests (the snapshots' are not checked here).
 //
-// The in-browser installer verifies transport parts (streaming) but cannot
-// stream-digest the multi-GB raw pack; this job closes that gap by inflating
-// each published profile and recomputing the raw pack digest, plus the
-// runtime chunk/whole digests (over the inflated parts for a v2 gzip
-// runtime), and checks that the profile index is paired with the served
-// runtime. Run before every deploy.
+// Before D1 the in-browser installer verified transport parts (streaming) but
+// could not stream-digest the multi-GB raw pack, and this job closed that gap.
+// It still inflates each published profile and recomputes its part and raw
+// pack digests, plus the runtime chunk/whole digests (over the inflated parts
+// for a v2 gzip runtime), and checks that the profile index is paired with
+// the served runtime. Run before every deploy.
 //
 // Usage: node pipeline/release/verify-release.mjs [--public <dir>]
 

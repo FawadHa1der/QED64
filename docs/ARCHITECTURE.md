@@ -5,7 +5,7 @@
 | Event | Measured |
 |---|---|
 | Runtime verify + instantiate + Lean init | ~8–10 s |
-| `init` snapshot (107 MB wire / 342 MB region) region-load at boot | **~0.7–0.8 s**; first Init-only check ~300 ms |
+| `init` snapshot (30 MiB wire / 111 MiB region: the served index, 2026-11-02, wasm64-36d7f415) region-load at boot | **~0.7–0.8 s**; first Init-only check ~300 ms; both times from 2026-08-24, on that day's bake of 107 MB wire / 342 MB region |
 | First check, Init only, without the snapshot | ~25–43 s |
 | `mathlib` umbrella snapshot (305 MiB wire / 1.04 GiB region: the served index, 2026-11-02, wasm64-36d7f415) — download + region walk + `[init]` replay | **~5–7 s** past the download (repeat visits: **~18 s click-to-✓ total** reading the OPFS-cached bytes, zero network); both times from 2026-08-24, on that day's bake of 806 MiB wire / 2.57 GiB region |
 | First Mathlib check after the umbrella load | **71 ms** (light `rw` buffer) – **1.6 s** (first use of linarith/norm_num/ring/positivity) |

@@ -24,7 +24,8 @@
 // the parts will be SERVED from: part URLs are served verbatim and
 // verify-release resolves them under public/, so a pack meant for
 // public/profiles/ needs `/profiles/` (the default, bare names, suits a pack
-// that is only unpacked locally — unpack.mjs goes by basename either way).
+// that is only unpacked locally — the fork's `lean4-wasm64 unpack` goes by
+// basename either way).
 //
 // One streaming pass: bytes go to the raw-pack hash, the .pack file and the
 // gzip stream as each file is read, and transport parts are cut as the gzip
