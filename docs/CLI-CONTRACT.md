@@ -1208,7 +1208,7 @@ usage: resident-probe.mjs [--artifact <stage1>] [--lib <tree>] [--budget-ms 1800
 | Exit | Meaning |
 |---|---|
 | 0 | `RESIDENT PROBE PASS`. Require that line as well as the exit, as the gate does: a `bin/lean.js` that never starts the runtime (an empty file) also exits 0, with no verdict line. |
-| 1 | `RESIDENT PROBE FAIL` (a missing `bin/lean.wasm`; a non-numeric `--budget-ms`, at once, `why` `budget exceeded`), or a crash of the probe itself: an unhandled throw with no verdict line. An absent `--lib` tree causes one, with nothing on stdout (Node's `UnhandledPromiseRejection`, naming no path). |
+| 1 | `RESIDENT PROBE FAIL` (a missing `bin/lean.wasm`; a non-numeric `--budget-ms`, at once, `why` `budget exceeded`), or a crash of the probe itself: an unhandled throw with no verdict line. An absent `--lib` tree causes one, with nothing on stdout (Node's `UnhandledPromiseRejection`, naming no path); turning that crash into a clean exit 2 refusal that names the path would not be a breaking change. |
 | 2 | Refused before the run, with no verdict line: no `--artifact` or `--snap-dir` resolved, a missing `bin/lean.js` or `--probe-file`, a refused flag combination, a bad `--settle-ms`, or a `--lean-option` that is malformed or names an option twice. |
 
 **A missing `.snap` is not refused.** A `<name>.snap` absent from `--snap-dir`,
