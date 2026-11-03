@@ -251,7 +251,13 @@ describe("the worker protocol ledger (docs/EMBEDDING.md §7.7)", () => {
   // hard-coded here, so a schema that joins it changes no test in this file.
   it("the runtime manifest schemas the worker reads: closure.json, the worker, the release generator, verify-release and fetch-artifacts agree; v1 stays readable; the pinned runtime is one of them", () => {
     expect(c.runtime.manifestSchemas).toContain("org.lean-browser64.runtime/v1");
-    expect(read("public/workers/lean.worker.js")).toContain(`const RUNTIME_MANIFEST_SCHEMAS = Object.freeze(${JSON.stringify(c.runtime.manifestSchemas).replace(/,/g, ", ")});`);
+    const worker = read("public/workers/lean.worker.js");
+    expect(worker).toContain(`const RUNTIME_MANIFEST_SCHEMAS = Object.freeze(${JSON.stringify(c.runtime.manifestSchemas).replace(/,/g, ", ")});`);
+    // runtimeFormatFault indexes the part-encodings table by schema: a schema with no row there would pass the list
+    // check above and then throw at boot. So the table's keys are closure.json's list too.
+    const partEncodings = /^const RUNTIME_PART_ENCODINGS = Object\.freeze\(\{\n([\s\S]*?)^\}\);$/m.exec(worker);
+    expect(partEncodings, "the worker's RUNTIME_PART_ENCODINGS table").not.toBeNull();
+    expect([...partEncodings![1]!.matchAll(/^\s*"([^"]+)":/gm)].map((m) => m[1]), "RUNTIME_PART_ENCODINGS keys").toEqual(c.runtime.manifestSchemas);
     expect([...RUNTIME_MANIFEST_SCHEMAS]).toEqual(c.runtime.manifestSchemas);
     expect(c.runtime.manifestSchemas).toContain(record.runtime.schema ?? "org.lean-browser64.runtime/v1");
     expect(c.runtime.manifestSchemas).toContain(JSON.parse(read("public/runtime/runtime-manifest.json")).schema);

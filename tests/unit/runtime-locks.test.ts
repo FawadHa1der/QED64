@@ -63,8 +63,11 @@ describe("the alive lock (the worker's half)", () => {
     const bare: string[] = [];
     vm.runInContext(L.pthreadPrelude("rt-2", "blob:http://x/glue"), vm.createContext({ navigator: {}, importScripts: (u: string) => bare.push(u) }));
     expect(bare).toEqual(["blob:http://x/glue"]);
-    // The real boot points the pool's Workers at the prelude, and no lane reads `qed64-alive:` any more.
-    expect(readFileSync(path.join(workers, "lean.worker.js"), "utf8")).toContain("mainScriptUrlOrBlob: pthreadUrl");
+    // The real boot wires the prelude in, both halves: pthreadUrl holds the prelude, and the pool's Workers start from
+    // pthreadUrl. No lane reads `qed64-alive:` any more.
+    const src = readFileSync(path.join(workers, "lean.worker.js"), "utf8");
+    expect(src).toContain("pthreadPrelude(instanceId, scriptUrl)");
+    expect(src).toContain("mainScriptUrlOrBlob: pthreadUrl");
   });
 
   // boot() up to its chunk fetch, which fails here (RUNTIME_FETCH_FAILED, before the allocation).

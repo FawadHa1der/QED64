@@ -2,18 +2,23 @@
 // "Path resolution", plan step A3) and the --stack-size re-exec ("Runtime"),
 // pinned without booting a runtime.
 //
-// Safety: no test here loads a real lean.js or any lean.wasm; the R10 block
-// runs resident-probe to completion against a fake Emscripten glue at
-// bin/lean.js. The tools run from a
-// SCRATCH CHECKOUT (the script and pipeline/toolchain/artifact-paths.mjs
-// copied into a temp dir, so "the repo root" and its deprecated defaults are
-// the test's), every environment variable of the rule is cleared, and each
-// case is chosen to stop at a cheap existence check: a missing lib tree, a
-// foreign index, a missing --snap, a bin/lean.js that is a directory. The one
-// bake that runs to completion runs a FAKE node-runner (a script that writes
-// the .snap and exits). Every child has a SIGKILL timeout: spawnSync's,
-// or (the one async spawn) a timer and a finally that kill it, and the scratch
-// tool's --hang mode exits by itself after 25 s whatever the test did.
+// Safety: no test here loads a real lean.js or any lean.wasm. The tools run
+// from a SCRATCH CHECKOUT (the script, the files it needs and
+// pipeline/toolchain/artifact-paths.mjs copied into a temp dir, so "the repo
+// root" and its deprecated defaults are the test's) with every environment
+// variable of the rule cleared. Most of the cases that run a tool stop at a
+// cheap check: a missing lib tree, a foreign index, a missing --snap, a
+// bin/lean.js that is a directory, a bad flag. The rest run on against a FAKE:
+// the bakes run a node-runner that writes the .snap and exits, the R10 block
+// runs the real resident-probe over a glue at bin/lean.js, the battery runs a
+// probe or a resident-probe that prints canned lines. The ensureStackSize
+// block runs a scratch tool of its own instead, once under the repo's
+// supervised-run.
+//
+// Every child that runs a tool has a SIGKILL timeout: spawnSync's, or (the two
+// async spawns) a timer and a finally that kill it, and the scratch tool's
+// --hang mode exits by itself after 25 s whatever the test did. Only a
+// `node -e` that prints its PID and a `git grep` have none.
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
