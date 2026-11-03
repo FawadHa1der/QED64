@@ -4,11 +4,19 @@ Everything the browser executes or mounts arrives through a digest chain:
 
 ```
 runtime-manifest.json ──sha256──► lean.js/lean.wasm chunks (1 + 7) ──whole-file sha256──► importScripts
+snapshot index        ──sha256──► <name>.<digest16>.snapz ──runtime field──► refused unless it names the served buildId
+```
+
+The library packs left that chain with D1 (2026-11): the browser installs no
+pack, and the stock page's import completion reads the two pack manifests only
+for their module names. The Node bakes still read the packs, and
+`npm run verify:release` audits them:
+
+```
 profile manifest      ──sha256──► gzip transport parts (8 + 61) ──gunzip──► raw pack
                                     │                                         │
-                                    └── byteLength + part digests             └── raw digest re-derived
-                                        verified in-browser                       by verify-release
-snapshot index        ──sha256──► <name>.<digest16>.snapz ──runtime field──► refused unless it names the served buildId
+                                    └── byteLength + part digests             └── raw length + digest
+                                        re-derived by verify-release              re-derived by verify-release
 ```
 
 ## Where the served pairing comes from
@@ -58,9 +66,12 @@ packs and snapshots.
   every snapshot's `runtime`, the base tree's packs and every
   toolchain-hosted file agree. Its `toolchain` section is this page's table
   as data.
-- `npm run verify:release` re-derives, from the bytes in `public/`, every
-  digest the browser will trust, including the multi-GB raw packs WebCrypto
-  cannot stream-compute.
+- `npm run verify:release` re-derives the served runtime's and profiles'
+  digests from the bytes in `public/`: runtime chunks and whole files; each
+  profile's parts and inflated raw pack (the largest is multi-GB); and the
+  profile index's pairing with that runtime. The snapshots' digests are not
+  checked here. The browser has installed no pack since D1, so the pack
+  digests audit the release, not anything the browser trusts.
 - `tests/unit/toolchain-pin.test.ts` (in `npm test`) pins the record to the
   tracked manifests: the record's digest, the runtime and snapshot buildIds,
   and every Worker-routed file byte for byte.
