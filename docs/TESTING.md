@@ -573,10 +573,11 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   never exits is stopped once its `.snap` is unchanged across two polls, a
   growing `.snap` is not complete, a failure line with no save in progress and
   `--quiet-ms` of quiet is exit 1, a save in progress is exempt, the
-  `--give-up-ms` deadline, and the refusals of the three timing flags; and
-  D6's notice: a failure line in a run whose `.snap` is complete prints the
-  `notice` WARNING and one `verdict` JSON line on stderr and still exits 0,
-  while another file's error or a probe.lean warning prints nothing).
+  `--give-up-ms` deadline, and the refusals of the three timing flags,
+  HARDENING #84; and D6's notice: a failure line in a run whose `.snap` is
+  complete prints the `notice` WARNING and one `verdict` JSON line on stderr
+  and still exits 0, while another file's error or a probe.lean warning prints
+  nothing).
   `tests/unit/cli-contract.test.ts` pins the bake's failure classifier against
   supervised-run's.
 - `infra/worker.js` serves `runtime-manifest*.json` and every `index.json`

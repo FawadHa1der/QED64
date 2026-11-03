@@ -581,7 +581,7 @@ The runner's output (node-runner and Lean) is interleaved on both streams.
    itself is judged as before (`runner-exit`, `runner-signal`, `no-snap`).
    Before contract 4 the bake waited for 300 s without output and 120 s of a
    stable size (about 4.5 min of every bake), and a probe whose header Lean
-   rejected waited forever.
+   rejected had no way to finish (HARDENING #84).
 7. Creates `<out>` (`mkdir -p`), unlinks `<work>/<name>.snap.deps`, writes
    `<name>.snapz.<pid>.tmp` and renames it to the final name. A failure is one
    line and exit 1; the temp is removed.
