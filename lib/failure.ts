@@ -18,7 +18,8 @@ export type BootStep = "check" | "download" | "inflate" | "commit" | "verify" | 
  * have it — 404/410, an HTML page where a binary or script belongs, a
  * snapshot the index does not list (a deploy problem: retrying cannot help);
  * corrupt: it arrived IN FULL but is wrong (length, SHA-256, gzip, magic, a
- * region the loader refuses); unpaired: a snapshot of another runtime build; oom: an
+ * runtime chunk with a Content-Encoding, a region the loader refuses);
+ * unpaired: a snapshot of another runtime build; oom: an
  * allocation or memory reservation failed; storage: OPFS/quota; stale: the
  * site was updated under this page (its worker scripts are of another
  * revision than each other: WORKER_DEP_MISMATCH; or a lazily imported chunk of
@@ -45,7 +46,8 @@ export interface FailureCause {
  * fallback a page uses against a worker that reports no `cause`, and the
  * classifier for page-side errors). Order matters: an allocation failure
  * inside a fetch path is OOM, and a chunk that arrived but fails its SHA-256
- * or length check is corrupt, though its code says RUNTIME_FETCH_FAILED. */
+ * or length check, or came with a Content-Encoding, is corrupt, though its code
+ * says RUNTIME_FETCH_FAILED. */
 export function failureKindOf(code: string | undefined, message: string): FailureKind {
   if (code === WORKER_DEP_MISMATCH || STALE_MESSAGE.test(message)) return "stale";
   if (code === "SNAPSHOT_UNPAIRED" || /was baked for runtime/.test(message)) return "unpaired";
@@ -64,7 +66,7 @@ export function failureKindOf(code: string | undefined, message: string): Failur
   // snapshot workers name it so (HARDENING #63). Before the corrupt rule, whose
   // "truncated" and "expected N bytes" would otherwise claim it.
   if (TRANSFER_ENDED_EARLY.test(message)) return "network";
-  if (/SHA-256 verification|sha256|digest mismatch|checksum|integrity|bad magic|magic|not a compacted-region|index declares|raw size mismatch|compressed data was not valid|Junk found|truncated|short (?:read|region)|unexpected end|incorrect header check|invalid (?:block|stored|distance|code|literal)|gzip|inflate|corrupt|expected \d+ bytes|bytes, expected|empty (?:body|snapshot source)/i.test(message)) return "corrupt";
+  if (/SHA-256 verification|sha256|digest mismatch|checksum|integrity|bad magic|magic|not a compacted-region|index declares|raw size mismatch|compressed data was not valid|Junk found|truncated|short (?:read|region)|unexpected end|incorrect header check|invalid (?:block|stored|distance|code|literal)|gzip|inflate|corrupt|expected \d+ bytes|bytes, expected|empty (?:body|snapshot source)|transformed by Content-Encoding/i.test(message)) return "corrupt";
   if (code === "RUNTIME_FETCH_FAILED" || /\bHTTP \d{3}\b|Failed to fetch|NetworkError|network error|fetch failed|net::ERR_|ERR_NETWORK|ERR_CONNECTION|connection (?:reset|closed|refused)|socket hang up|terminated|The operation was aborted|body stream/i.test(message)) return "network";
   if (/QuotaExceeded|quota|NoModificationAllowed|NotReadableError|getDirectory|createWritable|createSyncAccessHandle|OPFS/i.test(message)) return "storage";
   return "other";

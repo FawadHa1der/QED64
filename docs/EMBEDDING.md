@@ -924,7 +924,7 @@ interface FailureCause { kind: FailureKind; httpStatus?: number; stage?: BootSta
 |------|---------|------|
 | `network` | the fetch was rejected, the stream was cut, the body ended before the bytes it announced, or 5xx/429 (retrying can help) | `Failed to fetch`, `HTTP 503`, `the transfer of <file> ended early: received <n> of <expected> bytes` |
 | `missing` | the server does not have it: a deploy problem, so retrying cannot help | every 4xx except 408/425/429; an HTML answer where JSON or binary belongs (the workers and the index loader sniff it); `SNAPSHOT_NOT_IN_INDEX` |
-| `corrupt` | it arrived in full but is wrong | chunk length or SHA-256 mismatch; a gzip/DecompressionStream error of a body that arrived in full; "not a compacted-region file"; a size the index does not declare; "raw size mismatch"; `SNAPSHOT_LOAD_RESULT` (the Lean loader refused the region); `RUNTIME_MANIFEST_MISMATCH` (a runtime manifest whose `buildId` is not `wasm64-` + the first 16 hex digits of its own `files["lean.wasm"].sha256`: the runtime/v1 and v2 invariant (over the decoded `lean.wasm`) every reader may check; the page refuses it before fetching, the worker before booting; also a manifest whose `schema`, or a file's `encoding`, this worker does not read (`closure.json` `runtime.manifestSchemas`, §7.7), or a v2 manifest whose parts' `decodedBytes` break the format, refused before anything is fetched); a v2 runtime part that passed its SHA-256 but does not inflate, or inflates to another size than its `decodedBytes` (`RUNTIME_FETCH_FAILED`; not refetched: it was served as pinned) |
+| `corrupt` | it arrived in full but is wrong | chunk length or SHA-256 mismatch; a runtime chunk served with a `Content-Encoding` (`<label> chunk <n> was transformed by Content-Encoding: <enc>.`; `RUNTIME_FETCH_FAILED`); a gzip/DecompressionStream error of a body that arrived in full; "not a compacted-region file"; a size the index does not declare; "raw size mismatch"; `SNAPSHOT_LOAD_RESULT` (the Lean loader refused the region); `RUNTIME_MANIFEST_MISMATCH` (a runtime manifest whose `buildId` is not `wasm64-` + the first 16 hex digits of its own `files["lean.wasm"].sha256`: the runtime/v1 and v2 invariant (over the decoded `lean.wasm`) every reader may check; the page refuses it before fetching, the worker before booting; also a manifest whose `schema`, or a file's `encoding`, this worker does not read (`closure.json` `runtime.manifestSchemas`, §7.7), or a v2 manifest whose parts' `decodedBytes` break the format, refused before anything is fetched); a v2 runtime part that passed its SHA-256 but does not inflate, or inflates to another size than its `decodedBytes` (`RUNTIME_FETCH_FAILED`; not refetched: it was served as pinned) |
 | `unpaired` | a snapshot baked by another runtime build | `SNAPSHOT_UNPAIRED` |
 | `oom` | an allocation or reservation failed | `MEMORY_FAILED`, `could not allocate`, `Cannot enlarge memory` |
 | `storage` | OPFS or quota | `QuotaExceededError` |
@@ -2566,3 +2566,14 @@ terms. Its `liveness` member holds the mailbox internals; no fault injection
   (in `files` and closure.json `pipeline`). Only its surface is tier 1
   (docs/CLI-CONTRACT.md, "Tiers"). `EMBED_API_REVISION` and the worker `REVISION`
   are unchanged.
+- **A runtime chunk served with a `Content-Encoding` is `corrupt` (2026-11-02,
+  lean4game's report):** the worker refuses such a chunk, on both attempts, with
+  `<label> chunk <n> was transformed by Content-Encoding: <enc>.` under
+  `RUNTIME_FETCH_FAILED`. `failureKindOf` read that as `network`, unless `<enc>`
+  was `gzip`, whose name already matched the corrupt rule. So lean4game showed
+  "The download was interrupted — waiting for the connection" with the link up,
+  and the relay's reboots first downloaded any pre-open snapshot the cache lacked
+  (HARDENING #63). It is now `corrupt`, for every encoding (§7.2); there is no new
+  kind, and the worker is untouched. The stock page's words do not change: it
+  shows the message for both kinds. No API change: `EMBED_API_REVISION` and the
+  worker `REVISION` are unchanged.

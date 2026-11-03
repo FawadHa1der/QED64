@@ -29,6 +29,11 @@ describe("failureKindOf: the worker's real messages", () => {
     ["SNAPSHOT_NOT_IN_INDEX", "snapshot 'x' is not in the snapshot index", "missing"],
     ["RUNTIME_FETCH_FAILED", "lean.wasm chunk 3 failed SHA-256 verification.", "corrupt"],
     ["RUNTIME_FETCH_FAILED", "lean.wasm chunk 3: 1048576 bytes, expected 4194304.", "corrupt"],
+    // A chunk that arrived whole but transformed (lean4game's report: Cypress's proxy, br) is not the link's, whatever the
+    // encoding is called: "gzip" alone used to match, by its name, and every other encoding read as network.
+    ["RUNTIME_FETCH_FAILED", "lean.js chunk 0 was transformed by Content-Encoding: br.", "corrupt"],
+    ["RUNTIME_FETCH_FAILED", "lean.wasm chunk 3 was transformed by Content-Encoding: deflate.", "corrupt"],
+    ["RUNTIME_FETCH_FAILED", "lean.wasm chunk 3 was transformed by Content-Encoding: gzip.", "corrupt"],
     [undefined, "incorrect header check", "corrupt"],
     // A body that arrived in full and fails the decoder (Chromium's DecompressionStream words) is corrupt; one that
     // ENDED before the bytes it announced is the transfer, whatever the decoder said (HARDENING #63).

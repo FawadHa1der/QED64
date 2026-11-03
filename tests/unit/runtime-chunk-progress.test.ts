@@ -21,7 +21,7 @@ type Chunk = { url: string; bytes: number; sha256: string; decodedBytes?: number
 type FetchChunk = (chunk: Chunk, index: number, label: string, requestId: string, running: { loaded: number; total: number }, encoding?: "identity" | "gzip") => Promise<Uint8Array>;
 
 /** The worker in a sandbox whose fetch serves `parts` one read at a time, each read advancing the clock by `msPerPart`. */
-function loadWorker(parts: Uint8Array[], msPerPart: number) {
+function loadWorker(parts: Uint8Array[], msPerPart: number, headers: Record<string, string> = {}) {
   const posted: Posted[] = [];
   let clock = 0;
   const fetches: string[] = [];
@@ -41,7 +41,7 @@ function loadWorker(parts: Uint8Array[], msPerPart: number) {
         },
       }, { highWaterMark: 0 });
       const arrayBuffer = async () => { clock += msPerPart * parts.length; return Buffer.concat(parts).buffer; };
-      return { ok: true, status: 200, headers: new Headers(), body, arrayBuffer };
+      return { ok: true, status: 200, headers: new Headers(headers), body, arrayBuffer };
     },
   };
   sandbox.self = sandbox;
@@ -101,6 +101,16 @@ describe("runtime chunk download progress", () => {
     await expect(long.fetchChunk({ ...chunk, bytes: (1 << 16) - 1 }, 3, "lean.wasm", "r4", { loaded: 0, total: 1 << 16 })).rejects.toThrow(/lean\.wasm chunk 3: more than 65535 bytes/);
     const short = loadWorker(parts, 10);
     await expect(short.fetchChunk({ ...chunk, bytes: (1 << 16) + 1 }, 4, "lean.wasm", "r5", { loaded: 0, total: 1 << 16 })).rejects.toThrow(/lean\.wasm chunk 4: 65536 bytes, expected 65537/);
+  });
+
+  it("a chunk served with a Content-Encoding is refused on both attempts, and the refusal's words read corrupt", async () => {
+    const { parts, chunk } = chunkOf(1 << 16, 4);
+    const w = loadWorker(parts, 10, { "Content-Encoding": "br" });
+    // The sandbox's Error is another realm's: read the message, not the prototype.
+    const message = await w.fetchChunk(chunk, 0, "lean.js", "r6", { loaded: 0, total: 1 << 16 }).then(() => "resolved", (e: { message: string }) => e.message);
+    expect(message).toBe("lean.js chunk 0 was transformed by Content-Encoding: br.");
+    expect(w.fetches.map((f) => f.split(" ")[1])).toEqual(["force-cache", "reload"]);
+    expect(failureKindOf("RUNTIME_FETCH_FAILED", message)).toBe("corrupt");
   });
 });
 
