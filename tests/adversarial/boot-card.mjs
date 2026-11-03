@@ -64,10 +64,26 @@ function startProxy(upstream, mbps, rttMs) {
   const link = { freeAt: 0, down: 0, up: 0, connections: 0 };
   const HIGH = 2 * 1024 * 1024; // per-connection queue before backpressure
   const pipe = (src, dst, shaped) => {
+    // One FIFO per pipe, drained by one timer: a timer per slice can invert two close
+    // expiries, and a slice written out of order fails the worker's SHA-256 check, so the
+    // part is fetched again and the link's byte count reads one part high.
+    const fifo = [];
+    let timer = null;
     let queued = 0;
-    let pending = 0;
     let ended = false;
-    const finish = () => { if (ended && pending === 0 && !dst.destroyed) dst.end(); };
+    const finish = () => { if (ended && fifo.length === 0 && !dst.destroyed) dst.end(); };
+    const arm = () => { timer ??= setTimeout(drain, Math.max(0, fifo[0].at - Date.now())); };
+    const drain = () => {
+      timer = null;
+      do {
+        const { part } = fifo.shift();
+        if (!dst.destroyed) dst.write(part);
+        queued -= part.length;
+      } while (fifo.length > 0 && fifo[0].at <= Date.now());
+      if (queued <= HIGH / 2 && src.isPaused()) src.resume();
+      if (fifo.length > 0) arm();
+      finish();
+    };
     src.on("data", (chunk) => {
       for (let o = 0; o < chunk.length; o += 65536) {
         const part = chunk.subarray(o, Math.min(chunk.length, o + 65536));
@@ -79,20 +95,14 @@ function startProxy(upstream, mbps, rttMs) {
           link.down += part.length;
         } else link.up += part.length;
         queued += part.length;
-        pending += 1;
+        fifo.push({ part, at });
+        arm();
         if (queued > HIGH) src.pause();
-        setTimeout(() => {
-          if (!dst.destroyed) dst.write(part);
-          queued -= part.length;
-          pending -= 1;
-          if (queued <= HIGH / 2 && src.isPaused()) src.resume();
-          finish();
-        }, Math.max(0, at - now));
       }
     });
     src.on("end", () => { ended = true; finish(); });
     src.on("error", () => dst.destroy());
-    src.on("close", () => { if (pending === 0) dst.destroy(); });
+    src.on("close", () => { if (fifo.length === 0) dst.destroy(); });
   };
   const server = net.createServer((client) => {
     link.connections += 1;
