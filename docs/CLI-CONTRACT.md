@@ -79,9 +79,9 @@ resident-probe, was folded into it on 2026-10-05 as `--snapshots <a,b>`,
 `--lean-option` and any `--snapshots` list). The lean4-wasm64 gate (block 7, in
 the fork's tools from the v4.36 cut on) runs `resident-probe.mjs` from QED64's
 checkout when an adoption passes it in (`--resident-probe`) and parses what
-it prints. The proof sheets plan to adopt it: `website/build.sh`'s browser
-check passes `--lib`, `--snapshots init,<entry>` and its options through
-`--opt`, which map to `--lean-option`. They have not adopted it yet. A change
+it prints. The proof sheets adopted it on 2026-11-03 (their b13d886):
+`website/build.sh`'s browser check passes `--lib`, `--snapshots init,<entry>`
+and its options through `--opt`, which map to `--lean-option`. A change
 to any of the following is told to the kernel session before it lands:
 
 - the flags `--artifact <dir>`, `--snap-dir <dir>`, `--budget-ms <ms>`,
@@ -107,7 +107,7 @@ to any of the following is told to the kernel session before it lands:
   frames on the runtime's stdout: the gate requires `nonFrameStdoutBytes` 0.
 
 `--lib <tree>`, `--lean-option <name=value>` (repeatable) and any `--snapshots`
-list are tier 1 for the proof sheets' planned call; the gate passes none of them
+list are tier 1 for the proof sheets' call (adopted 2026-11-03); the gate passes none of them
 (of the lists, only `init`). [The tool's section](#resident-probe) words what each
 really does, including what it does not refuse: an absent `--lib` tree is an
 exit-1 crash with no verdict line.
@@ -1232,15 +1232,15 @@ needs the files checks for them first, as the gate does.
 **Side effects:** boots wasm. It writes no files.
 
 **Consumers:** the lean4-wasm64 gate; the compiler battery's `--transport
-fileworker`; planned, not adopted yet, the proof sheets' `website/build.sh`,
-whose `browser-check.mjs` call would become `--artifact`, `--lib`, `--snap-dir`,
-`--snapshots init,<entry>`, `--probe-file` (its `--sheet`), `--dump-messages`
-and one `--lean-option` per `--opt`. Two of their settings need more than that
-call: the argv keeps the page's `-DElab.async=false` unless they pass
-`--lean-option Elab.async=true` (their site removes the flag, which leaves
-Lean's default, on), and their 900 s budget needs `--budget-ms` (the default
-is 180 s). The probe refuses neither an absent tree nor a missing `.snap`, so
-those checks stay theirs.
+fileworker`; the proof sheets' `website/build.sh` (adopted in their b13d886,
+pushed on `website-v4.35` at b9c90df, 2026-11-03). Its `browser-check.mjs`
+passes `--artifact`, `--lib`, `--snap-dir`, `--snapshots init,<entry>`,
+`--probe-file` (its `--sheet`), `--dump-messages`, `--settle-ms 5000`,
+`--budget-ms` (900 s by default; the probe's default is 180 s) and one
+`--lean-option` per `--opt`. Their options include `Elab.async=true`, because
+the argv otherwise keeps the page's `-DElab.async=false` and their site
+removes the flag (Lean's default, on). The probe refuses neither an absent
+tree nor a missing `.snap`, so those checks stay theirs.
 
 ### pack
 
@@ -1326,7 +1326,7 @@ script by `tests/unit/cli-contract.test.ts`); each flag is in its SPEC.
 | the `baked` line, and exit 0 meaning "baked" (not yet a Lean verdict: the `notice` and `verdict` lines announce D6's exit 1 after one re-pin cycle) | bake-snapshot | the showcase's `scripts/judge-bake.mjs` J3; QED64's `adopt-release.sh` (`^baked`); the proof sheets' `website/build.sh` (`grep -E '^baked '` under pipefail, and `\|\| die` on the exit) |
 | `--snap --fresh-import --probe-file --probe --lib --artifact --budget-ms --via-mem --init-flags --workspace --dump-messages`, and `--watchdog-ms` | snapshot-probe | the showcase's `scripts/headless/exact-header.mjs`; lean4game `--verify-snapshots`; the compiler battery (the first eleven; none passes `--watchdog-ms` yet) |
 | `SNAPSHOT PROBE PASS` (exit 0), `SNAPSHOT PROBE FAIL: …`, `load:`, `compile:`, `[lean:stdout] …`, `ABORT: …` | snapshot-probe | `exact-header.mjs` (verdict, fail reason, load and compile times, the JSON messages, the abort); the compiler battery; lean4game |
-| `--artifact --lib --snap-dir --budget-ms --mathlib --probe-file --dump-messages --settle-ms`, `--lean-option` (repeatable), and `--snapshots` with any list | resident-probe | the lean4-wasm64 gate (block 7; of these it passes no `--lib`, `--lean-option` or `--settle-ms`, and `--snapshots init` only); the compiler battery's FileWorker lane (`--snapshots init,<name>`, no `--lean-option`); planned, not adopted yet, the proof sheets' `website/build.sh` (`--artifact --lib --snap-dir --probe-file --dump-messages`, `--snapshots init,<entry>`, its options as `--lean-option`, and `--budget-ms` to keep its budget) |
+| `--artifact --lib --snap-dir --budget-ms --mathlib --probe-file --dump-messages --settle-ms`, `--lean-option` (repeatable), and `--snapshots` with any list | resident-probe | the lean4-wasm64 gate (block 7; of these it passes no `--lib`, `--lean-option` or `--settle-ms`, and `--snapshots init` only); the compiler battery's FileWorker lane (`--snapshots init,<name>`, no `--lean-option`); the proof sheets' `website/build.sh` through `browser-check.mjs` (`--artifact --lib --snap-dir --probe-file --dump-messages --settle-ms --budget-ms`, `--snapshots init,<entry>`, and its options as `--lean-option`; adopted in their b13d886, 2026-11-03) |
 | the `{"caption":"",…}` and `compile: tag=0 …` lines, `RESIDENT PROBE PASS\|FAIL <json>` and its keys ("Tiers"), exits 0 / 1 / 2 as [its section](#resident-probe) words them (no refusal for a missing `.snap`) | resident-probe | the same |
 | `--target --quiet-ms --stable-ms --give-up-ms --`, and the runner arguments after `--` verbatim | supervised-run | the showcase's `scripts/headless/run-e2.sh`; `adopt-release.sh --rebuild-umbrella`; `runtime-smoke.test.ts` |
 | the last line `supervised-run: <why> (<n> s)` (`^supervised-run: `) and exits 0 / 1 / 2 | supervised-run | `run-e2.sh` (`grep -E '^supervised-run: ' … \| tail -1`); `runtime-smoke.test.ts` |
