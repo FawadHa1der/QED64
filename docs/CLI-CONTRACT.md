@@ -311,6 +311,12 @@ levels above the script): bake-snapshot's `--work` and `--out`. The
 deprecated defaults live under the repo root too.
 In an installed package "the repo root" is the package root inside
 `node_modules`, which is why the defaults go.
+So from an installed package a relative `--work` or `--out` lands inside
+the package, not under the caller's cwd (`--out out` writes
+`node_modules/qed64/out`), while `QED64_WORK`, `QED64_STAGING` and every
+other relative path flag resolve against the cwd. Pass absolute paths
+there (for example `--out "$PWD/out"`); the behaviour stays, because
+changing it is breaking (open decision 6).
 
 The next cycle removes step 3: a tool with neither the flag nor the variable
 then always takes step 4. Every consumer already passes its paths
