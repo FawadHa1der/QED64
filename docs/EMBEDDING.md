@@ -1519,13 +1519,20 @@ relay.restart(opts: RestartOptions): void;  // a deliberate replacement, not a d
   disposing a session and before booting the replacement, on every
   `restart()`, death reboot and `rearm()` (never on the first boot, and a
   page reload is no reboot). The stock page passes 1.5 s; lean4game passes
-  its own 1.5 s; the proof sheets pass 2 s. The value also decides what
-  compiled code the new runtime starts with (HARDENING #71, 2026-11-05):
+  its own 1.5 s; the proof sheets pass 2 s. On a `restart()` of a runtime
+  that is still alive, the value also decides what compiled code the new
+  runtime starts with (HARDENING #71, 2026-11-05):
   - **Under about 2 s** the new runtime compiles while the old one's Workers
     are still open (they close about 2 s after an idle or busy restart, about
     4.3 s after a frozen one), and V8 hands it the old runtime's already
     optimized module. Its first check then reads like a re-check: a deep
     proof that passed before the restart passes after it.
+  - **A death reboot inherits nothing, at any settle.** The dead runtime's
+    Workers are gone before the settle starts, so the replacement compiles
+    fresh and reads like a fresh page load. lean4game measured it after
+    out-of-memory deaths at its 1.5 s settle (4 of 4 cold). A `rearm()`
+    after a stack pause (§7.2) was not measured; it comes after the death and
+    an edit, so it most likely reads cold too.
   - **At 2 s or more** under `Elab.async=true`, idle and busy restarts start
     from a fresh compile and read exactly like a fresh page load: a proof
     near the stack limit that passed before can fail on the first check
@@ -1835,9 +1842,11 @@ reads them there, because `docs/history/` is not in the package's `files`.
 - **What the relay's `settle` decides (2026-11-06):** §7.9 now documents the
   `settle` argument. Besides giving the old heap time to go, it decides whether
   a restarted runtime inherits the old one's optimized wasm code, and so how a
-  proof near the stack limit reads on the first check after a restart: under
-  about 2 s it inherits; at 2 s or more under `Elab.async=true` every restart
-  reads like a fresh load (HARDENING #71, 2026-11-05). The stock page keeps
+  proof near the stack limit reads on the first check after a restart: on a
+  `restart()` of a live runtime, under about 2 s it inherits; at 2 s or more
+  under `Elab.async=true` every restart reads like a fresh load. A death reboot
+  never inherits, because the old Workers are already gone (lean4game measured
+  this after out-of-memory deaths; HARDENING #71, 2026-11-05). The stock page keeps
   1.5 s (the user's decision, 2026-11-06); the value stays each embedder's
   choice. Docs only: `EMBED_API_REVISION` and the worker `REVISION` are
   unchanged.
