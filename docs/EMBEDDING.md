@@ -1515,6 +1515,38 @@ relay.restart(opts: RestartOptions): void;  // a deliberate replacement, not a d
   relay for good. Nothing reboots the killed session (a disposed session
   reports no death), so discard the relay afterwards and build a new one to
   check again.
+- **`settle`** is the one wait the relay makes: it awaits it after
+  disposing a session and before booting the replacement, on every
+  `restart()`, death reboot and `rearm()` (never on the first boot, and a
+  page reload is no reboot). The stock page passes 1.5 s; lean4game passes
+  its own 1.5 s; the proof sheets pass 2 s. The value also decides what
+  compiled code the new runtime starts with (HARDENING #71, 2026-11-05):
+  - **Under about 2 s** the new runtime compiles while the old one's Workers
+    are still open (they close about 2 s after an idle or busy restart, about
+    4.3 s after a frozen one), and V8 hands it the old runtime's already
+    optimized module. Its first check then reads like a re-check: a deep
+    proof that passed before the restart passes after it.
+  - **At 2 s or more** under `Elab.async=true`, idle and busy restarts start
+    from a fresh compile and read exactly like a fresh page load: a proof
+    near the stack limit that passed before can fail on the first check
+    after the restart, the same way every time, until the next edit.
+  - **At 2 s or more** under `Elab.async=false` (the stock page's setting),
+    the first check after a restart reads warm in some restarts and cold in
+    others (13 of 30 warm at 2 s), so it is neither deeper nor more
+    reproducible.
+
+  | first check after a restart reads warm | 1.5 s | 2 s |
+  |---|---|---|
+  | `Elab.async=false` (stock page, showcase) | 20 of 20 | 13 of 30 |
+  | `Elab.async=true` (proof sheets, lean4game's `Runner`) | 18 of 18 | 0 of 18 |
+
+  Every miss is the stack guard's own error, never a wrong pass. Choose 2 s
+  or more under `Elab.async=true` when the same result on every restart
+  matters more than depth; keep 1.5 s for the deepest restarts. A settle
+  far below 1.5 s is not measured: the wait also gives the old runtime's
+  heap time to go (HARDENING #55). The measurements and their scope (one
+  host, headless Chromium 151, an Init-only `decide` ladder) are in
+  HARDENING #71's note of 2026-11-05.
 - The relay's other fields (`state`, `session`, `lastDeath`, `doc`,
   `pending`, `stats`, `fromClient`, `toClient`, …) are internal and may
   change in any commit; read `status()` instead.
@@ -1799,4 +1831,13 @@ reads them there, because `docs/history/` is not in the package's `files`.
   (§7.2). Under `/assets/` both stay `stale`. Off `/assets/`, an uncoded
   `deathCause` still reads `other` for both: that path takes only `oom` from the
   table. No API change: `EMBED_API_REVISION` and the worker `REVISION` are
+  unchanged.
+- **What the relay's `settle` decides (2026-11-06):** §7.9 now documents the
+  `settle` argument. Besides giving the old heap time to go, it decides whether
+  a restarted runtime inherits the old one's optimized wasm code, and so how a
+  proof near the stack limit reads on the first check after a restart: under
+  about 2 s it inherits; at 2 s or more under `Elab.async=true` every restart
+  reads like a fresh load (HARDENING #71, 2026-11-05). The stock page keeps
+  1.5 s (the user's decision, 2026-11-06); the value stays each embedder's
+  choice. Docs only: `EMBED_API_REVISION` and the worker `REVISION` are
   unchanged.
