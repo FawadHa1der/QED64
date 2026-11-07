@@ -19,7 +19,7 @@ if (skip) console.warn("page-look.test.ts: frontend/node_modules absent — skip
 
 describe("frontend/index.html", () => {
   it("keeps every id the lanes, the showcase and embedders read", () => {
-    for (const id of ["bar", "buildinfo", "examples", "pageactions", "sharebtn", "pill", "ptext", "ptime", "repolinks", "split",
+    for (const id of ["bar", "buildinfo", "examples", "pageactions", "sharebtn", "pill", "ptext", "ptime", "mathlibnote", "repolinks", "split",
       "editor", "infoview", "boot", "bootcard", "bootnote", "bootbar", "bootfill", "bootstat", "bootlabel", "bootnums",
       "bootstages", "bootshow", "bootreload", "pstatus"]) {
       expect(html, id).toContain(`id="${id}"`);

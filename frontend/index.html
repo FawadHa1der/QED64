@@ -44,6 +44,10 @@
     @keyframes pulse { 50% { opacity: .3; } }
     #pill #ptext { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     #pill #ptime { color: #9aa0b8; flex: none; }
+    /* The curated-Mathlib note beside the pill (main.ts, mathlib-coverage.ts; UX M1.5): shown on the plain page while
+       an unknown name stands under `import Mathlib`. No display here, so the hidden attribute works. */
+    #mathlibnote { flex: none; white-space: nowrap; font-size: 12px; color: #e2a63d; text-decoration: none; }
+    #mathlibnote:hover { text-decoration: underline; }
     /* #pstatus: the pill's screen-reader echo (main.ts announce, UX A1.3). Clipped to nothing; never display:none,
        which would silence it. Absolute, so it takes no room in the bar or the page's height. */
     #pstatus { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
@@ -182,6 +186,7 @@
       <button id="sharebtn" type="button" title="Copy a link to this code">Copy link</button>
     </span>
     <div id="pill" class="busy"><span class="dot"></span><span id="ptext">booting…</span><span id="ptime"></span></div>
+    <a id="mathlibnote" href="https://github.com/FawadHa1der/QED64#which-mathlib" target="_blank" rel="noopener noreferrer" hidden>not all of Mathlib is here</a>
     <span id="repolinks">
       <a href="https://github.com/FawadHa1der/QED64" target="_blank" rel="noopener noreferrer" title="QED64's source on GitHub">QED64 on GitHub</a>
       <a href="https://github.com/FawadHa1der/lean4/tree/qed64-wasm64" target="_blank" rel="noopener noreferrer" title="The Lean 4 fork with the wasm64 runtime (branch qed64-wasm64)">Lean wasm64 fork</a>

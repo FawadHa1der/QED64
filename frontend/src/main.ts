@@ -21,6 +21,7 @@ import { createCheckFallback } from "./check-fallback";
 import { STAGES, createBootChecklist } from "./boot-checklist";
 import { CAPABILITY_BOOT_NOTICE, NETWORK_HALT_LABEL, STALE_NOTICE, bootFailLabel, createStaleWatch, isNetworkCause } from "./stale-notice";
 import { installShareButton } from "./file-io";
+import { MATHLIB_GAPS, coverageHint } from "./mathlib-coverage";
 
 // The embedder-facing surface (docs/EMBEDDING.md §2), published synchronously
 // at module start — before any of the page's own listeners matter — so an
@@ -433,6 +434,13 @@ if (!EMBED) {
   // editor is mounted there is no text, and the button says "nothing to share".
   installShareButton(document.getElementById("sharebtn") as HTMLButtonElement, () => pageApi.api.getDocument()?.text ?? "");
   pageActions.hidden = false;
+  // The curated-Mathlib note beside the pill (mathlib-coverage.ts; UX M1.5, HARDENING #89): while Lean reports an
+  // unknown name under `import Mathlib` or `import Mathlib.Tactic`, the name may be from an area the umbrella leaves
+  // out. Each Lean publish is the whole current set, so the note follows the document; the relay's own notes (origin
+  // "qed64") leave it as it is. The pill itself stays render(status): lanes read its `ready`.
+  const coverNote = document.getElementById("mathlibnote")!;
+  coverNote.title = `import Mathlib here is a curated part of Mathlib: ${MATHLIB_GAPS}. An "Unknown identifier" for a name from those areas means it is not served here.`;
+  pageApi.api.on("diagnostics", (d) => { if (d.origin === "lean") coverNote.hidden = !coverageHint(docText(), d.diagnostics); });
 }
 
 async function main() {

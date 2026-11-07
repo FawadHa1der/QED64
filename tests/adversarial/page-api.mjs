@@ -10,7 +10,8 @@
 //   embed-code     ?embed=1#code=<doc> in a same-origin frame (the dev/prod
 //                  server's /embed-host.html): boots with exactly that document,
 //                  `qed64:api` fired before boot, the plain page's own controls
-//                  (the examples menu, the bar's #pageactions) are not rendered,
+//                  (the examples menu, the bar's #pageactions, the
+//                  curated-Mathlib note #mathlibnote) are not rendered,
 //                  localStorage["qed64.buffer"] is neither read (a seeded
 //                  sentinel does not appear) nor written (an edit leaves the
 //                  sentinel), settled() resolves ready, an Init-only document
@@ -52,7 +53,7 @@ const INIT_DOC = "theorem two : 1 + 1 = 2 := rfl\n";
 const BROKEN = "theorem two : 1 + 1 = 3 := rfl\n";
 const SENTINEL = "-- sentinel: embed mode must not read or write this\n";
 /** The plain page's own controls (docs/EMBEDDING.md §3): in the markup, never rendered under ?embed=1. */
-const PAGE_ONLY_IDS = ["examples", "pageactions"];
+const PAGE_ONLY_IDS = ["examples", "pageactions", "mathlibnote"];
 const withQuery = (q, hash = "") => { const u = new URL(url); for (const [k, v] of Object.entries(q)) u.searchParams.set(k, v); u.hash = hash; return u.toString(); };
 
 const results = [];

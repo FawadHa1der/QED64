@@ -36,6 +36,21 @@ Live: **https://qed64.fawadworkaddress.workers.dev/**
   (16 GB with `--fat-tree`), the floor `pipeline/release/adopt-release.sh`
   checks.
 
+## Which Mathlib
+
+The page serves a curated part of Mathlib v4.35.0: 2,432 of its 8,624
+modules, chosen for download size and memory (with Lean, Std, Batteries,
+Aesop and the other dependencies they make the 4,438 modules above).
+`import Mathlib` and `import Mathlib.Tactic` load exactly that part, so a
+name from an area it leaves out is "Unknown identifier" here although
+native Lean knows it. It has none of CategoryTheory, Probability,
+FieldTheory, AlgebraicGeometry, AlgebraicTopology, ModelTheory or
+RepresentationTheory, and almost none of MeasureTheory, NumberTheory or
+Combinatorics. A module outside the part, imported by name, is refused with
+a note on the import line. While such an error stands under
+`import Mathlib`, the page shows "not all of Mathlib is here" beside the
+status pill; its version tooltip names the Mathlib commit.
+
 ## Use QED64
 
 There are three ways, from least to most code. The contract for all three is
