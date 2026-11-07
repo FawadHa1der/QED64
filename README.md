@@ -90,6 +90,9 @@ and `/snapshots/` beside it. Then frame `/?embed=1`:
 - **Files.** On the plain page, Open… (Ctrl/Cmd+O) opens a `.lean` file of
   up to 2 MiB as one undoable edit, and Download (Ctrl/Cmd+S) saves the
   editor's text as a `.lean` file.
+- **Editor.** Shift+F12 lists a name's uses in the file, and F2 renames
+  them once the status reads ready. Lean answers both only for a whole
+  project, so the page computes them for its one document.
 - **URL parameters** ([docs/EMBEDDING.md](docs/EMBEDDING.md) §3–§4):
   `#code=<text>` and `#codez=<LZ-string>` (lean4web's spellings: a boot
   document only in a same-origin frame; on the plain page the fragment is a
@@ -315,7 +318,7 @@ its prerequisites and its pass line):
 | Path | What lives there |
 |---|---|
 | `lib/` | the library, `qed64/embed` (`index.ts` is the barrel): worker client, snapshot index, boot, session adapter, LSP relay, edit coalescer, causes, parameters |
-| `frontend/` | the page (its own `package.json`): lean4monaco over the in-browser LSP, the page API, import completion |
+| `frontend/` | the page (its own `package.json`): lean4monaco over the in-browser LSP, the page API, import completion, single-document references and rename |
 | `public/workers/` | the six worker scripts (`lean.worker.js` runs the runtime; the LSP front door, framer, Memory64 probe, worker constants, snapshot prefetch) |
 | `public/{runtime,profiles,snapshots}/` | the served artifacts: manifests tracked, bytes fetched (`npm run fetch:artifacts`), never committed |
 | `infra/` | `edge-worker.js` (`qed64/edge`) and `worker.js`, the live site's Worker |

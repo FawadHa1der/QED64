@@ -272,7 +272,9 @@ queued) → open → dead`:
 
 - `initialize` is answered at once from the transcribed watchdog capability
   table (with `change: 1`, and without the providers only the watchdog
-  answers (references, call hierarchy, rename, workspace symbols) and without
+  answers (references, call hierarchy, rename, workspace symbols; the page
+  answers references and rename for its one document from documentHighlight,
+  `frontend/src/editor/single-doc-refs.ts`, HARDENING #90) and without
   signatureHelp, color and the `experimental` block;
   `tests/unit/server-capabilities.test.ts` compares it with a transcription of
   the pinned tag's `mkLeanServerCapabilities` and names each difference) and
