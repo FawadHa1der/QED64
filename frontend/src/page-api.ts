@@ -566,8 +566,10 @@ const MAX_FRAGMENT_CHARS = 2 * 1048576;
 /** The document a URL fragment carries (docs/EMBEDDING.md §3.1), at most 2 MiB
  * of text: `#code=<encodeURIComponent(text)>` (lean4web's plain spelling) or
  * `#codez=<LZ-string>` (lean4web's default: `compressToBase64(text)` with the
- * `=` padding stripped; padding is tolerated, and the URI-safe alphabet is
- * recognised by its `-` or `$`). `code` outranks `codez` when both are present.
+ * `=` padding stripped; padding is tolerated; the value is percent-decoded
+ * first, since live.lean-lang.org's address bar writes `%2B` and `%2F` and a
+ * raw value has no `%`; the URI-safe alphabet is recognised by its `-` or `$`).
+ * `code` outranks `codez` when both are present.
  * A `codez` that does not decode, decodes to nothing, or decodes to more than
  * the cap is null, as a malformed or oversize `code` is. */
 export function codeFromHash(hash: string): string | null {
@@ -579,7 +581,10 @@ export function codeFromHash(hash: string): string | null {
       return text.length <= MAX_FRAGMENT_CHARS ? text : null;
     } catch { return null; }
   }
-  const packed = /^#(?:.*&)?codez=([^&]*)/.exec(hash)?.[1]?.replace(/=+$/, "");
+  const value = /^#(?:.*&)?codez=([^&]*)/.exec(hash)?.[1];
+  if (!value) return null;
+  let packed: string;
+  try { packed = decodeURIComponent(value).replace(/=+$/, ""); } catch { return null; } // a malformed escape
   if (!packed) return null;
   const text = /[-$]/.test(packed) ? decompressFromEncodedURIComponent(packed, MAX_FRAGMENT_CHARS) : decompressFromBase64(packed, MAX_FRAGMENT_CHARS);
   return text || null;

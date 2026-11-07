@@ -311,7 +311,9 @@ The first match in this list wins:
 2. `#code=<encodeURIComponent(text)>` or `#codez=<LZ-string>` in the fragment
    (lean4web's two spellings; `codez` is its default writer,
    `compressToBase64(text)` with the `=` padding stripped, padding tolerated,
-   the URI-safe alphabet recognised by a `-` or `$`; `code` outranks `codez`;
+   percent-encoded or raw (live.lean-lang.org's address bar writes `%2B` and
+   `%2F`; the Zulip bot writes raw), the URI-safe alphabet recognised by a
+   `-` or `$`; `code` outranks `codez`;
    at most 2 MiB of text), **only when the page is framed by a same-origin
    parent**.
    - A boot document is code. Lean source can define a widget module whose
@@ -364,7 +366,7 @@ runtime (one QED64 per page), navigate the frame away first, e.g. to
 |-----------|---------|-----------|
 | `embed=1` | §3 | exactly `1` |
 | `#code=` | §3.1 | URI-decoded, ≤ 2 MiB |
-| `#codez=` | §3.1 | LZ-string base64 (lean4web's writer; `=` padding optional; the URI-safe alphabet by its `-`/`$`), ≤ 2 MiB decoded; `#code=` outranks it |
+| `#codez=` | §3.1 | LZ-string base64 (lean4web's writer; `=` padding optional; percent-decoded first; the URI-safe alphabet by its `-`/`$`), ≤ 2 MiB decoded; `#code=` outranks it |
 | `snapshots=<dir>` | boot from a snapshot set served at `/<dir>/index.json` on **this origin** | `^(?:snapshots/)?[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`, resolving on this origin |
 | `profiles=<dir>` | accepted and validated, then ignored (D1: no library pack is read) | `^(?:profiles/)?…` (same rule) |
 | `runtime=<buildId>` | an unpromoted runtime | `^wasm64-[0-9a-f]{16}$` |

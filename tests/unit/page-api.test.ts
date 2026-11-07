@@ -29,6 +29,13 @@ const VECTOR = {
   text: "import Mathlib\n\nexample (x : ℝ) (h : 0 < x) : 0 < x ^ 2 + x := by positivity\n-- ∀ α, α = α\n",
   codez: "JYWwDg9gTgLgBAWQIYwBYBtgCMBQOCmAHkuOvnABSFwBccguIQCUlqtcADHADxyHN2ce1AHpwATHADUvWgF44WAJ5xIAZ2AxgANw2KcAWn1xAAERxAjcAAac3HlmcQA",
 };
+/** A link copied from live.lean-lang.org's address bar (2026-11-06, the UX parity study, assess-files/log-l4w.jsonl):
+ * its writer percent-encodes the value (`fixedEncodeURIComponent`), so the base64 `+` arrives as `%2B`. Before
+ * HARDENING #77's third follow-up the page read it as nothing. */
+const LEAN4WEB = {
+  text: "import Mathlib\n\n-- shared from QED64\ntheorem foo (a b : Nat) (h : a ≤ b) : a < b + 1 := by\n  omega\n\nexample (x y : ℝ) (h : x < y) : x / 2 < y / 2 := by linarith\n",
+  codez: "JYWwDg9gTgLgBAWQIYwBYBtgCMBQOC0%2BcAzqklAKYAmcAZlBCHAIoCiAIgGwAsOaF0Ck1oQIcABRI4WOAC44AORQBKCajlwpgEyJpq%2BVIA80uAGo4ARjkBeaQE8ccOIwoBzJHgoAPJOHQUJnnC2GoC4hKri6vKBRrZ6cIEA9HAATHAxcEmpsjZYwZgAduTAaDhAA",
+};
 
 const CAPS: Capabilities = {
   editorRpc: true, documents: true, events: true, restart: true, embedMode: true, snapshotRoots: false, postMessage: false,
@@ -227,6 +234,22 @@ describe("the boot document", () => {
     expect(uri).toMatch(/-/); // this text's stream carries a 63, `/` in base64
     expect(codeFromHash(`#codez=${uri}`)).toBe(text);
     expect(codeFromHash(`#codez=${compressToBase64(text).replace(/=*$/, "")}`)).toBe(text);
+  });
+  it("#codez= percent-encoded as live.lean-lang.org's address bar writes it (%2B, %2F, padding as %3D) decodes; a raw value is unchanged; a malformed escape is null", () => {
+    const text = "example (p q : Prop) (hp : p) (hq : q) : p ∧ q := ⟨hp, hq⟩\n";
+    const raw = compressToBase64(text).replace(/=*$/, "");
+    expect(raw).toMatch(/\+/);
+    expect(raw).toMatch(/\//);
+    const encoded = encodeURIComponent(raw); // lean4web's fixedEncodeURIComponent: base64 has no `!'()*`
+    expect(encoded).toBe("KYDwhgtgDgNsAEAKK8CO8Bc8AKAnA9lAJRIAWKWxZ6WqJl8g5ERqYC88gF%2BTkA08pqgS%2FIAUEA");
+    expect(codeFromHash(`#codez=${encoded}`)).toBe(text);
+    expect(codeFromHash(`#project=mathlib-stable&codez=${encoded}`)).toBe(text);
+    expect(codeFromHash(`#codez=${encodeURIComponent(compressToBase64(text))}`)).toBe(text); // padding as %3D
+    expect(codeFromHash(`#codez=${raw}`)).toBe(text); // the bot's and Copy link's raw spelling, unchanged
+    expect(codeFromHash(`#codez=${encodeURIComponent(compressToEncodedURIComponent(text))}`)).toBe(text); // URI-safe: still known by its `-`
+    expect(codeFromHash("#codez=%E0%A4%A")).toBeNull();
+    expect(codeFromHash("#codez=%3D%3D")).toBeNull(); // only padding: no document
+    expect(codeFromHash(`#codez=${LEAN4WEB.codez}`)).toBe(LEAN4WEB.text); // measured on live.lean-lang.org
   });
   it("an undecodable, empty or oversize #codez= is null; #code= outranks #codez=", () => {
     expect(codeFromHash("#codez=N4Ig")).toBeNull(); // a stream that ends early
