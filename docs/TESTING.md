@@ -32,7 +32,7 @@ paired build outputs of "Environment" below.
 
 | Lane | Command | What it proves | Needs | Lock | Pass line (exit 0) |
 |---|---|---|---|---|---|
-| Unit (G0) | `npm test` | diagnostic parsing, the LSP front door and the framer (the real worker source in a VM); the relay against a fake session; artifact discipline; the CLI contract and the path rule; the edge worker; the package contract; the adversarial harness's pure helpers; the page's element ids, no `color-scheme`, and the editor font and theme names main.ts copies from the installed lean4monaco (`page-look.test.ts`); the page's file keys and refusals (`file-io.test.ts`) and its curated-Mathlib words against the umbrella manifest and README (`mathlib-coverage.test.ts`); the docs' links (`docs-links.test.ts`: every relative Markdown link in README.md and docs/, and every `docs/…` path cited in the code) | nothing (`frontend/node_modules` for its `typecheck:site` pretest) | no | vitest `Test Files … passed` |
+| Unit (G0) | `npm test` | diagnostic parsing, the LSP front door and the framer (the real worker source in a VM); the relay against a fake session; artifact discipline; the CLI contract and the path rule; the edge worker; the package contract; the adversarial harness's pure helpers; the page's element ids, no `color-scheme`, and the editor font and theme names main.ts copies from the installed lean4monaco (`page-look.test.ts`); the page's file keys and refusals (`file-io.test.ts`), the splitter's share (`splitter.test.ts`) and its curated-Mathlib words against the umbrella manifest and README (`mathlib-coverage.test.ts`); the docs' links (`docs-links.test.ts`: every relative Markdown link in README.md and docs/, and every `docs/…` path cited in the code) | nothing (`frontend/node_modules` for its `typecheck:site` pretest) | no | vitest `Test Files … passed` |
 | Integration | `npm run test:integration` | the real wasm64 runtime under Node: prelude parse, Init import + `numBits=64` + kernel-checked `rfl`, positioned errors and run verdicts (through `supervised-run`), `sorry`, the persistent path (init sequence, resident recheck, error-count return, survival after failure), the FileWorker exit hook; Lean options reach the FileWorker (`lean-options.test.ts`: resident-probe `--option-check` with and without `--lean-option autoImplicit=false`, on the page's argv and thread setup) | `QED64_LEAN_ARTIFACT`, `QED64_INIT_SNAP` (`lean-options.test.ts` runs resident-probe on that file's directory unless `QED64_SNAP_DIR` names one; it skips, naming the variable, without them) | no (one heavy wasm Node at a time) | vitest `passed`, nothing skipped |
 | Slow tier | `QED64_SLOW=1 npm run test:integration` | the 2,308-module `import Lean` closure; a snapshot bake produces a valid compacted region | as Integration | no | as Integration |
 | Snapshot probe | `node pipeline/snapshot/snapshot-probe.mjs --via-mem --artifact <dir> --lib <tree> --snap <file> --probe-file <lean>` | a baked snapshot loads through `lean_wasm_load_snapshot_mem` (the browser worker's path) and the follow-up compile is an env-cache hit within a budget | a stage1 dir, a raw `.snap` and its tree | no | `SNAPSHOT PROBE PASS` |
@@ -46,9 +46,9 @@ paired build outputs of "Environment" below.
 | Editing latency | `node tests/adversarial/editing-latency.mjs --url <dev url> [--rounds 3]` | header-switch, admit, body-edit, completion and error-clear times, read from `qed64.status()` facts only | dev | lock | `SUMMARY {…}` (3 = no header fact) |
 | Crash gauntlet | `node tests/adversarial/crash-gauntlet.mjs <url> [minutes] [mixed\|imports]` | sustained example switches, garbage bursts and header flips: the page survives and the breaker does not halt | dev | lock | the step log, exit 0 (1 = page crash, 2 = halted) |
 | Liveness faults | `node tests/adversarial/liveness-faults.mjs --url <dev url> [--only <scenario>]` | HARDENING #52's mailbox, kick, liveness probe and exit hook, each by fault injection into the live worker: mailbox-mode, idle-no-probes, long-silent-command, lost-wakeups-healed, wedge-recovery, exit-detected; and #78's early-death-detected (a fresh session's Worker terminated at its first ready, before any heartbeat, is declared dead by the watchdog the arm starts) | dev | lock | `liveness-faults: 7/7 pass` |
-| Page API | `node tests/adversarial/page-api.mjs --url <dev url> [--only <scenario>]` | `qed64.api` as an embedder uses it (docs/EMBEDDING.md §2–§4): code-top-level, embed-code (with the plain page's own UI silent or not rendered in the frame: the examples menu, `#pageactions`, `#mathlibnote`, `#pstatus`, and the boot card's `#bootshow` never shown during the boot; no `#fileinput`, and Ctrl+S left to the browser), embed-setdoc, memory (`status().memory` is numbers once settled, read on a later turn; HARDENING #76), events, restart, bad-param | dev or served build (both answer `/embed-host.html`) | lock | `page-api: 7/7 pass` |
-| InfoView actions | `node tests/adversarial/infoview-actions.mjs --url <url> [--only <scenario>] [--browser chromium\|firefox]` | the InfoView's editor RPC on the real page (HARDENING #56): capability-flag, try-this-apply, conv-generate, foreign-show, restart-file (the InfoView's Restart File restarts the session); focus-return (HARDENING #85: after a click in the InfoView the keys reach the editor; it proves the fix only with `--browser firefox --only focus-return`, and Chromium is its control) | dev or served build | lock | `infoview-actions: 6/6 pass` (Firefox `--only focus-return`: `1/1`) |
-| Page UX | `node tests/adversarial/page-ux.mjs --url <url> [--only <scenario>] [--browser chromium\|firefox] [--run-dir <dir>]` | the plain page's own UX (the UX parity batch of 2026-11-06), each scenario on its own page with an Init-only document: a11y-status (the pill's screen-reader echo `#pstatus`; its embed half is page-api's embed-code), share-link (Copy link, HARDENING #77), example-undo and buffer-flush (HARDENING #86), look and layout (HARDENING #87), show-editor and content-halt (HARDENING #88), file-actions (HARDENING #89) | dev or served build | lock | `page-ux: 9/9 pass` |
+| Page API | `node tests/adversarial/page-api.mjs --url <dev url> [--only <scenario>]` | `qed64.api` as an embedder uses it (docs/EMBEDDING.md §2–§4): code-top-level, embed-code (with the plain page's own UI silent or not rendered in the frame: the examples menu, `#pageactions`, `#mathlibnote`, `#splitter`, `#pstatus`, and the boot card's `#bootshow` never shown during the boot; no `#fileinput`, and Ctrl+S left to the browser), embed-setdoc, memory (`status().memory` is numbers once settled, read on a later turn; HARDENING #76), events, restart, bad-param | dev or served build (both answer `/embed-host.html`) | lock | `page-api: 7/7 pass` |
+| InfoView actions | `node tests/adversarial/infoview-actions.mjs --url <url> [--only <scenario>] [--browser chromium\|firefox]` | the InfoView's editor RPC on the real page (HARDENING #56): capability-flag, try-this-apply, conv-generate, foreign-show, restart-file (the InfoView's Restart File restarts the session), copy-to-comment (the page's "Lean 4: Copy Goal to Comment" action, UX I3.4); focus-return (HARDENING #85: after a click in the InfoView the keys reach the editor; it proves the fix only with `--browser firefox --only focus-return`, and Chromium is its control) | dev or served build | lock | `infoview-actions: 7/7 pass` (Firefox `--only focus-return`: `1/1`) |
+| Page UX | `node tests/adversarial/page-ux.mjs --url <url> [--only <scenario>] [--browser chromium\|firefox] [--run-dir <dir>]` | the plain page's own UX (the UX parity batch of 2026-11-06), each scenario on its own page with an Init-only document: a11y-status (the pill's screen-reader echo `#pstatus`; its embed half is page-api's embed-code), share-link (Copy link, HARDENING #77), example-undo and buffer-flush (HARDENING #86), look and layout (HARDENING #87; look also the InfoView frame's name, UX A1.4), show-editor and content-halt (HARDENING #88), file-actions (HARDENING #89), splitter-drag (HARDENING #87's splitter paragraph) | dev or served build | lock | `page-ux: 10/10 pass` |
 | Reload storm | `node tests/adversarial/reload-storm.mjs --url <url> [--runs 5] [--embed] [--ballast-mb N] [--headed] [--boot-budget-ms 600000] [--hold-ms 0]` | five reloads 3 s apart per run, a fresh browser per run, `ready` again after them; a crash is classified by the V8 OOM line (HARDENING #53, #55); `--embed` reloads a same-origin host page around the frame; `--ballast-mb N` (with `--embed`) makes that host hold N MiB of live JS objects in the renderer's shared pointer cage, a heavy embedding page (#55 residual: 800 MiB crashed 8/8 and 0 MiB 0/8 on 3ab1c6a9, every dose up to 2400 MiB 0/4 on 36d7f415); each run also counts the `.snapz` requests after the first ready and the `[boot] raw cache busy` lines | dev or served build (stock and `--embed`) | lock | `RELOAD-STORM <tag>: 0/N crashed …` (1 = a crash, 2 = an unknown flag or a bad `--boot-budget-ms`/`--hold-ms`, 3 = nothing booted) |
 | Edit storm | `node tests/adversarial/edit-storm.mjs --url <served url> [--reps 2] [--scenarios …] [--run-dir <dir>] [--tag <label>]` | an edit per keystroke over work that ignores cancellation: no crash, death or reboot, ready at the last version, the pool within tolerance (HARDENING #59; `?edithold=0` is the control arm); the opt-in `pagelong` is `pageslow` with a 133-character example, about 20 s of typing (R16 #59: growth must not trend with typing length); `--tag` names `edit-storm-<tag>.json`, its samples and its log, so interleaved arms share one `--run-dir` | served build | lock | `edit-storm: N/N pass` (1 = a run failed, 2 = a bad `--tag`, 3 = infrastructure) |
 | Boot card | `node tests/adversarial/boot-card.mjs --url <served url> [--scenario slow-link\|check-fallback\|all]` | a cold first visit over a shaped link: the boot card shows progress the whole way, and the check fallback appears while an Init-only buffer elaborates (HARDENING #54) | served build | lock | `boot-card: N/N passed` |
@@ -409,7 +409,14 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   `omega` example; a click on the InfoView's own Restart File button must
   reboot the session with reason `user`, settle `ready` on a new session,
   print a new `#eval` value and show the goal again, the detail saying whether
-  that took a cursor move; before the fix it re-checked nothing). The scenario
+  that took a cursor move; before the fix it re-checked nothing),
+  `copy-to-comment` (init only, UX I3.4, HARDENING #56's I3.4 note: the
+  page's editor action "Lean 4: Copy Goal to Comment" is registered and among
+  the editor's supported actions, which the F1 palette lists; run through
+  `getAction().run()` with the cursor on `omega`, the InfoView's
+  `insertText("above")` lands the goal as a `/- … -/` block above it,
+  indented like it, which checks to ready with no error, and one Ctrl/Cmd+Z
+  restores the text). The scenario
   selection, the in-browser probes and the verdicts are pinned by
   tests/unit/infoview-actions.test.ts.
 - **Page UX** (`page-ux.mjs --url <url> [--only <scenario>] [--browser
@@ -450,7 +457,8 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   reads at 4.5:1 on it; the page declares no `color-scheme`; `emulateMedia`
   to light follows in the same session; after an edit, Fold All hides lines
   and no `textDocument/foldingRange` reaches the relay (counted with
-  `qed64.test.lsp.on("in")`, which must see the edit's `didChange`).
+  `qed64.test.lsp.on("in")`, which must see the edit's `didChange`); the
+  InfoView's iframe has `aria-label` "Lean InfoView" (UX A1.4).
   `layout` (UX L1.4, L1.6, L1.7; Chromium, Firefox once per change): one boot
   resized to 1400, 768, 721 and 375 px wide, the bar with its buttons shown
   (Open…, Download, Copy link; the title gives way first): no
@@ -458,7 +466,8 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   bottom, Monaco fills its pane; side by side down to 721 px, at 375 the
   InfoView below the editor with the goal shown; the pill given the longest
   label (the refused-import one, through `qed64.ui.idle`) never widens the
-  bar and its tooltip holds the whole label.
+  bar and its tooltip holds the whole label; the splitter sits between the
+  panes side by side and is not displayed when stacked.
   `show-editor` (UX P1.1, P1.15, HARDENING #88; Chromium and Firefox): a
   restored `#eval IO.sleep 60000` keeps Lean busy behind the card; once the
   editor exists the card offers "Show the editor while Lean loads" with the
@@ -486,7 +495,19 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   half (no `#fileinput`, Ctrl+S left alone) is page-api's `embed-code`. The
   curated-Mathlib note (`#mathlibnote`) and the version tooltip have no
   scenario (a Mathlib boot for one line of wiring); `coverageHint` is
-  unit-tested. Verdicts
+  unit-tested.
+  `splitter-drag` (UX L1.2, HARDENING #87's splitter paragraph; Chromium and
+  Firefox): the editor starts at 55 % of the row; a drag with the real mouse
+  goes to 30 % (the InfoView iframe then has `pointer-events: none`) and, in
+  one jump over the iframe, to 80 %; Monaco and the iframe follow their
+  panes, the goal still shows, and after the release the iframe takes the
+  pointer again; a drag past the left edge stops at 15 %; the share is
+  `--split` on `#split`, never an inline `flex`; the drags leave the editor's
+  selection alone. Its embed half (no splitter under `?embed=1`) is
+  page-api's `embed-code`. lean4web's InfoView defaults (UX S1.7: the
+  expected type collapsed, later goals smaller, tooltips on click) have no
+  scenario (InfoView DOM internals); they were checked once by a probe.
+  Verdicts
   are inline check maps; the selection (an `--only` that selects nothing
   exits 3) is pinned by tests/unit/page-ux.test.ts, and each change runs its
   new scenarios once against the build before it, which must fail them. The
@@ -498,7 +519,7 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   never the internal taps. `embed-code` (`?embed=1#code=`: that document,
   booted light, `qed64:api` before boot, the plain page's own controls
   (`PAGE_ONLY_IDS`: the examples menu, `#pageactions`, the curated-Mathlib
-  note `#mathlibnote`) present but not rendered, the file actions not
+  note `#mathlibnote`, the splitter `#splitter`) present but not rendered, the file actions not
   installed (no `#fileinput`, and a synthetic Ctrl+S keydown is not
   `defaultPrevented`: UX F1.5, F1.3), the boot card's `#bootshow` in the markup and never unhidden
   during the boot (watched from the end of parsing: the card is removed at

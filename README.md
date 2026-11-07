@@ -80,12 +80,13 @@ and `/snapshots/` beside it. Then frame `/?embed=1`:
   frame cannot boot, so you cannot frame the live site from another origin.
 - **Embed mode** (`?embed=1`) hides the examples menu and the page's own
   controls (Open…, Download, Copy link, Show the editor while Lean loads,
-  the curated-Mathlib note) and leaves
+  the curated-Mathlib note, the splitter) and leaves
   persistence to you: listen for the `document` event and call
   `setDocument`.
 - **Look.** The page follows the OS light or dark scheme, also when it
   changes. In a window or frame 720 px wide or less, it puts the InfoView
-  below the editor.
+  below the editor. On the plain page, drag the gutter between the editor
+  and the InfoView to resize them.
 - **Files.** On the plain page, Open… (Ctrl/Cmd+O) opens a `.lean` file of
   up to 2 MiB as one undoable edit, and Download (Ctrl/Cmd+S) saves the
   editor's text as a `.lean` file.

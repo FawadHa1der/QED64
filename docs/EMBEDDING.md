@@ -305,9 +305,10 @@ In embed mode the page:
 2. hides the examples menu and the plain page's own controls (the bar's
    `#pageactions`: Open…, Download, Copy link; the curated-Mathlib note
    `#mathlibnote` beside the pill; the boot card's `#bootshow`: Show the
-   editor while Lean loads). They are in the markup, never rendered, and none
-   of their listeners is installed: no `#fileinput`, and Ctrl/Cmd+S and
-   Ctrl/Cmd+O reach the frame as before.
+   editor while Lean loads; the splitter `#splitter` between the editor and
+   the InfoView, so the editor keeps 55 % of the row). They are in the
+   markup, never rendered, and none of their listeners is installed: no
+   `#fileinput`, and Ctrl/Cmd+S and Ctrl/Cmd+O reach the frame as before.
 
 ### 3.1 The boot document (both modes)
 
