@@ -51,9 +51,11 @@ export const DEFAULT_FILE_NAME = "QED64.lean";
 
 export interface FileKeyEvent { key?: string; ctrlKey: boolean; metaKey: boolean; altKey: boolean; shiftKey: boolean; isComposing?: boolean }
 
-/** The file action a key press is: Ctrl/Cmd+S "save", Ctrl/Cmd+O "open", anything else null. */
-export function fileKey(e: FileKeyEvent): "save" | "open" | null {
-  if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.isComposing) return null;
+/** The file action a key press is: Cmd+S (on a Mac; elsewhere Ctrl+S) "save", Cmd+O (Ctrl+O) "open", anything else
+ * null. Only the platform's own modifier, the one the browser's Save and Open use: on a Mac, Ctrl+O is Monaco's
+ * insert-line-break. */
+export function fileKey(e: FileKeyEvent, mac: boolean): "save" | "open" | null {
+  if (!(mac ? e.metaKey : e.ctrlKey) || e.altKey || e.shiftKey || e.isComposing) return null;
   const k = (e.key ?? "").toLowerCase(); // Chrome's autofill sends keydown events without a key
   return k === "s" ? "save" : k === "o" ? "open" : null;
 }
@@ -123,11 +125,13 @@ export function installFileActions(host: FileActionsHost, buttons: { open: HTMLB
   };
   buttons.open.addEventListener("click", open);
   buttons.save.addEventListener("click", download);
+  const mac = /Mac|iPhone|iPad/.test(navigator.platform);
   window.addEventListener("keydown", (e) => {
-    const action = fileKey(e);
+    const action = fileKey(e, mac);
     if (!action) return;
     e.preventDefault(); // not the browser's Save Page As / Open File
     e.stopPropagation(); // nor Monaco's keybindings
+    if (e.repeat) return; // a held key: one download, one chooser
     if (action === "save") download(); else open();
   }, true);
 }

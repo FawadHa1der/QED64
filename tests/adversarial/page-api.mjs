@@ -13,8 +13,9 @@
 //                  (the examples menu, the bar's #pageactions, the
 //                  curated-Mathlib note #mathlibnote, the splitter
 //                  #splitter: UX L1.2) are not rendered, the
-//                  file actions are not installed (no #fileinput, and a Ctrl+S
-//                  keydown is not defaultPrevented: UX F1.5, F1.3),
+//                  file actions are not installed (no #fileinput, and a
+//                  Ctrl+Cmd+S keydown, the save key on any platform, is not
+//                  defaultPrevented: UX F1.5, F1.3),
 //                  localStorage["qed64.buffer"] is neither read (a seeded
 //                  sentinel does not appear) nor written (an edit leaves the
 //                  sentinel), settled() resolves ready, an Init-only document
@@ -134,9 +135,10 @@ try {
     const announced = await page.evaluate(() => document.getElementById("pstatus")?.textContent ?? null);
     // "Show the editor while Lean loads" is the plain page's: in the markup, never unhidden here (UX P1.1).
     const bootshow = await page.evaluate(() => window.__rec.bootshow);
-    // Open… and Download are the plain page's (UX F1.5, F1.3): no file input, and Ctrl+S is left to the embedder.
+    // Open… and Download are the plain page's (UX F1.5, F1.3): no file input, and the save key is left to the embedder.
+    // Both modifiers: the plain page takes Cmd+S on a Mac and Ctrl+S elsewhere.
     const files = await page.evaluate(() => {
-      const e = new KeyboardEvent("keydown", { key: "s", ctrlKey: true, bubbles: true, cancelable: true });
+      const e = new KeyboardEvent("keydown", { key: "s", ctrlKey: true, metaKey: true, bubbles: true, cancelable: true });
       document.body.dispatchEvent(e);
       return { input: !!document.getElementById("fileinput"), saveTaken: e.defaultPrevented };
     });
@@ -146,7 +148,7 @@ try {
     await page.waitForTimeout(1200); // past the page's 400 ms save debounce
     const stored = await page.evaluate(() => localStorage.getItem("qed64.buffer"));
     const ok = s.phase === "ready" && doc?.text === INIT_DOC && shown.length === 0 && apiEvent && JSON.stringify(s.snapshots) === JSON.stringify(["init"]) && stored === SENTINEL && edit.unchanged === false && announced === "" && bootshow === "hidden" && !files.input && !files.saveTaken;
-    record("embed-code", ok, `phase ${s.phase}, snapshots ${JSON.stringify(s.snapshots)}, document ${JSON.stringify(doc?.text)}, page-only controls rendered or missing ${JSON.stringify(shown)}, #pstatus ${JSON.stringify(announced)}, #bootshow during the boot ${bootshow}, #fileinput ${files.input ? "present" : "absent"}, Ctrl+S ${files.saveTaken ? "taken" : "left alone"}, qed64:api ${apiEvent}, buffer after edit ${stored === SENTINEL ? "untouched" : JSON.stringify(stored)}`);
+    record("embed-code", ok, `phase ${s.phase}, snapshots ${JSON.stringify(s.snapshots)}, document ${JSON.stringify(doc?.text)}, page-only controls rendered or missing ${JSON.stringify(shown)}, #pstatus ${JSON.stringify(announced)}, #bootshow during the boot ${bootshow}, #fileinput ${files.input ? "present" : "absent"}, Ctrl/Cmd+S ${files.saveTaken ? "taken" : "left alone"}, qed64:api ${apiEvent}, buffer after edit ${stored === SENTINEL ? "untouched" : JSON.stringify(stored)}`);
     await context.close();
   }
 

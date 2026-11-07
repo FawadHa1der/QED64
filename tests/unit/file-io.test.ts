@@ -8,22 +8,30 @@ const key = (k: string | undefined, m: Partial<{ ctrlKey: boolean; metaKey: bool
   ({ key: k, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, ...m });
 
 describe("fileKey", () => {
-  it("Ctrl+S and Cmd+S save; Ctrl+O and Cmd+O open (either case of the letter)", () => {
-    expect(fileKey(key("s", { ctrlKey: true }))).toBe("save");
-    expect(fileKey(key("s", { metaKey: true }))).toBe("save");
-    expect(fileKey(key("S", { metaKey: true }))).toBe("save"); // Caps Lock
-    expect(fileKey(key("O", { ctrlKey: true }))).toBe("open");
-    expect(fileKey(key("o", { metaKey: true }))).toBe("open");
+  it("Cmd+S saves and Cmd+O opens on a Mac, Ctrl+S and Ctrl+O elsewhere (either case of the letter)", () => {
+    expect(fileKey(key("s", { metaKey: true }), true)).toBe("save");
+    expect(fileKey(key("S", { metaKey: true }), true)).toBe("save"); // Caps Lock
+    expect(fileKey(key("o", { metaKey: true }), true)).toBe("open");
+    expect(fileKey(key("s", { ctrlKey: true }), false)).toBe("save");
+    expect(fileKey(key("O", { ctrlKey: true }), false)).toBe("open");
+  });
+  it("leaves the other platform's modifier alone: on a Mac, Ctrl+O is Monaco's insert-line-break", () => {
+    expect(fileKey(key("o", { ctrlKey: true }), true)).toBeNull();
+    expect(fileKey(key("s", { ctrlKey: true }), true)).toBeNull();
+    expect(fileKey(key("s", { metaKey: true }), false)).toBeNull(); // the Windows key
   });
   it("leaves every other key to the editor and the browser", () => {
-    for (const e of [
-      key("s"), key("o"), key("s", { shiftKey: true }),
-      key("s", { ctrlKey: true, shiftKey: true }), key("o", { metaKey: true, shiftKey: true }), // Save As, the browser's own
-      key("s", { metaKey: true, altKey: true }), key("z", { ctrlKey: true }), key("p", { metaKey: true }),
-      key("s", { ctrlKey: true, isComposing: true }), // an IME composition
-      key(undefined, { ctrlKey: true }), // Chrome's autofill sends keydown events without a key
-    ]) {
-      expect(fileKey(e), JSON.stringify(e)).toBeNull();
+    for (const mac of [true, false]) {
+      const mod = mac ? { metaKey: true } : { ctrlKey: true };
+      for (const e of [
+        key("s"), key("o"), key("s", { shiftKey: true }),
+        key("s", { ...mod, shiftKey: true }), key("o", { ...mod, shiftKey: true }), // Save As, the browser's own
+        key("s", { ...mod, altKey: true }), key("z", mod), key("p", mod),
+        key("s", { ...mod, isComposing: true }), // an IME composition
+        key(undefined, mod), // Chrome's autofill sends keydown events without a key
+      ]) {
+        expect(fileKey(e, mac), JSON.stringify({ mac, e })).toBeNull();
+      }
     }
   });
 });
