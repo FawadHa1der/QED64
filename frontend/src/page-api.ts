@@ -145,6 +145,13 @@ export const LIVENESS_TIMING = Object.freeze({ probeAfterMs: 6000, wedgeAfterMs:
  * (which a hidden or background frame never runs). */
 export const FILE_PROGRESS_MS = 100;
 
+/** Is `text` already the model's text? Monaco stores the buffer in ONE line ending (an inserted CRLF or lone CR
+ * becomes the model's EOL), so compare in its terms. setDocument makes no edit for such a text, and the stock page's
+ * example menu asks the same question before it says "checking" (HARDENING #86). */
+export function sameDocumentText(model: { getValue(): string; getEOL?(): string }, text: string): boolean {
+  return model.getValue() === text.replace(/\r\n?|\n/g, model.getEOL?.() ?? "\n");
+}
+
 export function deathInfo(d: RelayStatus["lastDeath"]): DeathInfo | null {
   if (!d) return null;
   return { kind: (DEATH_KINDS.has(d.reason) ? d.reason : "other") as DeathKind, reason: d.reason, message: d.message, cause: d.cause ? { ...d.cause } : null, seq: d.seq, session: d.session, exitCode: d.exitCode ?? null };
@@ -367,12 +374,9 @@ export function createPageApi(
       const editor = binding?.editor();
       const model = editor?.getModel();
       if (!editor || !model) return new Promise<SetDocumentResult>((resolve, reject) => onReady(() => { api.setDocument(text, opts).then(resolve, reject); }, reject));
-      // Monaco stores the buffer in ONE line ending (an inserted CRLF or lone
-      // CR becomes the model's EOL), so compare in its terms. Identical text
-      // sends nothing (no change event): it waits only for an earlier edit's
-      // forward still pending, never for a version that never comes.
-      const eol = model.getEOL?.() ?? "\n";
-      const unchanged = model.getValue() === text.replace(/\r\n?|\n/g, eol);
+      // Identical text sends nothing (no change event): it waits only for an
+      // earlier edit's forward still pending, never for a version that never comes.
+      const unchanged = sameDocumentText(model, text);
       if (!unchanged && opts.undoable === false) model.setValue(text);
       else if (!unchanged) {
         editor.pushUndoStop();

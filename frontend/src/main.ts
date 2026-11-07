@@ -14,7 +14,7 @@ import * as monaco from "monaco-editor";
 import { registerSingleDocRefs, type RefsLanguages } from "./editor/single-doc-refs";
 import { selfWiden } from "./self-widen";
 import { installInfoviewEditorApi, type EditsEditor } from "./editor/infoview-edits";
-import { codeFromHash, createPageApi, pageStatusSink, sharedLinkFlags, type EditorLike } from "./page-api";
+import { codeFromHash, createPageApi, pageStatusSink, sameDocumentText, sharedLinkFlags, type EditorLike } from "./page-api";
 import { normalizeMemoryBytes, parseEditHoldParam, parseMemoryParam } from "../../lib/params";
 import { tapRelay } from "./relay-taps";
 import { installWidgetSourceCache } from "./widget-source-cache";
@@ -709,11 +709,10 @@ async function main() {
     const src = EXAMPLES[examplesEl.value];
     const model = editor.editor?.getModel();
     if (src && model) {
-      // Re-picking the already-loaded example is a no-op: identical text (in
-      // the model's line ending, as setDocument compares) is no edit, so no
-      // status would follow and nothing would ever clear the busy label — the
-      // pill wedged forever.
-      if (model.getValue() === src.replace(/\r\n?|\n/g, model.getEOL())) return;
+      // Re-picking the already-loaded example is a no-op: identical text
+      // (setDocument's own test) is no edit, so no status would follow and
+      // nothing would ever clear the busy label — the pill wedged forever.
+      if (sameDocumentText(model, src)) return;
       // One undoable edit (HARDENING #86): model.setValue cleared the undo
       // stack, and the autosave then stored the example over the visitor's
       // work. Ctrl/Cmd+Z now brings it back. The cursor goes to the top, as
