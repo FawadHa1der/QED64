@@ -31,6 +31,13 @@ def viaLog (name : String) (mk : TermElabM Exception) : CommandElabM Unit := do
   viaLog "E-simp" (do
     let e := Exception.error (← getRef) guardMd
     tryCatchRuntimeEx (Meta.throwNestedTacticEx `simp e) (fun ex => return ex))
+  -- `decide`'s report of a kernel failure, with the kernel's guard words inside (Elab/Tactic/Decide.lean:141-143).
+  viaLog "decide-kernel" (do
+    let ex := (Kernel.Exception.other K).toMessageData {}
+    return Exception.error (← getRef) m!"\
+      Tactic `{`decide}` failed. The elaborator is able to reduce the \
+      `{MessageData.ofConstName ``Decidable}` instance, but the kernel fails with:\n\
+      {indentD ex}")
   viaLog "N1" (do tryCatchRuntimeEx (throwMaxRecDepthAt (← getRef)) (fun ex => return ex))
   viaLog "N2-simp" (do
     let e ← tryCatchRuntimeEx (throwMaxRecDepthAt (← getRef)) (fun ex => pure ex)

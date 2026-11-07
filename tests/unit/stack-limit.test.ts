@@ -1,11 +1,12 @@
 // lib/stack-limit.ts (HARDENING #92, docs/EMBEDDING.md §7.10): the classifier of Lean's engine-stack guard errors and
-// the note it appends, on REAL message texts (tests/fixtures/stack-limit-messages.json: captured publishes, and Lean's
-// own encoding of the same messages as an InfoView RPC reply). The guard error stays an error with Lean's words first;
+// the note it appends, on Lean's own message texts (tests/fixtures/stack-limit-messages.json: publishes captured from
+// runs, Lean's own encoding of the same messages as an InfoView RPC reply and as a publish, and, where an entry's
+// `source` says so, a text reconstructed from Lean's source). The guard error stays an error with Lean's words first;
 // Lean's limits that desktop Lean has too are never taken for it.
 import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
-import { STACK_LIMIT_NOTE, annotateStackLimit, isStackLimitDiagnostic, type StackLimitDiagnostic } from "../../lib/stack-limit";
+import { GUARD_PHRASES, STACK_LIMIT_NOTE, annotateStackLimit, isStackLimitDiagnostic, type StackLimitDiagnostic } from "../../lib/stack-limit";
 import * as embed from "../../lib/index";
 
 const root = path.resolve(__dirname, "../..");
@@ -26,12 +27,15 @@ describe("the fixture", () => {
   it("holds the guard's two phrases, Lean's native limits, and Lean's own wire encoding of each shape", () => {
     expect(fx.published.filter((p) => p.guard).map((p) => p.id)).toEqual(["P1", "P2", "P3", "decide-kernel"]);
     expect(fx.published.filter((p) => !p.guard).map((p) => p.id)).toEqual(["P3-cut", "N1", "N2", "N3", "N4", "N6"]);
-    expect(fx.wire.map((w) => [w.name, w.guard])).toEqual([["E", true], ["E-synth", true], ["K", true], ["E-simp", true], ["N1", false], ["N2-simp", false], ["N4", false]]);
+    expect(fx.wire.map((w) => [w.name, w.guard])).toEqual([["E", true], ["E-synth", true], ["K", true], ["E-simp", true], ["decide-kernel", true], ["N1", false], ["N2-simp", false], ["N4", false]]);
     // The wire's publish strings are the captured ones: the probe encodes the same messages the runs logged.
     expect(wire("E").pub).toBe(P1);
     expect(wire("K").pub).toBe(text("P2"));
     expect(wire("N1").pub).toBe(text("N1"));
     expect(wire("E-simp").pub).toBe(`Tactic \`simp\` failed with a nested error:\n${P1}`);
+    // decide's report of a kernel failure is not captured from a run: the probe renders Decide.lean's own m! around P2.
+    expect(text("decide-kernel")).toBe(wire("decide-kernel").pub);
+    expect(text("decide-kernel")).toBe(`Tactic \`decide\` failed. The elaborator is able to reduce the \`Decidable\` instance, but the kernel fails with:\n\n  ${text("P2")}`);
     // Lean puts an interactive message's words in `expr` embeds (tag[0]), never in tag[1]: a walker of text/append/tag[1]
     // would read nothing of the guard's error, which is why the classifier reads the JSON.
     expect(wire("E").rpc).toEqual({ tag: [{ expr: { text: P1 } }, { text: "" }] });
@@ -77,15 +81,15 @@ describe("isStackLimitDiagnostic", () => {
     expect(isStackLimitDiagnostic(err(P1, { isSilent: false }))).toBe(true);
   });
 
-  it("is never fooled by QED64's own words: the note, and the relay's stack-pause note", () => {
+  it("is never fooled by QED64's own note (the relay's pause note: stack-limit-notes.test.ts, on the real relay)", () => {
     expect(isStackLimitDiagnostic(err(STACK_LIMIT_NOTE))).toBe(false);
-    expect(isStackLimitDiagnostic(err("Lean ran out of the browser's stack while checking here, so checking is paused. A browser gives Lean far less stack than desktop Lean has, so the proof may still be correct. Edit the file to check it again.", { source: "QED64" }))).toBe(false);
+    for (const p of GUARD_PHRASES) expect(STACK_LIMIT_NOTE).not.toContain(p);
     // An annotated error is still the guard's.
     expect(isStackLimitDiagnostic(err(P1 + SUFFIX))).toBe(true);
   });
 
   it("the phrases and the note hold no character JSON escapes, so the JSON reading finds them whole", () => {
-    for (const s of [STACK_LIMIT_NOTE, "the WebAssembly runtime's stack is exhausted", "the WebAssembly engine's stack is exhausted"]) {
+    for (const s of [STACK_LIMIT_NOTE, ...GUARD_PHRASES]) {
       expect(JSON.stringify(s)).toBe(`"${s}"`);
     }
   });
