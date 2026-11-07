@@ -36,9 +36,10 @@ describe.skipIf(skip)("main.ts against the installed lean4monaco (dist/leanmonac
     expect(fontOf(src)).toBeTruthy();
     expect(fontOf(main)).toBe(fontOf(src));
   });
-  it("follows an OS change with lean4monaco's own two themes (UX S1.2)", () => {
+  it("follows an OS change with lean4monaco's own two themes, and keeps a frame on its light one (UX S1.2)", () => {
     const pair = /isBrowserDefaultDark\(\)\s*\?\s*"([^"]+)"\s*:\s*"([^"]+)"/.exec(src);
     expect(pair).not.toBeNull();
     expect(main).toContain(`darkOs.matches ? "${pair![1]}" : "${pair![2]}"`);
+    expect(main).toContain(`EMBED ? { "workbench.colorTheme": "${pair![2]}" }`); // a ?embed=1 frame stays light
   });
 });

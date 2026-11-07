@@ -83,10 +83,10 @@ and `/snapshots/` beside it. Then frame `/?embed=1`:
   the curated-Mathlib note, the splitter) and leaves
   persistence to you: listen for the `document` event and call
   `setDocument`.
-- **Look.** The page follows the OS light or dark scheme, also when it
-  changes. In a window or frame 720 px wide or less, it puts the InfoView
-  below the editor. On the plain page, drag the gutter between the editor
-  and the InfoView to resize them.
+- **Look.** The plain page follows the OS light or dark scheme, also when
+  it changes; a `?embed=1` frame stays light. In a window or frame 720 px
+  wide or less, it puts the InfoView below the editor. On the plain page,
+  drag the gutter between the editor and the InfoView to resize them.
 - **Files.** On the plain page, Open… (Ctrl/Cmd+O) opens a `.lean` file of
   up to 2 MiB as one undoable edit, and Download (Ctrl/Cmd+S) saves the
   editor's text as a `.lean` file.

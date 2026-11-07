@@ -1884,14 +1884,15 @@ reads them there, because `docs/history/` is not in the package's `files`.
     undoable example pick and the save written on leaving (#86) are plain-page
     only. A visually hidden `#pstatus` (`role="status"`) is at the end of
     `<body>` and stays empty under `?embed=1`: the embedder announces.
-  - **The look follows the OS** (S1.2, #87): the page no longer forces Visual
-    Studio Light. lean4monaco picks Light or Dark from the frame's
-    `prefers-color-scheme` at start (a browser may derive it from the
-    embedding page's `color-scheme`; not checked), and the page follows a
-    change. The InfoView pane paints the editor theme's background. The bar
-    and pill stay dark and the boot card light in both schemes; the page's
-    blue is `#4664ee` and pending boot-stage text `#6b7190` (A1.5). The page
-    declares no `color-scheme`.
+  - **The look stays light in a frame** (S1.2, #87): the plain page now
+    follows the OS scheme, but a `?embed=1` frame keeps Visual Studio Light,
+    as before, and does not follow a change: it cannot know its embedder's
+    scheme (a dark OS turned the frame dark inside a light gallery; the
+    widgets session's review, 2026-11-07). A scheme an embedder chooses
+    belongs with v1.1's URL parameters (§5). The InfoView pane paints the
+    editor theme's background. The bar and pill stay dark and the boot card
+    light; the page's blue is `#4664ee` and pending boot-stage text `#6b7190`
+    (A1.5). The page declares no `color-scheme`.
   - **The layout** (L1.4, L1.6, L1.7, #87): the page is a flex column, and
     `#split` no longer subtracts a fixed bar height. At 720 px wide or less
     (the frame's own width) the bar wraps and the InfoView goes below the
@@ -1993,8 +1994,9 @@ reads them there, because `docs/history/` is not in the package's `files`.
     as `#editor + #infoview` no longer matches). In both modes the InfoView
     uses lean4web's display defaults: the expected type starts collapsed,
     goals after the first are smaller and dimmed, and a subterm's type
-    tooltip opens on click, not on hover. Its iframe is labelled "Lean
-    InfoView" (`aria-label`).
+    tooltip opens on click, not on hover (a widget whose instructions say
+    "hover" now needs a click; a click works under both settings). Its
+    iframe is labelled "Lean InfoView" (`aria-label`).
   - **New editor menu entries** (I3.4, E5.3, E5.4; #56's 2026-11-07 note,
     #90). In both modes the right-click menu and F1 palette offer "Lean 4:
     Copy Goal to Comment" (the goal as a `/- … -/` block above the cursor's

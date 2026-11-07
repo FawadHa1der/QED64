@@ -22,7 +22,9 @@
 //                  booted light (snapshots ["init"]), the plain page's
 //                  screen-reader echo #pstatus stays empty (UX A1.3), and the
 //                  boot card's "Show the editor while Lean loads" (#bootshow,
-//                  UX P1.1) is in the markup and never shown during the boot.
+//                  UX P1.1) is in the markup and never shown during the boot,
+//                  and in a dark context the frame's editor stays light, also
+//                  after a scheme change (HARDENING #87's 2026-11-07 note).
 //   embed-setdoc   ?embed=1 without #code: setDocument from the `qed64:api`
 //                  listener becomes the boot document.
 //   memory         status().memory.currentBytes/maximumBytes are positive numbers once settled
@@ -73,8 +75,8 @@ const browser = await chromium.launch();
 /** A page with an embedder's recorder installed before any page script runs.
  * `framed`: load it as the only iframe of the same-origin /embed-host.html and
  * return that frame as `page` (evaluate/waitForFunction work the same). */
-async function open(pageUrl, { seed = null, setDocOnApi = null, framed = false } = {}) {
-  const context = await browser.newContext();
+async function open(pageUrl, { seed = null, setDocOnApi = null, framed = false, colorScheme = null } = {}) {
+  const context = await browser.newContext(colorScheme ? { colorScheme } : {});
   await context.addInitScript(([seedText, doc]) => {
     if (seedText !== null) { try { localStorage.setItem("qed64.buffer", seedText); } catch { /* storage off */ } }
     window.__rec = { apiEvent: false, events: [], bootshow: "missing" };
@@ -125,9 +127,19 @@ try {
   }
 
   if (runs("embed-code")) {
-    const { page, context } = await open(withQuery({ embed: "1" }, `#code=${encodeURIComponent(INIT_DOC)}`), { seed: SENTINEL, framed: true });
+    const { page, context } = await open(withQuery({ embed: "1" }, `#code=${encodeURIComponent(INIT_DOC)}`), { seed: SENTINEL, framed: true, colorScheme: "dark" });
     const s = await settle(page);
     const doc = await page.evaluate(() => globalThis.qed64.api.getDocument());
+    // The frame stays light in a dark OS, at start and after a change (HARDENING #87's 2026-11-07 note): it cannot
+    // know its embedder's scheme. The frame must see the dark scheme, or the check would be vacuous.
+    await context.pages()[0].emulateMedia({ colorScheme: "light" });
+    await context.pages()[0].emulateMedia({ colorScheme: "dark" });
+    await page.waitForTimeout(500);
+    const scheme = await page.evaluate(() => ({
+      dark: matchMedia("(prefers-color-scheme: dark)").matches,
+      editorBg: getComputedStyle(document.querySelector("#editor .monaco-editor-background")).backgroundColor,
+    }));
+    const lightEditor = scheme.dark && (/rgb\((\d+), (\d+), (\d+)\)/.exec(scheme.editorBg) ?? []).slice(1).every((c) => Number(c) >= 230);
     // The plain page's own controls are in the markup and never rendered here (EMBEDDING §3): a missing id counts as
     // shown, so the check cannot pass on a page that lacks the control. Each change that adds one appends its id.
     const shown = await page.evaluate((ids) => ids.filter((id) => { const el = document.getElementById(id); return !el || el.getClientRects().length > 0; }), PAGE_ONLY_IDS);
@@ -147,8 +159,8 @@ try {
     const edit = await page.evaluate(() => globalThis.qed64.api.setDocument("theorem three : 1 + 2 = 3 := rfl\n"));
     await page.waitForTimeout(1200); // past the page's 400 ms save debounce
     const stored = await page.evaluate(() => localStorage.getItem("qed64.buffer"));
-    const ok = s.phase === "ready" && doc?.text === INIT_DOC && shown.length === 0 && apiEvent && JSON.stringify(s.snapshots) === JSON.stringify(["init"]) && stored === SENTINEL && edit.unchanged === false && announced === "" && bootshow === "hidden" && !files.input && !files.saveTaken;
-    record("embed-code", ok, `phase ${s.phase}, snapshots ${JSON.stringify(s.snapshots)}, document ${JSON.stringify(doc?.text)}, page-only controls rendered or missing ${JSON.stringify(shown)}, #pstatus ${JSON.stringify(announced)}, #bootshow during the boot ${bootshow}, #fileinput ${files.input ? "present" : "absent"}, Ctrl/Cmd+S ${files.saveTaken ? "taken" : "left alone"}, qed64:api ${apiEvent}, buffer after edit ${stored === SENTINEL ? "untouched" : JSON.stringify(stored)}`);
+    const ok = s.phase === "ready" && doc?.text === INIT_DOC && shown.length === 0 && apiEvent && JSON.stringify(s.snapshots) === JSON.stringify(["init"]) && stored === SENTINEL && edit.unchanged === false && announced === "" && bootshow === "hidden" && !files.input && !files.saveTaken && lightEditor;
+    record("embed-code", ok, `phase ${s.phase}, frame scheme ${JSON.stringify(scheme)} (light editor in a dark OS: ${lightEditor}), snapshots ${JSON.stringify(s.snapshots)}, document ${JSON.stringify(doc?.text)}, page-only controls rendered or missing ${JSON.stringify(shown)}, #pstatus ${JSON.stringify(announced)}, #bootshow during the boot ${bootshow}, #fileinput ${files.input ? "present" : "absent"}, Ctrl/Cmd+S ${files.saveTaken ? "taken" : "left alone"}, qed64:api ${apiEvent}, buffer after edit ${stored === SENTINEL ? "untouched" : JSON.stringify(stored)}`);
     await context.close();
   }
 

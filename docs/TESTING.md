@@ -540,8 +540,10 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   `defaultPrevented`: UX F1.5, F1.3), the boot card's `#bootshow` in the markup and never unhidden
   during the boot (watched from the end of parsing: the card is removed at
   the end of the boot), the stored buffer
-  neither read nor written, and the plain page's screen-reader echo
-  `#pstatus` empty: the embedder announces, UX A1.3), `embed-setdoc` (setDocument from the
+  neither read nor written, the plain page's screen-reader echo
+  `#pstatus` empty: the embedder announces, UX A1.3, and, in a dark context,
+  the frame's editor light, also after a scheme change: HARDENING #87's
+  2026-11-07 note), `embed-setdoc` (setDocument from the
   `qed64:api` listener becomes the boot document), `memory`
   (`status().memory.currentBytes`/`maximumBytes` are positive numbers once
   settled, read on a later turn: the page requests the worker's telemetry

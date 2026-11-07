@@ -619,9 +619,11 @@ async function main() {
       worker: { postMessage() {} },
       messagePort: clientPort,
     } as unknown as { url: string },
-    // Over lean4monaco's defaults (dist/leanmonaco.js start()). No colour theme: lean4monaco picks Visual Studio
-    // Light or Dark from the OS at start, and the listener below follows a change (HARDENING #87).
+    // Over lean4monaco's defaults (dist/leanmonaco.js start()). The plain page passes no colour theme: lean4monaco
+    // picks Visual Studio Light or Dark from the OS at start, and the listener below follows a change. A ?embed=1
+    // frame stays light, as before: it cannot know its embedder's scheme (HARDENING #87).
     vscode: {
+      ...(EMBED ? { "workbench.colorTheme": "Visual Studio Light" } : {}),
       "lean4.input.leader": "\\",
       // lean4monaco's own editor font, passed at start: its InfoView iframe copies the editor font only when it is
       // made (and on a theme change), and lean4monaco's later default landed after this page's editor (Menlo goals).
@@ -640,9 +642,10 @@ async function main() {
     },
   };
   await leanMonaco.start(options);
-  // lean4monaco reads the OS colour scheme once, at start; follow a change to the other of the same two themes.
+  // lean4monaco reads the OS colour scheme once, at start; the plain page follows a change to the other of the same
+  // two themes.
   const darkOs = window.matchMedia("(prefers-color-scheme: dark)");
-  darkOs.addEventListener("change", () => leanMonaco.updateVSCodeOptions({ "workbench.colorTheme": darkOs.matches ? "Visual Studio Dark" : "Visual Studio Light" }));
+  if (!EMBED) darkOs.addEventListener("change", () => leanMonaco.updateVSCodeOptions({ "workbench.colorTheme": darkOs.matches ? "Visual Studio Dark" : "Visual Studio Light" }));
   registerImportCompletion();
   // Find references and rename for the one document, from the FileWorker's documentHighlight (UX E5.3, E5.4;
   // editor/single-doc-refs.ts, HARDENING #90): the watchdog that answers them natively does not run here.
