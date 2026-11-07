@@ -86,7 +86,9 @@ if (EMBED) examplesEl.style.display = "none";
 // WHOLE boot: on a slow link the downloads alone take many minutes, and the
 // card is the only place their progress is shown (HARDENING #54). It goes
 // when the checker is actionable (`renderStatus`), when the boot fails (it
-// turns into the failure card), or by the check fallback below.
+// turns into the failure card), or by the check fallback below. The visitor
+// may hide it sooner ("Show the editor while Lean loads", main(); never a
+// timer): the pill keeps the boot's labels, and a failure brings it back.
 const bootEl = document.getElementById("boot")!;
 const bootCard = document.getElementById("bootcard")!;
 const bootBar = document.getElementById("bootbar")!;
@@ -94,6 +96,7 @@ const bootFill = document.getElementById("bootfill")!;
 const bootLabel = document.getElementById("bootlabel")!;
 const bootNums = document.getElementById("bootnums")!;
 const bootReload = document.getElementById("bootreload")! as HTMLButtonElement;
+const bootShow = document.getElementById("bootshow")! as HTMLButtonElement;
 const checklist = createBootChecklist(); // boot-checklist.ts: the active step and its rules
 let bootDone = false;
 // Downloads report cumulative bytes; a short moving window gives a stable
@@ -176,6 +179,8 @@ function bootFail(message: string, cause?: FailureCause) {
   if (bootDone || (bootFailShown && !cause)) return;
   bootFailShown ||= cause !== undefined;
   pageApi.bootFailed(message, cause);
+  bootEl.classList.remove("away"); // a card the visitor hid comes back to say so (UX P1.1)
+  bootShow.hidden = true;
   bootCard.classList.add("failed");
   bootCard.querySelector("h1")!.textContent = "QED64 could not start";
   // A stale cause (HARDENING #74) or a browser that cannot run QED64 (#77) gets words that say what to do; the
@@ -597,6 +602,14 @@ async function main() {
   await editor.start(editorEl, "/project/Probe.lean", initialText);
   docText = () => editor.editor?.getModel()?.getValue() ?? relay.lastText;
   pageApi.editorReady();
+  // UX P1.1, P1.15 (HARDENING #88): the visitor may read and type while Lean downloads and loads (a first visit is
+  // about a minute on a fast link), or delete a runaway command from the restored buffer instead of waiting for the
+  // check fallback. Shown once the editor exists; not after a failure; not in embed mode, where the embedder owns the
+  // boot's UI. The card stays the boot's (#54): bootProgress keeps it current, bootFinish removes it.
+  if (!EMBED && !bootDone && !bootCard.classList.contains("failed")) {
+    bootShow.hidden = false;
+    bootShow.addEventListener("click", () => { bootEl.classList.add("away"); editor.editor?.focus(); });
+  }
   document.getElementById("sharedlink")?.focus(); // the editor's start took focus from a panel already up
   if (restored && persistBuffer) ui.progress("restored your last buffer"); // not when a shared snippet's Open replaced it (HARDENING #77)
   let saveTimer: number | undefined;

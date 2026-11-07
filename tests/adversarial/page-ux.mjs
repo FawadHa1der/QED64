@@ -46,6 +46,15 @@
 //                 stacked at 375; a long pill label ends in an ellipsis with
 //                 its tooltip and never widens the bar. Chromium; Firefox
 //                 once per change.
+//   show-editor   (UX P1.1, P1.15, HARDENING #88) a restored buffer that keeps
+//                 Lean busy for a minute behind the boot card: once the editor
+//                 exists, the card offers "Show the editor while Lean loads"
+//                 and says later visits start in "a few seconds"; a click hides
+//                 the card with the boot still running and gives the editor the
+//                 keyboard; Ctrl/Cmd+A and typing replace the document, which
+//                 checks to ready, and the card is gone. Its embed half (no
+//                 button under ?embed=1) is page-api.mjs embed-code. Chromium
+//                 and Firefox.
 //   content-halt  (UX FILL-A6, HARDENING #88) a restored buffer whose #eval
 //                 ends the worker every time it runs (exit code 3, a cheap
 //                 stand-in for an out-of-memory #eval): the breaker halts after
@@ -67,7 +76,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { arg, browserName, fetchJson, launchBrowser, onlyMatches, resolveTarget, root, runDir, teeLog } from "./harness.mjs";
 
-export const SCENARIOS = ["a11y-status", "share-link", "example-undo", "buffer-flush", "look", "layout", "content-halt"];
+export const SCENARIOS = ["a11y-status", "share-link", "example-undo", "buffer-flush", "look", "layout", "show-editor", "content-halt"];
 /** The scenarios `--only` selects, in run order. An empty selection is refused (exit 3), never "0/0 pass". */
 export const selectScenarios = (only) => SCENARIOS.filter((name) => !only || onlyMatches(name, only));
 /** 0 all pass, 1 a scenario failed, 3 nothing was judged. */
@@ -89,6 +98,10 @@ const OWN = "-- my work\ntheorem mine : 2 + 2 = 4 := rfl\n";
 const LOOK_DOC = "example (p q : Prop) (hp : p) (hq : q) : p ∧ q := by\n  constructor\n  · exact hp\n  · exact hq\n";
 // layout: main.ts PHASE_LABEL.headerRefused, the longest label the pill shows.
 const LONG_LABEL = "this import is not available here — check the module name (this playground serves a curated Mathlib)";
+// show-editor: a restored buffer that keeps Lean busy for a minute behind the card (Init only), and what the visitor
+// types instead.
+const SLEEP_DOC = "#eval IO.sleep 60000\n";
+const TYPED = "example : True := trivial";
 // content-halt: every session the buffer reaches dies "exit" (lean.worker.js) as soon as the #eval runs, after it served
 // (pipeline/snapshot/fileworker-exit-probe.mjs EVAL_EXIT); main.ts PHASE_LABEL.halted is what the pill must then say.
 const HALT_DOC = "example : True := trivial\n\n#eval (IO.Process.exit 3 : IO Unit)\n";
@@ -524,6 +537,40 @@ async function main() {
       }
       const failed = steps.filter((s) => s.failures.length > 0);
       record("layout", failed.length === 0 && errors.length === 0, `failed ${JSON.stringify(failed.map((s) => [s.width, s.failures]))}; bars ${JSON.stringify(steps.map((s) => [s.width, s.bar?.h, s.pill?.w]))}; 375: ${JSON.stringify(m375)}; page errors ${JSON.stringify(errors)}`);
+      await context.close();
+    },
+    "show-editor": async () => {
+      // UX P1.1, P1.15. On the base build there is no #bootshow (the wait for it times out) and the card says "about
+      // 20 seconds".
+      const { page, context, errors } = await open(SLEEP_DOC, { wait: "none" });
+      const shown = await waitFor(() => page.evaluate(() => { const b = document.getElementById("bootshow"); return (!!b && b.getClientRects().length > 0) || null; }).catch(() => null), BOOT_MS / 5, 100);
+      const atShow = await page.evaluate(() => ({ editor: !!globalThis.qed64?.editor, boot: globalThis.qed64?.api?.status?.()?.boot ?? null, note: document.getElementById("bootnote")?.textContent ?? "" }));
+      if (shown) await page.click("#bootshow", { timeout: 5000 });
+      const afterClick = await page.evaluate(() => {
+        const b = document.getElementById("boot");
+        return { display: b ? getComputedStyle(b).display : null, focus: globalThis.qed64?.editor?.hasTextFocus?.() ?? null, boot: globalThis.qed64?.api?.status?.()?.boot ?? null, pill: document.getElementById("ptext").textContent };
+      });
+      await page.screenshot({ path: path.join(dir, `show-editor${firefox ? "-firefox" : ""}.png`) }).catch(() => {});
+      await page.keyboard.press("ControlOrMeta+KeyA");
+      await page.keyboard.type(TYPED);
+      const typedAt = Date.now();
+      const phase = await page.evaluate((ms) => globalThis.qed64.api.settled({ timeoutMs: ms }).then((s) => s.phase, (e) => `threw ${e}`), BOOT_MS);
+      const readyAfterMs = Date.now() - typedAt;
+      await sleep(1000); // the card's fade and removal (600 ms)
+      const end = await page.evaluate(() => { const b = document.getElementById("boot"); return { text: globalThis.qed64.editor.getModel().getValue(), boot: b ? b.className : null, done: globalThis.qed64.api.status().boot.done }; });
+      const checks = {
+        "the button shows once the editor exists, the boot still running": !!shown && atShow.editor && atShow.boot?.done === false,
+        "the card says later visits start in a few seconds": /a few seconds/.test(atShow.note) && !/20/.test(atShow.note),
+        "a click hides the card": afterClick.display === "none",
+        "the boot is still running": afterClick.boot?.done === false,
+        "the editor has the keyboard": afterClick.focus === true,
+        "the typed text is the document": end.text === TYPED,
+        "it checks to ready": phase === "ready",
+        "the card is gone at the end of the boot": end.done === true && (end.boot === null || /\bdone\b/.test(end.boot)),
+        "no page errors": errors.length === 0,
+      };
+      const failures = Object.keys(checks).filter((k) => !checks[k]);
+      record("show-editor", failures.length === 0, `failed ${JSON.stringify(failures)}; at the button ${JSON.stringify(atShow)}; after the click ${JSON.stringify(afterClick)}; ready ${readyAfterMs} ms after the last keystroke; end ${JSON.stringify(end)}; page errors ${JSON.stringify(errors)}`);
       await context.close();
     },
     "content-halt": async () => {

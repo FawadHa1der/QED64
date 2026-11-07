@@ -130,6 +130,13 @@
       margin-top: 14px; padding: 7px 18px; border-radius: 6px; border: 1px solid #4664ee;
       background: #4664ee; color: #fff; font: 13px system-ui, sans-serif; cursor: pointer;
     }
+    /* UX P1.1: the plain page's "Show the editor while Lean loads" (main.ts); neither button rule sets display, or
+       the hidden attribute would stop working. The visitor hid the card (.away); a failed boot shows it again. */
+    #bootshow {
+      margin-top: 14px; padding: 7px 18px; border-radius: 6px; border: 1px solid #4664ee;
+      background: #fff; color: #4664ee; font: 13px system-ui, sans-serif; cursor: pointer;
+    }
+    #boot.away { display: none; }
     /* The share-link gate (main.ts sharedLinkGate; HARDENING #77): built only
        when the URL carries #code=/#codez=; centered over the page and the boot
        card (#boot is z-index 10 inside #split; the top bar keeps the boot
@@ -184,7 +191,7 @@
         <h1>Loading Lean 4 + Mathlib into your browser</h1>
         <p id="bootnote">First visit downloads about <b>460&nbsp;MB</b> (the Lean runtime and a curated
         Mathlib environment) and caches it in your browser &mdash; later visits start in
-        <b>about 20&nbsp;seconds</b>. Everything then runs locally: no servers, and your
+        <b>a few seconds</b>. Everything then runs locally: no servers, and your
         proofs never leave this tab. With the Mathlib environment loaded, this tab
         uses <b>about 2.5&nbsp;GB of memory</b> — on machines with 8&nbsp;GB or less,
         close other heavy tabs first.</p>
@@ -197,7 +204,8 @@
           <li data-stage="load">Load the environment into Lean</li>
           <li data-stage="check">Check the example proof</li>
         </ol>
-        <button id="bootreload" hidden>Reload</button>
+        <button id="bootshow" type="button" hidden>Show the editor while Lean loads</button>
+        <button id="bootreload" type="button" hidden>Reload</button>
       </div>
     </div>
   </div>

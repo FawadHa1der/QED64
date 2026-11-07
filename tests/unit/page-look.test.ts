@@ -21,7 +21,7 @@ describe("frontend/index.html", () => {
   it("keeps every id the lanes, the showcase and embedders read", () => {
     for (const id of ["bar", "buildinfo", "examples", "pageactions", "sharebtn", "pill", "ptext", "ptime", "repolinks", "split",
       "editor", "infoview", "boot", "bootcard", "bootnote", "bootbar", "bootfill", "bootstat", "bootlabel", "bootnums",
-      "bootstages", "bootreload", "pstatus"]) {
+      "bootstages", "bootshow", "bootreload", "pstatus"]) {
       expect(html, id).toContain(`id="${id}"`);
     }
   });

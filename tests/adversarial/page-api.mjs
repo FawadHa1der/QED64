@@ -14,8 +14,10 @@
 //                  localStorage["qed64.buffer"] is neither read (a seeded
 //                  sentinel does not appear) nor written (an edit leaves the
 //                  sentinel), settled() resolves ready, an Init-only document
-//                  booted light (snapshots ["init"]), and the plain page's
-//                  screen-reader echo #pstatus stays empty (UX A1.3).
+//                  booted light (snapshots ["init"]), the plain page's
+//                  screen-reader echo #pstatus stays empty (UX A1.3), and the
+//                  boot card's "Show the editor while Lean loads" (#bootshow,
+//                  UX P1.1) is in the markup and never shown during the boot.
 //   embed-setdoc   ?embed=1 without #code: setDocument from the `qed64:api`
 //                  listener becomes the boot document.
 //   memory         status().memory.currentBytes/maximumBytes are positive numbers once settled
@@ -70,7 +72,15 @@ async function open(pageUrl, { seed = null, setDocOnApi = null, framed = false }
   const context = await browser.newContext();
   await context.addInitScript(([seedText, doc]) => {
     if (seedText !== null) { try { localStorage.setItem("qed64.buffer", seedText); } catch { /* storage off */ } }
-    window.__rec = { apiEvent: false, events: [] };
+    window.__rec = { apiEvent: false, events: [], bootshow: "missing" };
+    // The boot card's #bootshow (UX P1.1), watched from the end of parsing (before the page's module runs): the card
+    // and the button are removed at the end of the boot, so a check at ready alone would read nothing.
+    document.addEventListener("readystatechange", () => {
+      const b = document.readyState === "interactive" ? document.getElementById("bootshow") : null;
+      if (!b) return;
+      window.__rec.bootshow = b.hidden ? "hidden" : "shown";
+      new MutationObserver(() => { if (!b.hidden) window.__rec.bootshow = "shown"; }).observe(b, { attributes: true, attributeFilter: ["hidden"] });
+    });
     window.addEventListener("qed64:api", (e) => {
       const api = e.detail;
       window.__rec.apiEvent = true;
@@ -118,13 +128,15 @@ try {
     const shown = await page.evaluate((ids) => ids.filter((id) => { const el = document.getElementById(id); return !el || el.getClientRects().length > 0; }), PAGE_ONLY_IDS);
     // The plain page's screen-reader echo stays silent: the embedder announces (UX A1.3).
     const announced = await page.evaluate(() => document.getElementById("pstatus")?.textContent ?? null);
+    // "Show the editor while Lean loads" is the plain page's: in the markup, never unhidden here (UX P1.1).
+    const bootshow = await page.evaluate(() => window.__rec.bootshow);
     const apiEvent = await page.evaluate(() => window.__rec.apiEvent);
     // An edit: the buffer must still hold the sentinel afterwards (no write).
     const edit = await page.evaluate(() => globalThis.qed64.api.setDocument("theorem three : 1 + 2 = 3 := rfl\n"));
     await page.waitForTimeout(1200); // past the page's 400 ms save debounce
     const stored = await page.evaluate(() => localStorage.getItem("qed64.buffer"));
-    const ok = s.phase === "ready" && doc?.text === INIT_DOC && shown.length === 0 && apiEvent && JSON.stringify(s.snapshots) === JSON.stringify(["init"]) && stored === SENTINEL && edit.unchanged === false && announced === "";
-    record("embed-code", ok, `phase ${s.phase}, snapshots ${JSON.stringify(s.snapshots)}, document ${JSON.stringify(doc?.text)}, page-only controls rendered or missing ${JSON.stringify(shown)}, #pstatus ${JSON.stringify(announced)}, qed64:api ${apiEvent}, buffer after edit ${stored === SENTINEL ? "untouched" : JSON.stringify(stored)}`);
+    const ok = s.phase === "ready" && doc?.text === INIT_DOC && shown.length === 0 && apiEvent && JSON.stringify(s.snapshots) === JSON.stringify(["init"]) && stored === SENTINEL && edit.unchanged === false && announced === "" && bootshow === "hidden";
+    record("embed-code", ok, `phase ${s.phase}, snapshots ${JSON.stringify(s.snapshots)}, document ${JSON.stringify(doc?.text)}, page-only controls rendered or missing ${JSON.stringify(shown)}, #pstatus ${JSON.stringify(announced)}, #bootshow during the boot ${bootshow}, qed64:api ${apiEvent}, buffer after edit ${stored === SENTINEL ? "untouched" : JSON.stringify(stored)}`);
     await context.close();
   }
 
