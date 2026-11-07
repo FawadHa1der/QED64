@@ -1379,7 +1379,11 @@ frame at once). Embedders do not need their own throttle.
   lean4monaco logs every error reply it receives to the console (its own
   TODO; the relay's death and restart errors already go there), so typing
   with the suggest widget open can print one such line per superseding
-  change.
+  change. A queued request the client cancels prints the coalescer's
+  -32800 answer ("QED64: the client cancelled this request before it
+  reached the checker") the same way; since the front door advertised
+  signature help, these are most of the lines while typing (HARDENING #91
+  has the counts).
 - Every forwarded change opens the window again. A barrier (didOpen,
   didClose, a ranged change) or another document's change forwards a held
   change at once, inside the window its predecessor opened: barriers never
@@ -1905,7 +1909,8 @@ reads them there, because `docs/history/` is not in the package's `files`.
 - **The stock page's do-soon UX batch, and two front-door capabilities
   (2026-11-07; HARDENING #88, #89, #90, #91, and the 2026-11-07 notes on #87
   and #56):** what a `?embed=1` frame shows or does differently, and, for the
-  first item, every client of the front door.
+  first item, every client of the front door; for the second item's halted
+  note, every `LspRelay` user.
   - **Signature help and the InfoView's trace search** (E3.6, I4.13, #91;
     worker tier: the stock page, a `?embed=1` frame, lean4game, the proof
     sheets). The front door's `initialize` now also answers upstream's
@@ -1916,7 +1921,11 @@ reads them there, because `docs/history/` is not in the package's `files`.
     - A Monaco client (lean4monaco) now shows Lean's parameter popup after a
       space that follows a function or theorem, and on Ctrl/Cmd+Shift+Space;
       the FileWorker answers it. lean4game's FileWorker is stock Lean's
-      request handling, so its editor and typewriter show the popup too.
+      request handling, so its editor mode shows the popup too; its
+      typewriter's one-line editor has an in-memory model outside
+      lean4monaco's `file:///levels` document selector, so it sends nothing
+      (inferred from code, not measured). For lean4game, the Load and Console
+      items below are about its editor mode.
     - **Load.** While the popup shows, Monaco asks again on each key and
       cancels the request before. In QED64's edit-storm lane (57 keys at
       150 ms each under `import Mathlib`) typing sent 0.6-0.8 more requests
@@ -1937,7 +1946,9 @@ reads them there, because `docs/history/` is not in the package's `files`.
       sends no signatureHelp. Deleting `signatureHelpProvider` from the
       `initialize` result in a client's own translation layer removes the
       popup and the shortcut (lean4game: next to its
-      `semanticTokensProvider.range` edit in `game-translation.ts`).
+      `semanticTokensProvider.range` edit in `game-translation.ts`). A
+      `?embed=1` frame has neither, so it has no opt-out; Escape closes the
+      popup.
     - An InfoView 0.11.1 shows a magnifier on trace messages; its search runs
       the FileWorker's own `Lean.Widget.highlightMatches`. A screenshot of
       trace messages shows one more icon.
