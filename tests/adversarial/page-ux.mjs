@@ -40,7 +40,8 @@
 //                 reaches Lean (folding is by indentation). Chromium;
 //                 Firefox once per change.
 //   layout        (UX L1.4, L1.6, L1.7) at 1400, 768, 721 and 375 px
-//                 wide, the bar with Copy link shown: no scroll either way,
+//                 wide, the bar with its buttons shown (Open…, Download, Copy
+//                 link; the title ellipsizes first): no scroll either way,
 //                 the split fills from the bar to the window's bottom,
 //                 Monaco fills its pane; side by side down to 721 px,
 //                 stacked at 375; a long pill label ends in an ellipsis with
@@ -64,6 +65,17 @@
 //                 relay's one note says the checker crashed repeatedly on this
 //                 file (not that imports could not be loaded), and an edit
 //                 re-arms it to ready. Chromium.
+//   file-actions  (UX F1.5, F1.3, HARDENING #89) Open… and Download show in
+//                 the bar; Ctrl/Cmd+S downloads the editor's text as
+//                 QED64.lean and Ctrl/Cmd+O opens a file chooser, both keys
+//                 taken from the browser (defaultPrevented at window); the
+//                 chosen file replaces the text as one undoable edit
+//                 (Ctrl/Cmd+Z brings the text back); the Open… button opens
+//                 the chooser too, the next download keeps the file's name,
+//                 and the autosave keeps the file; a binary file is refused
+//                 on the Open… button for 2 s. Its embed half (no
+//                 #fileinput, Ctrl+S left alone under ?embed=1) is page-api.mjs
+//                 embed-code. Chromium and Firefox.
 //
 // Usage: node tests/adversarial/page-ux.mjs [--url http://localhost:5199/] [--only <scenario>] [--browser chromium|firefox] [--run-dir <dir>]
 // Run it through the host browser lock. Exit 0 all pass, 1 a scenario failed,
@@ -76,7 +88,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { arg, browserName, fetchJson, launchBrowser, onlyMatches, resolveTarget, root, runDir, teeLog } from "./harness.mjs";
 
-export const SCENARIOS = ["a11y-status", "share-link", "example-undo", "buffer-flush", "look", "layout", "show-editor", "content-halt"];
+export const SCENARIOS = ["a11y-status", "share-link", "example-undo", "buffer-flush", "look", "layout", "show-editor", "content-halt", "file-actions"];
 /** The scenarios `--only` selects, in run order. An empty selection is refused (exit 3), never "0/0 pass". */
 export const selectScenarios = (only) => SCENARIOS.filter((name) => !only || onlyMatches(name, only));
 /** 0 all pass, 1 a scenario failed, 3 nothing was judged. */
@@ -106,6 +118,8 @@ const TYPED = "example : True := trivial";
 // (pipeline/snapshot/fileworker-exit-probe.mjs EVAL_EXIT); main.ts PHASE_LABEL.halted is what the pill must then say.
 const HALT_DOC = "example : True := trivial\n\n#eval (IO.Process.exit 3 : IO Unit)\n";
 const HALTED_LABEL = "the checker keeps crashing on this content — edit the file to retry";
+// file-actions: the visitor's text, and the file they open (both Init only).
+const FILE_B = "theorem b : 2 + 2 = 4 := rfl\n";
 
 // ---------- helpers, copied from infoview-actions.mjs (lanes do not import each other's internals; `text` and
 // `cursorAt` are for the scenarios that follow) ----------
@@ -512,7 +526,7 @@ async function main() {
           "no sideways scroll": m.scrollW <= m.innerWidth,
           "no vertical scroll": m.scrollH <= m.innerHeight,
           "the bar fits": m.barScrollW <= m.barClientW,
-          "Copy link shows in the bar": !!m.pageactions && m.pageactions.x + m.pageactions.w <= m.innerWidth,
+          "the page's buttons show in the bar": !!m.pageactions && m.pageactions.x + m.pageactions.w <= m.innerWidth,
           "the split runs from the bar to the window's bottom": !!split && near(split.y, bar.y + bar.h) && near(split.y + split.h, m.innerHeight),
           ...(stacked
             ? {
@@ -612,6 +626,66 @@ async function main() {
       };
       const failures = Object.keys(checks).filter((k) => !checks[k]);
       record("content-halt", failures.length === 0, `failed ${JSON.stringify(failures)}; at the halt ${JSON.stringify(seen)}; after the edit ${after}; page errors ${errors.length} (other ${JSON.stringify(unexpected)})`);
+      await context.close();
+    },
+    "file-actions": async () => {
+      // UX F1.5, F1.3. On the base build there are no Open… and Download buttons, and both keys reach the browser: no
+      // download, no file chooser.
+      const { page, context, errors } = await open(INIT_DOC);
+      // A capture listener on window registered after the page's own runs after it (same node, registration order; the
+      // page's stopPropagation does not stop it), so it sees what the page decided.
+      await page.evaluate(() => {
+        globalThis.__fileKeys = [];
+        window.addEventListener("keydown", (e) => { if ((e.ctrlKey || e.metaKey) && /^[so]$/i.test(e.key ?? "")) globalThis.__fileKeys.push({ key: e.key, prevented: e.defaultPrevented }); }, true);
+      });
+      const buttons = await page.evaluate(() => ["fileopen", "filesave"].map((id) => { const b = document.getElementById(id); return !!b && b.getClientRects().length > 0; }));
+      const download = (act) => Promise.all([page.waitForEvent("download", { timeout: 15000 }), act()])
+        .then(async ([d]) => ({ name: d.suggestedFilename(), text: fs.readFileSync(await d.path(), "utf8") }), (e) => ({ error: String(e).split("\n")[0].slice(0, 160) }));
+      const choose = (act) => Promise.all([page.waitForEvent("filechooser", { timeout: 15000 }), act()]).then(([c]) => c, () => null);
+      const mine = { name: "Mine.lean", mimeType: "text/plain", buffer: Buffer.from(FILE_B) };
+      await page.evaluate(() => globalThis.qed64.api.focus());
+      const saved = await download(() => page.keyboard.press("ControlOrMeta+KeyS"));
+      const chooser = await choose(() => page.keyboard.press("ControlOrMeta+KeyO"));
+      const single = chooser ? !chooser.isMultiple() : false;
+      if (chooser) await chooser.setFiles(mine);
+      const opened = await waitFor(async () => ((await text(page)) === FILE_B ? true : null), 10000);
+      const afterOpen = await page.evaluate(() => { const e = globalThis.qed64.editor, p = e.getPosition(); return { canUndo: e.getModel().canUndo(), cursor: `${p.lineNumber}:${p.column}`, focus: e.hasTextFocus() }; });
+      await page.keyboard.press("ControlOrMeta+KeyZ"); // the open gave the editor the keyboard
+      const undone = await waitFor(async () => ((await text(page)) === INIT_DOC ? true : null), 5000);
+      const chooser2 = await choose(() => page.click("#fileopen", { timeout: 5000 }));
+      if (chooser2) await chooser2.setFiles(mine);
+      const reopened = await waitFor(async () => ((await text(page)) === FILE_B ? true : null), 10000);
+      const named = await download(() => page.click("#filesave", { timeout: 5000 }));
+      await sleep(1000); // past the 400 ms save debounce
+      const stored = await page.evaluate(() => localStorage.getItem("qed64.buffer"));
+      // A binary file is refused on the button (the pill is render(status)); the document stays.
+      const chooser3 = await choose(() => page.click("#fileopen", { timeout: 5000 }));
+      if (chooser3) await chooser3.setFiles({ name: "bin.lean", mimeType: "application/octet-stream", buffer: Buffer.from([0x74, 0, 0x65]) });
+      const refusedLabel = await waitFor(() => page.evaluate(() => { const t = document.getElementById("fileopen")?.textContent; return t && t !== "Open…" ? t : null; }), 3000, 50);
+      await sleep(2500); // the label's 2 s
+      const labelLater = await page.evaluate(() => document.getElementById("fileopen")?.textContent ?? null);
+      const textAfterRefusal = await text(page);
+      const phase = await page.evaluate(() => globalThis.qed64.api.settled({ timeoutMs: 120000 }).then((s) => s.phase, (e) => `threw ${e}`));
+      const keys = await page.evaluate(() => globalThis.__fileKeys.slice());
+      const checks = {
+        "Open… and Download show in the bar": buttons.every(Boolean),
+        "Ctrl/Cmd+S downloads the editor's text": saved.text === INIT_DOC,
+        "as QED64.lean": saved.name === "QED64.lean",
+        "Ctrl/Cmd+O opens a file chooser for one file": !!chooser && single,
+        "the chosen file replaces the text": !!opened,
+        "the open is undoable: Ctrl/Cmd+Z brings the text back": afterOpen.canUndo === true && !!undone,
+        "the open puts the cursor at 1:1 and the keyboard in the editor": afterOpen.cursor === "1:1" && afterOpen.focus === true,
+        "the Open… button opens the chooser too": !!chooser2 && !!reopened,
+        "the next download keeps the file's name": named.name === "Mine.lean" && named.text === FILE_B,
+        "the autosave keeps the opened file": stored === FILE_B,
+        "a binary file is refused on the button, the text left alone": refusedLabel === "not a text file" && textAfterRefusal === FILE_B,
+        "the button's own label comes back": labelLater === "Open…",
+        "the page took both keys from the browser": ["s", "o"].every((k) => keys.some((x) => x.key.toLowerCase() === k)) && keys.every((x) => x.prevented),
+        "ready after the open": phase === "ready",
+        "no page errors": errors.length === 0,
+      };
+      const failures = Object.keys(checks).filter((k) => !checks[k]);
+      record("file-actions", failures.length === 0, `failed ${JSON.stringify(failures)}; buttons ${JSON.stringify(buttons)}; key download ${JSON.stringify(saved)}; button download ${JSON.stringify(named)}; after the open ${JSON.stringify(afterOpen)}; refusal ${JSON.stringify([refusedLabel, labelLater])}; keys ${JSON.stringify(keys)}; phase ${phase}; page errors ${JSON.stringify(errors)}`);
       await context.close();
     },
   };

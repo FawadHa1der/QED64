@@ -19,7 +19,9 @@
       background: #1b1d29; color: #cfd2e6; font: 13px/1.5 system-ui, sans-serif;
       border-bottom: 1px solid #2c2f40;
     }
-    #bar .title { font-weight: 600; letter-spacing: .02em; color: #fff; white-space: nowrap; }
+    /* The title gives way first when the bar is crowded (the page's buttons below about 1000 px, a long pill label):
+       an ellipsis, with the full provenance in #buildinfo's tooltip. */
+    #bar .title { font-weight: 600; letter-spacing: .02em; color: #fff; white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
     #bar .title small { font-weight: 400; color: #9aa0b8; margin-left: 6px; }
     #examples, #pageactions button {
       background: #262a3d; color: #cfd2e6; border: 1px solid #3a3f58;
@@ -32,8 +34,9 @@
     #pageactions button { white-space: nowrap; cursor: pointer; }
     #pageactions button:hover { color: #fff; }
     #pill {
-      /* min-width 0: a long label ends in an ellipsis (its whole text is the tooltip) instead of widening the bar. */
-      display: flex; align-items: center; gap: 7px; margin-left: auto; min-width: 0; overflow: hidden;
+      /* min-width 13ch, not auto: a long label ends in an ellipsis (its whole text is the tooltip) instead of widening
+         the bar, and the short ones (`ready`, `elaborating`) keep their room in a crowded bar, where the title gives way. */
+      display: flex; align-items: center; gap: 7px; margin-left: auto; min-width: 13ch; overflow: hidden;
       background: #262a3d; border: 1px solid #3a3f58; border-radius: 999px;
       padding: 3px 12px; font: 12px ui-monospace, monospace; max-width: 55%;
     }
@@ -72,7 +75,7 @@
        editor. The widgets showcase injects the same stack at the same width into its frame. */
     @media (max-width: 720px) {
       #bar { flex-wrap: wrap; row-gap: 4px; }
-      #bar .title { min-width: 0; overflow: hidden; text-overflow: ellipsis; flex: 1 1 auto; }
+      #bar .title { flex: 1 1 auto; }
       #pill { max-width: 100%; flex: 1 1 100%; margin-left: 0; }
       #split { flex-direction: column; }
       #editor, #infoview { flex: 1 1 50%; min-height: 0; }
@@ -183,6 +186,8 @@
       <option value="init">Lean core — induction</option>
     </select>
     <span id="pageactions" hidden>
+      <button id="fileopen" type="button" title="Open a .lean file (Ctrl/Cmd+O)">Open…</button>
+      <button id="filesave" type="button" title="Download this file as .lean (Ctrl/Cmd+S)">Download</button>
       <button id="sharebtn" type="button" title="Copy a link to this code">Copy link</button>
     </span>
     <div id="pill" class="busy"><span class="dot"></span><span id="ptext">booting…</span><span id="ptime"></span></div>

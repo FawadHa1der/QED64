@@ -20,7 +20,7 @@ import { createTestHatch } from "./test-hatch";
 import { createCheckFallback } from "./check-fallback";
 import { STAGES, createBootChecklist } from "./boot-checklist";
 import { CAPABILITY_BOOT_NOTICE, NETWORK_HALT_LABEL, STALE_NOTICE, bootFailLabel, createStaleWatch, isNetworkCause } from "./stale-notice";
-import { installShareButton } from "./file-io";
+import { installFileActions, installShareButton } from "./file-io";
 import { MATHLIB_GAPS, coverageHint } from "./mathlib-coverage";
 
 // The embedder-facing surface (docs/EMBEDDING.md §2), published synchronously
@@ -433,6 +433,15 @@ if (!EMBED) {
   // "Copy link" (file-io.ts): a link to the editor's text, never this page's own URL (HARDENING #77). Before the
   // editor is mounted there is no text, and the button says "nothing to share".
   installShareButton(document.getElementById("sharebtn") as HTMLButtonElement, () => pageApi.api.getDocument()?.text ?? "");
+  // Open… and Download (file-io.ts; HARDENING #89), with Ctrl/Cmd+O and Ctrl/Cmd+S: installed at module start, so the
+  // keys never reach the browser's Open File and Save Page As, during the boot either. A file opens as one undoable
+  // edit (the #86 rule: setDocument, never setValue); before the editor exists it becomes the boot document or waits.
+  // A refusal is said on the button and to the screen reader (#pstatus), not on the pill (render(status)).
+  installFileActions({
+    getText: () => pageApi.api.getDocument()?.text ?? null,
+    setText: (text) => pageApi.api.setDocument(text, { cursor: { lineNumber: 1, column: 1 }, focus: true }),
+    announce,
+  }, { open: document.getElementById("fileopen") as HTMLButtonElement, save: document.getElementById("filesave") as HTMLButtonElement });
   pageActions.hidden = false;
   // The curated-Mathlib note beside the pill (mathlib-coverage.ts; UX M1.5, HARDENING #89): while Lean reports an
   // unknown name under `import Mathlib` or `import Mathlib.Tactic`, the name may be from an area the umbrella leaves
