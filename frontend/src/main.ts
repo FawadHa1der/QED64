@@ -25,6 +25,7 @@ import { CAPABILITY_BOOT_NOTICE, NETWORK_HALT_LABEL, STALE_NOTICE, bootFailLabel
 import { installFileActions, installShareButton } from "./file-io";
 import { MATHLIB_GAPS, coverageHint } from "./mathlib-coverage";
 import { installSplitter } from "./splitter";
+import { createSearchHint } from "./search-hint";
 
 // The embedder-facing surface (docs/EMBEDDING.md §2), published synchronously
 // at module start — before any of the page's own listeners matter — so an
@@ -297,37 +298,14 @@ type PageStatus = RelayStatus; // lastDeath is on RelayStatus since the relay co
 // again, because the rule was "before the first ready").
 let everServed = false;
 
-// GAP 4: the first library search of a Lean session (`exact?`/`apply?`/`rw?`)
-// indexes Mathlib for about a minute, and an edit inside the proof meanwhile
-// drops the partial index and starts over (126 s measured instead of 62 s,
-// UX FILL-A2, HARDENING #88). Past 3 s of elaborating on such a document the
-// pill says both instead of a bare elapsed ticker. UI-only: the timer lives
-// here, never in the relay.
-const SEARCH_RE = /\b(exact\?|apply\?|rw\?)/;
-const SEARCH_HINT = "first library search in this Lean session — about a minute; editing this proof restarts it";
-const SEARCH_HINT_AFTER_MS = 3000;
+// GAP 4: the first library search of each index family in a Lean session takes about a minute, and an edit inside the
+// proof meanwhile starts it over; past 3 s of elaborating the pill says both (frontend/src/search-hint.ts, HARDENING
+// #88).
 let docText: () => string = () => "";
-let searchSession = ""; // the session the warm-index fact belongs to (a reboot loses the index)
-let searchIndexWarm = false;
-let elaboratingSince: number | null = null;
-let searchSeen = false; // the document matched SEARCH_RE during this elaborating stretch
-let hintShown = false;
-function trackSearch(s: PageStatus): void {
-  if (s.session !== searchSession) { searchSession = s.session; searchIndexWarm = false; elaboratingSince = null; searchSeen = false; hintShown = false; }
-  if (s.phase === "elaborating") {
-    if (elaboratingSince === null) elaboratingSince = performance.now();
-    return;
-  }
-  if (elaboratingSince !== null && (searchSeen || SEARCH_RE.test(docText()))) searchIndexWarm = true; // a search completed: the index is warm
-  elaboratingSince = null; searchSeen = false; hintShown = false;
-}
+const searchHint = createSearchHint();
 function tickSearchHint(): void {
-  if (elaboratingSince === null || searchIndexWarm || hintShown) return;
-  if (!SEARCH_RE.test(docText())) return;
-  searchSeen = true;
-  if (performance.now() - elaboratingSince < SEARCH_HINT_AFTER_MS) return;
-  hintShown = true;
-  ui.progress(SEARCH_HINT);
+  const hint = searchHint.tick(docText());
+  if (hint) ui.progress(hint);
 }
 
 // GAP 3: a session that booted light (init only) and whose header now names
@@ -347,7 +325,7 @@ function renderStatus(s: PageStatus) {
   // on every ready-phase status the relay forwards (several a second).
   if (s.phase === "ready" && !wasReady) sampleMemoryNow?.();
   wasReady = s.phase === "ready";
-  trackSearch(s);
+  searchHint.status(s, docText());
   if (s.phase === "halted") {
     const d = s.lastDeath ?? null;
     // HARDENING #72: a stack pause is not a failed boot, even before the first
@@ -381,7 +359,7 @@ function renderStatus(s: PageStatus) {
   // THIS reboot happens, not on the sticky lastDeath a later user restart
   // would inherit).
   const wedged = s.relay === "rebooting" && s.rebootReason === "wedged";
-  const label = widening ? `loading ${widening}…` : wedged ? WEDGED_LABEL : s.phase === "elaborating" && hintShown ? SEARCH_HINT : PHASE_LABEL[s.phase];
+  const label = widening ? `loading ${widening}…` : wedged ? WEDGED_LABEL : s.phase === "elaborating" && searchHint.shown ? searchHint.shown : PHASE_LABEL[s.phase];
   if (s.phase === "booting" || s.phase === "starting" || s.phase === "elaborating" || s.phase === "dead") ui.busy(label);
   else ui.idle(label);
   if (s.phase === "ready" || s.phase === "headerRefused") bootFinish();

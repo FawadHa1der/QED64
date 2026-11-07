@@ -2010,3 +2010,10 @@ reads them there, because `docs/history/` is not in the package's `files`.
     `renameProvider` out.
   - No API change: `EMBED_API_REVISION` and the worker `REVISION` are
     unchanged.
+- **The first-library-search hint counts every search and each index
+  (2026-11-07, page tier; HARDENING #88's 2026-11-07 note):** the pill's
+  hint, in a frame too, now also shows for `try?` and Mathlib's `hint` and
+  `observe`, and for the first search of each of a Lean session's three
+  indexes (the `exact?` family, `rw?`, `rw??`), so a first `rw?` after an
+  `exact?` gets it; for `rw??` alone it says "about half a minute". No API
+  change.
