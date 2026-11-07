@@ -1902,3 +1902,97 @@ reads them there, because `docs/history/` is not in the package's `files`.
     (B1.4; not visible in a frame). Every element id is unchanged.
   - No API change: `EMBED_API_REVISION` and the worker `REVISION` are
     unchanged.
+- **The stock page's do-soon UX batch, and two front-door capabilities
+  (2026-11-07; HARDENING #88, #89, #90, #91, and the 2026-11-07 notes on #87
+  and #56):** what a `?embed=1` frame shows or does differently, and, for the
+  first item, every client of the front door.
+  - **Signature help and the InfoView's trace search** (E3.6, I4.13, #91;
+    worker tier: the stock page, a `?embed=1` frame, lean4game, the proof
+    sheets). The front door's `initialize` now also answers upstream's
+    `signatureHelpProvider` (`{workDoneProgress: false, triggerCharacters:
+    [" "]}`) and `experimental.rpcProvider.highlightMatchesProvider`.
+    `moduleHierarchyProvider`, `rpcWireFormat` and `colorProvider` stay out
+    (`tests/unit/server-capabilities.test.ts` names each difference).
+    - A Monaco client (lean4monaco) now shows Lean's parameter popup after a
+      space that follows a function or theorem, and on Ctrl/Cmd+Shift+Space;
+      the FileWorker answers it. lean4game's FileWorker is stock Lean's
+      request handling, so its editor and typewriter show the popup too.
+    - **Load.** While the popup shows, Monaco asks again on each key and
+      cancels the request before. In QED64's edit-storm lane (57 keys at
+      150 ms each under `import Mathlib`) typing sent 0.6-0.8 more requests
+      per key, most of them answered cancelled by the edit coalescer before
+      they reached Lean; the pool did not grow, and `ready` after the typing
+      came within 1 % of the time without the entry (#91). Each answered
+      request waits for the command at the cursor, so in a slow proof it
+      holds one of the coalescer's in-flight slots meanwhile, as the
+      InfoView's goal request does (§7.8).
+    - **Console.** A cancelled request comes back as an error reply, which
+      lean4monaco prints with `console.error`: Lean's empty RequestCancelled,
+      or the coalescer's "QED64: the client cancelled this request before it
+      reached the checker" (both -32800). Typing prints more of these lines
+      (#91 has the count); an allowlist that pairs only the empty line with
+      -32800 may need the coalescer's text too.
+    - **Opt-outs.** Monaco's `editor.parameterHints.enabled: false` in
+      lean4monaco's `vscode` options keeps only the shortcut: typing then
+      sends no signatureHelp. Deleting `signatureHelpProvider` from the
+      `initialize` result in a client's own translation layer removes the
+      popup and the shortcut (lean4game: next to its
+      `semanticTokensProvider.range` edit in `game-translation.ts`).
+    - An InfoView 0.11.1 shows a magnifier on trace messages; its search runs
+      the FileWorker's own `Lean.Widget.highlightMatches`. A screenshot of
+      trace messages shows one more icon.
+    - Re-run your typing and console lanes at the pin that brings this. The
+      worker `REVISION` stays "1": an older front door in a mixed cache
+      advertises less, nothing more.
+  - **Boot and crash messages** (FILL-A2, P1.1, P1.15, B1.1, FILL-A6,
+    FILL-A7, #88). `LspRelay`'s halted note (library tier: every `LspRelay`
+    user) now reads "the checker crashed repeatedly on this file (it may have
+    run out of memory), so checking is paused. Edit the file to check it
+    again."; its position, severity, source and the halted request error are
+    unchanged. **Served, not ready, decides** (both modes): the failure card
+    shows only for a halt before any session served. A halt after a serve,
+    even before the first `ready`, finishes the boot (`status().boot` is
+    `done`, not `failed`; no card), and `phase: "halted"`, `lastDeath` and
+    the `death` event carry the cause as before (§7.2). The pill then reads
+    "the checker keeps crashing on this content — edit the file to retry"
+    (for a network-like cause, "the connection dropped while Lean was loading
+    — edit the file to retry") with the death in its tooltip; before a serve
+    it reads "could not start — " and the card's words. The card says "the
+    download was interrupted — …" for a network-like cause (kind `network`,
+    or `WORKER_SCRIPT_LOAD_FAILED`), the no-Memory64 card keeps only its
+    advice, later visits start in "a few seconds", and the first library
+    search's hint names the restart an edit causes; `boot.message` is still
+    the death's message. `#bootshow` is in the frame's markup, hidden and not
+    installed (§3). No automatic retry on `online`.
+  - **Files and the curated Mathlib** (F1.5, F1.3, M1.5, F1.11, #89). Open…
+    and Download (`#fileopen`, `#filesave` in `#pageactions`) and the note
+    `#mathlibnote` (after `#pill`; the stale page's "Updated — reload"
+    button now lands between them) are in the frame's markup, hidden and not
+    installed: no `#fileinput`, and Ctrl/Cmd+S and Ctrl/Cmd+O reach the frame
+    as before (§3). In both modes the bar's title gives way first (an
+    ellipsis) and the pill keeps at least 13ch; the version tooltip
+    (`#buildinfo`'s title) keeps the provenance after `ready` and names the
+    Mathlib (a build-time define from the toolchain record; omitted under
+    another Vite config).
+  - **Panes and the InfoView's look** (L1.2, S1.7, A1.4; #87's 2026-11-07
+    paragraph). `#splitter` sits between `#editor` and `#infoview`, hidden and
+    not installed in the frame, so the editor keeps 55 % of the row
+    (`#editor` is now `flex: 0 0 var(--split, 55%)`; a sibling selector such
+    as `#editor + #infoview` no longer matches). In both modes the InfoView
+    uses lean4web's display defaults: the expected type starts collapsed,
+    goals after the first are smaller and dimmed, and a subterm's type
+    tooltip opens on click, not on hover. Its iframe is labelled "Lean
+    InfoView" (`aria-label`).
+  - **New editor menu entries** (I3.4, E5.3, E5.4; #56's 2026-11-07 note,
+    #90). In both modes the right-click menu and F1 palette offer "Lean 4:
+    Copy Goal to Comment" (the goal as a `/- … -/` block above the cursor's
+    line), "Go to References" and "Peek References" (Shift+F12), and "Rename
+    Symbol" (F2) for `lean4`. References and rename are answered from the
+    FileWorker's `textDocument/documentHighlight`, sent through the editor's
+    own client only when used. A rename is refused (an inline message) until
+    `status()` is `ready` on the editor's current version, and lands as one
+    undoable edit. Each of these edits reaches the embedder as one `document`
+    event. The front door still leaves `referencesProvider` and
+    `renameProvider` out.
+  - No API change: `EMBED_API_REVISION` and the worker `REVISION` are
+    unchanged.
