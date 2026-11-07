@@ -117,24 +117,34 @@ describe("focus after an InfoView action (UX parity FILL-A1, HARDENING #85)", ()
 });
 
 describe("the EditorRpcApi wrapper and its install hook", () => {
-  it("keeps every other member and replaces only the three editor actions", async () => {
+  it("keeps every other member and replaces only the three editor actions (and Restart File, below)", async () => {
     const ed = fakeEditor("x\n");
     const unsupported = (..._a: unknown[]): Promise<void> => { throw new Error("unsupported"); };
     const api = { startClientRequest: () => 1, applyEdit: unsupported, insertText: unsupported, showDocument: unsupported };
-    const wrapped = wrapEditorRpcApi(api, () => ed);
+    const wrapped = wrapEditorRpcApi(api, () => ed, () => {});
     expect(wrapped.startClientRequest).toBe(api.startClientRequest);
     await wrapped.applyEdit({ changes: { [URI]: [{ range: range(0, 0, 0, 1), newText: "y" }] } } as never);
     expect(ed.text()).toBe("y\n");
     // No editor yet (the InfoView can register before the editor mounts): a no-op, not a throw.
-    await expect(wrapEditorRpcApi(api, () => undefined).showDocument({ uri: URI } as never)).resolves.toBeUndefined();
+    await expect(wrapEditorRpcApi(api, () => undefined, () => {}).showDocument({ uri: URI } as never)).resolves.toBeUndefined();
+  });
+  it("replaces Restart File with the page's restart (lean4monaco's re-open reached Lean as a same-text didChange; F1.13)", async () => {
+    const calls: string[] = [];
+    const api = { saveConfig: 1, restartFile: async (_uri: string) => { calls.push("lean4monaco"); } };
+    // No editor yet: the restart does not need one.
+    const wrapped = wrapEditorRpcApi(api, () => undefined, () => { calls.push("restart"); });
+    await wrapped.restartFile(URI);
+    expect(calls).toEqual(["restart"]);
+    expect(wrapped.saveConfig).toBe(1);
   });
   it("installs the hook the patched lean4monaco page module calls", () => {
-    installInfoviewEditorApi(() => undefined);
+    installInfoviewEditorApi(() => undefined, () => {});
     const hook = (globalThis as unknown as { __qed64InfoviewEditorApi?: (a: object) => Record<string, unknown> }).__qed64InfoviewEditorApi;
     expect(typeof hook).toBe("function");
     const api = hook!({ saveConfig: 1 });
     expect(api.saveConfig).toBe(1);
     expect(typeof api.applyEdit).toBe("function");
+    expect(typeof api.restartFile).toBe("function");
   });
   it("sameUri compares percent-decoded spellings", () => {
     expect(sameUri("file:///a%20b.lean", "file:///a b.lean")).toBe(true);

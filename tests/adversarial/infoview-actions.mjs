@@ -35,6 +35,12 @@
 //                     click did not take the focus fails, never passes. Firefox
 //                     kept the keys in the iframe; it proves the fix only under
 //                     `--browser firefox`, and Chromium is its control.
+//   restart-file      init only (UX parity F1.13, HARDENING #56's F1.13 note):
+//                     `#eval IO.monoNanosNow` and an `omega` example; a click on
+//                     the InfoView's own Restart File button must reboot the
+//                     session (reason "user"), settle ready on a new session,
+//                     print a new #eval value and show the goal again. Before
+//                     the fix the click re-checked nothing.
 //
 // Usage: node tests/adversarial/infoview-actions.mjs [--url http://localhost:5199/] [--only <scenario>] [--browser chromium|firefox] [--run-dir <dir>]
 // Run it through the host browser lock. Exit 0 all pass, 1 a scenario failed,
@@ -46,7 +52,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { arg, browserName, fetchJson, launchBrowser, onlyMatches, resolveTarget, root, runDir, teeLog } from "./harness.mjs";
 
-export const SCENARIOS = ["capability-flag", "try-this-apply", "conv-generate", "foreign-show", "focus-return"];
+export const SCENARIOS = ["capability-flag", "try-this-apply", "conv-generate", "foreign-show", "focus-return", "restart-file"];
 /** The scenarios `--only` selects, in run order. An empty selection is refused
  * (exit 3): `--only foreign-show` once ran nothing and reported "0/0 pass". */
 export const selectScenarios = (only) => SCENARIOS.filter((name) => !only || onlyMatches(name, only));
@@ -62,9 +68,11 @@ const SEL = {
   panelSummary: "summary",
   goalTarget: "div:has(> .goal-vdash)",
   selected: "[class*=highlight-selected]",
+  restartFile: ".restart-file-button",
 };
 const DOC_A = "example (n : Nat) : n + 0 = n := by simp?\n";
 const DOC_B = "import Mathlib.Tactic.Widget.Conv\n\nexample (a b c : Nat) : a + (b + c) = (c + b) + a := by\n  conv?\n  omega\n";
+const DOC_R = "#eval IO.monoNanosNow\n\nexample (a b : Nat) : a + b = b + a := by\n  omega\n";
 // foreign-show: a go-to-definition target in Mathlib, and the own-document
 // control's range (`n + 0 = n` in DOC_A). The probe's seqNums sit far above the
 // iframe Rpc's own, which count up from 1.
@@ -218,6 +226,8 @@ async function installDiagTap(page) {
   });
 }
 const errorDiags = (page) => page.evaluate(() => (globalThis.__diags?.diagnostics ?? []).filter((d) => d.severity === 1).map((d) => d.message.slice(0, 120)));
+/** The `#eval` output on line 1 the client received last (an information diagnostic). */
+const evalOutput = (page) => page.evaluate(() => (globalThis.__diags?.diagnostics ?? []).find((d) => d.range.start.line === 0 && d.severity === 3)?.message ?? null);
 
 async function main() {
   try { browserName(); } catch (e) { console.error(`infoview-actions: refused — ${e.message}`); process.exit(3); }
@@ -370,6 +380,39 @@ async function main() {
       const failures = rounds.flatMap((r, i) => r.failures.map((f) => `round ${i + 1} (${r.kind}): ${f}`));
       record("focus-return", failures.length === 0 && errors.length === 0, `${browserName()}; failed checks ${JSON.stringify(failures)}; rounds ${JSON.stringify(rounds)}; page errors ${JSON.stringify(errors)}`);
       await page.screenshot({ path: path.join(dir, `focus-return-${browserName()}.png`) }).catch(() => {});
+      await context.close();
+    },
+
+    "restart-file": async () => {
+      // UX parity F1.13 (HARDENING #56's F1.13 note): before the fix the click re-checked nothing (same #eval value, no reboot).
+      const { page, context, errors } = await boot("-- restart-file\n", 300000);
+      await installDiagTap(page); // before the document, so its publish is seen
+      await page.evaluate(async (t) => { const api = globalThis.qed64.api; await api.setDocument(t); await api.settled({ timeoutMs: 120000 }); }, DOC_R);
+      const v1 = await waitFor(() => evalOutput(page), 10000);
+      const before = await page.evaluate(() => {
+        globalThis.__reboots = [];
+        globalThis.qed64.api.on("reboot", (p) => globalThis.__reboots.push(p));
+        return globalThis.qed64.api.status().session;
+      });
+      await cursorAt(page, 4, 3);
+      const iv = page.frameLocator(SEL.frame);
+      const button = iv.locator(SEL.restartFile).first();
+      const found = await button.waitFor({ timeout: 30000 }).then(() => true, () => false);
+      let reboot = null, settled = null, v2 = null, goalNoMove = false, goalAfterMove = false;
+      if (found) {
+        await button.click();
+        reboot = await waitFor(() => page.evaluate((b) => globalThis.__reboots.find((x) => x.fromSession === b) ?? null, before), 30000);
+        settled = reboot ? await page.evaluate((b) => globalThis.qed64.api.settled({ afterSession: b, timeoutMs: 180000 }).then((s) => ({ phase: s.phase, session: s.session }), (e) => ({ error: String(e?.message ?? e) })), before) : null;
+        v2 = await waitFor(async () => { const v = await evalOutput(page); return v !== null && v !== v1 ? v : null; }, 20000);
+        // The InfoView writes `a b : Nat` with a no-break space.
+        const goal = () => iv.locator("body").innerText().then((t) => /a b : Nat/.test(t.replace(/\u00a0/g, " ")) || null, () => null);
+        goalNoMove = !!(await waitFor(goal, 20000, 500));
+        if (!goalNoMove) { await cursorAt(page, 3, 1); await cursorAt(page, 4, 3); goalAfterMove = !!(await waitFor(goal, 20000, 500)); }
+      }
+      const ok = found && reboot?.reason === "user" && settled?.phase === "ready" && settled.session !== before
+        && v1 !== null && v2 !== null && (goalNoMove || goalAfterMove) && errors.length === 0;
+      record("restart-file", ok, `button ${found}; reboot ${JSON.stringify(reboot)}; settled ${JSON.stringify(settled)}; #eval before ${v1} after ${v2}; goal without a cursor move ${goalNoMove}, after one ${goalAfterMove}; page errors ${JSON.stringify(errors)}`);
+      await page.screenshot({ path: path.join(dir, "restart-file.png") }).catch(() => {});
       await context.close();
     },
   };

@@ -19,6 +19,11 @@
 //   * showDocument: reveals and selects the range in this document; other
 //     documents (go-to-definition into Mathlib) cannot be opened and are
 //     ignored.
+// It also replaces `restartFile` (the InfoView's Restart File button): lean4monaco
+// sends didClose + didOpen, which the front door turns into a full-text didChange of
+// the same text (public/workers/lsp-front-door.js; lean4game's next level relies on
+// that), so the button re-checked nothing. Here it restarts the page's Lean session
+// (the `restart` callback: the page API's restart(); UX parity F1.13, HARDENING #56).
 // The page installs the wrapper through `globalThis.__qed64InfoviewEditorApi`,
 // which the patched lean4monaco page module (frontend/build/lean4monaco-fixes.mjs)
 // calls when it registers the API for the InfoView iframe.
@@ -130,9 +135,10 @@ export function showDocumentIn(editor: EditsEditor, show: { uri: string; selecti
   return true;
 }
 
-/** The InfoProvider's EditorRpcApi with the three editor actions replaced
- * (Rpc.register copies own properties, so a plain spread is enough). */
-export function wrapEditorRpcApi<T extends object>(api: T, getEditor: () => EditsEditor | undefined): T {
+/** The InfoProvider's EditorRpcApi with the three editor actions and Restart File replaced
+ * (Rpc.register copies own properties, so a plain spread is enough). `restart` restarts the
+ * page's Lean session; one document, one session, so restartFile's URI is not consulted. */
+export function wrapEditorRpcApi<T extends object>(api: T, getEditor: () => EditsEditor | undefined, restart: () => void): T {
   const run = <A extends unknown[]>(f: (e: EditsEditor, ...a: A) => boolean) => async (...a: A): Promise<void> => {
     const editor = getEditor();
     if (editor) f(editor, ...a);
@@ -142,10 +148,11 @@ export function wrapEditorRpcApi<T extends object>(api: T, getEditor: () => Edit
     applyEdit: run(applyWorkspaceEdit),
     insertText: run(insertTextIn),
     showDocument: run(showDocumentIn),
+    restartFile: async (): Promise<void> => { restart(); },
   };
 }
 
 /** Install the hook the patched lean4monaco page module calls; before the editor starts. */
-export function installInfoviewEditorApi(getEditor: () => EditsEditor | undefined): void {
-  (globalThis as unknown as { __qed64InfoviewEditorApi?: (api: object) => object }).__qed64InfoviewEditorApi = (api) => wrapEditorRpcApi(api, getEditor);
+export function installInfoviewEditorApi(getEditor: () => EditsEditor | undefined, restart: () => void): void {
+  (globalThis as unknown as { __qed64InfoviewEditorApi?: (api: object) => object }).__qed64InfoviewEditorApi = (api) => wrapEditorRpcApi(api, getEditor, restart);
 }

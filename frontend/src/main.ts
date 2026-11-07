@@ -520,7 +520,8 @@ async function main() {
   const editor = new LeanMonacoEditor();
   // The InfoView's applyEdit / insertText / showDocument act on this editor's
   // model (HARDENING #56); installed before the InfoView registers its API.
-  installInfoviewEditorApi(() => (editor.editor ?? undefined) as unknown as EditsEditor | undefined);
+  // Its Restart File restarts the Lean session (UX parity F1.13; HARDENING #56's F1.13 note).
+  installInfoviewEditorApi(() => (editor.editor ?? undefined) as unknown as EditsEditor | undefined, () => { pageApi.api.restart(); });
   // Firefox: Monaco focuses its textarea with element.focus(), which there does not take the keyboard out of a
   // focused child frame, so after any click in the InfoView a click on the editor typed nowhere (UX parity
   // FILL-A1, HARDENING #85; Chromium moves it by itself). Before Monaco's handler (capture phase), focus this window.

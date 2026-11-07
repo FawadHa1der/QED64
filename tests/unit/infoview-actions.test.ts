@@ -9,7 +9,9 @@
 //     a page that moves the selection or the focus for a foreign file — it used
 //     to check only the text, which showDocument never touches;
 //   * focus-return (HARDENING #85) fails Firefox's trap and never passes a
-//     round whose InfoView click did not take the focus.
+//     round whose InfoView click did not take the focus;
+//   * Restart File sent from the iframe by name reaches the page's restart
+//     (UX parity F1.13, HARDENING #56's F1.13 note).
 // The page half is the real one: lean4monaco's vscode-lean4 Rpc registering
 // wrapEditorRpcApi, as the patched infowebview.js does, over a postMessage
 // model with the browser's semantics (a structured-cloned string delivered as
@@ -19,7 +21,7 @@
 import { describe, expect, test } from "vitest";
 import { Rpc } from "../../frontend/node_modules/lean4monaco/dist/vscode-lean4/vscode-lean4/src/rpc.js";
 import { wrapEditorRpcApi, type EditsEditor } from "../../frontend/src/editor/infoview-edits";
-import { SCENARIOS, apiAtLoad, capabilityVerdict, exitCodeFor, focusReturnFailures, foreignShow, foreignShowFailures, recordApiAtDomContentLoaded, selectScenarios, type EditorView } from "../adversarial/infoview-actions.mjs";
+import { SCENARIOS, apiAtLoad, capabilityVerdict, exitCodeFor, focusReturnFailures, foreignShow, foreignShowFailures, recordApiAtDomContentLoaded, rpcFromInfoview, selectScenarios, type EditorView } from "../adversarial/infoview-actions.mjs";
 
 type Probe = (arg: unknown, g: unknown) => unknown;
 /** Playwright: `(${fn.toString()})(arg)` in the target's global scope. */
@@ -28,7 +30,7 @@ const evaluateIn = (g: unknown) => async (fn: Probe, arg?: unknown) => structure
 
 describe("scenario selection", () => {
   test("every scenario runs alone (foreign-show used to ride on conv-generate's page)", () => {
-    expect(SCENARIOS).toEqual(["capability-flag", "try-this-apply", "conv-generate", "foreign-show", "focus-return"]);
+    expect(SCENARIOS).toEqual(["capability-flag", "try-this-apply", "conv-generate", "foreign-show", "focus-return", "restart-file"]);
     for (const name of SCENARIOS) expect(selectScenarios(name)).toEqual([name]);
     expect(selectScenarios("")).toEqual(SCENARIOS);
     expect(selectScenarios("conv-generate|foreign-show")).toEqual(["conv-generate", "foreign-show"]);
@@ -165,7 +167,7 @@ describe("foreign-show", () => {
   // The InfoProvider's EditorRpcApi as lean4monaco hands it to the hook (the
   // three editor actions are replaced by wrapEditorRpcApi).
   const infoProviderApi = { copyToClipboard: async (_text: string) => {} };
-  const shipped = (getEditor: () => EditsEditor) => wrapEditorRpcApi(infoProviderApi, getEditor);
+  const shipped = (getEditor: () => EditsEditor) => wrapEditorRpcApi(infoProviderApi, getEditor, () => {});
   async function run(register: (getEditor: () => EditsEditor) => object, opts: { strayFrame?: boolean; timeoutMs?: number } = {}) {
     const p = fakePage();
     const ch = infoviewChannel(register(() => p.editor));
@@ -246,5 +248,17 @@ describe("focus-return (UX parity FILL-A1, HARDENING #85)", () => {
     expect(focusReturnFailures({ kind: "click", before: view("IFRAME", false), afterInfoview: view("IFRAME", false), afterAction: inEditor, typed: true }))
       .toEqual(["the editor had the focus before the InfoView click"]);
     expect(focusReturnFailures({ kind: "apply", applied: true, afterAction: inEditor, undone: true })).toEqual(["the editor had the focus before the InfoView click"]);
+  });
+});
+
+describe("restart-file over the InfoView's RPC (UX parity F1.13)", () => {
+  test("restartFile sent from the iframe reaches the page's restart once, with no exception", async () => {
+    const p = fakePage();
+    let restarts = 0;
+    const lean4monacos = { restartFile: async (_uri: string) => { throw new Error("lean4monaco's: a same-text didChange"); } };
+    const ch = infoviewChannel(wrapEditorRpcApi(lean4monacos, () => p.editor as unknown as EditsEditor, () => { restarts += 1; }));
+    const answer = await evaluateIn(ch.iframe)(rpcFromInfoview as Probe, { name: "restartFile", args: [URI], seqNum: 2 ** 30 + 7, timeoutMs: 1000 });
+    expect(answer).toEqual({ answered: true, exception: null });
+    expect(restarts).toBe(1);
   });
 });
