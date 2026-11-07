@@ -538,7 +538,7 @@ describe("relay contract: the halted note (gap 5 — one whole-document publish 
           range: { start: { line: 1, character: 0 }, end: { line: 1, character: HEADER.length } },
           severity: 1,
           source: "QED64",
-          message: "imports could not be loaded: the checker crashed repeatedly while processing this content. Edit the file (or pick an example from the menu) to restart it.",
+          message: "the checker crashed repeatedly on this file (it may have run out of memory), so checking is paused. Edit the file to check it again.",
         }],
       },
     }]);

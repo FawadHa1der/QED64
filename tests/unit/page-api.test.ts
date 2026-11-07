@@ -523,14 +523,16 @@ describe("review fixes", () => {
 /** A RelaySession that boots at once, its commit sized the way ResidentSession sizes it: the restart's
  * `initialBytes`, else the page's policy (main.ts: the sticky api commit, else the default). */
 /** main.ts's boot card as renderStatus drives it: EVERY status goes to the real check fallback first; a halt
- * before any ready turns the card into the failure card (bootFail); a final verdict finishes the boot; the
+ * before any session served turns the card into the failure card (bootFail); a halt after a serve finishes the boot
+ * (UX FILL-A6: the content stopped the checker, so the editor shows); a final verdict finishes the boot; the
  * fallback's timer finishes it too. Only the card's own bookkeeping is modelled here — the fallback decision is
  * check-fallback.ts itself. */
 function bootCardModel(page: PageApi, clock: Clock, onFire: () => void) {
-  let bootDone = false, everReady = false;
+  let bootDone = false, everServed = false;
   const events: string[] = [];
   const checklist = createBootChecklist();
-  const finish = (why: string) => { if (bootDone) return; bootDone = true; events.push(why); page.bootFinished(); checklist.finish(); };
+  // As main.ts bootFinish: the fallback is cancelled (read only when this runs, after both consts exist).
+  const finish = (why: string) => { if (bootDone) return; bootDone = true; events.push(why); fallback.cancel(); page.bootFinished(); checklist.finish(); };
   const fallback = createCheckFallback(() => { onFire(); finish("editor shown"); }, 30000, clock);
   return {
     events,
@@ -541,8 +543,12 @@ function bootCardModel(page: PageApi, clock: Clock, onFire: () => void) {
     progress(label: string, info?: { phase?: string }) { if (!bootDone) checklist.progress(label, info); },
     renderStatus(s: RelayStatus) {
       if (!bootDone) { fallback.observe(s); checklist.observe(s); }
-      if (s.phase === "ready") everReady = true;
-      if (s.phase === "halted") { if (s.lastDeath && !everReady && !bootDone) events.push("failure card"); return; }
+      if (s.relay === "serving") everServed = true;
+      if (s.phase === "halted") {
+        if (s.lastDeath && !everServed) { if (!bootDone) events.push("failure card"); }
+        else finish("content halt");
+        return;
+      }
       if (s.phase === "ready" || s.phase === "headerRefused") finish("verdict");
     },
   };
@@ -756,7 +762,7 @@ describe("over the real relay", () => {
 describe("the check fallback over the real relay's crash loop", () => {
   const relays: LspRelay[] = [];
   afterEach(() => { for (const r of relays.splice(0)) { r.clientPort.close(); r.unload(); } });
-  it("a restored buffer that kills the checker after every serve still surfaces the editor 30 s after the first serve: crash reboots and the halt leave the fallback armed", async () => {
+  it("a restored buffer that kills the checker after every serve surfaces the editor at the halt, never a failure card (UX FILL-A6); crash reboots leave the fallback armed until then", async () => {
     const clock = new Clock();
     const page = createPageApi(CAPS, new Clock());
     const sessions: Session[] = [];
@@ -772,13 +778,17 @@ describe("the check fallback over the real relay's crash loop", () => {
       card.progress("elaborating");
       clock.advance(5000);
       sessions.at(-1)!.die(); // the buffer kills the checker; the relay reboots (a crash reboot keeps the timer)
-      expect(card.step()).toBe("check"); // and does not rewind the checklist: the card is gone 30 s after the first serve
+      // A crash reboot does not rewind the checklist; the third death halts the relay, which finishes the boot.
+      expect(card.step()).toBe(i < 2 ? "check" : "done");
+      expect(clock.timers).toHaveLength(i < 2 ? 1 : 0); // armed across the crash reboots, cancelled by the finish
       await flush();
     }
     expect(relay.state.kind).toBe("halted"); // the breaker: three deaths inside 120 s
-    expect(card.events).toEqual(["failure card"]);
-    clock.advance(15000); // 30 s after the FIRST serve
-    expect(card.events).toEqual(["failure card", "editor shown"]); // the editor appears; the halted pill and note say "edit the file"
+    expect(card.events).toEqual(["content halt"]); // the editor appears at once; the halted pill and note say "edit the file"
+    expect(page.api.status().boot).toMatchObject({ done: true, failed: false });
+    clock.advance(15000); // 30 s after the FIRST serve: the finish cancelled the fallback
+    expect(card.events).toEqual(["content halt"]);
+    expect(clock.timers).toHaveLength(0);
   });
   it("a boot that fails before any session serves keeps the failure card: only a serving status arms the fallback", async () => {
     const clock = new Clock();

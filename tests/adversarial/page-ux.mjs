@@ -46,6 +46,15 @@
 //                 stacked at 375; a long pill label ends in an ellipsis with
 //                 its tooltip and never widens the bar. Chromium; Firefox
 //                 once per change.
+//   content-halt  (UX FILL-A6, HARDENING #88) a restored buffer whose #eval
+//                 ends the worker every time it runs (exit code 3, a cheap
+//                 stand-in for an out-of-memory #eval): the breaker halts after
+//                 sessions that served, so the boot FINISHES (status().boot
+//                 done, not failed; no failure card), the pill reads the
+//                 halted phase's words with the death in its tooltip, the
+//                 relay's one note says the checker crashed repeatedly on this
+//                 file (not that imports could not be loaded), and an edit
+//                 re-arms it to ready. Chromium.
 //
 // Usage: node tests/adversarial/page-ux.mjs [--url http://localhost:5199/] [--only <scenario>] [--browser chromium|firefox] [--run-dir <dir>]
 // Run it through the host browser lock. Exit 0 all pass, 1 a scenario failed,
@@ -58,7 +67,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { arg, browserName, fetchJson, launchBrowser, onlyMatches, resolveTarget, root, runDir, teeLog } from "./harness.mjs";
 
-export const SCENARIOS = ["a11y-status", "share-link", "example-undo", "buffer-flush", "look", "layout"];
+export const SCENARIOS = ["a11y-status", "share-link", "example-undo", "buffer-flush", "look", "layout", "content-halt"];
 /** The scenarios `--only` selects, in run order. An empty selection is refused (exit 3), never "0/0 pass". */
 export const selectScenarios = (only) => SCENARIOS.filter((name) => !only || onlyMatches(name, only));
 /** 0 all pass, 1 a scenario failed, 3 nothing was judged. */
@@ -80,6 +89,10 @@ const OWN = "-- my work\ntheorem mine : 2 + 2 = 4 := rfl\n";
 const LOOK_DOC = "example (p q : Prop) (hp : p) (hq : q) : p ∧ q := by\n  constructor\n  · exact hp\n  · exact hq\n";
 // layout: main.ts PHASE_LABEL.headerRefused, the longest label the pill shows.
 const LONG_LABEL = "this import is not available here — check the module name (this playground serves a curated Mathlib)";
+// content-halt: every session the buffer reaches dies "exit" (lean.worker.js) as soon as the #eval runs, after it served
+// (pipeline/snapshot/fileworker-exit-probe.mjs EVAL_EXIT); main.ts PHASE_LABEL.halted is what the pill must then say.
+const HALT_DOC = "example : True := trivial\n\n#eval (IO.Process.exit 3 : IO Unit)\n";
+const HALTED_LABEL = "the checker keeps crashing on this content — edit the file to retry";
 
 // ---------- helpers, copied from infoview-actions.mjs (lanes do not import each other's internals; `text` and
 // `cursorAt` are for the scenarios that follow) ----------
@@ -150,6 +163,12 @@ function recordStatusText() {
       if (el) new MutationObserver(() => into.push(el.textContent)).observe(el, { childList: true, characterData: true, subtree: true });
     }
   });
+}
+/** content-halt: every `diagnostics` event of the page API (an embedder's view; `origin` "qed64" is the relay's note). */
+function recordDiagnostics() {
+  if (window !== window.top) return;
+  globalThis.__diags = [];
+  window.addEventListener("qed64:api", (e) => e.detail.on("diagnostics", (p) => globalThis.__diags.push(p)));
 }
 /** share-link: `navigator.clipboard` replaced (top frame), so no run writes the developer's OS clipboard. writeText
  * keeps the text in `__copied`, or rejects as a refused permission does while `__clipboardRefuses` is set. */
@@ -505,6 +524,47 @@ async function main() {
       }
       const failed = steps.filter((s) => s.failures.length > 0);
       record("layout", failed.length === 0 && errors.length === 0, `failed ${JSON.stringify(failed.map((s) => [s.width, s.failures]))}; bars ${JSON.stringify(steps.map((s) => [s.width, s.bar?.h, s.pill?.w]))}; 375: ${JSON.stringify(m375)}; page errors ${JSON.stringify(errors)}`);
+      await context.close();
+    },
+    "content-halt": async () => {
+      // UX FILL-A6. On the base build a halt before the first ready was a failed boot: the card "QED64 could not start"
+      // with a Reload that crashes again, the pill "could not start — lean --worker exited with code 3", and a note that
+      // blamed the imports.
+      const { page, context, errors } = await open(HALT_DOC, { init: recordDiagnostics, wait: "none" });
+      const halted = await waitFor(() => page.evaluate(() => globalThis.qed64?.status?.()?.phase === "halted" || null).catch(() => null), BOOT_MS, 250);
+      await sleep(1500); // the card's fade and removal (600 ms), the note's publish
+      const seen = await page.evaluate(() => {
+        const st = globalThis.qed64.api.status(), ptext = document.getElementById("ptext"), boot = document.getElementById("boot");
+        const notes = globalThis.__diags.filter((d) => d.origin === "qed64");
+        return {
+          phase: st.phase, lastDeath: st.lastDeath, boot: st.boot, deaths: globalThis.qed64.relay.stats.workerDeaths,
+          failedCard: !!document.querySelector("#bootcard.failed"), bootEl: boot ? boot.className : null,
+          pill: ptext.textContent, title: ptext.title, note: notes.at(-1)?.diagnostics ?? null,
+        };
+      });
+      await page.screenshot({ path: path.join(dir, `content-halt${firefox ? "-firefox" : ""}.png`) }).catch(() => {});
+      // An edit re-arms the halted relay (the next session's own publish replaces the note).
+      const after = await page.evaluate(async (doc) => {
+        const r = await globalThis.qed64.api.setDocument(doc);
+        return globalThis.qed64.api.settled({ version: r.version, timeoutMs: 120000 }).then((s) => s.phase, (e) => `threw ${e}`);
+      }, "example : True := trivial\n");
+      const msg = seen.note?.[0]?.message ?? "";
+      // The relay's answers to the requests each death and the halt left open reach the page as errors: expected here.
+      const unexpected = errors.filter((e) => !/QED64: (?:the Lean checker died \(exit\)|checker halted after repeated crashes)/.test(e));
+      const checks = {
+        "the relay halted": !!halted,
+        "on the content's exit, not a stack pause": seen.lastDeath?.reason === "exit" && seen.lastDeath?.cause?.code !== "ENGINE_STACK_OVERFLOW",
+        "the boot finished, not failed": seen.boot?.done === true && seen.boot?.failed === false,
+        "no failure card": !seen.failedCard && (seen.bootEl === null || /\bdone\b/.test(seen.bootEl)),
+        "the pill says the content keeps crashing": seen.pill === HALTED_LABEL,
+        "its tooltip names the death": /last death: exit/.test(seen.title),
+        "one note, on the file": seen.note?.length === 1 && /crashed repeatedly on this file/.test(msg),
+        "the note blames no import, check or menu": !/imports could not be loaded|while checking|from the menu/.test(msg),
+        "an edit re-arms it to ready": after === "ready",
+        "no other page errors": unexpected.length === 0,
+      };
+      const failures = Object.keys(checks).filter((k) => !checks[k]);
+      record("content-halt", failures.length === 0, `failed ${JSON.stringify(failures)}; at the halt ${JSON.stringify(seen)}; after the edit ${after}; page errors ${errors.length} (other ${JSON.stringify(unexpected)})`);
       await context.close();
     },
   };

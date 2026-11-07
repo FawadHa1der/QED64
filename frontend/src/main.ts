@@ -19,7 +19,7 @@ import { installWidgetSourceCache } from "./widget-source-cache";
 import { createTestHatch } from "./test-hatch";
 import { createCheckFallback } from "./check-fallback";
 import { STAGES, createBootChecklist } from "./boot-checklist";
-import { STALE_NOTICE, bootFailLabel, createStaleWatch } from "./stale-notice";
+import { NETWORK_HALT_LABEL, STALE_NOTICE, bootFailLabel, createStaleWatch, isNetworkCause } from "./stale-notice";
 import { installShareButton } from "./file-io";
 
 // The embedder-facing surface (docs/EMBEDDING.md §2), published synchronously
@@ -62,7 +62,7 @@ const pillEl = document.getElementById("pill")!;
 // The stale-page prompt (stale-notice.ts; docs/EMBEDDING.md §7.2 `stale`):
 // the site was deployed under this page. The relay heals by itself, so the
 // prompt is a standing Reload button beside the pill, never a card over the
-// editor; a halt before the first ready already gets the failure card's.
+// editor; a halt before any session served already gets the failure card's.
 const staleWatch = createStaleWatch((d) => {
   console.warn(`[qed64] ${STALE_NOTICE} (${d.message})`);
   const btn = document.createElement("button");
@@ -270,12 +270,15 @@ const STACK_PAUSED_LABEL = "paused — Lean ran out of the browser's stack; edit
  * the page compiles against a relay that does not carry it yet. */
 type PageStatus = RelayStatus; // lastDeath is on RelayStatus since the relay contract (2026-09-07)
 
-// GAP 2 (page side): a halt BEFORE any session ever reached `ready` is a boot
-// that never worked — a Memory64 reservation refused, a capability missing,
-// a runtime fetch or snapshot pairing failure — and gets the first-boot
-// failure card with its Reload button; a halt after that is the crash-loop
-// breaker, explained by the pill and the relay's in-document note.
-let everReady = false;
+// GAP 2 (page side): a halt BEFORE any session ever served is a boot that
+// never worked — a Memory64 reservation refused, a capability missing, a
+// runtime fetch or snapshot pairing failure, a cut download — and gets the
+// first-boot failure card with its Reload button. A halt after a session
+// served is the crash-loop breaker on the content, explained by the pill and
+// the relay's in-document note (UX FILL-A6, HARDENING #88: an out-of-memory
+// `#eval` in a restored buffer got "could not start" and a Reload that crashed
+// again, because the rule was "before the first ready").
+let everServed = false;
 
 // GAP 4: the first library search of a Lean session (`exact?`/`apply?`/`rw?`)
 // indexes Mathlib for about a minute, and an edit inside the proof meanwhile
@@ -322,12 +325,10 @@ function renderStatus(s: PageStatus) {
     checkFallback.observe(s);
     if (checklist.observe(s)) renderStages(); // a deliberate replacement's first status: back to the runtime step
   }
-  if (s.phase === "ready") {
-    everReady = true;
-    // The memory meter samples on the TRANSITION into ready (HARDENING #76), not
-    // on every ready-phase status the relay forwards (several a second).
-    if (!wasReady) sampleMemoryNow?.();
-  }
+  if (s.relay === "serving") everServed = true;
+  // The memory meter samples on the TRANSITION into ready (HARDENING #76), not
+  // on every ready-phase status the relay forwards (several a second).
+  if (s.phase === "ready" && !wasReady) sampleMemoryNow?.();
   wasReady = s.phase === "ready";
   trackSearch(s);
   if (s.phase === "halted") {
@@ -339,15 +340,21 @@ function renderStatus(s: PageStatus) {
       ui.idle(STACK_PAUSED_LABEL);
       return;
     }
-    // Not gated on the overlay: once it is gone (the check fallback, or a
-    // first boot that settled in headerRefused) `bootFail` is a no-op and the
-    // pill alone must carry the message, not a bare "halted — bootFailed".
-    if (d && !everReady) {
-      ui.idle(`could not start — ${d.message || d.reason}`);
+    // A boot that never served: the failure card, and the pill says the same
+    // words. Not gated on the overlay: once it is gone `bootFail` is a no-op
+    // and the pill alone must carry the message.
+    if (d && !everServed) {
+      ui.idle(`could not start — ${bootFailLabel(d.message || d.reason, d.cause)}`);
       bootFail(d.message || d.reason, d.cause);
       return;
     }
-    ui.idle(d ? `halted — ${d.reason}` : PHASE_LABEL.halted);
+    // The boot works here, so the content (or a reboot's download) stopped
+    // the checker (FILL-A6): the editor, the phase's words instead of
+    // "halted — <reason>" (the death goes in the tooltip), the relay's note.
+    bootFinish();
+    const label = isNetworkCause(d?.cause) ? NETWORK_HALT_LABEL : PHASE_LABEL.halted;
+    ui.idle(label);
+    if (d) ptext.title = `${label}\n(last death: ${d.reason}${d.message ? ` — ${d.message}` : ""})`;
     return;
   }
   if (s.phase !== "booting" && s.phase !== "starting") widening = null;

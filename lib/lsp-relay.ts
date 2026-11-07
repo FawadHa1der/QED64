@@ -32,7 +32,7 @@ export type RelayStatus = Omit<WorkerStatus, "phase"> & { phase: WorkerStatus["p
 const EMPTY: WorkerStatus = { phase: "booting", version: null, header: null, ring: { bytesQueued: 0, refused: 0 }, pool: { unused: -1, running: -1 }, dropped: 0 };
 const BREAKER_DEATHS = 3;
 const BREAKER_WINDOW_MS = 120_000;
-const HALTED_NOTE = "imports could not be loaded: the checker crashed repeatedly while processing this content. Edit the file (or pick an example from the menu) to restart it.";
+const HALTED_NOTE = "the checker crashed repeatedly on this file (it may have run out of memory), so checking is paused. Edit the file to check it again."; // #88: also reboots that could not boot, so not "imports"/"while checking"; no host UI
 const STACK_REPLY = "QED64: checking paused: Lean ran out of the browser's stack; edit the file to check it again";
 const STACK_NOTE = "Lean ran out of the browser's stack while checking here, so checking is paused. A browser gives Lean far less stack than desktop Lean has, so the proof may still be correct. Edit the file to check it again.";
 
@@ -66,7 +66,7 @@ export class LspRelay {
   readonly pending = new Map<number | string, string>();
   deaths: number[] = [];
   lastStatus: WorkerStatus | null = null;
-  /** Set by every counted death, cleared when a session reports phase "ready"; halted-before-ready is the page's boot-failure card (a stack pause's is not, #72). */
+  /** Set by every counted death, cleared when a session reports phase "ready"; the stock page shows a halt before any session served as its boot-failure card (a stack pause's never, #72). */
   lastDeath: Death | null = null;
   /** The last restart(opts), reused by a death-reboot while the header it was chosen for stands — a widened or resized
    * session survives a crash instead of coming back on the policy's default. A header change forgets it, and so
