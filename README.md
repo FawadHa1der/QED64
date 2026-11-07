@@ -92,7 +92,9 @@ and `/snapshots/` beside it. Then frame `/?embed=1`:
   editor's text as a `.lean` file.
 - **Editor.** Shift+F12 lists a name's uses in the file, and F2 renames
   them once the status reads ready. Lean answers both only for a whole
-  project, so the page computes them for its one document.
+  project, so the page computes them for its one document. A space after a
+  function or theorem shows its parameters (Ctrl/Cmd+Shift+Space shows them
+  again), and the InfoView's trace messages have a search.
 - **URL parameters** ([docs/EMBEDDING.md](docs/EMBEDDING.md) §3–§4):
   `#code=<text>` and `#codez=<LZ-string>` (lean4web's spellings: a boot
   document only in a same-origin frame; on the plain page the fragment is a

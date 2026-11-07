@@ -48,7 +48,7 @@ paired build outputs of "Environment" below.
 | Liveness faults | `node tests/adversarial/liveness-faults.mjs --url <dev url> [--only <scenario>]` | HARDENING #52's mailbox, kick, liveness probe and exit hook, each by fault injection into the live worker: mailbox-mode, idle-no-probes, long-silent-command, lost-wakeups-healed, wedge-recovery, exit-detected; and #78's early-death-detected (a fresh session's Worker terminated at its first ready, before any heartbeat, is declared dead by the watchdog the arm starts) | dev | lock | `liveness-faults: 7/7 pass` |
 | Page API | `node tests/adversarial/page-api.mjs --url <dev url> [--only <scenario>]` | `qed64.api` as an embedder uses it (docs/EMBEDDING.md §2–§4): code-top-level, embed-code (with the plain page's own UI silent or not rendered in the frame: the examples menu, `#pageactions`, `#mathlibnote`, `#splitter`, `#pstatus`, and the boot card's `#bootshow` never shown during the boot; no `#fileinput`, and Ctrl+S left to the browser), embed-setdoc, memory (`status().memory` is numbers once settled, read on a later turn; HARDENING #76), events, restart, bad-param | dev or served build (both answer `/embed-host.html`) | lock | `page-api: 7/7 pass` |
 | InfoView actions | `node tests/adversarial/infoview-actions.mjs --url <url> [--only <scenario>] [--browser chromium\|firefox]` | the InfoView's editor RPC on the real page (HARDENING #56): capability-flag, try-this-apply, conv-generate, foreign-show, restart-file (the InfoView's Restart File restarts the session), copy-to-comment (the page's "Lean 4: Copy Goal to Comment" action, UX I3.4); focus-return (HARDENING #85: after a click in the InfoView the keys reach the editor; it proves the fix only with `--browser firefox --only focus-return`, and Chromium is its control) | dev or served build | lock | `infoview-actions: 7/7 pass` (Firefox `--only focus-return`: `1/1`) |
-| Page UX | `node tests/adversarial/page-ux.mjs --url <url> [--only <scenario>] [--browser chromium\|firefox] [--run-dir <dir>]` | the plain page's own UX (the UX parity batch of 2026-11-06), each scenario on its own page with an Init-only document: a11y-status (the pill's screen-reader echo `#pstatus`; its embed half is page-api's embed-code), share-link (Copy link, HARDENING #77), example-undo and buffer-flush (HARDENING #86), look and layout (HARDENING #87; look also the InfoView frame's name, UX A1.4), show-editor and content-halt (HARDENING #88), file-actions (HARDENING #89), splitter-drag (HARDENING #87's splitter paragraph), references-rename (HARDENING #90) | dev or served build | lock | `page-ux: 11/11 pass` |
+| Page UX | `node tests/adversarial/page-ux.mjs --url <url> [--only <scenario>] [--browser chromium\|firefox] [--run-dir <dir>]` | the plain page's own UX (the UX parity batch of 2026-11-06), each scenario on its own page with an Init-only document: a11y-status (the pill's screen-reader echo `#pstatus`; its embed half is page-api's embed-code), share-link (Copy link, HARDENING #77), example-undo and buffer-flush (HARDENING #86), look and layout (HARDENING #87; look also the InfoView frame's name, UX A1.4), show-editor and content-halt (HARDENING #88), file-actions (HARDENING #89), splitter-drag (HARDENING #87's splitter paragraph), references-rename (HARDENING #90), signature-help (HARDENING #91) | dev or served build | lock | `page-ux: 12/12 pass` |
 | Reload storm | `node tests/adversarial/reload-storm.mjs --url <url> [--runs 5] [--embed] [--ballast-mb N] [--headed] [--boot-budget-ms 600000] [--hold-ms 0]` | five reloads 3 s apart per run, a fresh browser per run, `ready` again after them; a crash is classified by the V8 OOM line (HARDENING #53, #55); `--embed` reloads a same-origin host page around the frame; `--ballast-mb N` (with `--embed`) makes that host hold N MiB of live JS objects in the renderer's shared pointer cage, a heavy embedding page (#55 residual: 800 MiB crashed 8/8 and 0 MiB 0/8 on 3ab1c6a9, every dose up to 2400 MiB 0/4 on 36d7f415); each run also counts the `.snapz` requests after the first ready and the `[boot] raw cache busy` lines | dev or served build (stock and `--embed`) | lock | `RELOAD-STORM <tag>: 0/N crashed …` (1 = a crash, 2 = an unknown flag or a bad `--boot-budget-ms`/`--hold-ms`, 3 = nothing booted) |
 | Edit storm | `node tests/adversarial/edit-storm.mjs --url <served url> [--reps 2] [--scenarios …] [--run-dir <dir>] [--tag <label>]` | an edit per keystroke over work that ignores cancellation: no crash, death or reboot, ready at the last version, the pool within tolerance (HARDENING #59; `?edithold=0` is the control arm); the opt-in `pagelong` is `pageslow` with a 133-character example, about 20 s of typing (R16 #59: growth must not trend with typing length); `--tag` names `edit-storm-<tag>.json`, its samples and its log, so interleaved arms share one `--run-dir` | served build | lock | `edit-storm: N/N pass` (1 = a run failed, 2 = a bad `--tag`, 3 = infrastructure) |
 | Boot card | `node tests/adversarial/boot-card.mjs --url <served url> [--scenario slow-link\|check-fallback\|all]` | a cold first visit over a shaped link: the boot card shows progress the whole way, and the check fallback appears while an Init-only buffer elaborates (HARDENING #54) | served build | lock | `boot-card: N/N passed` |
@@ -515,6 +515,14 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   Ctrl/Cmd+Z restores it; on `return`, whose documentHighlight answers its
   `do`, Shift+F12 says "No references found" and the cursor stays. The
   rename's ready gate has no scenario (timing; unit-tested).
+  `signature-help` (UX E3.6, HARDENING #91; Chromium): a space typed after
+  `Nat.add_comm 2` sends `textDocument/signatureHelp` (counted with
+  `qed64.test.lsp.on("in")`) and shows Lean's parameter popup
+  (`∀ (m : Nat), 2 + m = m + 2`); Escape closes it and Ctrl/Cmd+Shift+Space
+  shows it again; the space is in the text. The console's error lines are
+  recorded, not judged. The InfoView's trace search (UX I4.13, the other
+  capability) has no scenario: an InfoView DOM internal, pinned by
+  tests/unit/server-capabilities.test.ts.
   Verdicts
   are inline check maps; the selection (an `--only` that selects nothing
   exits 3) is pinned by tests/unit/page-ux.test.ts, and each change runs its
@@ -570,9 +578,14 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   `-<scenario>-<rep>-samples.json` files and its log, so interleaved arms
   (one invocation each, as in `--url …/?edithold=0 --tag holdoff-r1` then
   `--url … --tag default-r1`) can share one `--run-dir`; without it the
-  names stay `edit-storm.json` and `edit-storm.log`. Serve a build
-  (`scripts/serve-dist.mjs`), not the dev server, and run it through the
-  host browser lock.
+  names stay `edit-storm.json` and `edit-storm.log`. A change that makes the
+  client ask while typing (a capability, HARDENING #91) runs
+  `pagecadence,pageslow,pagesleep --reps 2` in two arms, the build just
+  before it (`--tag base`) and the build with it, sharing one `--run-dir`:
+  it passes with 6/6 in both arms, the pool within `--grow-tolerance 4`,
+  and `pageslow`'s `readyAfterTypingMs` within 20 % of the base arm's.
+  Serve a build (`scripts/serve-dist.mjs`), not the dev server, and run it
+  through the host browser lock.
 - **Unpaired snapshot** (`unpaired-snapshot.mjs --url <served build>
   [--scenario unpaired|rescued] [--runtime wasm64-0000000000000000]
   [--buffer <text>] [--wait-ms 90000 (rescued: 180000)] [--headed]`,
