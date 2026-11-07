@@ -57,6 +57,11 @@ try {
 
 const editorEl = document.getElementById("editor")! as HTMLElement;
 const infoviewEl = document.getElementById("infoview")! as HTMLElement;
+// The InfoView frame's accessible name (UX A1.4): lean4monaco appends a bare <iframe> to #infoview (a new one if the
+// InfoView is made again), so each is named as it arrives. aria-label, not title: no native tooltip over the pane.
+new MutationObserver(() => {
+  for (const f of infoviewEl.querySelectorAll("iframe:not([aria-label])")) f.setAttribute("aria-label", "Lean InfoView");
+}).observe(infoviewEl, { childList: true });
 const pill = document.getElementById("pill")!;
 const ptext = document.getElementById("ptext")!;
 const pillEl = document.getElementById("pill")!;

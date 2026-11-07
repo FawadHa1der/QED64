@@ -28,7 +28,7 @@
 //                 and across a reload scheduled right after the edit (the
 //                 opener's once-per-tab seed keeps what the page saved).
 //                 Chromium and Firefox.
-//   look          (UX S1.2, I3.6, E8.3, HARDENING #87) one boot in a dark OS:
+//   look          (UX S1.2, I3.6, E8.3, A1.4, HARDENING #87) one boot in a dark OS:
 //                 the goal is in the editor's JuliaMono (not Menlo); the
 //                 editor is dark (in Chromium from the start; Playwright's
 //                 Firefox shows the page the scheme only through a change
@@ -37,7 +37,8 @@
 //                 more on it, the page declares no color-scheme. An OS
 //                 change to light follows in the same session. Fold All
 //                 hides lines and no textDocument/foldingRange request
-//                 reaches Lean (folding is by indentation). Chromium;
+//                 reaches Lean (folding is by indentation). The InfoView's
+//                 iframe is named "Lean InfoView" (aria-label). Chromium;
 //                 Firefox once per change.
 //   layout        (UX L1.4, L1.6, L1.7) at 1400, 768, 721 and 375 px
 //                 wide, the bar with its buttons shown (Open…, Download, Copy
@@ -158,6 +159,7 @@ function lookProbe() {
     frameFont: fd?.documentElement.style.getPropertyValue("--vscode-editor-font-family") ?? null,
     frameClass: fd?.documentElement.className ?? null,
     colorScheme: getComputedStyle(document.documentElement).colorScheme || "normal",
+    frameLabels: [...document.querySelectorAll("#infoview iframe")].map((f) => f.getAttribute("aria-label")),
     session: st.session, phase: st.phase,
   };
 }
@@ -450,8 +452,8 @@ async function main() {
       await context.close();
     },
     "look": async () => {
-      // UX S1.2, I3.6, E8.3. On the base build the editor is forced light in a dark OS, the InfoView's code font is
-      // Menlo, and nothing folds (lean4monaco's "editor.folding": false).
+      // UX S1.2, I3.6, E8.3, A1.4. On the base build the editor is forced light in a dark OS, the InfoView's code font
+      // is Menlo, nothing folds (lean4monaco's "editor.folding": false), and the InfoView's iframe has no name.
       const { page, context, errors } = await open(LOOK_DOC, { context: { colorScheme: "dark", viewport: { width: 1400, height: 900 } } });
       await cursorAt(page, 2, 3);
       const goal = await waitFor(async () => (await frameText(page)).includes("⊢") || null, 30000);
@@ -492,6 +494,7 @@ async function main() {
         "dark: the InfoView's text reads on the pane (4.5:1)": contrast(dark.textFg, dark.paneBg) >= 4.5,
         "the InfoView's code font is the editor's JuliaMono": /JuliaMono/.test(atLoad.frameFont ?? "") && !/Menlo/.test(atLoad.frameFont ?? "") && /JuliaMono/.test(atLoad.goalFont ?? ""),
         "the page declares no color-scheme": dark.colorScheme === "normal",
+        "the InfoView frame is named Lean InfoView (aria-label)": atLoad.frameLabels.length > 0 && atLoad.frameLabels.every((l) => l === "Lean InfoView"),
         "an OS change to light: the editor is light": luminance(light.editorBg) > 0.8,
         "light: the InfoView pane and frame paint the editor's background": paints(light),
         "light: the InfoView's text reads on the pane (4.5:1)": contrast(light.textFg, light.paneBg) >= 4.5,
