@@ -438,9 +438,10 @@ async function main() {
       const iv = page.frameLocator(SEL.frame);
       const goal = () => iv.locator("body").innerText().then((t) => /⊢ a \+ b = b \+ a/.test(t.replace(/\u00a0/g, " ")) || null, () => null);
       const goalShown = !!(await waitFor(goal, 60000 * SLOW, 500));
+      // getAction takes the id given to addAction; the action's own `id` is Monaco's `<editor id>:<id>`.
       const action = await page.evaluate(({ id }) => {
-        const e = globalThis.qed64.editor;
-        return { label: e.getAction(id)?.label ?? null, listed: e.getSupportedActions().some((a) => a.id === id) };
+        const e = globalThis.qed64.editor, a = e.getAction(id);
+        return { label: a?.label ?? null, listed: !!a && e.getSupportedActions().includes(a) };
       }, COPY_ACTION);
       let copied = null, phase = null, errs = ["not reached"], undone = null;
       if (action.label) {
