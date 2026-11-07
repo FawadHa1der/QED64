@@ -23,6 +23,11 @@
 //                 Ctrl/Cmd+Z brings the visitor's text back and the autosave
 //                 stores that again; a re-pick of the loaded example edits
 //                 nothing and leaves no busy pill. Chromium and Firefox.
+//   buffer-flush  (UX FILL-A13, HARDENING #86) an edit still inside the 400 ms
+//                 save debounce is stored at once when the tab goes hidden,
+//                 and across a reload scheduled right after the edit (the
+//                 opener's once-per-tab seed keeps what the page saved).
+//                 Chromium and Firefox.
 //
 // Usage: node tests/adversarial/page-ux.mjs [--url http://localhost:5199/] [--only <scenario>] [--browser chromium|firefox] [--run-dir <dir>]
 // Run it through the host browser lock. Exit 0 all pass, 1 a scenario failed,
@@ -35,7 +40,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { arg, browserName, fetchJson, launchBrowser, onlyMatches, resolveTarget, root, runDir, teeLog } from "./harness.mjs";
 
-export const SCENARIOS = ["a11y-status", "share-link", "example-undo"];
+export const SCENARIOS = ["a11y-status", "share-link", "example-undo", "buffer-flush"];
 /** The scenarios `--only` selects, in run order. An empty selection is refused (exit 3), never "0/0 pass". */
 export const selectScenarios = (only) => SCENARIOS.filter((name) => !only || onlyMatches(name, only));
 /** 0 all pass, 1 a scenario failed, 3 nothing was judged. */
@@ -289,6 +294,45 @@ async function main() {
       };
       const failures = Object.keys(checks).filter((k) => !checks[k]);
       record("example-undo", failures.length === 0, `failed ${JSON.stringify(failures)}; after the pick ${JSON.stringify(afterSwitch)}; re-pick ${JSON.stringify(guard)}; phases ${phaseSwitched}/${phaseUndone}; page errors ${JSON.stringify(errors)}`);
+      await context.close();
+    },
+    "buffer-flush": async () => {
+      // UX FILL-A13: on the base build the pagehide listener only unloads the relay, so both edits are lost.
+      const { page, context, errors } = await open(OWN);
+      // Hidden: an edit, then (well inside the debounce) the tab goes to the background.
+      const hidden = await page.evaluate(() => {
+        const m = globalThis.qed64.editor.getModel(), ln = m.getLineCount();
+        m.applyEdits([{ range: { startLineNumber: ln, startColumn: 1, endLineNumber: ln, endColumn: 1 }, text: "-- hidden\n" }]);
+        const before = localStorage.getItem("qed64.buffer");
+        Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+        document.dispatchEvent(new Event("visibilitychange"));
+        delete document.visibilityState;
+        return { before, after: localStorage.getItem("qed64.buffer"), text: m.getValue() };
+      });
+      // Reload: an edit and, in the next task, a reload. Scheduled in the page, so this evaluate returns before the
+      // navigation (an evaluate on a reloading page can hang; e2e.mjs notes it).
+      const origin0 = await page.evaluate(() => performance.timeOrigin);
+      const { reloadText, reloadBefore } = await page.evaluate(() => {
+        const m = globalThis.qed64.editor.getModel(), ln = m.getLineCount();
+        m.applyEdits([{ range: { startLineNumber: ln, startColumn: 1, endLineNumber: ln, endColumn: 1 }, text: "-- reload\n" }]);
+        setTimeout(() => location.reload(), 0);
+        return { reloadText: m.getValue(), reloadBefore: localStorage.getItem("qed64.buffer") };
+      });
+      const reloaded = await waitFor(async () => { const o = await page.evaluate(() => performance.timeOrigin).catch(() => null); return o !== null && o !== origin0 ? o : null; }, 30000);
+      const storedAfterReload = reloaded ? await page.evaluate(() => localStorage.getItem("qed64.buffer")).catch(() => null) : null;
+      const mounted = reloaded ? await waitFor(() => page.evaluate(() => globalThis.qed64?.api?.getDocument?.() != null || null).catch(() => null), BOOT_MS) : null;
+      const textAfterReload = mounted ? await text(page) : null;
+      const checks = {
+        "the debounce still owed the hidden edit": hidden.before === OWN, // the control: the edit was inside the window
+        "going hidden stores it at once": hidden.after === hidden.text,
+        "the debounce still owed the reload edit": reloadBefore === hidden.text,
+        "the page reloaded": !!reloaded,
+        "a reload keeps the last edit": storedAfterReload === reloadText,
+        "the reloaded editor shows it": textAfterReload === reloadText,
+        "no page errors": errors.length === 0,
+      };
+      const failures = Object.keys(checks).filter((k) => !checks[k]);
+      record("buffer-flush", failures.length === 0, `failed ${JSON.stringify(failures)}; hidden ${JSON.stringify(hidden)}; before the reload ${JSON.stringify(reloadBefore)}; stored after ${JSON.stringify(storedAfterReload)}; page errors ${JSON.stringify(errors)}`);
       await context.close();
     },
   };

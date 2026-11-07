@@ -8,7 +8,7 @@ import { SCENARIOS, exitCodeFor, selectScenarios } from "../adversarial/page-ux.
 
 describe("page-ux scenario selection", () => {
   test("every scenario runs alone, in SCENARIOS order", () => {
-    expect(SCENARIOS).toEqual(["a11y-status", "share-link", "example-undo"]);
+    expect(SCENARIOS).toEqual(["a11y-status", "share-link", "example-undo", "buffer-flush"]);
     for (const name of SCENARIOS) expect(selectScenarios(name)).toEqual([name]);
     expect(selectScenarios("")).toEqual(SCENARIOS);
     expect(selectScenarios("a11y-.*")).toEqual(["a11y-status"]);

@@ -592,7 +592,14 @@ async function main() {
   }
   // Only a save the debounce still owes: with none pending the store already holds the visitor's text, and a first
   // visit has none to keep (flushing then stored the default example as their buffer; HARDENING #77, 2026-10-18).
-  if (!EMBED) flushBufferSave = () => { if (saveTimer === undefined) return; window.clearTimeout(saveTimer); saveTimer = undefined; saveNow(); };
+  if (!EMBED) {
+    flushBufferSave = () => { if (saveTimer === undefined) return; window.clearTimeout(saveTimer); saveTimer = undefined; saveNow(); };
+    // Leaving inside the debounce lost the last words (a reload 150-300 ms after a keystroke; HARDENING #86): a reload,
+    // a closed tab and a tab sent to the background write what it still owes. visibilitychange also covers the mobile
+    // and discard cases in which pagehide may not fire; whichever comes second finds nothing owed.
+    window.addEventListener("pagehide", () => flushBufferSave?.());
+    document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") flushBufferSave?.(); });
+  }
 
   // Example switching = a document edit; a header change is resolved
   // in-kernel against the loaded environments (K1), a light session widens
