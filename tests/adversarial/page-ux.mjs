@@ -96,6 +96,11 @@
 //                 included); one Ctrl/Cmd+Z restores the text. On `return`,
 //                 whose documentHighlight answers its `do`, Shift+F12 finds no
 //                 references and the cursor stays. Chromium.
+//   signature-help (UX E3.6, HARDENING #91) a space after `Nat.add_comm 2`
+//                 sends textDocument/signatureHelp and shows Lean's
+//                 parameter popup (`∀ (m : Nat), 2 + m = m + 2`); Escape
+//                 closes it and Ctrl/Cmd+Shift+Space shows it again. The
+//                 console's error lines are recorded, not judged. Chromium.
 //
 // Usage: node tests/adversarial/page-ux.mjs [--url http://localhost:5199/] [--only <scenario>] [--browser chromium|firefox] [--run-dir <dir>]
 // Run it through the host browser lock. Exit 0 all pass, 1 a scenario failed,
@@ -108,7 +113,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { arg, browserName, fetchJson, launchBrowser, onlyMatches, resolveTarget, root, runDir, teeLog } from "./harness.mjs";
 
-export const SCENARIOS = ["a11y-status", "share-link", "example-undo", "buffer-flush", "look", "layout", "show-editor", "content-halt", "file-actions", "splitter-drag", "references-rename"];
+export const SCENARIOS = ["a11y-status", "share-link", "example-undo", "buffer-flush", "look", "layout", "show-editor", "content-halt", "file-actions", "splitter-drag", "references-rename", "signature-help"];
 /** The scenarios `--only` selects, in run order. An empty selection is refused (exit 3), never "0/0 pass". */
 export const selectScenarios = (only) => SCENARIOS.filter((name) => !only || onlyMatches(name, only));
 /** 0 all pass, 1 a scenario failed, 3 nothing was judged. */
@@ -145,6 +150,9 @@ const FILE_B = "theorem b : 2 + 2 = 4 := rfl\n";
 const REFS_DOC = "namespace Foo\ndef bar (n : Nat) : Nat := n + 1\ntheorem bar_pos (n : Nat) : 0 < bar n := Nat.succ_pos n\nend Foo\n\nexample : Foo.bar 1 = 2 := rfl\nopen Foo in\nexample : bar 2 = 3 := rfl\nexample (n : Nat) : 0 < Foo.bar n := Foo.bar_pos n\n";
 const REFS_RENAMED = "namespace Foo\ndef baz (n : Nat) : Nat := n + 1\ntheorem bar_pos (n : Nat) : 0 < baz n := Nat.succ_pos n\nend Foo\n\nexample : baz 1 = 2 := rfl\nopen Foo in\nexample : baz 2 = 3 := rfl\nexample (n : Nat) : 0 < baz n := Foo.bar_pos n\n";
 const DO_DOC = "def f : IO Unit := do\n  return ()\n";
+// signature-help: the UX study's case (Init only, so `Nat`, not `ℕ`); the proof does not check, which signature help
+// does not mind. Lean's answer for the space after `2` (the study, measured directly): `∀ (m : ℕ), 2 + m = m + 2`.
+const SIG_DOC = "example : 2 + 3 = 3 + 2 := Nat.add_comm 2\n";
 
 // ---------- helpers, copied from infoview-actions.mjs (lanes do not import each other's internals; `text` and
 // `cursorAt` are for the scenarios that follow) ----------
@@ -818,6 +826,43 @@ async function main() {
       };
       const failures = Object.keys(checks).filter((k) => !checks[k]);
       record("references-rename", failures.length === 0, `failed ${JSON.stringify(failures)}; rows ${rows}; tree ${JSON.stringify(tree.slice(0, 300))}; offered ${JSON.stringify(offered)}; after ${JSON.stringify(after)}; undone ${!!undone}; on return ${JSON.stringify({ phase, ...onReturn })}; page errors ${JSON.stringify(errors)}`);
+      await context.close();
+    },
+    "signature-help": async () => {
+      // UX E3.6. On a build whose front door does not advertise signatureHelpProvider, Monaco registers no provider:
+      // the space sends no request, and neither it nor the shortcut shows a popup.
+      const { page, context, errors } = await open(SIG_DOC);
+      const consoleErrors = [];
+      page.on("console", (m) => { if (m.type() === "error") consoleErrors.push(m.text().slice(0, 120)); });
+      await page.evaluate(() => {
+        globalThis.__sig = 0;
+        globalThis.qed64.test.lsp.on("in", (m) => { if (m.method === "textDocument/signatureHelp") globalThis.__sig += 1; });
+      });
+      const popup = () => waitFor(async () => (await page.locator(".parameter-hints-widget.visible").first().innerText().catch(() => "")) || null, 15000);
+      const closed = () => waitFor(async () => (await page.locator(".parameter-hints-widget.visible").count()) === 0 || null, 5000);
+      await cursorAt(page, 1, SIG_DOC.indexOf("\n") + 1); // the end of line 1
+      const t0 = Date.now();
+      await page.keyboard.type(" ");
+      const hint = await popup();
+      const afterMs = hint ? Date.now() - t0 : null;
+      const sentOnSpace = await page.evaluate(() => globalThis.__sig);
+      await page.screenshot({ path: path.join(dir, `signature-help${firefox ? "-firefox" : ""}.png`) }).catch(() => {});
+      await page.keyboard.press("Escape");
+      const escaped = !!(await closed());
+      await page.keyboard.press("ControlOrMeta+Shift+Space"); // editor.action.triggerParameterHints
+      const again = await popup();
+      await page.keyboard.press("Escape");
+      const typed = await text(page);
+      const checks = {
+        "a space after the function sends signatureHelp": sentOnSpace >= 1,
+        "the popup shows Lean's signature": /2 \+ m = m \+ 2/.test(hint ?? ""),
+        "Escape closes it": escaped,
+        "Ctrl/Cmd+Shift+Space shows it again": /2 \+ m = m \+ 2/.test(again ?? ""),
+        "the space reached the text": typed === SIG_DOC.replace("\n", " \n"),
+        "no page errors": errors.length === 0,
+      };
+      const failures = Object.keys(checks).filter((k) => !checks[k]);
+      record("signature-help", failures.length === 0, `failed ${JSON.stringify(failures)}; popup ${JSON.stringify(hint?.slice(0, 120) ?? null)} after ${afterMs} ms; again ${JSON.stringify(again?.slice(0, 120) ?? null)}; signatureHelp requests ${sentOnSpace} on the space, ${await page.evaluate(() => globalThis.__sig)} in all; console errors ${JSON.stringify(consoleErrors)}; page errors ${JSON.stringify(errors)}`);
       await context.close();
     },
   };

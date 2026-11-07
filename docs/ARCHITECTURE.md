@@ -274,8 +274,11 @@ queued) → open → dead`:
   table (with `change: 1`, and without the providers only the watchdog
   answers (references, call hierarchy, rename, workspace symbols; the page
   answers references and rename for its one document from documentHighlight,
-  `frontend/src/editor/single-doc-refs.ts`, HARDENING #90) and without
-  signatureHelp, color and the `experimental` block;
+  `frontend/src/editor/single-doc-refs.ts`, HARDENING #90), without color,
+  and without two `experimental` members, `moduleHierarchyProvider`
+  (watchdog-only) and `rpcProvider.rpcWireFormat` (InfoView 0.11.1 does not
+  negotiate it); signature help and the InfoView's trace search are
+  advertised, HARDENING #91;
   `tests/unit/server-capabilities.test.ts` compares it with a transcription of
   the pinned tag's `mkLeanServerCapabilities` and names each difference) and
   cached; a *replay* (the relay re-sending after a reboot) is cached only.

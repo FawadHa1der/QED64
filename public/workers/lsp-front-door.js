@@ -29,8 +29,11 @@
   // diverge from the worker's document by construction (§4 row 3; vscode-languageclient honours
   // `resolvedTextDocumentSync.change`). Left out: the four providers stock Lean answers only in
   // the watchdog (references, call hierarchy, rename, workspace symbols; the resident FileWorker
-  // has no handler and replies internalError -32603), and signatureHelp, color and the
-  // `experimental` RPC block, which no lane here gates.
+  // has no handler and replies internalError -32603; the stock page answers references and
+  // rename for its one document itself, frontend/src/editor/single-doc-refs.ts), color, and two
+  // `experimental` members: moduleHierarchyProvider (watchdog-only too; lean4monaco's client
+  // sends $/lean/moduleHierarchy/* when it is advertised) and rpcProvider.rpcWireFormat
+  // (InfoView 0.11.1 does not negotiate it; decide it at an InfoView bump).
   const SERVER_CAPABILITIES = {
     textDocumentSync: { openClose: true, change: 1, willSave: false, willSaveWaitUntil: false, save: { includeText: true } },
     completionProvider: { triggerCharacters: ["."], resolveProvider: true },
@@ -55,6 +58,14 @@
     },
     codeActionProvider: { workDoneProgress: false, resolveProvider: true, codeActionKinds: ["quickfix", "refactor", "source.organizeImports"] },
     inlayHintProvider: { workDoneProgress: false, resolveProvider: false },
+    // A Monaco client asks after a space and on each key while its popup shows: 0.6-0.8 more
+    // requests per key, most cancelled before they reach Lean (docs/HARDENING.md #91, the
+    // edit-storm figures). An embedder that wants only Ctrl+Shift+Space sets Monaco's
+    // `editor.parameterHints.enabled: false` (docs/EMBEDDING.md §12).
+    signatureHelpProvider: { workDoneProgress: false, triggerCharacters: [" "] },
+    // InfoView 0.11.1 shows a trace message's search (the magnifier) only when this is advertised;
+    // the FileWorker serves the Lean.Widget.highlightMatches RPC itself.
+    experimental: { rpcProvider: { highlightMatchesProvider: {} } },
   };
 
   // The ALLOWLIST (§5, Watchdog Parity graft; invariant K-iv): exactly the
