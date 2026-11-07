@@ -1062,8 +1062,9 @@ describe("the boot card's words for a failed boot (bootFailLabel)", () => {
     expect(isNetworkCause({ kind: "other", code: "crash" })).toBe(false);
     expect(isNetworkCause(null)).toBe(false);
     expect(isNetworkCause(undefined)).toBe(false);
-    // main.ts ui.idle turns a label matching this into a boot failure; the pill's halt and could-not-start words must not.
-    for (const words of [NETWORK_BOOT_NOTICE, NETWORK_HALT_LABEL, `could not start — ${NETWORK_BOOT_NOTICE}`]) {
+    // main.ts ui.idle turns a label matching this into a boot failure; the pill's halt and could-not-start words must not
+    // (a halt after a serve says STALE_NOTICE for a stale cause).
+    for (const words of [NETWORK_BOOT_NOTICE, NETWORK_HALT_LABEL, STALE_NOTICE, `could not start — ${NETWORK_BOOT_NOTICE}`]) {
       expect(words).not.toMatch(/^FAILED|failed — reload|restart failed/);
     }
   });

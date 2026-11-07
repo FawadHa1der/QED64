@@ -1956,8 +1956,10 @@ reads them there, because `docs/history/` is not in the package's `files`.
     the `death` event carry the cause as before (§7.2). The pill then reads
     "the checker keeps crashing on this content — edit the file to retry"
     (for a network-like cause, "the connection dropped while Lean was loading
-    — edit the file to retry") with the death in its tooltip; before a serve
-    it reads "could not start — " and the card's words. The card says "the
+    — edit the file to retry"; for a stale cause, §7.2, "QED64 was updated
+    while this page was open — reload to use the new version") with the
+    death in its tooltip; before a serve it reads "could not start — " and
+    the card's words. The card says "the
     download was interrupted — …" for a network-like cause (kind `network`,
     or `WORKER_SCRIPT_LOAD_FAILED`), the no-Memory64 card keeps only its
     advice, later visits start in "a few seconds", and the first library

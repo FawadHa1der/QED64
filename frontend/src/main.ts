@@ -21,7 +21,7 @@ import { installWidgetSourceCache } from "./widget-source-cache";
 import { createTestHatch } from "./test-hatch";
 import { createCheckFallback } from "./check-fallback";
 import { STAGES, createBootChecklist } from "./boot-checklist";
-import { CAPABILITY_BOOT_NOTICE, NETWORK_HALT_LABEL, STALE_NOTICE, bootFailLabel, createStaleWatch, isNetworkCause } from "./stale-notice";
+import { CAPABILITY_BOOT_NOTICE, NETWORK_HALT_LABEL, STALE_NOTICE, bootFailLabel, createStaleWatch, isNetworkCause, isStaleDeath } from "./stale-notice";
 import { installFileActions, installShareButton } from "./file-io";
 import { MATHLIB_GAPS, coverageHint } from "./mathlib-coverage";
 import { installSplitter } from "./splitter";
@@ -368,8 +368,9 @@ function renderStatus(s: PageStatus) {
     // The boot works here, so the content (or a reboot's download) stopped
     // the checker (FILL-A6): the editor, the phase's words instead of
     // "halted — <reason>" (the death goes in the tooltip), the relay's note.
+    // A stale page's deaths outrank both, as on the card: reloading is the fix.
     bootFinish();
-    const label = isNetworkCause(d?.cause) ? NETWORK_HALT_LABEL : PHASE_LABEL.halted;
+    const label = isStaleDeath(d) ? STALE_NOTICE : isNetworkCause(d?.cause) ? NETWORK_HALT_LABEL : PHASE_LABEL.halted;
     ui.idle(label);
     if (d) ptext.title = `${label}\n(last death: ${d.reason}${d.message ? ` — ${d.message}` : ""})`;
     return;
