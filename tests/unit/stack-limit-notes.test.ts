@@ -88,6 +88,28 @@ describe("installStackLimitNotes", () => {
     expect(reply(13)).toEqual([{ title: "Try this", kind: "quickfix" }]);
   });
 
+  it("replaces the message's params by a copy: a caller of taps.toClient keeps its own params and array unchanged", async () => {
+    installStackLimitNotes(taps);
+    const diagnostics = [diag(2, P1)];
+    const params = { uri: URI, version: 1, diagnostics };
+    const frame: LspMessage = { jsonrpc: "2.0", method: "textDocument/publishDiagnostics", params };
+    const frozen = structuredClone(params);
+    taps.toClient(frame);
+    await flush();
+    expect(frame.params).not.toBe(params);
+    expect(params).toEqual(frozen);
+    expect(params.diagnostics).toBe(diagnostics);
+    expect(taps.fromPage(frame)).toBe(true); // still the page's own frame
+    const got = toClient.find((m) => m.method === "textDocument/publishDiagnostics")!.params as { uri: string; diagnostics: { message: string }[] };
+    expect(got.uri).toBe(URI);
+    expect(got.diagnostics.map((d) => d.message)).toEqual([P1 + SUFFIX]);
+    // Nothing to add: the frame's params stay the caller's own object.
+    const plain = { uri: URI, version: 2, diagnostics: [diag(0, N1)] };
+    const frame2: LspMessage = { jsonrpc: "2.0", method: "textDocument/publishDiagnostics", params: plain };
+    taps.toClient(frame2);
+    expect(frame2.params).toBe(plain);
+  });
+
   it("passes the relay's stack-pause note unchanged: it is QED64's own, and counts 0", async () => {
     installStackLimitNotes(taps);
     current().answer(publish([diag(2, P1)]));

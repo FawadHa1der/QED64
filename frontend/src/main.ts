@@ -269,9 +269,11 @@ const ui: StatusSink = {
 
 // ---- Status: the relay's datum rendered, nothing regexed -------------------
 // The pill is `render(status)` — one enum from the worker (§2.2(e)), no label
-// strings to regex over (C10). The overlay goes at the first phase in which
-// the workspace is actionable: `ready`, or `headerRefused` (a restored buffer
-// with a refused import needs editing, so it must be visible).
+// strings to regex over (C10) — plus page facts: widening, wedged, the search
+// hint and, at `ready`, the stack-limit count (HARDENING #92), so a lane that
+// waits for the pill's ready matches /^ready/. The overlay goes at the first
+// phase in which the workspace is actionable: `ready`, or `headerRefused` (a
+// restored buffer with a refused import needs editing, so it must be visible).
 const PHASE_LABEL: Record<RelayStatus["phase"], string> = {
   booting: "starting Lean",
   starting: "starting the Lean checker",
@@ -441,7 +443,8 @@ if (!EMBED) {
   // The curated-Mathlib note beside the pill (mathlib-coverage.ts; UX M1.5, HARDENING #89): while Lean reports an
   // unknown name under `import Mathlib` or `import Mathlib.Tactic`, the name may be from an area the umbrella leaves
   // out. Each Lean publish is the whole current set, so the note follows the document; the relay's own notes (origin
-  // "qed64") leave it as it is. The pill itself stays render(status): lanes read its `ready`.
+  // "qed64") leave it as it is. The pill itself stays render(status), plus page facts (widening, wedged, the search
+  // hint and, at ready, the stack-limit count of HARDENING #92): lanes read its /^ready/.
   const coverNote = document.getElementById("mathlibnote")!;
   coverNote.title = `import Mathlib here is a curated part of Mathlib: ${MATHLIB_GAPS}. An "Unknown identifier" for a name from those areas means it is not served here.`;
   pageApi.api.on("diagnostics", (d) => { if (d.origin === "lean") coverNote.hidden = !coverageHint(docText(), d.diagnostics); });
@@ -562,7 +565,9 @@ async function main() {
   // getWidgetSource cache and the test hatch observe and answer LSP traffic
   // around the relay, never inside it.
   const taps = tapRelay(relay);
-  installStackLimitNotes(taps); // first: the note is on a frame before any observer (the page API's events) sees it
+  // The note goes on Lean's frames before any observer (the page API's events) sees them: interceptors run before every
+  // observer whatever the install order, and the test hatch adds its own interceptor per request, after this one.
+  installStackLimitNotes(taps);
   installWidgetSourceCache(taps, () => relay.session.id);
   qed64Global.test = createTestHatch(relay, taps);
   pageApi.bind({
