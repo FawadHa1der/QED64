@@ -23,7 +23,7 @@ const LEAN4GAME = [
 const PROOF_SHEETS = ["DEFAULT_MAXIMUM_BYTES", "LspRelay", "MEMORY64_PROBE", "ResidentSession", "chooseSnapshots", "importedModulesOf",
   "initialBytesForEntries", "installArtifacts", "prefetchRaw", "removeRawRegion", "isCacheKeyOf", "SNAPSHOT_CACHE_DIR"];
 /** Runtime names frontend/src/main.ts (the stock page) imports from the barrel ("../../lib"). */
-const STOCK_PAGE = ["ENGINE_STACK_OVERFLOW", "LspRelay", "ResidentSession", "entryLabel", "failureCauseOf", "installArtifacts", "makeEditorPolicy"];
+const STOCK_PAGE = ["ENGINE_STACK_OVERFLOW", "LspRelay", "ResidentSession", "STACK_LIMIT_NOTE", "entryLabel", "failureCauseOf", "installArtifacts", "isStackLimitDiagnostic", "makeEditorPolicy"];
 /** The umbrella-root list: policy data that follows the served umbrella (R1), so outside the v1 contract (D13). */
 const INTERNAL = ["LEGACY_UMBRELLA_ROOTS"];
 /** Names the barrel exported once and no longer does. The R9a ones still live in their lib/ files, where the page and the tests import them. */

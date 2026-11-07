@@ -7,7 +7,9 @@
 //     interceptor may answer a client message itself (the widget-source cache);
 //   * relay → client (`toClient`): observers see each message before it is
 //     posted, and an interceptor may consume one (the test hatch swallows the
-//     replies to its own injected requests).
+//     replies to its own injected requests); one that returns false may first
+//     replace a field of the message, which every observer and the client then
+//     see (the stack-limit note, stack-limit-notes.ts).
 // One wrapper per relay (idempotent), so the page API, the widget-source cache
 // and the test hatch compose. A throwing hook is logged, never propagated into
 // the relay.
@@ -27,7 +29,8 @@ export interface RelayTaps {
   onOut(fn: (msg: LspMessage) => void): () => void;
   /** Answer or drop a client message instead of forwarding it: return true when handled. */
   interceptIn(fn: (msg: LspMessage) => boolean): () => void;
-  /** Consume a relay → client message: return true to drop it. */
+  /** Consume a relay → client message: return true to drop it. One that returns false may first replace a field
+   * (never mutate a value it did not make): interceptors run before every observer. */
   interceptOut(fn: (msg: LspMessage) => boolean): () => void;
   /** Post to the client as the relay would (observers and interceptors run).
    * The message is marked as the page's own (`fromPage`). */

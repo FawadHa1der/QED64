@@ -6,8 +6,8 @@ import { LeanMonaco, LeanMonacoEditor, type LeanMonacoOptions } from "lean4monac
 // the stock page is its first consumer. The imports below it are page-internal
 // modules (or names) the barrel does not export.
 import {
-  ENGINE_STACK_OVERFLOW, LspRelay, ResidentSession, entryLabel, failureCauseOf, installArtifacts, makeEditorPolicy,
-  type FailureCause, type ProgressInfo, type RelayStatus, type ResidentPolicy, type StatusSink,
+  ENGINE_STACK_OVERFLOW, LspRelay, ResidentSession, STACK_LIMIT_NOTE, entryLabel, failureCauseOf, installArtifacts, isStackLimitDiagnostic,
+  makeEditorPolicy, type FailureCause, type ProgressInfo, type RelayStatus, type ResidentPolicy, type StatusSink,
 } from "../../lib";
 import { registerImportCompletion } from "./import-completion";
 import * as monaco from "monaco-editor";
@@ -26,6 +26,7 @@ import { installFileActions, installShareButton } from "./file-io";
 import { MATHLIB_GAPS, coverageHint } from "./mathlib-coverage";
 import { installSplitter } from "./splitter";
 import { createSearchHint } from "./search-hint";
+import { installStackLimitNotes, stackLimitLabel } from "./stack-limit-notes";
 
 // The embedder-facing surface (docs/EMBEDDING.md §2), published synchronously
 // at module start — before any of the page's own listeners matter — so an
@@ -308,6 +309,11 @@ function tickSearchHint(): void {
   if (hint) ui.progress(hint);
 }
 
+// HARDENING #92: Lean's errors in its latest publish that are the engine-stack guard's (the commands under them were not
+// checked). At `ready` the pill says how many instead of plain "ready", with QED64's note in its tooltip; the errors
+// themselves stay errors and carry the note (stack-limit-notes.ts).
+let stackLimited = 0;
+
 // GAP 3: a session that booted light (init only) and whose header now names
 // Mathlib is refused by the kernel; the page widens it once (a user restart
 // with the umbrella, or the overlay entry whose roots cover the header) and
@@ -359,9 +365,11 @@ function renderStatus(s: PageStatus) {
   // THIS reboot happens, not on the sticky lastDeath a later user restart
   // would inherit).
   const wedged = s.relay === "rebooting" && s.rebootReason === "wedged";
-  const label = widening ? `loading ${widening}…` : wedged ? WEDGED_LABEL : s.phase === "elaborating" && searchHint.shown ? searchHint.shown : PHASE_LABEL[s.phase];
+  const stackLabel = !widening && !wedged && s.phase === "ready" && stackLimited > 0;
+  const label = widening ? `loading ${widening}…` : wedged ? WEDGED_LABEL : s.phase === "elaborating" && searchHint.shown ? searchHint.shown : stackLabel ? stackLimitLabel(stackLimited) : PHASE_LABEL[s.phase];
   if (s.phase === "booting" || s.phase === "starting" || s.phase === "elaborating" || s.phase === "dead") ui.busy(label);
   else ui.idle(label);
+  if (stackLabel) ptext.title = `${label}\n\n${STACK_LIMIT_NOTE}`;
   if (s.phase === "ready" || s.phase === "headerRefused") bootFinish();
 }
 
@@ -554,6 +562,7 @@ async function main() {
   // getWidgetSource cache and the test hatch observe and answer LSP traffic
   // around the relay, never inside it.
   const taps = tapRelay(relay);
+  installStackLimitNotes(taps); // first: the note is on a frame before any observer (the page API's events) sees it
   installWidgetSourceCache(taps, () => relay.session.id);
   qed64Global.test = createTestHatch(relay, taps);
   pageApi.bind({
@@ -564,6 +573,16 @@ async function main() {
     editor: () => (editor.editor ?? undefined) as unknown as EditorLike | undefined,
     build: { buildId: artifacts.runtime.buildId, leanVersion: artifacts.runtime.leanVersion, sourceRevision: artifacts.runtime.sourceRevision ?? null, shell: null },
     snapshotNames: artifacts.snapshots?.snapshots.map((e) => e.name) ?? [],
+  });
+  // HARDENING #92: each publish is the document's whole set (the relay's halted note holds no guard error, so a halt
+  // counts 0). Lean can publish after its `ready` status, and the worker does not repeat an unchanged status: a changed
+  // count re-renders the pill at once (both modes; #pstatus announces the label once, on the plain page only).
+  pageApi.api.on("diagnostics", (d) => {
+    const n = d.diagnostics.filter(isStackLimitDiagnostic).length;
+    if (n === stackLimited) return;
+    stackLimited = n;
+    const s = relay.status();
+    if (s.phase === "ready") renderStatus(s);
   });
   // `request` is LeanSession-private; the meter is a trusted internal peer.
   startMemoryMeter(() => (relay.session as ResidentSession).lean as unknown as Tel);
