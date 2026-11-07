@@ -59,8 +59,10 @@
     #bootbar {
       height: 8px; border-radius: 999px; background: #e8eaf3; overflow: hidden; margin-bottom: 8px;
     }
+    /* The page's one blue is #4664ee: 4.86:1 against white either way (WCAG AA; the old #4f6df5 was 4.34:1).
+       New buttons use it; grey text on the white cards is #6b7190 (4.78:1) or darker (UX A1.5). */
     #bootfill {
-      height: 100%; width: 0%; border-radius: 999px; background: #4f6df5;
+      height: 100%; width: 0%; border-radius: 999px; background: #4664ee;
       transition: width .3s ease;
     }
     #bootbar.busy #bootfill {
@@ -78,14 +80,14 @@
     #bootstat #bootnums { flex: none; }
     #bootstages { margin: 0; padding: 0 0 0 2px; list-style: none; }
     #bootstages li {
-      padding: 3px 0 3px 26px; position: relative; color: #9aa0b8;
+      padding: 3px 0 3px 26px; position: relative; color: #6b7190; /* 4.78:1 on the card (AA) */
     }
     #bootstages li::before {
       content: ""; position: absolute; left: 2px; top: 8px; width: 12px; height: 12px;
       border-radius: 50%; border: 2px solid #cdd2e4; box-sizing: border-box;
     }
     #bootstages li.active { color: #1b1d29; font-weight: 600; }
-    #bootstages li.active::before { border-color: #4f6df5; background: #dfe6ff; }
+    #bootstages li.active::before { border-color: #4664ee; background: #dfe6ff; }
     #bootstages li.done { color: #5a5f78; }
     #bootstages li.done::before {
       border-color: #52c47b; background: #52c47b;
@@ -93,8 +95,8 @@
     }
     #bootcard.failed h1 { color: #c0392b; }
     #bootreload {
-      margin-top: 14px; padding: 7px 18px; border-radius: 6px; border: 1px solid #4f6df5;
-      background: #4f6df5; color: #fff; font: 13px system-ui, sans-serif; cursor: pointer;
+      margin-top: 14px; padding: 7px 18px; border-radius: 6px; border: 1px solid #4664ee;
+      background: #4664ee; color: #fff; font: 13px system-ui, sans-serif; cursor: pointer;
     }
     /* The share-link gate (main.ts sharedLinkGate; HARDENING #77): built only
        when the URL carries #code=/#codez=; centered over the page and the boot
@@ -117,11 +119,11 @@
     }
     #sharedlink-flag { color: #c0392b; font-weight: 600; }
     #sharedlink button {
-      padding: 6px 14px; border-radius: 6px; border: 1px solid #4f6df5; background: #fff;
-      color: #4f6df5; font: 13px system-ui, sans-serif; cursor: pointer;
+      padding: 6px 14px; border-radius: 6px; border: 1px solid #4664ee; background: #fff;
+      color: #4664ee; font: 13px system-ui, sans-serif; cursor: pointer;
     }
     #sharedlink #sharedlink-more { padding: 2px 8px; font-size: 12px; }
-    #sharedlink #sharedlink-open { background: #4f6df5; color: #fff; }
+    #sharedlink #sharedlink-open { background: #4664ee; color: #fff; }
     #sharedlink-actions { display: flex; gap: 8px; margin-top: 10px; }
   </style>
 </head>

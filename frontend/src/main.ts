@@ -69,7 +69,7 @@ const staleWatch = createStaleWatch((d) => {
   btn.type = "button";
   btn.textContent = "Updated — reload";
   btn.title = STALE_NOTICE;
-  btn.style.cssText = "margin-left:.6em;padding:.15em .6em;font:inherit;font-size:.9em;cursor:pointer;border-radius:.4em;border:1px solid #4f6df5;background:#4f6df5;color:#fff";
+  btn.style.cssText = "margin-left:.6em;padding:.15em .6em;font:inherit;font-size:.9em;cursor:pointer;border-radius:.4em;border:1px solid #4664ee;background:#4664ee;color:#fff";
   btn.onclick = () => window.location.reload();
   pillEl.insertAdjacentElement("afterend", btn);
 });
