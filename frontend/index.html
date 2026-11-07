@@ -34,6 +34,9 @@
     @keyframes pulse { 50% { opacity: .3; } }
     #pill #ptext { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     #pill #ptime { color: #9aa0b8; flex: none; }
+    /* #pstatus: the pill's screen-reader echo (main.ts announce, UX A1.3). Clipped to nothing; never display:none,
+       which would silence it. Absolute, so it takes no room in the bar or the page's height. */
+    #pstatus { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
     /* Source links, after the pill: one line, never wrapping (the bar's height is what #split subtracts). */
     #repolinks { display: flex; gap: 10px; flex: none; white-space: nowrap; font-size: 12px; }
     #repolinks a { color: #9aa0b8; text-decoration: none; }
@@ -172,6 +175,7 @@
       </div>
     </div>
   </div>
+  <div id="pstatus" role="status"></div>
   <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

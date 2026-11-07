@@ -13,7 +13,8 @@
 //                  localStorage["qed64.buffer"] is neither read (a seeded
 //                  sentinel does not appear) nor written (an edit leaves the
 //                  sentinel), settled() resolves ready, an Init-only document
-//                  booted light (snapshots ["init"]).
+//                  booted light (snapshots ["init"]), and the plain page's
+//                  screen-reader echo #pstatus stays empty (UX A1.3).
 //   embed-setdoc   ?embed=1 without #code: setDocument from the `qed64:api`
 //                  listener becomes the boot document.
 //   memory         status().memory.currentBytes/maximumBytes are positive numbers once settled
@@ -110,13 +111,15 @@ try {
     const s = await settle(page);
     const doc = await page.evaluate(() => globalThis.qed64.api.getDocument());
     const hidden = await page.evaluate(() => getComputedStyle(document.getElementById("examples")).display === "none");
+    // The plain page's screen-reader echo stays silent: the embedder announces (UX A1.3).
+    const announced = await page.evaluate(() => document.getElementById("pstatus")?.textContent ?? null);
     const apiEvent = await page.evaluate(() => window.__rec.apiEvent);
     // An edit: the buffer must still hold the sentinel afterwards (no write).
     const edit = await page.evaluate(() => globalThis.qed64.api.setDocument("theorem three : 1 + 2 = 3 := rfl\n"));
     await page.waitForTimeout(1200); // past the page's 400 ms save debounce
     const stored = await page.evaluate(() => localStorage.getItem("qed64.buffer"));
-    const ok = s.phase === "ready" && doc?.text === INIT_DOC && hidden && apiEvent && JSON.stringify(s.snapshots) === JSON.stringify(["init"]) && stored === SENTINEL && edit.unchanged === false;
-    record("embed-code", ok, `phase ${s.phase}, snapshots ${JSON.stringify(s.snapshots)}, document ${JSON.stringify(doc?.text)}, examples hidden ${hidden}, qed64:api ${apiEvent}, buffer after edit ${stored === SENTINEL ? "untouched" : JSON.stringify(stored)}`);
+    const ok = s.phase === "ready" && doc?.text === INIT_DOC && hidden && apiEvent && JSON.stringify(s.snapshots) === JSON.stringify(["init"]) && stored === SENTINEL && edit.unchanged === false && announced === "";
+    record("embed-code", ok, `phase ${s.phase}, snapshots ${JSON.stringify(s.snapshots)}, document ${JSON.stringify(doc?.text)}, examples hidden ${hidden}, #pstatus ${JSON.stringify(announced)}, qed64:api ${apiEvent}, buffer after edit ${stored === SENTINEL ? "untouched" : JSON.stringify(stored)}`);
     await context.close();
   }
 

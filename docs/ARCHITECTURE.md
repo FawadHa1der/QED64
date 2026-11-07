@@ -458,7 +458,11 @@ and no note; the "already declared" error is then simply the user's error.
 **The page** (`frontend/src/main.ts`): the pill is `render(status)` —
 `PHASE_LABEL[phase]`, busy for `booting | starting | elaborating | dead`,
 idle otherwise; the boot overlay is dismissed at the first `ready` or
-`headerRefused`. A `halted` status renders in two ways: if no session ever
+`headerRefused`. A visually hidden polite live region, `#pstatus`, repeats
+the pill for screen readers: it hears the labels of `busy` and `idle` and the
+page's own notes (a `progress` without `info`), but never the boot's streamed
+progress, `elaborating`, or the same label twice, and it stays silent under
+`?embed=1`, where the embedder announces. A `halted` status renders in two ways: if no session ever
 reached `ready`, the boot-failure card ("QED64 could not start: <message>",
 Reload); otherwise the pill reads `halted — <reason>` and the relay's
 in-document diagnostic explains. The harness oracle is

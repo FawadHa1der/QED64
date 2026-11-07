@@ -200,12 +200,23 @@ function renderTime() {
   const s = Math.round((performance.now() - busySince) / 1000);
   ptime.textContent = s >= 3 ? (s < 60 ? `· ${s}s` : `· ${(s / 60) | 0}m ${s % 60}s`) : "";
 }
+// The pill's screen-reader echo (UX A1.3): `#pstatus` (role="status", visually hidden; index.html) hears what the pill
+// says at busy and idle, and the page's own notes (a `progress` without `info`). Never the boot's telemetry (a
+// `progress` with `info`: every module name of the environment load, every download tick), never `elaborating` (every
+// edit flips to it), never the same label twice (the relay repeats `ready` several times a second). Not `#ptext` itself:
+// that would announce all three. Silent under ?embed=1: the embedder announces from the status events in its own words.
+const pstatus = EMBED ? null : document.getElementById("pstatus");
+function announce(label: string): void {
+  if (!pstatus || label === PHASE_LABEL.elaborating || pstatus.textContent === label) return;
+  pstatus.textContent = label;
+}
 const ui: StatusSink = {
   busy(label, info) {
     if (busySince === null) busySince = performance.now();
     pill.classList.add("busy");
     ptext.textContent = label;
     ptext.title = label;
+    announce(label);
     if (ticker === undefined) ticker = window.setInterval(renderTime, 1000);
     renderTime();
     bootProgress(label, info);
@@ -215,6 +226,7 @@ const ui: StatusSink = {
   progress(label, info) {
     ptext.textContent = label;
     ptext.title = label;
+    if (!info) announce(label); // the page's own note; the library's progress always carries info (EMBEDDING §7.1)
     bootProgress(label, info);
     if (info?.stage) pageApi.bootStep(label, info);
   },
@@ -223,6 +235,7 @@ const ui: StatusSink = {
     pill.classList.remove("busy");
     ptext.textContent = label;
     ptext.title = label;
+    announce(label);
     renderTime();
     if (/^FAILED|failed — reload|restart failed/.test(label)) bootFail(label);
     else if (/^ready$/.test(label)) bootFinish();
