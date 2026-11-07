@@ -667,6 +667,13 @@ async function main() {
     run: (ed) => ed.trigger("qed64", "lean4.infoView.copyToComment", null),
   });
   docText = () => editor.editor?.getModel()?.getValue() ?? relay.lastText;
+  // The autosave listens before editorReady, which applies a file opened during the boot (Open…, Ctrl/Cmd+O; it
+  // waited for the editor), so that edit is saved too.
+  let saveTimer: number | undefined;
+  if (!EMBED) editor.editor?.getModel()?.onDidChangeContent(() => {
+    window.clearTimeout(saveTimer);
+    saveTimer = window.setTimeout(() => { saveTimer = undefined; saveNow(); }, 400);
+  });
   pageApi.editorReady();
   // UX P1.1, P1.15 (HARDENING #88): the visitor may read and type while Lean downloads and loads (a first visit is
   // about a minute on a fast link), or delete a runaway command from the restored buffer instead of waiting for the
@@ -678,11 +685,6 @@ async function main() {
   }
   document.getElementById("sharedlink")?.focus(); // the editor's start took focus from a panel already up
   if (restored && persistBuffer) ui.progress("restored your last buffer"); // not when a shared snippet's Open replaced it (HARDENING #77)
-  let saveTimer: number | undefined;
-  if (!EMBED) editor.editor?.getModel()?.onDidChangeContent(() => {
-    window.clearTimeout(saveTimer);
-    saveTimer = window.setTimeout(() => { saveTimer = undefined; saveNow(); }, 400);
-  });
   function saveNow() {
     try {
       const text = editor.editor?.getModel()?.getValue();
