@@ -75,6 +75,13 @@ describe("insertText", () => {
     expect(ed.text()).toBe("by rfl\n");
     expect(ed.selection()).toEqual({ startLineNumber: 1, startColumn: 4, endLineNumber: 1, endColumn: 4 });
   });
+  it("'above' without a position uses the cursor's line: the InfoView's copy-to-comment block, one undo step (UX I3.4)", () => {
+    const ed = fakeEditor("example (a b : Nat) : a + b = b + a := by\n  omega\n");
+    ed.setPosition({ lineNumber: 2, column: 3 });
+    expect(insertTextIn(ed, "/-\na b : Nat\n⊢ a + b = b + a\n-/", "above")).toBe(true);
+    expect(ed.text()).toBe("example (a b : Nat) : a + b = b + a := by\n  /-\n  a b : Nat\n  ⊢ a + b = b + a\n  -/\n  omega\n");
+    expect(ed.log).toEqual(["undo-stop", "edit×1", "undo-stop", "focus"]);
+  });
   it("ignores another document", () => {
     const ed = fakeEditor("x");
     expect(insertTextIn(ed, "y", "here", { textDocument: { uri: "file:///Mathlib/Order/Basic.lean" }, position: { line: 0, character: 0 } })).toBe(false);

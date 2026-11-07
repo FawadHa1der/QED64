@@ -41,6 +41,14 @@
 //                     session (reason "user"), settle ready on a new session,
 //                     print a new #eval value and show the goal again. Before
 //                     the fix the click re-checked nothing.
+//   copy-to-comment   init only (UX parity I3.4, HARDENING #56's I3.4 note):
+//                     the page's editor action "Lean 4: Copy Goal to
+//                     Comment" is registered (getAction, and listed in the
+//                     editor's supported actions, which the F1 palette
+//                     shows); run with the cursor on `omega`, the InfoView's
+//                     insertText("above") lands the goal as a `/- … -/` block
+//                     above it, indented like it, which checks to ready with
+//                     no error; one Ctrl/Cmd+Z restores the text.
 //
 // Usage: node tests/adversarial/infoview-actions.mjs [--url http://localhost:5199/] [--only <scenario>] [--browser chromium|firefox] [--run-dir <dir>]
 // Run it through the host browser lock. Exit 0 all pass, 1 a scenario failed,
@@ -52,7 +60,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { arg, browserName, fetchJson, launchBrowser, onlyMatches, resolveTarget, root, runDir, teeLog } from "./harness.mjs";
 
-export const SCENARIOS = ["capability-flag", "try-this-apply", "conv-generate", "foreign-show", "focus-return", "restart-file"];
+export const SCENARIOS = ["capability-flag", "try-this-apply", "conv-generate", "foreign-show", "focus-return", "restart-file", "copy-to-comment"];
 /** The scenarios `--only` selects, in run order. An empty selection is refused
  * (exit 3): `--only foreign-show` once ran nothing and reported "0/0 pass". */
 export const selectScenarios = (only) => SCENARIOS.filter((name) => !only || onlyMatches(name, only));
@@ -73,6 +81,11 @@ const SEL = {
 const DOC_A = "example (n : Nat) : n + 0 = n := by simp?\n";
 const DOC_B = "import Mathlib.Tactic.Widget.Conv\n\nexample (a b c : Nat) : a + (b + c) = (c + b) + a := by\n  conv?\n  omega\n";
 const DOC_R = "#eval IO.monoNanosNow\n\nexample (a b : Nat) : a + b = b + a := by\n  omega\n";
+// copy-to-comment: the InfoView's block (`/-\n<goals>\n-/`, its goalsToString: no case name for the one goal, `Nat`
+// without Mathlib), indented like the cursor's line; tests/unit/infoview-edits.test.ts pins the same string.
+const DOC_C = "example (a b : Nat) : a + b = b + a := by\n  omega\n";
+const COPIED_C = "example (a b : Nat) : a + b = b + a := by\n  /-\n  a b : Nat\n  ⊢ a + b = b + a\n  -/\n  omega\n";
+const COPY_ACTION = { id: "qed64.copyGoalToComment", label: "Lean 4: Copy Goal to Comment" };
 // foreign-show: a go-to-definition target in Mathlib, and the own-document
 // control's range (`n + 0 = n` in DOC_A). The probe's seqNums sit far above the
 // iframe Rpc's own, which count up from 1.
@@ -413,6 +426,44 @@ async function main() {
         && v1 !== null && v2 !== null && (goalNoMove || goalAfterMove) && errors.length === 0;
       record("restart-file", ok, `button ${found}; reboot ${JSON.stringify(reboot)}; settled ${JSON.stringify(settled)}; #eval before ${v1} after ${v2}; goal without a cursor move ${goalNoMove}, after one ${goalAfterMove}; page errors ${JSON.stringify(errors)}`);
       await page.screenshot({ path: path.join(dir, "restart-file.png") }).catch(() => {});
+      await context.close();
+    },
+
+    "copy-to-comment": async () => {
+      // UX parity I3.4: before the change the page registered no such action (lean4monaco drops VS Code's menus).
+      const { page, context, errors } = await boot(DOC_C, 300000);
+      await installDiagTap(page);
+      await cursorAt(page, 2, 3);
+      // The InfoView answers copyToComment only with a goal at the cursor. It writes `a b : Nat` with a no-break space.
+      const iv = page.frameLocator(SEL.frame);
+      const goal = () => iv.locator("body").innerText().then((t) => /⊢ a \+ b = b \+ a/.test(t.replace(/\u00a0/g, " ")) || null, () => null);
+      const goalShown = !!(await waitFor(goal, 60000 * SLOW, 500));
+      const action = await page.evaluate(({ id }) => {
+        const e = globalThis.qed64.editor;
+        return { label: e.getAction(id)?.label ?? null, listed: e.getSupportedActions().some((a) => a.id === id) };
+      }, COPY_ACTION);
+      let copied = null, phase = null, errs = ["not reached"], undone = null;
+      if (action.label) {
+        await page.evaluate(({ id }) => globalThis.qed64.editor.getAction(id).run(), COPY_ACTION);
+        copied = await waitFor(async () => { const t = await text(page); return t !== DOC_C ? t : null; }, 10000);
+        phase = copied ? await page.evaluate((ms) => globalThis.qed64.api.settled({ timeoutMs: ms }).then((s) => s.phase, (e) => `threw ${e}`), 120000 * SLOW) : null;
+        errs = phase === "ready" ? await errorDiags(page) : ["not settled"];
+        await page.screenshot({ path: path.join(dir, "copy-to-comment.png") }).catch(() => {});
+        // One undo with the real keys: the InfoView's insertText gave the editor the keyboard (HARDENING #85).
+        await page.keyboard.press("ControlOrMeta+KeyZ");
+        undone = await waitFor(async () => ((await text(page)) === DOC_C ? true : null), 5000);
+      }
+      const checks = {
+        "the InfoView shows the goal": goalShown,
+        "the action is registered with its label": action.label === COPY_ACTION.label,
+        "it is among the editor's supported actions (the F1 palette)": action.listed,
+        "it lands the goal as a comment above the cursor's line": copied === COPIED_C,
+        "that checks to ready with no error": phase === "ready" && errs.length === 0,
+        "one Ctrl/Cmd+Z restores the text": !!undone,
+        "no page errors": errors.length === 0,
+      };
+      const failures = Object.keys(checks).filter((k) => !checks[k]);
+      record("copy-to-comment", failures.length === 0, `failed checks ${JSON.stringify(failures)}; action ${JSON.stringify(action)}; text after ${JSON.stringify(copied)}; phase ${phase}; error diagnostics ${JSON.stringify(errs)}; page errors ${JSON.stringify(errors)}`);
       await context.close();
     },
   };

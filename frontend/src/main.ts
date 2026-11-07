@@ -639,6 +639,16 @@ async function main() {
   // long after load — pin it to the content we actually open.
   examplesEl.value = "mathlib";
   await editor.start(editorEl, "/project/Probe.lean", initialText);
+  // "Lean 4: Copy Goal to Comment" in the right-click menu and the F1 palette (UX I3.4). vscode-lean4 registers
+  // lean4.infoView.copyToComment, but lean4monaco drops VS Code's menus. trigger() hands an id Monaco does not know to
+  // the command service; the InfoView answers with insertText("/-\n<goals>\n-/", "above") (HARDENING #56's wrapper).
+  editor.editor?.addAction({
+    id: "qed64.copyGoalToComment",
+    label: "Lean 4: Copy Goal to Comment",
+    contextMenuGroupId: "1_modification",
+    contextMenuOrder: 9,
+    run: (ed) => ed.trigger("qed64", "lean4.infoView.copyToComment", null),
+  });
   docText = () => editor.editor?.getModel()?.getValue() ?? relay.lastText;
   pageApi.editorReady();
   // UX P1.1, P1.15 (HARDENING #88): the visitor may read and type while Lean downloads and loads (a first visit is

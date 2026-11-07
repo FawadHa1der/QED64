@@ -30,7 +30,7 @@ const evaluateIn = (g: unknown) => async (fn: Probe, arg?: unknown) => structure
 
 describe("scenario selection", () => {
   test("every scenario runs alone (foreign-show used to ride on conv-generate's page)", () => {
-    expect(SCENARIOS).toEqual(["capability-flag", "try-this-apply", "conv-generate", "foreign-show", "focus-return", "restart-file"]);
+    expect(SCENARIOS).toEqual(["capability-flag", "try-this-apply", "conv-generate", "foreign-show", "focus-return", "restart-file", "copy-to-comment"]);
     for (const name of SCENARIOS) expect(selectScenarios(name)).toEqual([name]);
     expect(selectScenarios("")).toEqual(SCENARIOS);
     expect(selectScenarios("conv-generate|foreign-show")).toEqual(["conv-generate", "foreign-show"]);
