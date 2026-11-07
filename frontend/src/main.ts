@@ -22,6 +22,7 @@ import { STAGES, createBootChecklist } from "./boot-checklist";
 import { CAPABILITY_BOOT_NOTICE, NETWORK_HALT_LABEL, STALE_NOTICE, bootFailLabel, createStaleWatch, isNetworkCause } from "./stale-notice";
 import { installFileActions, installShareButton } from "./file-io";
 import { MATHLIB_GAPS, coverageHint } from "./mathlib-coverage";
+import { installSplitter } from "./splitter";
 
 // The embedder-facing surface (docs/EMBEDDING.md §2), published synchronously
 // at module start — before any of the page's own listeners matter — so an
@@ -455,6 +456,11 @@ if (!EMBED) {
   const coverNote = document.getElementById("mathlibnote")!;
   coverNote.title = `import Mathlib here is a curated part of Mathlib: ${MATHLIB_GAPS}. An "Unknown identifier" for a name from those areas means it is not served here.`;
   pageApi.api.on("diagnostics", (d) => { if (d.origin === "lean") coverNote.hidden = !coverageHint(docText(), d.diagnostics); });
+  // The splitter between the editor and the InfoView (splitter.ts; UX L1.2, HARDENING #87): installed before Monaco
+  // exists, its share is only ever the --split variable. Not in embed mode, where the embedder owns the layout.
+  const splitter = document.getElementById("splitter")!;
+  installSplitter(document.getElementById("split")!, splitter);
+  splitter.hidden = false;
 }
 
 async function main() {

@@ -11,7 +11,8 @@
 //                  server's /embed-host.html): boots with exactly that document,
 //                  `qed64:api` fired before boot, the plain page's own controls
 //                  (the examples menu, the bar's #pageactions, the
-//                  curated-Mathlib note #mathlibnote) are not rendered, the
+//                  curated-Mathlib note #mathlibnote, the splitter
+//                  #splitter: UX L1.2) are not rendered, the
 //                  file actions are not installed (no #fileinput, and a Ctrl+S
 //                  keydown is not defaultPrevented: UX F1.5, F1.3),
 //                  localStorage["qed64.buffer"] is neither read (a seeded
@@ -55,7 +56,7 @@ const INIT_DOC = "theorem two : 1 + 1 = 2 := rfl\n";
 const BROKEN = "theorem two : 1 + 1 = 3 := rfl\n";
 const SENTINEL = "-- sentinel: embed mode must not read or write this\n";
 /** The plain page's own controls (docs/EMBEDDING.md §3): in the markup, never rendered under ?embed=1. */
-const PAGE_ONLY_IDS = ["examples", "pageactions", "mathlibnote"];
+const PAGE_ONLY_IDS = ["examples", "pageactions", "mathlibnote", "splitter"];
 const withQuery = (q, hash = "") => { const u = new URL(url); for (const [k, v] of Object.entries(q)) u.searchParams.set(k, v); u.hash = hash; return u.toString(); };
 
 const results = [];

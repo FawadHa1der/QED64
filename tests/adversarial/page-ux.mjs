@@ -46,8 +46,9 @@
 //                 the split fills from the bar to the window's bottom,
 //                 Monaco fills its pane; side by side down to 721 px,
 //                 stacked at 375; a long pill label ends in an ellipsis with
-//                 its tooltip and never widens the bar. Chromium; Firefox
-//                 once per change.
+//                 its tooltip and never widens the bar; the splitter sits
+//                 between the panes, and is not displayed when stacked.
+//                 Chromium; Firefox once per change.
 //   show-editor   (UX P1.1, P1.15, HARDENING #88) a restored buffer that keeps
 //                 Lean busy for a minute behind the boot card: once the editor
 //                 exists, the card offers "Show the editor while Lean loads"
@@ -77,6 +78,18 @@
 //                 on the Open… button for 2 s. Its embed half (no
 //                 #fileinput, Ctrl+S left alone under ?embed=1) is page-api.mjs
 //                 embed-code. Chromium and Firefox.
+//   splitter-drag (UX L1.2, HARDENING #87) the plain page's splitter between
+//                 the editor and the InfoView: the editor starts at 55 % of
+//                 the row; one drag jumps onto the editor (30 %), the
+//                 InfoView iframe then takes no pointer events, and the next
+//                 move lands over the iframe: the editor reaches 80 %, Monaco
+//                 and the iframe follow their panes, the goal still shows,
+//                 and once the button is up the iframe takes the pointer
+//                 again; a drag past the edge stops at 15 %; the share is the
+//                 --split variable, never an inline flex; the drags leave the
+//                 editor's selection alone. Its embed half (no splitter
+//                 under ?embed=1) is page-api.mjs embed-code. Chromium and
+//                 Firefox.
 //
 // Usage: node tests/adversarial/page-ux.mjs [--url http://localhost:5199/] [--only <scenario>] [--browser chromium|firefox] [--run-dir <dir>]
 // Run it through the host browser lock. Exit 0 all pass, 1 a scenario failed,
@@ -89,7 +102,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { arg, browserName, fetchJson, launchBrowser, onlyMatches, resolveTarget, root, runDir, teeLog } from "./harness.mjs";
 
-export const SCENARIOS = ["a11y-status", "share-link", "example-undo", "buffer-flush", "look", "layout", "show-editor", "content-halt", "file-actions"];
+export const SCENARIOS = ["a11y-status", "share-link", "example-undo", "buffer-flush", "look", "layout", "show-editor", "content-halt", "file-actions", "splitter-drag"];
 /** The scenarios `--only` selects, in run order. An empty selection is refused (exit 3), never "0/0 pass". */
 export const selectScenarios = (only) => SCENARIOS.filter((name) => !only || onlyMatches(name, only));
 /** 0 all pass, 1 a scenario failed, 3 nothing was judged. */
@@ -172,8 +185,21 @@ function layoutProbe(label) {
   return {
     innerWidth, innerHeight, scrollW: se.scrollWidth, scrollH: se.scrollHeight, barScrollW: bar.scrollWidth, barClientW: bar.clientWidth,
     bar: box("#bar"), pageactions: box("#pageactions"), pill: box("#pill"), title: document.getElementById("ptext").title,
-    split: box("#split"), editor: box("#editor"), infoview: box("#infoview"), monacoW: globalThis.qed64.editor.getLayoutInfo().width,
+    split: box("#split"), editor: box("#editor"), infoview: box("#infoview"), splitter: box("#splitter"), monacoW: globalThis.qed64.editor.getLayoutInfo().width,
     viewport: document.querySelector('meta[name="viewport"]')?.getAttribute("content") ?? null,
+  };
+}
+/** splitter-drag: the row, the panes and the handle (null when not displayed), the InfoView iframe's width and pointer
+ * events, the drag state, the editor's inline flex (never set) and --split, and Monaco's width. */
+function paneProbe() {
+  const box = (e) => { if (!e || e.getClientRects().length === 0) return null; const b = e.getBoundingClientRect(); return { x: b.x, y: b.y, w: b.width, h: b.height }; };
+  const split = document.getElementById("split"), editor = document.getElementById("editor"), infoview = document.getElementById("infoview");
+  const frame = [...document.querySelectorAll("#infoview iframe")].pop() ?? null;
+  return {
+    split: box(split), editor: box(editor), infoview: box(infoview), handle: box(document.getElementById("splitter")),
+    frameW: frame ? frame.getBoundingClientRect().width : null, infoviewInner: infoview.clientWidth,
+    framePointer: frame ? getComputedStyle(frame).pointerEvents : null, dragging: split.classList.contains("dragging"),
+    inlineFlex: editor.style.flex, splitVar: split.style.getPropertyValue("--split"), monacoW: globalThis.qed64.editor.getLayoutInfo().width,
   };
 }
 /** The InfoView frame's text. */
@@ -537,8 +563,12 @@ async function main() {
               "both panes have room": editor.h >= 150 && infoview.h >= 150,
               "the stacked InfoView shows the goal": (await frameText(page)).includes("⊢"),
               "a viewport meta": /^width=device-width/.test(m.viewport ?? ""),
+              "the splitter is not displayed": m.splitter === null,
             }
-            : { "side by side": near(infoview.y, editor.y) && infoview.x >= editor.x + editor.w - 1.5 }),
+            : {
+              "side by side": near(infoview.y, editor.y) && infoview.x >= editor.x + editor.w - 1.5,
+              "the splitter sits between the panes": !!m.splitter && near(m.splitter.x, editor.x + editor.w) && near(infoview.x, m.splitter.x + m.splitter.w),
+            }),
           "Monaco fills its pane": near(m.monacoW, editor.w, 2),
         };
         const long = await page.evaluate(layoutProbe, LONG_LABEL);
@@ -689,6 +719,52 @@ async function main() {
       };
       const failures = Object.keys(checks).filter((k) => !checks[k]);
       record("file-actions", failures.length === 0, `failed ${JSON.stringify(failures)}; buttons ${JSON.stringify(buttons)}; key download ${JSON.stringify(saved)}; button download ${JSON.stringify(named)}; after the open ${JSON.stringify(afterOpen)}; refusal ${JSON.stringify([refusedLabel, labelLater])}; keys ${JSON.stringify(keys)}; phase ${phase}; page errors ${JSON.stringify(errors)}`);
+      await context.close();
+    },
+    "splitter-drag": async () => {
+      // UX L1.2. On the base build there is no #splitter (the split is fixed at 55/45): the grab finds no handle.
+      const { page, context, errors } = await open(LOOK_DOC, { context: { viewport: { width: 1400, height: 900 } } });
+      await cursorAt(page, 2, 3);
+      const goal = async () => (await frameText(page)).includes("⊢") || null;
+      await waitFor(goal, 30000);
+      await waitFor(() => page.evaluate(() => !document.getElementById("boot") || null), 5000); // the card's fade (600 ms)
+      const share = (b) => b.editor.w / b.split.w;
+      const near = (a, b, tol) => Math.abs(a - b) <= tol;
+      const sel0 = await page.evaluate(() => JSON.stringify(globalThis.qed64.editor.getSelection()));
+      const b0 = await page.evaluate(paneProbe);
+      if (!b0.handle) throw new Error(`no splitter shown; panes ${JSON.stringify(b0)}`);
+      const y = b0.split.y + b0.split.h / 2;
+      const grab = async (b) => { await page.mouse.move(b.handle.x + b.handle.w / 2, y); await page.mouse.down(); };
+      // One jump onto the editor, then one that lands over the InfoView iframe before the layout follows.
+      await grab(b0);
+      await page.mouse.move(b0.split.x + b0.split.w * 0.3, y);
+      const mid = await page.evaluate(paneProbe);
+      await page.mouse.move(b0.split.x + b0.split.w * 0.8, y);
+      await page.mouse.up();
+      const b1 = await page.evaluate(paneProbe);
+      const followed = await waitFor(async () => { const b = await page.evaluate(paneProbe); return near(b.monacoW, b.editor.w, 2) && near(b.frameW, b.infoviewInner, 1) ? b : null; }, 3000);
+      const goalStill = !!(await waitFor(goal, 5000));
+      await page.screenshot({ path: path.join(dir, `splitter-80${firefox ? "-firefox" : ""}.png`) }).catch(() => {});
+      // Past the left edge.
+      await grab(b1);
+      await page.mouse.move(b0.split.x + 5, y);
+      await page.mouse.up();
+      const b2 = await page.evaluate(paneProbe);
+      const sel1 = await page.evaluate(() => JSON.stringify(globalThis.qed64.editor.getSelection()));
+      const checks = {
+        "starts at the stock 55 %": near(share(b0), 0.55, 0.01),
+        "during the drag the InfoView iframe takes no pointer events": mid.dragging && mid.framePointer === "none",
+        "a drag that jumps over the InfoView reaches 80 %": near(share(b1), 0.8, 0.01),
+        "Monaco and the iframe follow their panes": !!followed,
+        "the InfoView still shows the goal": goalStill,
+        "the drag ended: the iframe takes the pointer again": !b1.dragging && b1.framePointer === "auto",
+        "a drag past the edge stops at 15 %": near(share(b2), 0.15, 0.01) && !b2.dragging,
+        "the share is --split, never an inline flex": b2.splitVar === "15%" && b2.inlineFlex === "",
+        "the drags left the editor's selection alone": sel1 === sel0,
+        "no page errors": errors.length === 0,
+      };
+      const failures = Object.keys(checks).filter((k) => !checks[k]);
+      record("splitter-drag", failures.length === 0, `failed ${JSON.stringify(failures)}; shares ${[b0, mid, b1, b2].map((b) => share(b).toFixed(3)).join(" → ")}; during the drag ${JSON.stringify({ dragging: mid.dragging, framePointer: mid.framePointer })}; after ${JSON.stringify({ dragging: b1.dragging, framePointer: b1.framePointer, monacoW: followed?.monacoW, editorW: followed?.editor.w, frameW: followed?.frameW, infoviewInner: followed?.infoviewInner })}; at the edge ${JSON.stringify({ splitVar: b2.splitVar, inlineFlex: b2.inlineFlex })}; page errors ${JSON.stringify(errors)}`);
       await context.close();
     },
   };

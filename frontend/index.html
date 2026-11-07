@@ -61,7 +61,10 @@
     /* Narrower windows: no links (no room for them beside the pill). */
     @media (max-width: 959px) { #repolinks { display: none; } }
     #split { display: flex; flex: 1 1 auto; min-height: 0; position: relative; }
-    #editor { flex: 1 1 55%; min-width: 0; }
+    /* --split: the editor's share of the row, set by the splitter (splitter.ts, UX L1.2; 55% there too). A variable read
+       here, never an inline flex, so a later rule on #editor (the 720 px stack below, an embedder's injected CSS) still
+       wins. The InfoView fills the rest. */
+    #editor { flex: 0 0 var(--split, 55%); min-width: 0; }
     #infoview { flex: 1 1 45%; min-width: 0; border-left: 1px solid rgba(128, 128, 128, .35); }
     /* The InfoView's document is transparent (lean4monaco's css/vscode_webview.css), so its pane paints the editor
        theme's background, a variable the theme service sets on <body> (#fff until it does). No color-scheme on this
@@ -71,6 +74,15 @@
        default is 300x150 with a border, which crams the whole InfoView into
        a thumbnail. Fill the pane. */
     #infoview iframe { display: block; width: 100%; height: 100%; border: none; }
+    /* The splitter (splitter.ts, UX L1.2; HARDENING #87): a 5 px handle between the panes, painted like the editor so it
+       reads as a gutter in either theme; the plain page's only (hidden in the markup, shown by main.ts outside
+       ?embed=1; no display here, so the hidden attribute works). During a drag the InfoView iframe takes no pointer
+       events (besides the handle's pointer capture), so a fast drag over it is never lost to the frame. */
+    #splitter { flex: none; width: 5px; cursor: col-resize; touch-action: none; user-select: none;
+                background: var(--vscode-editor-background, #fff); }
+    #splitter:hover, #split.dragging #splitter { background: rgba(70, 100, 238, .45); }
+    #split.dragging { cursor: col-resize; user-select: none; }
+    #split.dragging iframe { pointer-events: none; }
     /* Narrow windows and frames (UX L1.4): the bar wraps, the pill gets a row of its own, the InfoView goes below the
        editor. The widgets showcase injects the same stack at the same width into its frame. */
     @media (max-width: 720px) {
@@ -79,6 +91,7 @@
       #pill { max-width: 100%; flex: 1 1 100%; margin-left: 0; }
       #split { flex-direction: column; }
       #editor, #infoview { flex: 1 1 50%; min-height: 0; }
+      #splitter { display: none; }
       #infoview { border-left: 0; border-top: 1px solid rgba(128, 128, 128, .35); }
     }
     #boot {
@@ -199,6 +212,7 @@
   </div>
   <div id="split">
     <div id="editor"></div>
+    <div id="splitter" role="separator" aria-orientation="vertical" aria-label="Resize the editor and the InfoView" title="Drag to resize the editor and the InfoView" hidden></div>
     <div id="infoview"></div>
     <div id="boot">
       <div id="bootcard">
