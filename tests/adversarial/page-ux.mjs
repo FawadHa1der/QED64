@@ -101,6 +101,20 @@
 //                 parameter popup (`∀ (m : Nat), 2 + m = m + 2`); Escape
 //                 closes it and Ctrl/Cmd+Shift+Space shows it again. The
 //                 console's error lines are recorded, not judged. Chromium.
+//   stack-limit   (HARDENING #92) Lean's engine-stack guard error on a valid
+//                 Init-only `decide` (Fin 28 × Fin 28 in Chromium: the
+//                 calibrated over-deep case, 0 deaths; Fin 44 in Firefox) STAYS
+//                 an error, Lean's words first, and says why: QED64's note
+//                 follows them in the `diagnostics` event, the editor's hover,
+//                 the InfoView's messages at the cursor and the InfoView's
+//                 getInteractiveDiagnostics reply; the pill reads "ready — 1
+//                 place not checked (browser stack limit)" with the note in its
+//                 tooltip, and #pstatus announces that once. A native
+//                 maxRecDepth error in the same file stays exactly Lean's, with
+//                 no note. An edit that makes the proof shallow brings plain
+//                 "ready" back. Each "(a)" check passes on a build without the
+//                 note too, so its "(b)" partner fails for the right reason.
+//                 Chromium; Firefox once per change.
 //
 // Usage: node tests/adversarial/page-ux.mjs [--url http://localhost:5199/] [--only <scenario>] [--browser chromium|firefox] [--run-dir <dir>]
 // Run it through the host browser lock. Exit 0 all pass, 1 a scenario failed,
@@ -113,7 +127,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { arg, browserName, fetchJson, launchBrowser, onlyMatches, resolveTarget, root, runDir, teeLog } from "./harness.mjs";
 
-export const SCENARIOS = ["a11y-status", "share-link", "example-undo", "buffer-flush", "look", "layout", "show-editor", "content-halt", "file-actions", "splitter-drag", "references-rename", "signature-help"];
+export const SCENARIOS = ["a11y-status", "share-link", "example-undo", "buffer-flush", "look", "layout", "show-editor", "content-halt", "file-actions", "splitter-drag", "references-rename", "signature-help", "stack-limit"];
 /** The scenarios `--only` selects, in run order. An empty selection is refused (exit 3), never "0/0 pass". */
 export const selectScenarios = (only) => SCENARIOS.filter((name) => !only || onlyMatches(name, only));
 /** 0 all pass, 1 a scenario failed, 3 nothing was judged. */
@@ -153,6 +167,18 @@ const DO_DOC = "def f : IO Unit := do\n  return ()\n";
 // signature-help: the UX study's case (Init only, so `Nat`, not `ℕ`); the proof does not check, which signature help
 // does not mind. Lean's answer for the space after `2` (the study, measured directly): `∀ (m : ℕ), 2 + m = m + 2`.
 const SIG_DOC = "example : 2 + 3 = 3 + 2 := Nat.add_comm 2\n";
+// stack-limit: a native maxRecDepth error (the compiler battery's rec_depth_overflow_clean, second case: native Lean and
+// the wasm runtime give exactly STACK_NATIVE), a valid `decide` deeper than a browser Worker's stack allows (Chromium:
+// TESTING's calibrated K 28, which fails cold and warm with 0 deaths, K 32 the measured fallback; Firefox's Worker has
+// about twice the stack: K 44, which tripped the guard cleanly 3 of 3 here, where K 40 checks and K 48 can get past the
+// guard and pause, HARDENING #92), and a plain theorem. 0-based lines 1, 3, 5.
+const stackDoc = (k) => `set_option maxRecDepth 64 in\nexample : (List.range 100).foldl (· + ·) 0 = 4950 := by decide\n\ntheorem deepLegal : ∀ n : Fin ${k}, ∀ m : Fin ${k}, n * m = m * n := by decide\n\ntheorem two : 1 + 1 = 2 := rfl\n`;
+const STACK_GUARD = "maximum recursion depth has been reached: the WebAssembly runtime's stack is exhausted";
+const STACK_NATIVE = "maximum recursion depth has been reached\nuse `set_option maxRecDepth <num>` to increase limit\nuse `set_option diagnostics true` to get diagnostic information";
+// frontend/src/stack-limit-notes.ts stackLimitLabel(1), and the first words of lib/stack-limit.ts STACK_LIMIT_NOTE (the
+// rest is read from the pill's tooltip, so the lane holds no second copy of the note).
+const STACK_LABEL = "ready — 1 place not checked (browser stack limit)";
+const NOTE_START = "QED64: this was not checked.";
 
 // ---------- helpers, copied from infoview-actions.mjs (lanes do not import each other's internals; `text` and
 // `cursorAt` are for the scenarios that follow) ----------
@@ -218,6 +244,10 @@ function paneProbe() {
     inlineFlex: editor.style.flex, splitVar: split.style.getPropertyValue("--split"), monacoW: globalThis.qed64.editor.getLayoutInfo().width,
   };
 }
+/** stack-limit: what the editor's hover shows (every visible hover widget's text). */
+const hoverText = (page) => page.evaluate(() => [...document.querySelectorAll(".monaco-hover")].filter((e) => e.getClientRects().length > 0 && !e.classList.contains("hidden")).map((e) => e.innerText).join("\n"));
+/** stack-limit: occurrences of `needle` in `hay`. */
+const count = (hay, needle) => hay.split(needle).length - 1;
 /** The InfoView frame's text. */
 const frameText = (page) => page.evaluate(() => [...document.querySelectorAll("#infoview iframe")].pop()?.contentDocument?.body?.innerText ?? "");
 
@@ -286,8 +316,8 @@ async function main() {
   const withQuery = (q, hash = "") => { const u = new URL(url); for (const [k, v] of Object.entries(q)) u.searchParams.set(k, v); u.hash = hash; return u.toString(); };
   /** A fresh context and page on `url` with `query` and `hash`. `doc` (null: none) is seeded as the stored buffer
    * once per tab, in the top frame only (a sessionStorage guard, so a reload keeps what the page itself saved).
-   * `init` (called with `initArg`) is one more init script; `context` goes to browser.newContext (viewport,
-   * colorScheme, …). `wait: "ready"` polls until the phase is ready within `budgetMs`; "none" returns at
+   * `init` (called with `initArg`) is one more init script, or a list of them; `context` goes to browser.newContext
+   * (viewport, colorScheme, …). `wait: "ready"` polls until the phase is ready within `budgetMs`; "none" returns at
    * domcontentloaded. `errors`: page errors except the shapes every load carries, and the console lines
    * infoview-actions.mjs counts. */
   async function open(doc, { init = null, initArg = undefined, context: contextOptions = {}, query = {}, hash = "", wait = "ready", budgetMs = BOOT_MS } = {}) {
@@ -300,7 +330,7 @@ async function main() {
         sessionStorage.setItem("pageux.seeded", "1");
       } catch { /* storage off */ }
     }, doc);
-    if (init) await context.addInitScript(init, initArg);
+    for (const f of [init].flat()) if (f) await context.addInitScript(f, initArg);
     const page = await context.newPage();
     const errors = [];
     page.on("pageerror", (e) => { const m = String(e); if (!/unsupported|Session disposed\.|Outdated RPC session/.test(m) || /abortSignal/.test(m)) errors.push(m.slice(0, 200)); });
@@ -860,6 +890,79 @@ async function main() {
       };
       const failures = Object.keys(checks).filter((k) => !checks[k]);
       record("signature-help", failures.length === 0, `failed ${JSON.stringify(failures)}; popup ${JSON.stringify(hint?.slice(0, 120) ?? null)} after ${afterMs} ms; again ${JSON.stringify(again?.slice(0, 120) ?? null)}; signatureHelp requests ${sentOnSpace} on the space, ${await page.evaluate(() => globalThis.__sig)} in all; console errors ${JSON.stringify(consoleErrors)}; page errors ${JSON.stringify(errors)}`);
+      await context.close();
+    },
+    "stack-limit": async () => {
+      // HARDENING #92. On a build without the note the guard's error is a bare Lean error under a plain "ready" pill:
+      // every (a) check passes there, and the note, the label and the announcement fail.
+      const k = firefox ? 44 : 28;
+      const doc = stackDoc(k);
+      const { page, context, errors } = await open(doc, { init: [recordDiagnostics, recordStatusText] });
+      await page.evaluate(() => globalThis.qed64.api.settled({ timeoutMs: 120000 }).catch(() => null));
+      // The publish can trail the ready status by a frame; the pill follows it (main.ts re-renders on a changed count).
+      const label = await waitFor(async () => { const t = await page.textContent("#ptext"); return t === STACK_LABEL ? t : null; }, 10000) ?? await page.textContent("#ptext");
+      await sleep(1500); // late frames
+      const leanDiags = () => page.evaluate(() => globalThis.__diags.filter((d) => d.origin === "lean").at(-1)?.diagnostics ?? []);
+      const ds = await leanDiags();
+      const errs = ds.filter((d) => d.severity === 1);
+      const guard = errs.filter((d) => d.message.includes("the WebAssembly runtime's stack is exhausted") || d.message.includes("the WebAssembly engine's stack is exhausted"));
+      const g = guard[0] ?? null;
+      const native = errs.filter((d) => d.message.includes("use `set_option maxRecDepth <num>` to increase limit"));
+      const title = await page.evaluate(() => document.getElementById("ptext").title);
+      const note = title.startsWith(`${STACK_LABEL}\n\n`) ? title.slice(STACK_LABEL.length + 2) : null;
+      // The editor's hover on the error, then the InfoView at the same cursor.
+      const at = g ? { line: g.range.start.line + 1, column: g.range.start.character + 2 } : { line: 4, column: doc.split("\n")[3].indexOf("decide") + 2 };
+      await cursorAt(page, at.line, at.column);
+      await page.evaluate(() => globalThis.qed64.editor.trigger("page-ux", "editor.action.showHover", null));
+      const hover = (await waitFor(async () => { const t = await hoverText(page); return t.includes(STACK_GUARD) && t.includes(NOTE_START) ? t : null; }, 5000)) ?? await hoverText(page);
+      await page.keyboard.press("Escape");
+      const iv = (await waitFor(async () => { const t = await frameText(page); return t.includes(STACK_GUARD) && t.includes(NOTE_START) ? t : null; }, 15000)) ?? await frameText(page);
+      await page.screenshot({ path: path.join(dir, `stack-limit${firefox ? "-firefox" : ""}.png`) }).catch(() => {});
+      // The InfoView's own request, through the test hatch: the reply the page hands the InfoView. Recorded raw on a
+      // build without the note (a captured wasm fixture for tests/unit/stack-limit.test.ts).
+      const rpc = await page.evaluate(async (line) => {
+        const lsp = globalThis.qed64.test.lsp, uri = globalThis.qed64.relay.doc.uri;
+        const c = await lsp.request("$/lean/rpc/connect", { uri });
+        const r = await lsp.request("$/lean/rpc/call", { textDocument: { uri }, position: { line, character: 0 }, sessionId: c.result.sessionId, method: "Lean.Widget.getInteractiveDiagnostics", params: { lineRange: { start: line, end: line + 1 } } });
+        return r.result ?? r.error ?? null;
+      }, 3).catch((e) => `threw ${e}`);
+      const rpcGuard = Array.isArray(rpc) ? rpc.find((d) => d.severity === 1 && JSON.stringify(d.message).includes(STACK_GUARD)) ?? null : null;
+      const rpcJson = rpcGuard ? JSON.stringify(rpcGuard.message) : "";
+      const said = await page.evaluate(() => globalThis.__said.slice());
+      const deaths0 = await page.evaluate(() => globalThis.qed64.relay.stats.workerDeaths);
+      // Reset: a shallow proof brings plain "ready" back; the native control stays as it was.
+      const after = await page.evaluate(async (t) => {
+        const r = await globalThis.qed64.api.setDocument(t);
+        return globalThis.qed64.api.settled({ version: r.version, timeoutMs: 120000 }).then((s) => s.phase, (e) => `threw ${e}`);
+      }, doc.replace(`Fin ${k}`, "Fin 4").replace(`Fin ${k}`, "Fin 4"));
+      const plain = await waitFor(async () => ((await page.textContent("#ptext")) === "ready" ? true : null), 10000);
+      await sleep(1000);
+      const reset = await page.evaluate(() => ({ title: document.getElementById("ptext").title, said: globalThis.__said.at(-1) ?? null, deaths: globalThis.qed64.relay.stats.workerDeaths, relay: globalThis.qed64.status().relay }));
+      const ds2 = await leanDiags();
+      fs.writeFileSync(path.join(dir, `stack-limit${firefox ? "-firefox" : ""}.json`), JSON.stringify({ k, diagnostics: ds, rpc, said, title, hover, infoview: iv.slice(0, 4000), after: ds2 }, null, 2));
+      const checks = {
+        "0 deaths, never halted": deaths0 === 0 && reset.deaths === 0 && reset.relay === "serving",
+        "(a) exactly one guard error, on deepLegal": guard.length === 1 && g.range.start.line === 3,
+        "(a) it stays an error, Lean's words first": g?.severity === 1 && g.message.startsWith(STACK_GUARD),
+        "(a) the native maxRecDepth error is exactly Lean's": native.length === 1 && native[0].message === STACK_NATIVE && native[0].range.start.line === 1,
+        "(a) two errors in all, none on the plain theorem": errs.length === 2 && !ds.some((d) => d.range.start.line === 5),
+        "(b) the diagnostics event carries the note after Lean's words": !!note && note.startsWith(NOTE_START) && g?.message.endsWith(`\n\n${note}`) && count(g.message, NOTE_START) === 1,
+        "(a) the hover shows Lean's error": hover.includes(STACK_GUARD),
+        "(b) the hover shows the note": hover.includes(NOTE_START),
+        "(a) the InfoView shows Lean's error": iv.includes(STACK_GUARD),
+        "(b) the InfoView shows the note, Lean's words once": iv.includes(NOTE_START) && count(iv, STACK_GUARD) === 1,
+        "(a) the InfoView's reply has Lean's error in an expr embed": rpcJson.includes(`{"expr":{"text":"${STACK_GUARD}`),
+        "(b) the InfoView's reply carries the note": count(rpcJson, NOTE_START) === 1,
+        "(b) the pill counts it": label === STACK_LABEL,
+        "(b) its tooltip has the note": !!note && note.startsWith(NOTE_START),
+        "(b) #pstatus announces it once, last": count(said.join("\u0000"), STACK_LABEL) === 1 && said.at(-1) === STACK_LABEL,
+        "an edit that makes it shallow checks ready": after === "ready",
+        "then the pill is plain ready again": !!plain && reset.title === "ready" && reset.said === "ready",
+        "then only the native error remains": ds2.filter((d) => d.severity === 1).map((d) => d.message).join() === STACK_NATIVE,
+        "no page errors": errors.length === 0,
+      };
+      const failures = Object.keys(checks).filter((key) => !checks[key]);
+      record("stack-limit", failures.length === 0, `failed ${JSON.stringify(failures)}; K ${k}; pill ${JSON.stringify(label)}; errors ${JSON.stringify(errs.map((d) => [d.range.start.line, d.message.slice(0, 90)]))}; guard tail ${JSON.stringify(g?.message.slice(-120) ?? null)}; hover ${JSON.stringify(hover.slice(0, 160))}; announced ${JSON.stringify(said.slice(-4))}; after the edit ${after}, pill plain ${!!plain}; page errors ${JSON.stringify(errors)}; record stack-limit${firefox ? "-firefox" : ""}.json`);
       await context.close();
     },
   };

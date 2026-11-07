@@ -51,6 +51,18 @@ a note on the import line. While such an error stands under
 `import Mathlib`, the page shows "not all of Mathlib is here" beside the
 status pill; its version tooltip names the Mathlib commit.
 
+## The browser's stack
+
+A browser gives Lean far less stack than desktop Lean has, so a very long
+file, a very long proof or a very deep `decide` can run out of it. Lean then
+reports an error ("… the WebAssembly runtime's stack is exhausted …") on a
+command it could not check. The error stays, because that command is not
+verified, but the page adds a note to it saying that this is a limit of
+running Lean in a browser rather than a mistake found in the proof, and what
+helps; the status pill then reads "ready — N places not checked (browser
+stack limit)". When the recursion gets past Lean's own check, the page
+pauses checking until the next edit.
+
 ## Use QED64
 
 There are three ways, from least to most code. The contract for all three is

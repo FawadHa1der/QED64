@@ -1580,8 +1580,8 @@ relay.restart(opts: RestartOptions): void;  // a deliberate replacement, not a d
 When a browser's engine stack runs low, the runtime's Lean (kernel patch
 0036) does not die: it reports an error of its own on the command it was
 checking, and that command was **not checked** (HARDENING #71, #92). It is
-an ordinary severity-1 diagnostic, so a verdict that counts errors reads it
-as a failed proof, and it is one: the proof is not verified. Its words hold
+an ordinary severity-1 diagnostic, and a verdict that counts errors counts
+it, as it should: the proof is not verified. Its words hold
 one of two phrases, alone or nested in another error ("failed to synthesize
 …", "Tactic `simp` failed with a nested error: …", `decide`'s report of a
 kernel failure):
