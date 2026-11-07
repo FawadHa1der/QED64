@@ -601,11 +601,16 @@ async function main() {
     const src = EXAMPLES[examplesEl.value];
     const model = editor.editor?.getModel();
     if (src && model) {
-      // Re-picking the already-loaded example is a no-op: setValue with
-      // identical text emits no change event, so no status would follow and
-      // nothing would ever clear the busy label — the pill wedged forever.
-      if (model.getValue() === src) return;
-      model.setValue(src);
+      // Re-picking the already-loaded example is a no-op: identical text (in
+      // the model's line ending, as setDocument compares) is no edit, so no
+      // status would follow and nothing would ever clear the busy label — the
+      // pill wedged forever.
+      if (model.getValue() === src.replace(/\r\n?|\n/g, model.getEOL())) return;
+      // One undoable edit (HARDENING #86): model.setValue cleared the undo
+      // stack, and the autosave then stored the example over the visitor's
+      // work. Ctrl/Cmd+Z now brings it back. The cursor goes to the top, as
+      // setValue put it; the focus stays on the menu.
+      void pageApi.api.setDocument(src, { cursor: { lineNumber: 1, column: 1 }, focus: false });
       // During the boot the card and the pill keep the boot's own progress
       // (the edit waits for the checker); "checking" would jump the card's
       // checklist past a download that is still running.

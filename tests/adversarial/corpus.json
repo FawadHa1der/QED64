@@ -787,14 +787,6 @@
           "ms": 120
         },
         {
-          "op": "undo",
-          "ms": 120
-        },
-        {
-          "op": "undo",
-          "ms": 120
-        },
-        {
           "op": "pause",
           "ms": 1000
         },
@@ -813,7 +805,7 @@
         "panicFree": true,
         "mustSucceed": true
       },
-      "rationale": "Types unbalanced anonymous-constructor/bracket garbage into the middle of a working mil proof (inside 'rw [← mul_assoc]'), lets error diagnostics land, then undo-alls (with extra no-op undos) and pins the exact original source (audit confirmed the setValue is byte-identical to the app's built-in mil example in frontend/src/main.ts). Regression for the stale-diagnostics-never-clearing class: the earlier garbage errors must be gone at settle."
+      "rationale": "Types unbalanced anonymous-constructor/bracket garbage into the middle of a working mil proof (inside 'rw [← mul_assoc]'), lets error diagnostics land, then undo-alls (exactly its four edits: since HARDENING #86 the example pick before them is undoable too, and a surplus undo would reach into the previous item's document) and pins the exact original source (audit confirmed the setValue is byte-identical to the app's built-in mil example in frontend/src/main.ts). Regression for the stale-diagnostics-never-clearing class: the earlier garbage errors must be gone at settle."
     },
     {
       "name": "rapid-example-switch-storm",

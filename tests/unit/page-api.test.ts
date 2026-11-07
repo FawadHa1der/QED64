@@ -293,6 +293,17 @@ describe("setDocument / settled", () => {
     await expect(t.api.setDocument("A\n")).resolves.toEqual({ version: 1, unchanged: true });
     expect(t.editor.edits).toBe(0);
   });
+  it("the example switch's call (main.ts; HARDENING #86): one undoable edit, the cursor at 1:1, the focus left where it was", async () => {
+    const t = setup();
+    boot(t, "-- mine\n");
+    t.editor.position = { lineNumber: 1, column: 8 };
+    const r = t.api.setDocument("inductive T where\n  | a\n", { cursor: { lineNumber: 1, column: 1 }, focus: false });
+    t.clock.advance(CLIENT_FLUSH_MS);
+    await expect(r).resolves.toEqual({ version: 2, unchanged: false });
+    expect(t.editor.edits).toBe(1); // executeEdits between undo stops, not setValue (which clears Monaco's undo stack)
+    expect(t.api.getCursor()).toEqual({ lineNumber: 1, column: 1 });
+    expect(t.editor.focused).toBe(0);
+  });
   it("undoable: false uses setValue; the cursor is set (clamped) when given", async () => {
     const t = setup();
     boot(t, "A\n");

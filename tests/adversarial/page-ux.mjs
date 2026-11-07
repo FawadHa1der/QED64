@@ -18,6 +18,11 @@
 //                 never changes the page's URL (HARDENING #77). In a fresh
 //                 visit with its own buffer the link opens behind the gate,
 //                 and the opener's stored buffer stays untouched. Chromium.
+//   example-undo  (UX F1.2, HARDENING #86) picking an example is one undoable
+//                 edit, the cursor at 1:1, and the autosave stores it;
+//                 Ctrl/Cmd+Z brings the visitor's text back and the autosave
+//                 stores that again; a re-pick of the loaded example edits
+//                 nothing and leaves no busy pill. Chromium and Firefox.
 //
 // Usage: node tests/adversarial/page-ux.mjs [--url http://localhost:5199/] [--only <scenario>] [--browser chromium|firefox] [--run-dir <dir>]
 // Run it through the host browser lock. Exit 0 all pass, 1 a scenario failed,
@@ -30,7 +35,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { arg, browserName, fetchJson, launchBrowser, onlyMatches, resolveTarget, root, runDir, teeLog } from "./harness.mjs";
 
-export const SCENARIOS = ["a11y-status", "share-link"];
+export const SCENARIOS = ["a11y-status", "share-link", "example-undo"];
 /** The scenarios `--only` selects, in run order. An empty selection is refused (exit 3), never "0/0 pass". */
 export const selectScenarios = (only) => SCENARIOS.filter((name) => !only || onlyMatches(name, only));
 /** 0 all pass, 1 a scenario failed, 3 nothing was judged. */
@@ -45,6 +50,9 @@ const WORKER_PROGRESS = /^(Verifying |Importing modules|Loading environment snap
 // tests/unit/page-api.test.ts).
 const SHARE_TEXT = "example (p q : Prop) (hp : p) (hq : q) : p ∧ q := ⟨hp, hq⟩\n";
 const SHARE_CODEZ = "KYDwhgtgDgNsAEAKK8CO8Bc8AKAnA9lAJRIAWKWxZ6WqJl8g5ERqYC88gF+TkA08pqgS/IAUEA";
+// example-undo: the visitor's own text, stored before the page loads. The lane picks only the Init example ("init"),
+// never one that imports Mathlib: a fresh context would download the Mathlib environment.
+const OWN = "-- my work\ntheorem mine : 2 + 2 = 4 := rfl\n";
 
 // ---------- helpers, copied from infoview-actions.mjs (lanes do not import each other's internals; `text` and
 // `cursorAt` are for the scenarios that follow) ----------
@@ -239,6 +247,49 @@ async function main() {
       const failures = Object.keys(checks).filter((k) => !checks[k]);
       record("share-link", failures.length === 0, `failed ${JSON.stringify(failures)}; bar ${JSON.stringify(bar)}; copied ${JSON.stringify(copied)}; prompt ${JSON.stringify(prompted)}; page errors ${JSON.stringify([...errors, ...v.errors])}`);
       await v.context.close();
+    },
+    "example-undo": async () => {
+      // UX F1.2: on the base build the pick is model.setValue, which clears the undo stack: Ctrl/Cmd+Z does nothing
+      // and the autosave keeps the example.
+      const { page, context, errors } = await open(OWN);
+      const stored = () => page.evaluate(() => localStorage.getItem("qed64.buffer"));
+      const settledPhase = () => page.evaluate(() => globalThis.qed64.api.settled({ timeoutMs: 120000 }).then((s) => s.phase, (e) => `threw ${e}`));
+      await page.selectOption("#examples", "init");
+      const switched = await waitFor(async () => { const t = await text(page); return t !== OWN && t.includes("Tree.mirror_size") ? t : null; }, 10000);
+      const afterSwitch = await page.evaluate(() => {
+        const e = globalThis.qed64.editor, m = e.getModel(), p = e.getPosition();
+        return { canUndo: m.canUndo(), cursor: `${p.lineNumber}:${p.column}`, version: m.getVersionId() };
+      });
+      await sleep(1000); // past the 400 ms save debounce
+      const storedSwitched = await stored();
+      const phaseSwitched = await settledPhase();
+      // A re-pick of the loaded example (as Chrome's form-state restore or a keyboard user can fire it).
+      await page.evaluate(() => document.getElementById("examples").dispatchEvent(new Event("change")));
+      await sleep(2000);
+      const guard = await page.evaluate(() => ({ version: globalThis.qed64.editor.getModel().getVersionId(), busy: document.getElementById("pill").classList.contains("busy") }));
+      // Undo with the real keys, in the editor.
+      await page.evaluate(() => globalThis.qed64.api.focus());
+      await page.keyboard.press("ControlOrMeta+KeyZ");
+      const undone = await waitFor(async () => ((await text(page)) === OWN ? true : null), 5000);
+      await sleep(1000);
+      const storedUndone = await stored();
+      const phaseUndone = await settledPhase();
+      const checks = {
+        "the pick replaced the text": !!switched,
+        "the pick is undoable": afterSwitch.canUndo === true,
+        "the cursor is at 1:1": afterSwitch.cursor === "1:1",
+        "the autosave stored the example": !!switched && storedSwitched === switched,
+        "ready after the pick": phaseSwitched === "ready",
+        "a re-pick edits nothing": guard.version === afterSwitch.version,
+        "a re-pick leaves no busy pill": guard.busy === false,
+        "Ctrl/Cmd+Z brings the text back": !!undone,
+        "the autosave stores it again": storedUndone === OWN,
+        "ready after the undo": phaseUndone === "ready",
+        "no page errors": errors.length === 0,
+      };
+      const failures = Object.keys(checks).filter((k) => !checks[k]);
+      record("example-undo", failures.length === 0, `failed ${JSON.stringify(failures)}; after the pick ${JSON.stringify(afterSwitch)}; re-pick ${JSON.stringify(guard)}; phases ${phaseSwitched}/${phaseUndone}; page errors ${JSON.stringify(errors)}`);
+      await context.close();
     },
   };
 

@@ -413,9 +413,12 @@ for (const item of actionItems) {
     for (const a of item.actions) {
       switch (a.op) {
         case "setValue": await setBuffer(a.text ?? ""); break;
-        case "typeAppend": await page.evaluate((t) => { const m = globalThis.qed64.editor.getModel(); const ln = m.getLineCount(); const c = m.getLineMaxColumn(ln); m.applyEdits([{ range: { startLineNumber: ln, startColumn: c, endLineNumber: ln, endColumn: c }, text: t } ]); }, a.text ?? ""); break;
-        case "typeAt": await page.evaluate(({ t, l, c }) => { const m = globalThis.qed64.editor.getModel(); const ln = Math.min(l || 1, m.getLineCount()); const col = Math.min(c || 1, m.getLineMaxColumn(ln)); m.applyEdits([{ range: { startLineNumber: ln, startColumn: col, endLineNumber: ln, endColumn: col }, text: t }]); }, { t: a.text ?? "", l: a.line, c: a.col }); break;
-        case "deleteRange": await page.evaluate(({ l, c, el, ec }) => { const m = globalThis.qed64.editor.getModel(); m.applyEdits([{ range: { startLineNumber: l, startColumn: c, endLineNumber: el, endColumn: ec }, text: "" }]); }, { l: a.line ?? 1, c: a.col ?? 1, el: a.endLine ?? 1, ec: a.endCol ?? 1 }).catch(() => {}); break;
+        // A text op edits as a person does: one undo step (executeEdits between undo stops). model.applyEdits bypassed
+        // the undo stack, so the corpus's `undo` steps undid nothing; once the example switch became undoable
+        // (HARDENING #86) they would have reached past it into the previous item's document.
+        case "typeAppend": await page.evaluate((t) => { const e = globalThis.qed64.editor, m = e.getModel(); const ln = m.getLineCount(); const c = m.getLineMaxColumn(ln); e.pushUndoStop(); e.executeEdits("e2e", [{ range: { startLineNumber: ln, startColumn: c, endLineNumber: ln, endColumn: c }, text: t }]); e.pushUndoStop(); }, a.text ?? ""); break;
+        case "typeAt": await page.evaluate(({ t, l, c }) => { const e = globalThis.qed64.editor, m = e.getModel(); const ln = Math.min(l || 1, m.getLineCount()); const col = Math.min(c || 1, m.getLineMaxColumn(ln)); e.pushUndoStop(); e.executeEdits("e2e", [{ range: { startLineNumber: ln, startColumn: col, endLineNumber: ln, endColumn: col }, text: t }]); e.pushUndoStop(); }, { t: a.text ?? "", l: a.line, c: a.col }); break;
+        case "deleteRange": await page.evaluate(({ l, c, el, ec }) => { const e = globalThis.qed64.editor; e.pushUndoStop(); e.executeEdits("e2e", [{ range: { startLineNumber: l, startColumn: c, endLineNumber: el, endColumn: ec }, text: "" }]); e.pushUndoStop(); }, { l: a.line ?? 1, c: a.col ?? 1, el: a.endLine ?? 1, ec: a.endCol ?? 1 }).catch(() => {}); break;
         case "switchExample": await page.selectOption("#examples", a.value ?? "mathlib"); break;
         case "undo": await page.evaluate(() => globalThis.qed64.editor.trigger("t", "undo")); break;
         case "redo": await page.evaluate(() => globalThis.qed64.editor.trigger("t", "redo")); break;
