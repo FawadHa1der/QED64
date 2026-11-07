@@ -621,6 +621,13 @@ async function main() {
       // in typing would hold one of the edit coalescer's request slots until the check ends (HARDENING #59, #87).
       "editor.folding": true,
       "editor.foldingStrategy": "indentation",
+      // lean4web's InfoView defaults (UX S1.7): the expected type starts collapsed, goals after the first are smaller
+      // and dimmed, and a subterm's type opens on a click rather than on hover. Passed at start, so every InfoView
+      // panel mounts with them (a panel copies them into its own state; a live change would miss mounted panels).
+      // expectedTypeVisibility supersedes lean4web's deprecated `showExpectedType: false` (vscode-lean4's config.js).
+      "lean4.infoview.expectedTypeVisibility": "Collapsed by default",
+      "lean4.infoview.emphasizeFirstGoal": true,
+      "lean4.infoview.showTooltipOnHover": false,
     },
   };
   await leanMonaco.start(options);
