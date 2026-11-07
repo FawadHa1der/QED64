@@ -1,0 +1,557 @@
+{
+  "doc": "Real message texts for tests/unit/stack-limit.test.ts (HARDENING #92). `published`: publishDiagnostics message strings as captured from runs (each with its source; paths under work/ are gitignored run records). `wire`: the same MessageData shapes encoded by Lean itself, as a getInteractiveDiagnostics reply (`rpc`, TaggedText JSON with widgets on, as lean4monaco's InfoView asks) and as the publish string (`pub`), produced by upstream Lean v4.35.0 running tests/fixtures/stack-limit-wire.lean (`~/.elan/toolchains/leanprover--lean4---v4.35.0/bin/lean tests/fixtures/stack-limit-wire.lean`, about 0.5 s; each JSON line it prints is one `wire` entry) (logException + msgToInteractiveDiagnostic hasWidgets=true + rpcEncode; the fork's InteractiveDiagnostic.lean is upstream's). `guard`: whether the text is Lean's engine-stack guard error (kernel patch 0036's words) or nests it.",
+  "published": [
+    {
+      "id": "P1",
+      "guard": true,
+      "text": "maximum recursion depth has been reached: the WebAssembly runtime's stack is exhausted (a browser gives it far less stack than native Lean has; raising maxRecDepth does not help, and the same code may succeed natively)",
+      "source": "work/eh-ab/fin18-e1a.log line 2 (deep-recursion legal, Chrome; also 6,541x in work/arch-impl-2026-11-01/scratch/STACKVAR/runs); the fork's src/Lean/CoreM.lean:527"
+    },
+    {
+      "id": "P2",
+      "guard": true,
+      "text": "(kernel) the WebAssembly engine's stack is exhausted: this proof recurses deeper than a browser allows (the same proof may check natively)",
+      "source": "work/research-long-files-2026-11-07/wasm/runs/r2/log.json (thm400, line 361, runtime wasm64-36d7f415); the fork's src/runtime/interrupt.cpp:100-101 via Message.lean:889"
+    },
+    {
+      "id": "P3",
+      "guard": true,
+      "text": "failed to synthesize\n  Decidable ({ lowerBound := some 1, upperBound := some 0 }.isImpossible = true)\nmaximum recursion depth has been reached: the WebAssembly runtime's stack is exhausted (a browser gives it far less stack than native Lean has; raising maxRecDepth does not help, and the same code may succeed natively)\n\nHint: Additional diagnostic information may be available using the `set_option diagnostics true` command.",
+      "source": "prefix measured: work/research-long-files-2026-11-07/wasm/runs/r2/lsp-omega330.json diagSummary.head[0] (cut at 160 chars); the rest from SynthInstance.lean:690, CoreM.lean useDiagnosticMsg (the wire pair E-synth has the same shape whole)"
+    },
+    {
+      "id": "P3-cut",
+      "guard": false,
+      "text": "failed to synthesize\n  Decidable ({ lowerBound := some 1, upperBound := some 0 }.isImpossible = true)\nmaximum recursion depth has been reached: the WebAssembly ",
+      "source": "the capture itself, cut mid-phrase: the rule needs the whole phrase"
+    },
+    {
+      "id": "decide-kernel",
+      "guard": true,
+      "text": "Tactic `decide` failed. The elaborator is able to reduce the proposition, but the kernel fails with:\n  (kernel) the WebAssembly engine's stack is exhausted: this proof recurses deeper than a browser allows (the same proof may check natively)",
+      "source": "shape from Elab/Tactic/Decide.lean:128-143 (the kernel's failure under `decide`, indented), with P2 inside"
+    },
+    {
+      "id": "N1",
+      "guard": false,
+      "text": "maximum recursion depth has been reached\nuse `set_option maxRecDepth <num>` to increase limit\nuse `set_option diagnostics true` to get diagnostic information",
+      "source": "work/accept-r3/msgs-P/rec_depth_overflow_clean.jsonl (compiler battery on the wasm runtime, kind runtime.maxRecDepth); Prelude.lean maxRecDepthErrorMessage"
+    },
+    {
+      "id": "N2",
+      "guard": false,
+      "text": "Tactic `simp` failed with a nested error:\nmaximum recursion depth has been reached\nuse `set_option maxRecDepth <num>` to increase limit\nuse `set_option diagnostics true` to get diagnostic information",
+      "source": "work/accept-r3/msgs-P/simp_loop_breaker.jsonl (kind nested.runtime.maxRecDepth)"
+    },
+    {
+      "id": "N3",
+      "guard": false,
+      "text": "(deterministic) timeout at `isDefEq`, maximum number of heartbeats (1) has been reached\n\nNote: Use `set_option maxHeartbeats <num>` to set the limit.\n\nHint: Additional diagnostic information may be available using the `set_option diagnostics true` command.",
+      "source": "work/ux-parity-2026-11-06/qed-live/log-local-b2.json step P1 (QED64's page, Chrome)"
+    },
+    {
+      "id": "N4",
+      "guard": false,
+      "text": "(kernel) deep recursion detected, use `set_option maxRecDepth <num>` to increase the limit",
+      "source": "work/research-long-files-2026-11-07/native/logs/omega-reporter-iso.jsonl (native 4.35, --tstack 64); Message.lean:892"
+    },
+    {
+      "id": "N6",
+      "guard": false,
+      "text": "deep recursion was detected at 'interpreter' (potential solution: increase elaboration stack size using the `lean --tstack` flag)",
+      "source": "the fork's src/runtime/exception.cpp:22 (the interpreter's check_stack on the shadow stack)"
+    }
+  ],
+  "wire": [
+    {
+      "name": "E",
+      "guard": true,
+      "rpc": {
+        "tag": [
+          {
+            "expr": {
+              "text": "maximum recursion depth has been reached: the WebAssembly runtime's stack is exhausted (a browser gives it far less stack than native Lean has; raising maxRecDepth does not help, and the same code may succeed natively)"
+            }
+          },
+          {
+            "text": ""
+          }
+        ]
+      },
+      "pub": "maximum recursion depth has been reached: the WebAssembly runtime's stack is exhausted (a browser gives it far less stack than native Lean has; raising maxRecDepth does not help, and the same code may succeed natively)"
+    },
+    {
+      "name": "E-synth",
+      "guard": true,
+      "rpc": {
+        "append": [
+          {
+            "tag": [
+              {
+                "expr": {
+                  "text": "failed to synthesize"
+                }
+              },
+              {
+                "text": ""
+              }
+            ]
+          },
+          {
+            "tag": [
+              {
+                "expr": {
+                  "text": "\n  "
+                }
+              },
+              {
+                "text": ""
+              }
+            ]
+          },
+          {
+            "tag": [
+              {
+                "expr": {
+                  "tag": [
+                    {
+                      "info": {
+                        "__rpcref": "0"
+                      },
+                      "subexprPos": "/"
+                    },
+                    {
+                      "text": "True"
+                    }
+                  ]
+                }
+              },
+              {
+                "text": ""
+              }
+            ]
+          },
+          {
+            "tag": [
+              {
+                "expr": {
+                  "text": ""
+                }
+              },
+              {
+                "text": ""
+              }
+            ]
+          },
+          {
+            "tag": [
+              {
+                "expr": {
+                  "text": "\n"
+                }
+              },
+              {
+                "text": ""
+              }
+            ]
+          },
+          {
+            "tag": [
+              {
+                "expr": {
+                  "text": ""
+                }
+              },
+              {
+                "text": ""
+              }
+            ]
+          },
+          {
+            "tag": [
+              {
+                "expr": {
+                  "text": "maximum recursion depth has been reached: the WebAssembly runtime's stack is exhausted (a browser gives it far less stack than native Lean has; raising maxRecDepth does not help, and the same code may succeed natively)"
+                }
+              },
+              {
+                "text": ""
+              }
+            ]
+          },
+          {
+            "tag": [
+              {
+                "expr": {
+                  "text": "\n"
+                }
+              },
+              {
+                "text": ""
+              }
+            ]
+          },
+          {
+            "tag": [
+              {
+                "expr": {
+                  "text": "\n"
+                }
+              },
+              {
+                "text": ""
+              }
+            ]
+          },
+          {
+            "tag": [
+              {
+                "expr": {
+                  "text": "Hint: "
+                }
+              },
+              {
+                "text": ""
+              }
+            ]
+          },
+          {
+            "tag": [
+              {
+                "expr": {
+                  "text": "Additional diagnostic information may be available using the `set_option diagnostics true` command."
+                }
+              },
+              {
+                "text": ""
+              }
+            ]
+          }
+        ]
+      },
+      "pub": "failed to synthesize\n  True\nmaximum recursion depth has been reached: the WebAssembly runtime's stack is exhausted (a browser gives it far less stack than native Lean has; raising maxRecDepth does not help, and the same code may succeed natively)\n\nHint: Additional diagnostic information may be available using the `set_option diagnostics true` command."
+    },
+    {
+      "name": "K",
+      "guard": true,
+      "rpc": {
+        "append": [
+          {
+            "tag": [
+              {
+                "expr": {
+                  "text": "(kernel) "
+                }
+              },
+              {
+                "text": ""
+              }
+            ]
+          },
+          {
+            "tag": [
+              {
+                "expr": {
+                  "text": "the WebAssembly engine's stack is exhausted: this proof recurses deeper than a browser allows (the same proof may check natively)"
+                }
+              },
+              {
+                "text": ""
+              }
+            ]
+          }
+        ]
+      },
+      "pub": "(kernel) the WebAssembly engine's stack is exhausted: this proof recurses deeper than a browser allows (the same proof may check natively)"
+    },
+    {
+      "name": "E-simp",
+      "guard": true,
+      "rpc": {
+        "append": [
+          {
+            "tag": [
+              {
+                "expr": {
+                  "text": "Tactic `"
+                }
+              },
+              {
+                "text": ""
+              }
+            ]
+          },
+          {
+            "tag": [
+              {
+                "expr": {
+                  "text": "simp"
+                }
+              },
+              {
+                "text": ""
+              }
+            ]
+          },
+          {
+            "tag": [
+              {
+                "expr": {
+                  "text": "` failed with a nested error:"
+                }
+              },
+              {
+                "text": ""
+              }
+            ]
+          },
+          {
+            "tag": [
+              {
+                "expr": {
+                  "text": "\n"
+                }
+              },
+              {
+                "text": ""
+              }
+            ]
+          },
+          {
+            "tag": [
+              {
+                "expr": {
+                  "text": ""
+                }
+              },
+              {
+                "text": ""
+              }
+            ]
+          },
+          {
+            "tag": [
+              {
+                "expr": {
+                  "text": "maximum recursion depth has been reached: the WebAssembly runtime's stack is exhausted (a browser gives it far less stack than native Lean has; raising maxRecDepth does not help, and the same code may succeed natively)"
+                }
+              },
+              {
+                "text": ""
+              }
+            ]
+          }
+        ]
+      },
+      "pub": "Tactic `simp` failed with a nested error:\nmaximum recursion depth has been reached: the WebAssembly runtime's stack is exhausted (a browser gives it far less stack than native Lean has; raising maxRecDepth does not help, and the same code may succeed natively)"
+    },
+    {
+      "name": "N1",
+      "guard": false,
+      "rpc": {
+        "tag": [
+          {
+            "expr": {
+              "text": "maximum recursion depth has been reached\nuse `set_option maxRecDepth <num>` to increase limit\nuse `set_option diagnostics true` to get diagnostic information"
+            }
+          },
+          {
+            "text": ""
+          }
+        ]
+      },
+      "pub": "maximum recursion depth has been reached\nuse `set_option maxRecDepth <num>` to increase limit\nuse `set_option diagnostics true` to get diagnostic information"
+    },
+    {
+      "name": "N2-simp",
+      "guard": false,
+      "rpc": {
+        "append": [
+          {
+            "tag": [
+              {
+                "expr": {
+                  "text": "Tactic `"
+                }
+              },
+              {
+                "text": ""
+              }
+            ]
+          },
+          {
+            "tag": [
+              {
+                "expr": {
+                  "text": "simp"
+                }
+              },
+              {
+                "text": ""
+              }
+            ]
+          },
+          {
+            "tag": [
+              {
+                "expr": {
+                  "text": "` failed with a nested error:"
+                }
+              },
+              {
+                "text": ""
+              }
+            ]
+          },
+          {
+            "tag": [
+              {
+                "expr": {
+                  "text": "\n"
+                }
+              },
+              {
+                "text": ""
+              }
+            ]
+          },
+          {
+            "tag": [
+              {
+                "expr": {
+                  "text": ""
+                }
+              },
+              {
+                "text": ""
+              }
+            ]
+          },
+          {
+            "tag": [
+              {
+                "expr": {
+                  "text": "maximum recursion depth has been reached\nuse `set_option maxRecDepth <num>` to increase limit\nuse `set_option diagnostics true` to get diagnostic information"
+                }
+              },
+              {
+                "text": ""
+              }
+            ]
+          }
+        ]
+      },
+      "pub": "Tactic `simp` failed with a nested error:\nmaximum recursion depth has been reached\nuse `set_option maxRecDepth <num>` to increase limit\nuse `set_option diagnostics true` to get diagnostic information"
+    },
+    {
+      "name": "N4",
+      "guard": false,
+      "rpc": {
+        "tag": [
+          {
+            "expr": {
+              "text": "(kernel) deep recursion detected, use `set_option maxRecDepth <num>` to increase the limit"
+            }
+          },
+          {
+            "text": ""
+          }
+        ]
+      },
+      "pub": "(kernel) deep recursion detected, use `set_option maxRecDepth <num>` to increase the limit"
+    }
+  ],
+  "captured": {
+    "source": "page-ux stack-limit on the build without the note (page code 5b6b0f3, runtime wasm64-36d7f415, headless Chromium, 2026-11-07; run record work/stack-clarity-2026-11-07/impl/runs/negctl-sl-cr/stack-limit.json): the document's last publish, and Lean's Lean.Widget.getInteractiveDiagnostics reply for line 3 asked through the test hatch (the InfoView's own request)",
+    "publish": [
+      {
+        "fullRange": {
+          "end": {
+            "character": 62,
+            "line": 1
+          },
+          "start": {
+            "character": 56,
+            "line": 1
+          }
+        },
+        "message": "maximum recursion depth has been reached\nuse `set_option maxRecDepth <num>` to increase limit\nuse `set_option diagnostics true` to get diagnostic information",
+        "range": {
+          "end": {
+            "character": 62,
+            "line": 1
+          },
+          "start": {
+            "character": 56,
+            "line": 1
+          }
+        },
+        "severity": 1,
+        "source": "Lean 4"
+      },
+      {
+        "fullRange": {
+          "end": {
+            "character": 74,
+            "line": 3
+          },
+          "start": {
+            "character": 68,
+            "line": 3
+          }
+        },
+        "message": "maximum recursion depth has been reached: the WebAssembly runtime's stack is exhausted (a browser gives it far less stack than native Lean has; raising maxRecDepth does not help, and the same code may succeed natively)",
+        "range": {
+          "end": {
+            "character": 74,
+            "line": 3
+          },
+          "start": {
+            "character": 68,
+            "line": 3
+          }
+        },
+        "severity": 1,
+        "source": "Lean 4"
+      }
+    ],
+    "rpcReply": [
+      {
+        "fullRange": {
+          "end": {
+            "character": 74,
+            "line": 3
+          },
+          "start": {
+            "character": 68,
+            "line": 3
+          }
+        },
+        "message": {
+          "tag": [
+            {
+              "expr": {
+                "text": "maximum recursion depth has been reached: the WebAssembly runtime's stack is exhausted (a browser gives it far less stack than native Lean has; raising maxRecDepth does not help, and the same code may succeed natively)"
+              }
+            },
+            {
+              "text": ""
+            }
+          ]
+        },
+        "range": {
+          "end": {
+            "character": 74,
+            "line": 3
+          },
+          "start": {
+            "character": 68,
+            "line": 3
+          }
+        },
+        "severity": 1,
+        "source": "Lean 4"
+      }
+    ]
+  }
+}

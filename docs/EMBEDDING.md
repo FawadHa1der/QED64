@@ -1,9 +1,10 @@
 # Embedding QED64 — contract v1
 
 Status: **v1, final.** The page API is `1.0.0` (`frontend/src/page-api.ts`
-`API_REVISION`), and `qed64/embed` is `EMBED_API_REVISION` `1.1.0` (final
+`API_REVISION`), and `qed64/embed` is `EMBED_API_REVISION` `1.2.0` (final
 at `1.0.0`, declared 2026-11-01, architecture review D13; `1.1.0` adds the
-v2 runtime manifest's fields, §12).
+v2 runtime manifest's fields, `1.2.0` the stack-limit helpers of §7.10;
+§12).
 The v1 draft (daf9b63) was reviewed by the two consumers of the time:
 - the widgets showcase: `qed64-showcase/docs/QED64-EMBEDDING-V1-REVIEW.md`;
 - lean4game: 24 items, adversarially verified.
@@ -896,6 +897,9 @@ pins the names lean4game, the proof sheets and the stock page import.
   code is the string `"WORKER_DEP_MISMATCH"`, §7.2: compare with the
   literal).
 - **offline:** `runtimeUrls(manifest)` and `WORKER_URLS`.
+- **stack limit (§7.10):** `isStackLimitDiagnostic`, `annotateStackLimit`
+  and `STACK_LIMIT_NOTE` (Lean's engine-stack guard errors: recognise them,
+  and append QED64's note), with the type `StackLimitDiagnostic`.
 - **internal re-exports** (`/** @internal */` in the barrel):
   `LEGACY_UMBRELLA_ROOTS`, the roots the stock page gives a rootless index
   entry named `mathlib` (§8). It stays in the barrel but outside the
@@ -1571,6 +1575,81 @@ relay.restart(opts: RestartOptions): void;  // a deliberate replacement, not a d
   `pending`, `stats`, `fromClient`, `toClient`, …) are internal and may
   change in any commit; read `status()` instead.
 
+### 7.10 Lean's engine-stack guard errors
+
+When a browser's engine stack runs low, the runtime's Lean (kernel patch
+0036) does not die: it reports an error of its own on the command it was
+checking, and that command was **not checked** (HARDENING #71, #92). It is
+an ordinary severity-1 diagnostic, so a verdict that counts errors reads it
+as a failed proof, and it is one: the proof is not verified. Its words hold
+one of two phrases, alone or nested in another error ("failed to synthesize
+…", "Tactic `simp` failed with a nested error: …", `decide`'s report of a
+kernel failure):
+- "the WebAssembly runtime's stack is exhausted" (the elaborator: "maximum
+  recursion depth has been reached: the WebAssembly runtime's stack is
+  exhausted (…)");
+- "the WebAssembly engine's stack is exhausted" (the kernel: "(kernel) the
+  WebAssembly engine's stack is exhausted: …").
+
+Upstream Lean has neither phrase. Lean's limits that desktop Lean has too
+are other errors and do not match: maxRecDepth's "maximum recursion depth
+has been reached" followed by "use `set_option maxRecDepth <num>` to
+increase limit" (the same first six words, and the same
+`runtime.maxRecDepth` tag), maxHeartbeats' timeout, the kernel's
+"(kernel) deep recursion detected" and the interpreter's "deep recursion
+was detected". Recursion that gets past the guard kills the checker
+instead: that is the stack pause of §7.2.
+
+```ts
+interface StackLimitDiagnostic { severity?: number; message?: unknown; isSilent?: boolean }
+isStackLimitDiagnostic(d: StackLimitDiagnostic): boolean;
+annotateStackLimit<D extends StackLimitDiagnostic>(diagnostics: D[]): D[];
+STACK_LIMIT_NOTE: string;
+```
+
+- **`isStackLimitDiagnostic(d)`**: true for an error (`severity` 1, not
+  `isSilent`) whose message holds either phrase. The message is an LSP
+  `Diagnostic`'s string, or the TaggedText (JSON) of an entry of a
+  `Lean.Widget.getInteractiveDiagnostics` reply, where Lean puts the words
+  inside `expr` embeds; it reads both, and classifies a reply's entry as it
+  does the same diagnostic's publish. A warning or info that quotes the
+  words (an `#eval` printing them) is not one. A count is
+  `diagnostics.filter(isStackLimitDiagnostic).length`.
+- **`annotateStackLimit(diagnostics)`** appends `"\n\n" + STACK_LIMIT_NOTE`
+  after Lean's words on each such error that does not carry it yet: a string
+  gains the text, a TaggedText gains a `{text}` node at the end of its
+  `append` (or a new `append` around it). Severity, range and every other
+  field stay, so every error count stays and the verdict stays "error". It
+  returns its input when nothing needs the note (a second call changes
+  nothing), otherwise a new array, and never mutates.
+- **`STACK_LIMIT_NOTE`** is QED64's explanation: the command was not
+  checked, because Lean ran out of the browser's stack; this is a limit of
+  running Lean in a browser, not a mistake found in the proof, and the proof
+  is not verified; what helps (a long file in smaller parts, a long proof in
+  helper lemmas, desktop Lean or live.lean-lang.org). `lib/stack-limit.ts`
+  holds its one wording; compare with the constant, not a copy of its text.
+
+`LspRelay` forwards these errors untouched. A library consumer adds the note
+where it reads messages, one call each: `params.diagnostics =
+annotateStackLimit(params.diagnostics)` in its `publishDiagnostics` handler,
+and `result = annotateStackLimit(result)` on a `getInteractiveDiagnostics`
+reply or any other RPC result that is a diagnostic array. Or it says the
+same in its own words, keyed on `isStackLimitDiagnostic`.
+
+The stock page, in both modes, does both through its relay taps, before its
+page API and the editor see the frame: the editor's hover and markers, the
+InfoView's messages and the `diagnostics` event (origin `lean`) show Lean's
+error followed by the note. At `ready`, while Lean's latest publish holds N
+such errors, its pill reads "ready — N place(s) not checked (browser stack
+limit)" with the note in its tooltip (labels are internal, §9), and
+`#pstatus` announces that once on the plain page. `status()`, `settled()`
+and the `ready` event are unchanged: `ready` says the check finished, not
+that every command was verified.
+
+Not covered: a tactic that catches the guard's error and reports one of its
+own (Mathlib's `ennreal_num`; Verso's `tryCatchRuntimeEx`, the proof
+sheets' "Could not prove:") leaves no words to match.
+
 ---
 
 ## 8. Overlay environments
@@ -2017,3 +2096,25 @@ reads them there, because `docs/history/` is not in the package's `files`.
   indexes (the `exact?` family, `rw?`, `rw??`), so a first `rw?` after an
   `exact?` gets it; for `rw??` alone it says "about half a minute". No API
   change.
+- **Lean's engine-stack guard errors say why (2026-11-07, HARDENING #92):**
+  what the stock page and a `?embed=1` frame show, and three additive library
+  exports with their type.
+  - **Library tier.** `qed64/embed` exports `isStackLimitDiagnostic`,
+    `annotateStackLimit`, `STACK_LIMIT_NOTE` and the type
+    `StackLimitDiagnostic` (§7.10). `LspRelay` is unchanged: its publishes
+    and replies still carry Lean's text untouched, so a library consumer
+    (lean4game, the proof sheets) sees nothing new until it calls the
+    helpers.
+  - **Page tier** (both modes). A guard error carries QED64's note after
+    Lean's words: in the editor, in the InfoView (the page annotates every
+    array reply, which only changes `getInteractiveDiagnostics`) and in the
+    `diagnostics` event, whose origin stays `lean` with the same severity,
+    range and count. A byte-for-byte comparison of such a message with
+    Lean's must strip the `"\n\n" + STACK_LIMIT_NOTE` suffix. At `ready`,
+    while Lean's latest publish holds N of them, the pill reads "ready — N
+    place(s) not checked (browser stack limit)" with the note in its tooltip,
+    a frame's pill too; a test that records `#ptext` records that label on
+    such content. `#pstatus` stays silent in a frame. `status()`,
+    `settled()`, `ready` and every other event are unchanged.
+  - `API_REVISION` and the worker `REVISION` are unchanged.
+  - `EMBED_API_REVISION` → `1.2.0`.

@@ -17,7 +17,7 @@
 
 /** Semver of the library contract (docs/EMBEDDING.md §1, §7), final since 1.0.0:
  * minor = additive; a break is the next major, with a migration note in §12. */
-export const EMBED_API_REVISION = "1.1.0";
+export const EMBED_API_REVISION = "1.2.0";
 
 // runtime
 export { LeanSession, MEMORY64_PROBE, probeMemory64 } from "./client";
@@ -61,3 +61,7 @@ export type { ResidentHost, ResidentPolicy, SessionFile } from "./resident-sessi
 // relay
 export { LspRelay } from "./lsp-relay";
 export type { Death, RelaySession, RelayState, RelayStatus, RestartOptions } from "./lsp-relay";
+
+// Lean's engine-stack guard errors: recognise them and append QED64's note (docs/EMBEDDING.md §7.10)
+export { STACK_LIMIT_NOTE, annotateStackLimit, isStackLimitDiagnostic } from "./stack-limit";
+export type { StackLimitDiagnostic } from "./stack-limit";

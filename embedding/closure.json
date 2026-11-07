@@ -13,7 +13,8 @@
     "lib/edit-coalescer.ts",
     "lib/lsp-relay.ts",
     "lib/client.ts",
-    "lib/snapshots.ts"
+    "lib/snapshots.ts",
+    "lib/stack-limit.ts"
   ],
   "workers": [
     {
