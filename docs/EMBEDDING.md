@@ -1974,8 +1974,7 @@ reads them there, because `docs/history/` is not in the package's `files`.
     as before (§3). In both modes the bar's title gives way first (an
     ellipsis) and the pill keeps at least 13ch; the version tooltip
     (`#buildinfo`'s title) keeps the provenance after `ready` and names the
-    Mathlib (a build-time define from the toolchain record; omitted under
-    another Vite config).
+    Mathlib (a build-time define from the toolchain record).
   - **Panes and the InfoView's look** (L1.2, S1.7, A1.4; #87's 2026-11-07
     paragraph). `#splitter` sits between `#editor` and `#infoview`, hidden and
     not installed in the frame, so the editor keeps 55 % of the row

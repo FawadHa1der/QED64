@@ -47,7 +47,7 @@ export function installShareButton(button: HTMLButtonElement, text: () => string
 /** The largest file Open… accepts: the share link's cap (page-api.ts), 2 MiB. */
 export const MAX_OPEN_BYTES = 2 * 1048576;
 /** Download's file name until a file is opened (then the opened file's). */
-export const DEFAULT_FILE_NAME = "QED64.lean";
+const DEFAULT_FILE_NAME = "QED64.lean";
 
 export interface FileKeyEvent { key?: string; ctrlKey: boolean; metaKey: boolean; altKey: boolean; shiftKey: boolean; isComposing?: boolean }
 

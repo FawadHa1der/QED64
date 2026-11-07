@@ -60,7 +60,7 @@ const isPos = (p: unknown): p is LspPosition => typeof (p as LspPosition | undef
 
 /** The occurrences of the name under the cursor in a documentHighlight reply, or null when there is none: the
  * reply's `return` fallback (its `do`, or the `return` keyword itself) is not a name. */
-export function occurrences(reply: unknown, at: LspPosition, textOf: (r: LspRange) => string): LspRange[] | null {
+function occurrences(reply: unknown, at: LspPosition, textOf: (r: LspRange) => string): LspRange[] | null {
   const ranges = (Array.isArray(reply) ? reply : []).map((h) => (h as { range?: LspRange } | null)?.range)
     .filter((r): r is LspRange => isPos(r?.start) && isPos(r?.end));
   const here = ranges.find((r) => contains(r, at));

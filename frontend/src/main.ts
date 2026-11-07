@@ -743,7 +743,7 @@ let wasReady = false;
 // replaced the whole title, so the provenance showed only during the boot).
 declare const __QED64_MATHLIB__: { commit: string; tag: string | null } | null;
 /** The Mathlib the served environment is built from (frontend/vite.config.ts, from the toolchain record), or null. */
-const MATHLIB = typeof __QED64_MATHLIB__ === "undefined" ? null : __QED64_MATHLIB__;
+const MATHLIB = __QED64_MATHLIB__;
 let provenance: string[] = [];
 let heapLines: string[] = [];
 function renderBuildTitle(): void {
