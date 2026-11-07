@@ -18,10 +18,16 @@
     }
     #bar .title { font-weight: 600; letter-spacing: .02em; color: #fff; white-space: nowrap; }
     #bar .title small { font-weight: 400; color: #9aa0b8; margin-left: 6px; }
-    #examples {
+    #examples, #pageactions button {
       background: #262a3d; color: #cfd2e6; border: 1px solid #3a3f58;
       border-radius: 4px; padding: 3px 6px; font: 12px system-ui, sans-serif;
     }
+    /* The plain page's own bar buttons (file-io.ts): hidden in the markup, shown by main.ts outside ?embed=1 only.
+       The examples menu's box, so the bar keeps its height. An author display beats the UA's [hidden] rule. */
+    #pageactions { display: flex; gap: 6px; flex: none; }
+    #pageactions[hidden] { display: none; }
+    #pageactions button { white-space: nowrap; cursor: pointer; }
+    #pageactions button:hover { color: #fff; }
     #pill {
       display: flex; align-items: center; gap: 7px; margin-left: auto;
       background: #262a3d; border: 1px solid #3a3f58; border-radius: 999px;
@@ -144,6 +150,9 @@
       <option value="mil">Mathematics in Lean paste</option>
       <option value="init">Lean core — induction</option>
     </select>
+    <span id="pageactions" hidden>
+      <button id="sharebtn" type="button" title="Copy a link to this code">Copy link</button>
+    </span>
     <div id="pill" class="busy"><span class="dot"></span><span id="ptext">booting…</span><span id="ptime"></span></div>
     <span id="repolinks">
       <a href="https://github.com/FawadHa1der/QED64" target="_blank" rel="noopener noreferrer" title="QED64's source on GitHub">QED64 on GitHub</a>

@@ -10,7 +10,7 @@
 // LspRelay runs.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  codeFromHash, createPageApi, isSyntheticFrame, pageStatusSink, sharedLinkFlags, toApiStatus, FILE_PROGRESS_MS, LIVENESS_TIMING,
+  codeFromHash, createPageApi, isSyntheticFrame, pageStatusSink, shareLink, sharedLinkFlags, toApiStatus, FILE_PROGRESS_MS, LIVENESS_TIMING,
   type ApiStatus, type Capabilities, type EditorLike, type PageApi, type RelayLike,
 } from "../../frontend/src/page-api";
 import { compressToBase64, compressToEncodedURIComponent } from "../../frontend/src/lz-string";
@@ -262,6 +262,19 @@ describe("the boot document", () => {
     const cap = 2 * 1048576;
     expect(codeFromHash(`#codez=${compressToBase64("a".repeat(cap)).replace(/=*$/, "")}`)).toHaveLength(cap);
     expect(codeFromHash(`#codez=${compressToBase64("a".repeat(cap + 1)).replace(/=*$/, "")}`)).toBeNull();
+  });
+  it("shareLink (Copy link) writes raw #codez= without padding, the bot's spelling, which codeFromHash reads back; no link for an empty or oversize text", () => {
+    const base = "https://qed64.example/";
+    expect(shareLink(VECTOR.text, base)).toBe(`${base}#codez=${VECTOR.codez}`); // the vector the bot repository pins
+    const text = "example (p q : Prop) (hp : p) (hq : q) : p ∧ q := ⟨hp, hq⟩\n"; // its base64 has a `+` and a `/`
+    const link = shareLink(text, base)!;
+    expect(link).toBe(`${base}#codez=KYDwhgtgDgNsAEAKK8CO8Bc8AKAnA9lAJRIAWKWxZ6WqJl8g5ERqYC88gF+TkA08pqgS/IAUEA`);
+    expect(codeFromHash(new URL(link).hash)).toBe(text);
+    expect(codeFromHash(new URL(shareLink(LEAN4WEB.text, base)!).hash)).toBe(LEAN4WEB.text);
+    expect(shareLink("", base)).toBeNull();
+    const cap = 2 * 1048576;
+    expect(codeFromHash(new URL(shareLink("a".repeat(cap), base)!).hash)).toHaveLength(cap);
+    expect(shareLink("a".repeat(cap + 1), base)).toBeNull();
   });
   it("sharedLinkFlags names the risky spellings a shared snippet contains (a label, not a blocker)", () => {
     expect(sharedLinkFlags(VECTOR.text)).toEqual([]);

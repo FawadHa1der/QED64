@@ -18,7 +18,7 @@ import { ENGINE_STACK_OVERFLOW, type BootStage, type FailureCause } from "../../
 import type { ProgressInfo } from "../../lib/qed64-boot";
 import type { RelayStatus, RestartOptions } from "../../lib/lsp-relay";
 import type { LspMessage, RelayTaps } from "./relay-taps";
-import { decompressFromBase64, decompressFromEncodedURIComponent } from "./lz-string";
+import { compressToBase64, decompressFromBase64, decompressFromEncodedURIComponent } from "./lz-string";
 
 export const API_REVISION = "1.0.0";
 
@@ -588,6 +588,15 @@ export function codeFromHash(hash: string): string | null {
   if (!packed) return null;
   const text = /[-$]/.test(packed) ? decompressFromEncodedURIComponent(packed, MAX_FRAGMENT_CHARS) : decompressFromBase64(packed, MAX_FRAGMENT_CHARS);
   return text || null;
+}
+
+/** The share link for `text`, the inverse of `codeFromHash`: `<base>#codez=` and `compressToBase64(text)` with the
+ * padding stripped, raw (not percent-encoded): the Zulip bot's spelling, which QED64 reads, and which lean4web's
+ * reader decodes too (read from its source, not measured). `base` is the page without its query or fragment (origin
+ * and path). Null for an empty text and for one over the 2 MiB a fragment may carry: such a link would open nothing. */
+export function shareLink(text: string, base: string): string | null {
+  if (text === "" || text.length > MAX_FRAGMENT_CHARS) return null;
+  return `${base}#codez=${compressToBase64(text).replace(/=+$/, "")}`;
 }
 
 /** The spellings a shared snippet is labelled for before it is opened on the

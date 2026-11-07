@@ -63,13 +63,15 @@ and `/snapshots/` beside it. Then frame `/?embed=1`:
 - **Same origin only in v1.** The frame inherits cross-origin isolation from
   your page, so your page needs the COOP/COEP headers too. A cross-origin
   frame cannot boot, so you cannot frame the live site from another origin.
-- **Embed mode** (`?embed=1`) hides the examples menu and leaves persistence to
-  you: listen for the `document` event and call `setDocument`.
+- **Embed mode** (`?embed=1`) hides the examples menu and the page's own
+  controls (Copy link) and leaves persistence to you: listen for the
+  `document` event and call `setDocument`.
 - **URL parameters** ([docs/EMBEDDING.md](docs/EMBEDDING.md) §3–§4):
   `#code=<text>` and `#codez=<LZ-string>` (lean4web's spellings: a boot
   document only in a same-origin frame; on the plain page the fragment is a
   share link that opens behind a consent gate,
-  [docs/HARDENING.md](docs/HARDENING.md) #77),
+  [docs/HARDENING.md](docs/HARDENING.md) #77, and the bar's Copy link
+  writes one for the editor's text),
   `snapshots=<dir>` (an overlay set on this origin), `profiles=<dir>`
   (validated, then ignored since 2026-11: no library pack is read),
   `runtime=<buildId>`, `memory=<GiB>` and `edithold=<n>`. A refused value

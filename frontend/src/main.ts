@@ -20,6 +20,7 @@ import { createTestHatch } from "./test-hatch";
 import { createCheckFallback } from "./check-fallback";
 import { STAGES, createBootChecklist } from "./boot-checklist";
 import { STALE_NOTICE, bootFailLabel, createStaleWatch } from "./stale-notice";
+import { installShareButton } from "./file-io";
 
 // The embedder-facing surface (docs/EMBEDDING.md §2), published synchronously
 // at module start — before any of the page's own listeners matter — so an
@@ -405,6 +406,17 @@ theorem Tree.mirror_size (t : Tree α) : t.mirror.size = t.size := by
   | node l x r ihl ihr => simp [mirror, size, ihl, ihr]; omega
 `,
 };
+
+// ---- The plain page's own controls ------------------------------------------
+// Page-only elements start `hidden` in the markup; this one block shows and installs them, and only outside
+// ?embed=1 (docs/EMBEDDING.md §3), so an embedder's frame never renders them and none of their listeners exists there.
+if (!EMBED) {
+  const pageActions = document.getElementById("pageactions")!;
+  // "Copy link" (file-io.ts): a link to the editor's text, never this page's own URL (HARDENING #77). Before the
+  // editor is mounted there is no text, and the button says "nothing to share".
+  installShareButton(document.getElementById("sharebtn") as HTMLButtonElement, () => pageApi.api.getDocument()?.text ?? "");
+  pageActions.hidden = false;
+}
 
 async function main() {
   // ?memory=<GiB> (docs/EMBEDDING.md §4): the initial commit of every session;

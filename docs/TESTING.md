@@ -46,9 +46,9 @@ paired build outputs of "Environment" below.
 | Editing latency | `node tests/adversarial/editing-latency.mjs --url <dev url> [--rounds 3]` | header-switch, admit, body-edit, completion and error-clear times, read from `qed64.status()` facts only | dev | lock | `SUMMARY {…}` (3 = no header fact) |
 | Crash gauntlet | `node tests/adversarial/crash-gauntlet.mjs <url> [minutes] [mixed\|imports]` | sustained example switches, garbage bursts and header flips: the page survives and the breaker does not halt | dev | lock | the step log, exit 0 (1 = page crash, 2 = halted) |
 | Liveness faults | `node tests/adversarial/liveness-faults.mjs --url <dev url> [--only <scenario>]` | HARDENING #52's mailbox, kick, liveness probe and exit hook, each by fault injection into the live worker: mailbox-mode, idle-no-probes, long-silent-command, lost-wakeups-healed, wedge-recovery, exit-detected; and #78's early-death-detected (a fresh session's Worker terminated at its first ready, before any heartbeat, is declared dead by the watchdog the arm starts) | dev | lock | `liveness-faults: 7/7 pass` |
-| Page API | `node tests/adversarial/page-api.mjs --url <dev url> [--only <scenario>]` | `qed64.api` as an embedder uses it (docs/EMBEDDING.md §2–§4): code-top-level, embed-code (with the plain page's own UI silent or hidden in the frame), embed-setdoc, memory (`status().memory` is numbers once settled, read on a later turn; HARDENING #76), events, restart, bad-param | dev or served build (both answer `/embed-host.html`) | lock | `page-api: 7/7 pass` |
+| Page API | `node tests/adversarial/page-api.mjs --url <dev url> [--only <scenario>]` | `qed64.api` as an embedder uses it (docs/EMBEDDING.md §2–§4): code-top-level, embed-code (with the plain page's own UI silent or not rendered in the frame: the examples menu, `#pageactions`, `#pstatus`), embed-setdoc, memory (`status().memory` is numbers once settled, read on a later turn; HARDENING #76), events, restart, bad-param | dev or served build (both answer `/embed-host.html`) | lock | `page-api: 7/7 pass` |
 | InfoView actions | `node tests/adversarial/infoview-actions.mjs --url <url> [--only <scenario>] [--browser chromium\|firefox]` | the InfoView's editor RPC on the real page (HARDENING #56): capability-flag, try-this-apply, conv-generate, foreign-show, restart-file (the InfoView's Restart File restarts the session); focus-return (HARDENING #85: after a click in the InfoView the keys reach the editor; it proves the fix only with `--browser firefox --only focus-return`, and Chromium is its control) | dev or served build | lock | `infoview-actions: 6/6 pass` (Firefox `--only focus-return`: `1/1`) |
-| Page UX | `node tests/adversarial/page-ux.mjs --url <url> [--only <scenario>] [--browser chromium\|firefox] [--run-dir <dir>]` | the plain page's own UX (the UX parity batch of 2026-11-06), each scenario on its own page with an Init-only document: a11y-status (the pill's screen-reader echo `#pstatus`; its embed half is page-api's embed-code) | dev or served build | lock | `page-ux: 1/1 pass` |
+| Page UX | `node tests/adversarial/page-ux.mjs --url <url> [--only <scenario>] [--browser chromium\|firefox] [--run-dir <dir>]` | the plain page's own UX (the UX parity batch of 2026-11-06), each scenario on its own page with an Init-only document: a11y-status (the pill's screen-reader echo `#pstatus`; its embed half is page-api's embed-code), share-link (Copy link, HARDENING #77) | dev or served build | lock | `page-ux: 2/2 pass` |
 | Reload storm | `node tests/adversarial/reload-storm.mjs --url <url> [--runs 5] [--embed] [--ballast-mb N] [--headed] [--boot-budget-ms 600000] [--hold-ms 0]` | five reloads 3 s apart per run, a fresh browser per run, `ready` again after them; a crash is classified by the V8 OOM line (HARDENING #53, #55); `--embed` reloads a same-origin host page around the frame; `--ballast-mb N` (with `--embed`) makes that host hold N MiB of live JS objects in the renderer's shared pointer cage, a heavy embedding page (#55 residual: 800 MiB crashed 8/8 and 0 MiB 0/8 on 3ab1c6a9, every dose up to 2400 MiB 0/4 on 36d7f415); each run also counts the `.snapz` requests after the first ready and the `[boot] raw cache busy` lines | dev or served build (stock and `--embed`) | lock | `RELOAD-STORM <tag>: 0/N crashed …` (1 = a crash, 2 = an unknown flag or a bad `--boot-budget-ms`/`--hold-ms`, 3 = nothing booted) |
 | Edit storm | `node tests/adversarial/edit-storm.mjs --url <served url> [--reps 2] [--scenarios …] [--run-dir <dir>] [--tag <label>]` | an edit per keystroke over work that ignores cancellation: no crash, death or reboot, ready at the last version, the pool within tolerance (HARDENING #59; `?edithold=0` is the control arm); the opt-in `pagelong` is `pageslow` with a 133-character example, about 20 s of typing (R16 #59: growth must not trend with typing length); `--tag` names `edit-storm-<tag>.json`, its samples and its log, so interleaved arms share one `--run-dir` | served build | lock | `edit-storm: N/N pass` (1 = a run failed, 2 = a bad `--tag`, 3 = infrastructure) |
 | Boot card | `node tests/adversarial/boot-card.mjs --url <served url> [--scenario slow-link\|check-fallback\|all]` | a cold first visit over a shaped link: the boot card shows progress the whole way, and the check fallback appears while an Init-only buffer elaborates (HARDENING #54) | served build | lock | `boot-card: N/N passed` |
@@ -424,7 +424,14 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
   hidden, and `#pill`, `#ptext` and `#ptime` are not live; the boot's
   announcements include the restored-buffer note and end on "ready", never
   the worker's streamed progress or `elaborating`; three edits after ready
-  announce nothing while the pill visibly flips to `elaborating`). Verdicts
+  announce nothing while the pill visibly flips to `elaborating`).
+  `share-link` (UX F1.8, Chromium; HARDENING #77's third follow-up): the bar's
+  Copy link shows on the plain page without raising the bar, and a click puts
+  `<page>#codez=<raw base64>` on a clipboard stubbed by an init script (no run
+  writes the OS clipboard) and says "Copied", then goes back; with the stub
+  refusing, the link comes up in `window.prompt`; typing never changes the
+  page's URL; in a fresh visit with a buffer of its own the link opens behind
+  the gate and that stored buffer stays. Verdicts
   are inline check maps; the selection (an `--only` that selects nothing
   exits 3) is pinned by tests/unit/page-ux.test.ts, and each change runs its
   new scenarios once against the build before it, which must fail them. The
@@ -434,7 +441,9 @@ product, and a run that cannot boot must refuse rather than fail scenarios.
 - **Page API** (`page-api.mjs --url <dev url> [--only <scenario>]`,
   docs/EMBEDDING.md §2–§4): `qed64.api` used the way an embedder uses it,
   never the internal taps. `embed-code` (`?embed=1#code=`: that document,
-  booted light, `qed64:api` before boot, examples hidden, the stored buffer
+  booted light, `qed64:api` before boot, the plain page's own controls
+  (`PAGE_ONLY_IDS`: the examples menu, `#pageactions`) present but not
+  rendered, the stored buffer
   neither read nor written, and the plain page's screen-reader echo
   `#pstatus` empty: the embedder announces, UX A1.3), `embed-setdoc` (setDocument from the
   `qed64:api` listener becomes the boot document), `memory`

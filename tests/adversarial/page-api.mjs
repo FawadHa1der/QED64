@@ -9,7 +9,8 @@
 //                  page boots the empty document instead.
 //   embed-code     ?embed=1#code=<doc> in a same-origin frame (the dev/prod
 //                  server's /embed-host.html): boots with exactly that document,
-//                  `qed64:api` fired before boot, the examples menu is hidden,
+//                  `qed64:api` fired before boot, the plain page's own controls
+//                  (the examples menu, the bar's #pageactions) are not rendered,
 //                  localStorage["qed64.buffer"] is neither read (a seeded
 //                  sentinel does not appear) nor written (an edit leaves the
 //                  sentinel), settled() resolves ready, an Init-only document
@@ -48,6 +49,8 @@ console.log(`page-api: ${url} → ${manifest.buildId}; reports in ${path.relativ
 const INIT_DOC = "theorem two : 1 + 1 = 2 := rfl\n";
 const BROKEN = "theorem two : 1 + 1 = 3 := rfl\n";
 const SENTINEL = "-- sentinel: embed mode must not read or write this\n";
+/** The plain page's own controls (docs/EMBEDDING.md §3): in the markup, never rendered under ?embed=1. */
+const PAGE_ONLY_IDS = ["examples", "pageactions"];
 const withQuery = (q, hash = "") => { const u = new URL(url); for (const [k, v] of Object.entries(q)) u.searchParams.set(k, v); u.hash = hash; return u.toString(); };
 
 const results = [];
@@ -110,7 +113,9 @@ try {
     const { page, context } = await open(withQuery({ embed: "1" }, `#code=${encodeURIComponent(INIT_DOC)}`), { seed: SENTINEL, framed: true });
     const s = await settle(page);
     const doc = await page.evaluate(() => globalThis.qed64.api.getDocument());
-    const hidden = await page.evaluate(() => getComputedStyle(document.getElementById("examples")).display === "none");
+    // The plain page's own controls are in the markup and never rendered here (EMBEDDING §3): a missing id counts as
+    // shown, so the check cannot pass on a page that lacks the control. Each change that adds one appends its id.
+    const shown = await page.evaluate((ids) => ids.filter((id) => { const el = document.getElementById(id); return !el || el.getClientRects().length > 0; }), PAGE_ONLY_IDS);
     // The plain page's screen-reader echo stays silent: the embedder announces (UX A1.3).
     const announced = await page.evaluate(() => document.getElementById("pstatus")?.textContent ?? null);
     const apiEvent = await page.evaluate(() => window.__rec.apiEvent);
@@ -118,8 +123,8 @@ try {
     const edit = await page.evaluate(() => globalThis.qed64.api.setDocument("theorem three : 1 + 2 = 3 := rfl\n"));
     await page.waitForTimeout(1200); // past the page's 400 ms save debounce
     const stored = await page.evaluate(() => localStorage.getItem("qed64.buffer"));
-    const ok = s.phase === "ready" && doc?.text === INIT_DOC && hidden && apiEvent && JSON.stringify(s.snapshots) === JSON.stringify(["init"]) && stored === SENTINEL && edit.unchanged === false && announced === "";
-    record("embed-code", ok, `phase ${s.phase}, snapshots ${JSON.stringify(s.snapshots)}, document ${JSON.stringify(doc?.text)}, examples hidden ${hidden}, #pstatus ${JSON.stringify(announced)}, qed64:api ${apiEvent}, buffer after edit ${stored === SENTINEL ? "untouched" : JSON.stringify(stored)}`);
+    const ok = s.phase === "ready" && doc?.text === INIT_DOC && shown.length === 0 && apiEvent && JSON.stringify(s.snapshots) === JSON.stringify(["init"]) && stored === SENTINEL && edit.unchanged === false && announced === "";
+    record("embed-code", ok, `phase ${s.phase}, snapshots ${JSON.stringify(s.snapshots)}, document ${JSON.stringify(doc?.text)}, page-only controls rendered or missing ${JSON.stringify(shown)}, #pstatus ${JSON.stringify(announced)}, qed64:api ${apiEvent}, buffer after edit ${stored === SENTINEL ? "untouched" : JSON.stringify(stored)}`);
     await context.close();
   }
 

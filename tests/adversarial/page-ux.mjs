@@ -10,6 +10,14 @@
 //                 progress or `elaborating`, and three edits after ready
 //                 announce nothing while the pill visibly flips. Its embed
 //                 half (silent under ?embed=1) is page-api.mjs embed-code.
+//   share-link    (UX F1.8, F1.9) the bar's Copy link: shown on the plain
+//                 page without raising the bar; a click puts
+//                 `<page>#codez=<raw base64>` on a stubbed clipboard (no run
+//                 touches the OS clipboard) and says "Copied", then goes back;
+//                 a refused clipboard gets window.prompt with the link; typing
+//                 never changes the page's URL (HARDENING #77). In a fresh
+//                 visit with its own buffer the link opens behind the gate,
+//                 and the opener's stored buffer stays untouched. Chromium.
 //
 // Usage: node tests/adversarial/page-ux.mjs [--url http://localhost:5199/] [--only <scenario>] [--browser chromium|firefox] [--run-dir <dir>]
 // Run it through the host browser lock. Exit 0 all pass, 1 a scenario failed,
@@ -22,7 +30,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { arg, browserName, fetchJson, launchBrowser, onlyMatches, resolveTarget, root, runDir, teeLog } from "./harness.mjs";
 
-export const SCENARIOS = ["a11y-status"];
+export const SCENARIOS = ["a11y-status", "share-link"];
 /** The scenarios `--only` selects, in run order. An empty selection is refused (exit 3), never "0/0 pass". */
 export const selectScenarios = (only) => SCENARIOS.filter((name) => !only || onlyMatches(name, only));
 /** 0 all pass, 1 a scenario failed, 3 nothing was judged. */
@@ -33,6 +41,10 @@ const INIT_DOC = "theorem two : 1 + 1 = 2 := rfl\n";
 const EDITS = ["theorem two : 1 + 1 = 2 := rfl\n#eval IO.sleep 500\n", "theorem three : 1 + 2 = 3 := rfl\n", "theorem four : 2 + 2 = 4 := rfl\n"];
 // The worker's streamed progress labels (public/workers/lean.worker.js), which must never be announced.
 const WORKER_PROGRESS = /^(Verifying |Importing modules|Loading environment snapshot|Loading the environment into Lean|Mounting |Initializing |Starting the Emscripten|Shared Memory64)/;
+// share-link: the shared text, and its compressToBase64 without padding (raw: it has a `+` and a `/`; pinned in
+// tests/unit/page-api.test.ts).
+const SHARE_TEXT = "example (p q : Prop) (hp : p) (hq : q) : p ∧ q := ⟨hp, hq⟩\n";
+const SHARE_CODEZ = "KYDwhgtgDgNsAEAKK8CO8Bc8AKAnA9lAJRIAWKWxZ6WqJl8g5ERqYC88gF+TkA08pqgS/IAUEA";
 
 // ---------- helpers, copied from infoview-actions.mjs (lanes do not import each other's internals; `text` and
 // `cursorAt` are for the scenarios that follow) ----------
@@ -57,6 +69,18 @@ function recordStatusText() {
       if (el) new MutationObserver(() => into.push(el.textContent)).observe(el, { childList: true, characterData: true, subtree: true });
     }
   });
+}
+/** share-link: `navigator.clipboard` replaced (top frame), so no run writes the developer's OS clipboard. writeText
+ * keeps the text in `__copied`, or rejects as a refused permission does while `__clipboardRefuses` is set. */
+function stubClipboard() {
+  if (window !== window.top) return;
+  globalThis.__copied = [];
+  globalThis.__clipboardRefuses = false;
+  const writeText = async (t) => {
+    if (globalThis.__clipboardRefuses) throw new DOMException("refused by the lane", "NotAllowedError");
+    globalThis.__copied.push(t);
+  };
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
 }
 
 async function main() {
@@ -160,6 +184,61 @@ async function main() {
       const failures = Object.keys(checks).filter((k) => !checks[k]);
       record("a11y-status", failures.length === 0, `failed ${JSON.stringify(failures)}; aria ${JSON.stringify(aria)}; boot said ${JSON.stringify(atReady)}; edits said ${JSON.stringify(afterEdits.slice(atReady.length))}; pill during the edits ${JSON.stringify(editShown.slice(0, 8))}; page errors ${JSON.stringify(errors)}`);
       await context.close();
+    },
+    "share-link": async () => {
+      // UX F1.8 (and F1.9's writer): on the base build there is no #sharebtn, so the first click throws.
+      const { page, context, errors } = await open(SHARE_TEXT, { init: stubClipboard });
+      const href0 = await page.evaluate(() => location.href);
+      const base = await page.evaluate(() => location.origin + location.pathname);
+      const bar = await page.evaluate(() => {
+        const b = document.getElementById("bar"), actions = document.getElementById("pageactions"), btn = document.getElementById("sharebtn");
+        const shown = !!btn && btn.getClientRects().length > 0;
+        const h1 = b.offsetHeight;
+        if (actions) { actions.hidden = true; }
+        const h0 = b.offsetHeight;
+        if (actions) { actions.hidden = false; }
+        return { shown, h0, h1, label: btn?.textContent ?? null };
+      });
+      await page.click("#sharebtn", { timeout: 5000 });
+      const copied = await waitFor(() => page.evaluate(() => globalThis.__copied[0] ?? null), 3000);
+      const labelAfter = await page.textContent("#sharebtn");
+      // A refused clipboard: the link comes up in a prompt instead (Playwright dismisses it).
+      let prompted = null;
+      page.once("dialog", (d) => { prompted = { type: d.type(), message: d.message(), value: d.defaultValue() }; void d.dismiss(); });
+      await page.evaluate(() => { globalThis.__clipboardRefuses = true; });
+      await page.click("#sharebtn");
+      await waitFor(() => prompted, 3000);
+      // Typing never moves the URL: the page does not write its own fragment (HARDENING #77).
+      await page.evaluate(() => { const m = globalThis.qed64.editor.getModel(); m.applyEdits([{ range: { startLineNumber: 1, startColumn: 1, endLineNumber: 1, endColumn: 1 }, text: "-- x\n" }]); });
+      await sleep(2500); // past the 400 ms save and the label's 2 s
+      const href1 = await page.evaluate(() => location.href);
+      const labelLater = await page.textContent("#sharebtn");
+      await context.close();
+      // The round trip: a visitor with a buffer of their own opens the link.
+      const other = "theorem other : True := trivial\n";
+      const v = await open(other, { hash: copied ? new URL(copied).hash : "#codez=missing" });
+      const gate = await waitFor(() => v.page.evaluate(() => document.getElementById("sharedlink-text")?.textContent ?? null), 20000);
+      await v.page.click("#sharedlink-open", { timeout: 5000 }).catch(() => {});
+      const opened = await waitFor(async () => ((await text(v.page)) === SHARE_TEXT ? true : null), 10000);
+      await sleep(1000);
+      const storedOther = await v.page.evaluate(() => localStorage.getItem("qed64.buffer"));
+      const link = `${base}#codez=${SHARE_CODEZ}`;
+      const checks = {
+        "Copy link shows on the plain page": bar.shown && bar.label === "Copy link",
+        "it keeps the bar's height": bar.h1 === bar.h0,
+        "the link is raw #codez= on the page without its query": copied === link,
+        "the button says Copied": labelAfter === "Copied",
+        "and goes back": labelLater === "Copy link",
+        "a refused clipboard prompts with the link": prompted?.type === "prompt" && prompted.value === link,
+        "the page's URL never changes": href1 === href0,
+        "the link opens behind the gate": gate === SHARE_TEXT,
+        "Open puts it in the editor": !!opened,
+        "the opener's buffer is untouched": storedOther === other,
+        "no page errors": errors.length === 0 && v.errors.length === 0,
+      };
+      const failures = Object.keys(checks).filter((k) => !checks[k]);
+      record("share-link", failures.length === 0, `failed ${JSON.stringify(failures)}; bar ${JSON.stringify(bar)}; copied ${JSON.stringify(copied)}; prompt ${JSON.stringify(prompted)}; page errors ${JSON.stringify([...errors, ...v.errors])}`);
+      await v.context.close();
     },
   };
 
