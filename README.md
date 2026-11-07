@@ -79,12 +79,16 @@ and `/snapshots/` beside it. Then frame `/?embed=1`:
   your page, so your page needs the COOP/COEP headers too. A cross-origin
   frame cannot boot, so you cannot frame the live site from another origin.
 - **Embed mode** (`?embed=1`) hides the examples menu and the page's own
-  controls (Copy link, Show the editor while Lean loads) and leaves
+  controls (Open…, Download, Copy link, Show the editor while Lean loads,
+  the curated-Mathlib note) and leaves
   persistence to you: listen for the `document` event and call
   `setDocument`.
 - **Look.** The page follows the OS light or dark scheme, also when it
   changes. In a window or frame 720 px wide or less, it puts the InfoView
   below the editor.
+- **Files.** On the plain page, Open… (Ctrl/Cmd+O) opens a `.lean` file of
+  up to 2 MiB as one undoable edit, and Download (Ctrl/Cmd+S) saves the
+  editor's text as a `.lean` file.
 - **URL parameters** ([docs/EMBEDDING.md](docs/EMBEDDING.md) §3–§4):
   `#code=<text>` and `#codez=<LZ-string>` (lean4web's spellings: a boot
   document only in a same-origin frame; on the plain page the fragment is a

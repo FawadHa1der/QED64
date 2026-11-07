@@ -303,9 +303,11 @@ In embed mode the page:
 1. **does not read or write `localStorage["qed64.buffer"]`** (the embedder
    owns persistence through the `document` event and `setDocument`);
 2. hides the examples menu and the plain page's own controls (the bar's
-   `#pageactions`: Copy link; the boot card's `#bootshow`: Show the editor
-   while Lean loads). They are in the markup, never rendered, and none of
-   their listeners is installed.
+   `#pageactions`: Open…, Download, Copy link; the curated-Mathlib note
+   `#mathlibnote` beside the pill; the boot card's `#bootshow`: Show the
+   editor while Lean loads). They are in the markup, never rendered, and none
+   of their listeners is installed: no `#fileinput`, and Ctrl/Cmd+S and
+   Ctrl/Cmd+O reach the frame as before.
 
 ### 3.1 The boot document (both modes)
 
