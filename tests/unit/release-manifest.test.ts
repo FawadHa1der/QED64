@@ -934,6 +934,8 @@ describe.skipIf(!hasGit)("frontend/build/build-info.mjs: dist/qed64-build.json o
     fs.mkdirSync(frontend, { recursive: true });
     for (const f of ["vite.config.ts", "package.json"]) fs.copyFileSync(path.join(root, "frontend", f), path.join(frontend, f));
     fs.copyFileSync(path.join(root, "public/runtime/runtime-manifest.json"), path.join(checkout, "public/runtime/runtime-manifest.json"));
+    fs.mkdirSync(path.join(checkout, "toolchain"));
+    fs.copyFileSync(path.join(root, "toolchain/lean4-wasm64-release.json"), path.join(checkout, "toolchain/lean4-wasm64-release.json")); // the Mathlib define
     for (const d of ["build", "src", "node_modules"]) fs.symlinkSync(path.join(root, "frontend", d), path.join(frontend, d));
     fs.symlinkSync(path.join(root, "lib"), path.join(checkout, "lib")); // the barrel the config reads EMBED_API_REVISION from
     const g = (...args: string[]) => spawnSync("git", args, { cwd: checkout, encoding: "utf8" });

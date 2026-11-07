@@ -122,4 +122,11 @@ describe("toolchain/lean4-wasm64-release.json pins the release the Worker serves
       expect([r.status, r.headers.get("cache-control"), asked], p).toEqual([404, "no-store", [`get ${p.slice(1)}`]]);
     }
   });
+
+  test("the record names the Mathlib commit the page's version tooltip shows (frontend/vite.config.ts __QED64_MATHLIB__, UX F1.11)", () => {
+    const m = (record as Release & { mathlib?: { commit?: unknown; tag?: unknown } }).mathlib;
+    expect(m?.commit).toMatch(/^[0-9a-f]{40}$/);
+    // The tag is optional (an untagged Mathlib commit shows the short commit only); a string when present.
+    if (m?.tag !== undefined) expect(typeof m.tag).toBe("string");
+  });
 });

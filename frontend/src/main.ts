@@ -451,15 +451,22 @@ async function main() {
   // every session (0 disables the hold); the ResidentHost option is the fact.
   const editHold = parseEditHoldParam(location.search);
   const artifacts = await installArtifacts(ui);
-  // Identify the exact compiler in the product bar: Lean version + fork
-  // commit visible, full provenance (incl. runtime id) in the tooltip.
+  // Identify the exact compiler in the product bar: Lean version + fork commit visible; the full provenance (the
+  // runtime id, the Mathlib) in the tooltip, beside the memory meter's lines (renderBuildTitle).
   {
     const bi = document.getElementById("buildinfo");
     const rt = artifacts.runtime;
     if (bi && rt.leanVersion) {
       const fork = /@([0-9a-f]+)/.exec(rt.sourceRevision ?? "")?.[1];
       bi.textContent = `Lean ${rt.leanVersion} · wasm64${fork ? ` · qed64@${fork.slice(0, 7)}` : ""}`;
-      bi.title = `Lean ${rt.leanVersion}\n${rt.sourceRevision ?? "source revision unknown"}\nruntime ${rt.buildId}\nno servers — everything runs in this tab`;
+      provenance = [
+        `Lean ${rt.leanVersion}`,
+        rt.sourceRevision ?? "source revision unknown",
+        ...(MATHLIB ? [`Mathlib ${MATHLIB.tag ? `${MATHLIB.tag} ` : ""}(${MATHLIB.commit.slice(0, 7)}), a curated part; see README "Which Mathlib"`] : []),
+        `runtime ${rt.buildId}`,
+        "no servers — everything runs in this tab",
+      ];
+      renderBuildTitle();
     }
   }
   // Crash insurance: the buffer persists locally on every edit, so a killed
@@ -681,6 +688,18 @@ type Tel = { request(type: string, payload: Record<string, unknown>): Promise<un
 // 12 s in, which a runtime that is ready in 3 s exposed.
 let sampleMemoryNow: (() => void) | null = null;
 let wasReady = false;
+// The version tooltip (#buildinfo's title) has two writers, main()'s provenance and the memory meter's heap reading,
+// and one composer, so each keeps the other's lines (UX F1.11, HARDENING #89: the meter's first sample, at ready,
+// replaced the whole title, so the provenance showed only during the boot).
+declare const __QED64_MATHLIB__: { commit: string; tag: string | null } | null;
+/** The Mathlib the served environment is built from (frontend/vite.config.ts, from the toolchain record), or null. */
+const MATHLIB = typeof __QED64_MATHLIB__ === "undefined" ? null : __QED64_MATHLIB__;
+let provenance: string[] = [];
+let heapLines: string[] = [];
+function renderBuildTitle(): void {
+  const el = document.getElementById("buildinfo");
+  if (el) el.title = [...provenance, ...(provenance.length > 0 && heapLines.length > 0 ? [""] : []), ...heapLines].join("\n");
+}
 function startMemoryMeter(getSession: () => Tel | null) {
   const el = document.getElementById("buildinfo");
   if (!el) return;
@@ -700,12 +719,13 @@ function startMemoryMeter(getSession: () => Tel | null) {
       const frac = mem.currentBytes / mem.maximumBytes;
       el.textContent = `${base} · heap ${gib(mem.currentBytes)}/${gib(mem.maximumBytes)} GiB`;
       el.style.color = frac >= 0.95 ? "#e06c75" : frac >= 0.85 ? "#e2a63d" : "";
-      el.title = [
+      heapLines = [
         `Lean wasm heap: ${gib(mem.currentBytes)} of ${gib(mem.maximumBytes)} GiB cap`,
         `· environment snapshot regions inside the heap: ${gib(mem.regionBytes ?? 0)} GiB`,
         `The browser adds compiled-code and UI overhead on top of this heap;`,
         `near the cap, heavy edits can abort the checker (it restarts itself).`,
-      ].join("\n");
+      ];
+      renderBuildTitle();
       if (frac >= 0.85 && !warned) {
         warned = true;
         console.warn(`[qed64] wasm heap at ${(frac * 100) | 0}% of its ${gib(mem.maximumBytes)} GiB cap — heavy elaboration may restart the checker`);

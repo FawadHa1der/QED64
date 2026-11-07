@@ -25,6 +25,16 @@ const pairedBuildId = JSON.parse(
   readFileSync(new URL("../public/runtime/runtime-manifest.json", import.meta.url), "utf8"),
 ).buildId as string;
 
+// The Mathlib the served environment is built from, for the page's version tooltip (UX F1.11). The pinned toolchain
+// record names it (tests/unit/toolchain-pin.test.ts holds the record to the tracked manifests). It changes only at a
+// Lean/Mathlib import, when the paired runtime above changes the bundle anyway; never the page's own commit, which
+// would change every chunk on every push (HARDENING #74's stale chunks; dist/qed64-build.json carries it). null if the
+// record names none.
+const recordMathlib = (JSON.parse(
+  readFileSync(new URL("../toolchain/lean4-wasm64-release.json", import.meta.url), "utf8"),
+) as { mathlib?: { commit?: string; tag?: string } }).mathlib;
+const pinnedMathlib = recordMathlib?.commit ? { commit: recordMathlib.commit, tag: recordMathlib.tag ?? null } : null;
+
 // The lean4web-style front end for QED64: lean4monaco (Monaco + vscode-lean4
 // InfoView) speaking LSP to the in-browser wasm64 Lean file worker instead of
 // a WebSocket server.
@@ -40,7 +50,7 @@ const pairedBuildId = JSON.parse(
 // so the shell must stay mounted at the origin root.
 export default defineConfig(({ command }) => ({
   publicDir: command === "serve" ? "../public" : false,
-  define: { __QED64_BUILD_ID__: JSON.stringify(pairedBuildId) },
+  define: { __QED64_BUILD_ID__: JSON.stringify(pairedBuildId), __QED64_MATHLIB__: JSON.stringify(pinnedMathlib) },
   build: {
     outDir: "../dist",
     emptyOutDir: true,
