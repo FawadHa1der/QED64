@@ -19,7 +19,7 @@ import { installWidgetSourceCache } from "./widget-source-cache";
 import { createTestHatch } from "./test-hatch";
 import { createCheckFallback } from "./check-fallback";
 import { STAGES, createBootChecklist } from "./boot-checklist";
-import { NETWORK_HALT_LABEL, STALE_NOTICE, bootFailLabel, createStaleWatch, isNetworkCause } from "./stale-notice";
+import { CAPABILITY_BOOT_NOTICE, NETWORK_HALT_LABEL, STALE_NOTICE, bootFailLabel, createStaleWatch, isNetworkCause } from "./stale-notice";
 import { installShareButton } from "./file-io";
 
 // The embedder-facing surface (docs/EMBEDDING.md §2), published synchronously
@@ -183,10 +183,13 @@ function bootFail(message: string, cause?: FailureCause) {
   bootShow.hidden = true;
   bootCard.classList.add("failed");
   bootCard.querySelector("h1")!.textContent = "QED64 could not start";
-  // A stale cause (HARDENING #74) or a browser that cannot run QED64 (#77) gets words that say what to do; the
-  // browser's own stay as the title.
-  bootLabel.textContent = bootFailLabel(message, cause);
+  // A stale cause (HARDENING #74), a browser that cannot run QED64 (#77) or a cut download (#88) gets words that say
+  // what to do; the browser's own stay as the title.
+  const label = bootFailLabel(message, cause);
+  bootLabel.textContent = label;
   bootLabel.title = message;
+  // UX B1.1 (#88): for a browser that cannot run QED64 the card keeps only that advice (index.html `.unsupported`).
+  bootCard.classList.toggle("unsupported", label === CAPABILITY_BOOT_NOTICE);
   bootNums.textContent = "";
   bootBar.classList.remove("busy");
   bootReload.hidden = false;

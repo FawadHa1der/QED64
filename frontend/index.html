@@ -137,6 +137,10 @@
       background: #fff; color: #4664ee; font: 13px system-ui, sans-serif; cursor: pointer;
     }
     #boot.away { display: none; }
+    /* UX B1.1: a browser without Memory64 (Safari, iOS) gets only the advice; the download note, the bar, the
+       checklist and a Reload cannot help it, and the address bar already holds the link to open elsewhere. */
+    #bootcard.unsupported #bootnote, #bootcard.unsupported #bootbar, #bootcard.unsupported #bootstages,
+    #bootcard.unsupported #bootreload { display: none; }
     /* The share-link gate (main.ts sharedLinkGate; HARDENING #77): built only
        when the URL carries #code=/#codez=; centered over the page and the boot
        card (#boot is z-index 10 inside #split; the top bar keeps the boot
