@@ -1,7 +1,7 @@
 // The InfoView's editor actions on the page's Monaco model
 // (frontend/src/editor/infoview-edits.ts, docs/HARDENING.md #56), against a
 // small in-memory stand-in for Monaco's editor and model.
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { applyWorkspaceEdit, insertTextIn, installInfoviewEditorApi, sameUri, showDocumentIn, wrapEditorRpcApi, type EditsEditor } from "../../frontend/src/editor/infoview-edits";
 
 const URI = "file:///project/Probe.lean";
@@ -92,6 +92,26 @@ describe("showDocument", () => {
   it("ignores another document (go-to-definition into Mathlib cannot open a file here)", () => {
     const ed = fakeEditor("a");
     expect(showDocumentIn(ed, { uri: "file:///lib/lean/Mathlib/Order/Basic.lean", selection: range(0, 0, 0, 1) })).toBe(false);
+    expect(ed.log).toEqual([]);
+  });
+});
+
+describe("focus after an InfoView action (UX parity FILL-A1, HARDENING #85)", () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+  it("focuses this window before the editor in all three actions (Firefox keeps the keys in the InfoView frame otherwise)", () => {
+    const ed = fakeEditor("theorem t : True := by\n  trivial\n");
+    vi.stubGlobal("focus", () => { ed.log.push("window"); });
+    expect(applyWorkspaceEdit(ed, { changes: { [URI]: [{ range: range(1, 2, 1, 9), newText: "exact True.intro" }] } })).toBe(true);
+    expect(insertTextIn(ed, "skip", "above", { textDocument: { uri: URI }, position: { line: 1, character: 2 } })).toBe(true);
+    expect(showDocumentIn(ed, { uri: URI, selection: range(0, 0, 0, 7) })).toBe(true);
+    expect(ed.log.filter((x) => x === "window" || x === "focus")).toEqual(["window", "focus", "window", "focus", "window", "focus"]);
+  });
+  it("an action that applies nothing moves no focus", () => {
+    const ed = fakeEditor("x");
+    vi.stubGlobal("focus", () => { ed.log.push("window"); });
+    expect(showDocumentIn(ed, { uri: "file:///lib/lean/Mathlib/Order/Basic.lean" })).toBe(false);
+    expect(applyWorkspaceEdit(ed, { changes: {} })).toBe(false);
+    expect(insertTextIn(ed, "y", "here", { textDocument: { uri: "file:///other.lean" }, position: { line: 0, character: 0 } })).toBe(false);
     expect(ed.log).toEqual([]);
   });
 });

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// InfoView editor actions in REAL headless Chromium (docs/HARDENING.md #56):
-// lean4monaco's InfoView wiring, fixed in QED64.
+// InfoView editor actions in REAL headless Chromium, or Firefox with
+// `--browser firefox` (docs/HARDENING.md #56): lean4monaco's InfoView wiring,
+// fixed in QED64.
 //
 //   capability-flag   globalThis.qed64.api = {version 1, capabilities.editorRpc}
 //                     exists at DOMContentLoaded (an init script's listener
@@ -24,8 +25,18 @@
 //                     with no error; the same call for the editor's own document
 //                     selects and focuses (the control: the check can see a
 //                     showDocument at all).
+//   focus-return      init only (HARDENING #85, UX parity FILL-A1): four rounds
+//                     with real clicks, each from a click on the page's bar and
+//                     then the editor. "apply": click [apply], then Ctrl/Cmd+Z
+//                     with no other click must undo it (the editor has the
+//                     focus). "click": a click in blank InfoView space takes the
+//                     focus into the iframe; a click on the editor must take it
+//                     back, and typed text must land. A round whose InfoView
+//                     click did not take the focus fails, never passes. Firefox
+//                     kept the keys in the iframe; it proves the fix only under
+//                     `--browser firefox`, and Chromium is its control.
 //
-// Usage: node tests/adversarial/infoview-actions.mjs [--url http://localhost:5199/] [--only <scenario>] [--run-dir <dir>]
+// Usage: node tests/adversarial/infoview-actions.mjs [--url http://localhost:5199/] [--only <scenario>] [--browser chromium|firefox] [--run-dir <dir>]
 // Run it through the host browser lock. Exit 0 all pass, 1 a scenario failed,
 // 3 infrastructure refusal (an --only that selects no scenario included).
 // Every scenario runs on its own page. The selection, the in-browser probes and
@@ -33,9 +44,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { arg, fetchJson, onlyMatches, resolveTarget, root, runDir, teeLog } from "./harness.mjs";
+import { arg, browserName, fetchJson, launchBrowser, onlyMatches, resolveTarget, root, runDir, teeLog } from "./harness.mjs";
 
-export const SCENARIOS = ["capability-flag", "try-this-apply", "conv-generate", "foreign-show"];
+export const SCENARIOS = ["capability-flag", "try-this-apply", "conv-generate", "foreign-show", "focus-return"];
 /** The scenarios `--only` selects, in run order. An empty selection is refused
  * (exit 3): `--only foreign-show` once ran nothing and reported "0/0 pass". */
 export const selectScenarios = (only) => SCENARIOS.filter((name) => !only || onlyMatches(name, only));
@@ -141,6 +152,27 @@ export async function foreignShow(inPage, inFrame, timeoutMs = 30000) {
   const afterOwn = await inPage(editorView);
   return { before, foreign, afterForeign, own, afterOwn };
 }
+/** focus-return: the checks one round failed (none = pass). A round that could
+ * not see the trap never passes: the editor must hold the focus before the
+ * InfoView click, and a plain InfoView click must take it into the iframe (in
+ * Firefox only that move traps the next click on the editor). */
+export function focusReturnFailures(r) {
+  const before = { "the editor had the focus before the InfoView click": r.before?.editorFocus === true };
+  const checks = r.kind === "apply"
+    ? {
+        ...before,
+        "[apply] landed": r.applied === true,
+        "the editor has the focus after [apply]": r.afterAction?.editorFocus === true,
+        "Ctrl/Cmd+Z after [apply] undid it": r.undone === true,
+      }
+    : {
+        ...before,
+        "the InfoView click took the focus": r.afterInfoview?.focus === "IFRAME",
+        "the editor has the focus after a click on it": r.afterAction?.editorFocus === true,
+        "typed text landed in the editor": r.typed === true,
+      };
+  return Object.keys(checks).filter((k) => !checks[k]);
+}
 /** The foreign-show checks that failed (none = pass). */
 export function foreignShowFailures({ before, foreign, afterForeign, own, afterOwn }) {
   const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -163,6 +195,17 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const text = (page) => page.evaluate(() => globalThis.qed64.editor.getModel().getValue());
 const cursorAt = (page, lineNumber, column) => page.evaluate(([l, c]) => { const e = globalThis.qed64.editor; e.setPosition({ lineNumber: l, column: c }); e.focus(); }, [lineNumber, column]);
 const ready = (page) => page.evaluate(() => globalThis.qed64.status().phase === "ready");
+/** A real mouse click on the editor at (line, column), through the browser's input as a visitor's. */
+async function clickEditorAt(page, lineNumber, column) {
+  const xy = await page.evaluate(([l, c]) => {
+    const e = globalThis.qed64.editor;
+    const p = e.getScrolledVisiblePosition({ lineNumber: l, column: c });
+    const r = e.getDomNode().getBoundingClientRect();
+    return p ? { x: r.left + p.left + 2, y: r.top + p.top + p.height / 2 } : null;
+  }, [lineNumber, column]);
+  if (!xy) throw new Error(`clickEditorAt: ${lineNumber}:${column} is not visible`);
+  await page.mouse.click(xy.x, xy.y);
+}
 async function waitFor(pred, ms, every = 200) {
   const t0 = Date.now();
   for (;;) { const v = await pred(); if (v) return v; if (Date.now() - t0 > ms) return null; await sleep(every); }
@@ -177,15 +220,18 @@ async function installDiagTap(page) {
 const errorDiags = (page) => page.evaluate(() => (globalThis.__diags?.diagnostics ?? []).filter((d) => d.severity === 1).map((d) => d.message.slice(0, 120)));
 
 async function main() {
+  try { browserName(); } catch (e) { console.error(`infoview-actions: refused — ${e.message}`); process.exit(3); }
+  const firefox = browserName() === "firefox";
+  const SLOW = firefox ? 2 : 1; // Playwright's Firefox runs wasm several times slower
   const url = arg("url", "http://localhost:5199/");
   const only = arg("only", "");
   const scenarios = selectScenarios(only);
   if (scenarios.length === 0) { console.error(`infoview-actions: refused — --only ${JSON.stringify(only)} selects none of ${SCENARIOS.join(", ")}`); process.exit(3); }
   const target = resolveTarget(url);
   const manifest = await fetchJson(target.manifestUrl).catch((e) => { console.error(`infoview-actions: refused — ${e.message}`); process.exit(3); });
-  const dir = runDir(manifest.buildId ?? "unknown", target.mode);
+  const dir = runDir(manifest.buildId ?? "unknown", firefox ? `${target.mode}-firefox` : target.mode);
   teeLog(dir, "infoview-actions.log");
-  console.log(`infoview-actions: ${url} → ${manifest.buildId}; ${scenarios.join(", ")}; reports in ${path.relative(root, dir)}`);
+  console.log(`infoview-actions: ${url} → ${manifest.buildId} (${browserName()}); ${scenarios.join(", ")}; reports in ${path.relative(root, dir)}`);
 
   const results = [];
   let failed = 0;
@@ -193,11 +239,10 @@ async function main() {
     results.push({ name, outcome: ok ? "pass" : "fail", detail, ...extra });
     if (!ok) failed += 1;
     console.log(`${ok ? "PASS" : "FAIL"} ${name} :: ${detail}`);
-    fs.writeFileSync(path.join(dir, "infoview-actions-report.json"), JSON.stringify({ url, buildId: manifest.buildId, total: results.length, failed, results }, null, 2));
+    fs.writeFileSync(path.join(dir, "infoview-actions-report.json"), JSON.stringify({ url, buildId: manifest.buildId, browser: browserName(), total: results.length, failed, results }, null, 2));
   }
 
-  const { chromium } = await import("playwright");
-  const browser = await chromium.launch();
+  const browser = await launchBrowser().catch((e) => { console.error(`infoview-actions: refused — ${String(e?.message ?? e).split("\n")[0].slice(0, 200)}`); process.exit(3); });
   /** A fresh page booted to `ready` on `doc`. */
   async function boot(doc, budgetMs) {
     const context = await browser.newContext();
@@ -211,7 +256,7 @@ async function main() {
     for (;;) {
       const ph = await page.evaluate(() => globalThis.qed64?.status?.()?.phase ?? null).catch(() => null);
       if (ph === "ready") break;
-      if (Date.now() - t0 > budgetMs) throw new Error(`not ready within ${budgetMs} ms (phase ${ph})`);
+      if (Date.now() - t0 > budgetMs * SLOW) throw new Error(`not ready within ${budgetMs * SLOW} ms (phase ${ph})`);
       await sleep(250);
     }
     return { page, context, errors };
@@ -283,6 +328,48 @@ async function main() {
       const seen = await foreignShow((fn, a) => page.evaluate(fn, a), (fn, a) => frame.evaluate(fn, a));
       const failures = foreignShowFailures(seen);
       record("foreign-show", failures.length === 0 && errors.length === 0, `failed checks ${JSON.stringify(failures)}; ${JSON.stringify(seen)}; page errors ${JSON.stringify(errors)}`);
+      await context.close();
+    },
+
+    "focus-return": async () => {
+      // HARDENING #85 (UX parity FILL-A1): the proof runs under --browser firefox; Chromium is the control.
+      const { page, context, errors } = await boot(DOC_A, 300000);
+      const iv = page.frameLocator(SEL.frame);
+      const link = iv.locator(SEL.coreTryThis, { hasText: "[apply]" }).first();
+      const col = DOC_A.indexOf("simp?") + 3;
+      const rounds = [];
+      for (const kind of ["apply", "click", "apply", "click"]) {
+        await waitFor(() => ready(page), 60000 * SLOW); // an undo or a setDocument re-checks DOC_A: no stale [apply]
+        // A known start: a failed round leaves the focus in the iframe, and there the next InfoView click is no move
+        // into it (a round on the unfixed build then passed). A click on the bar's title brings it back to this page.
+        await page.locator("#bar .title").click();
+        await clickEditorAt(page, 1, col);
+        await link.waitFor({ timeout: 60000 * SLOW });
+        const r = { kind, before: await page.evaluate(editorView) };
+        if (kind === "apply") {
+          await link.click();
+          r.applied = !!(await waitFor(async () => ((await text(page)) !== DOC_A) || null, 10000));
+          await sleep(300);
+          r.afterAction = await page.evaluate(editorView);
+          await page.keyboard.press("ControlOrMeta+KeyZ"); // no click first: Firefox lost this key (the study's log-ff2.json)
+          r.undone = !!(await waitFor(async () => ((await text(page)) === DOC_A) || null, 3000));
+        } else {
+          const box = await page.locator(SEL.frame).last().boundingBox();
+          await page.mouse.click(box.x + box.width / 2, box.y + box.height - 12); // blank InfoView space below its content
+          await sleep(300);
+          r.afterInfoview = await page.evaluate(editorView);
+          await clickEditorAt(page, 1, col);
+          await sleep(300);
+          r.afterAction = await page.evaluate(editorView);
+          await page.keyboard.type("zz", { delay: 50 });
+          r.typed = !!(await waitFor(async () => (await text(page)).includes("zz") || null, 3000));
+        }
+        rounds.push({ kind, before: r.before.focus, afterInfoview: r.afterInfoview?.focus, afterAction: r.afterAction?.focus, failures: focusReturnFailures(r) });
+        if ((await text(page)) !== DOC_A) await page.evaluate((t) => globalThis.qed64.api.setDocument(t), DOC_A);
+      }
+      const failures = rounds.flatMap((r, i) => r.failures.map((f) => `round ${i + 1} (${r.kind}): ${f}`));
+      record("focus-return", failures.length === 0 && errors.length === 0, `${browserName()}; failed checks ${JSON.stringify(failures)}; rounds ${JSON.stringify(rounds)}; page errors ${JSON.stringify(errors)}`);
+      await page.screenshot({ path: path.join(dir, `focus-return-${browserName()}.png`) }).catch(() => {});
       await context.close();
     },
   };

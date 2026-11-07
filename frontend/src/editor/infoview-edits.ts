@@ -62,6 +62,14 @@ const toRange = (r: LspRange): MonacoRange => ({
 });
 const at = (p: LspPosition): MonacoRange => toRange({ start: p, end: p });
 
+/** Give the keyboard to the editor after an InfoView action. The click that sent the action left the focus in the
+ * InfoView's iframe, and in Firefox `editor.focus()` alone does not take it out of a focused child frame; focusing
+ * this window first does (UX parity FILL-A1, HARDENING #85). */
+function focusEditor(editor: EditsEditor): void {
+  globalThis.focus?.();
+  editor.focus();
+}
+
 /** Apply an LSP WorkspaceEdit to the editor's document. Returns whether anything was applied. */
 export function applyWorkspaceEdit(editor: EditsEditor, edit: LspWorkspaceEdit): boolean {
   const model = editor.getModel();
@@ -82,7 +90,7 @@ export function applyWorkspaceEdit(editor: EditsEditor, edit: LspWorkspaceEdit):
   editor.pushUndoStop();
   editor.executeEdits(SOURCE, edits.map((te) => ({ range: toRange(te.range), text: te.newText, forceMoveMarkers: true })));
   editor.pushUndoStop();
-  editor.focus();
+  focusEditor(editor);
   return true;
 }
 
@@ -105,7 +113,7 @@ export function insertTextIn(editor: EditsEditor, text: string, kind: string, td
     editor.setSelection(at(pos));
   }
   editor.pushUndoStop();
-  editor.focus();
+  focusEditor(editor);
   return true;
 }
 
@@ -118,7 +126,7 @@ export function showDocumentIn(editor: EditsEditor, show: { uri: string; selecti
     editor.revealRangeInCenterIfOutsideViewport(range);
     editor.setSelection(range);
   }
-  editor.focus();
+  focusEditor(editor);
   return true;
 }
 

@@ -1108,3 +1108,35 @@ The guard at work, on the real runtime:
 Not fixed: the runner still never exits. A runner that prints no failure line and writes no `.snap` waits for `--give-up-ms`, 6 h. A probe that prints a failure line and then stays silent past `--quiet-ms` before its save opens the temp file is cut short; bake probes are a header and a `#check` (CLI-CONTRACT). QED64's own logs hold no mathlib bake through the new finish yet; expect one at the next adoption.
 
 Tests: tests/unit/bake-snapshot.test.ts, with a fake runner and a fake stage1 only (no wasm): completion with a runner that never exits, a growing `.snap`, the failure guard, out-of-scope lines running on to the deadline, the save-in-progress exemption, give-up, and the refusals of the three flags. tests/unit/cli-contract.test.ts pins the classifier against supervised-run's. No test or lane runs a real rejected header; the real runs above were by hand.
+
+### 85. In Firefox a click in the InfoView kept the keyboard in its frame (fixed: the page focuses its own window first)
+
+Found on 2026-11-06 by the UX parity study (`work/ux-parity-2026-11-06/assess-fill/`, FILL-A1) in Playwright's Firefox 153; there was no field report. In the study's words this is the likeliest cause of "apply doesn't work" in Firefox.
+- **The click half.** After a click inside the InfoView (`[apply]` or goal text), a click on the editor left `document.activeElement` on the InfoView's iframe, and typed text went nowhere: 4 of 4 headed rounds (`log-stuck-ff-qed.json`). A click on the page's bar and then on the editor recovered. live.lean-lang.org has the same trap (`log-stuck-ff-l4w.json`).
+- **The apply half.** Right after an `[apply]`, the #56 action's own `editor.focus()` left the focus in the iframe; Cmd+Z undid nothing and Cmd+. opened no menu: 3 of 6 rounds, headless and headed (`log-ff2.json`, `log-ff3h.json`; the rounds alternate, see below).
+- Chromium moved the focus every time (4 of 4, `log-stuck-cr-qed.json`).
+
+Cause, as measured: Monaco focuses its textarea on a click with `element.focus()`, and the #56 actions call `editor.focus()`. In Firefox neither takes the focus out of a focused child frame. Firefox's focus code was not read.
+
+Fix:
+- `frontend/src/main.ts`: a capture-phase `mousedown` listener on the document calls `window.focus()` when an iframe holds the focus and the click is not on an iframe, before Monaco's handler runs. The study's prototype fixed 8 of 8 headed rounds (`log-stuck-ff-qed-fixfocus.json`, `-fixblur.json`).
+- `frontend/src/editor/infoview-edits.ts`: `focusEditor()` calls `window.focus()` before `editor.focus()` in the three actions.
+- Both act in `?embed=1` too, inside the frame, where the visitor clicks.
+
+Measured on 2026-11-06 with `infoview-actions.mjs --only focus-return` on served builds, in headless Playwright Firefox 153 (four rounds: apply, click, apply, click; run directories under `work/ux-impl-2026-11-06/impl/N1/runs/`):
+- **The fixed build:** 4 of 4 rounds pass (`a1-ff-focus-2`).
+- **The base build** (page code as at 3e86720): 4 of 4 rounds fail (`base-ff-focus-2`). The apply rounds fail on "the editor has the focus after [apply]" and "Ctrl/Cmd+Z after [apply] undid it". The click rounds fail on "the editor has the focus after a click on it" and "typed text landed in the editor".
+- **Chromium**, the control: 4 of 4 rounds pass on both builds (`a1-cr`, `base-cr-focus`).
+
+The apply rounds involve no click on the page, so they measure `focusEditor`. The click rounds involve no InfoView action, so they measure the listener.
+
+From the lane's first draft: its click rounds passed on the base build, headless and headed. A failed apply round had left the focus in the iframe. The next round's InfoView click therefore moved nothing, and the second click on the editor got the focus back. Inferred from these runs, and consistent with the study's alternating rounds: Firefox traps the first focus call after the focus moves into the frame, not every one. Each round now starts with a click on the page's bar and then on the editor, and a round fails unless the editor held the focus before the InfoView click. A throwaway probe on the base build, headed and headless, showed the trap does not depend on where the InfoView is clicked (blank space or text) or on how the mouse moves there (`impl/N1/probe-focus.mjs` and its logs).
+
+Rules: to move the keyboard from a child frame to an element of the parent in Firefox, focus the parent window first. And a focus check must establish where the focus starts: a round that begins with the focus already in the frame cannot see it move there.
+
+Gates:
+- `tests/adversarial/infoview-actions.mjs --browser firefox --only focus-return`. It proves the fix only in Firefox. In Chromium it is the control.
+- `tests/unit/infoview-edits.test.ts`: the window before the editor in all three actions, and no focus when nothing was applied.
+- `tests/unit/infoview-actions.test.ts` pins the round verdict, including the start-state check.
+
+Not done here: lean4game's editor uses its own lean4monaco wiring and is not changed (its session's call). Reporting the trap to Monaco or lean4monaco is the user's call.

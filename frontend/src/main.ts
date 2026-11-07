@@ -521,6 +521,12 @@ async function main() {
   // The InfoView's applyEdit / insertText / showDocument act on this editor's
   // model (HARDENING #56); installed before the InfoView registers its API.
   installInfoviewEditorApi(() => (editor.editor ?? undefined) as unknown as EditsEditor | undefined);
+  // Firefox: Monaco focuses its textarea with element.focus(), which there does not take the keyboard out of a
+  // focused child frame, so after any click in the InfoView a click on the editor typed nowhere (UX parity
+  // FILL-A1, HARDENING #85; Chromium moves it by itself). Before Monaco's handler (capture phase), focus this window.
+  document.addEventListener("mousedown", (e) => {
+    if (document.activeElement instanceof HTMLIFrameElement && !(e.target instanceof HTMLIFrameElement)) window.focus();
+  }, true);
   leanMonaco.setInfoviewElement(infoviewEl);
 
   const options: LeanMonacoOptions = {

@@ -7,6 +7,7 @@ export type EditorView = { uri: string; text: string; selection: number[] | null
 export type RpcAnswer = { answered: boolean; exception?: string | null };
 export type ForeignShowSeen = { before: EditorView; foreign: RpcAnswer; afterForeign: EditorView; own: RpcAnswer; afterOwn: EditorView };
 export type ApiSeen = { atDcl: unknown; atLoad: unknown; frozen: boolean };
+export type FocusRound = { kind: "apply" | "click"; before?: EditorView; applied?: boolean; undone?: boolean; typed?: boolean; afterInfoview?: EditorView; afterAction?: EditorView };
 export const SCENARIOS: string[];
 export function selectScenarios(only: string): string[];
 export function exitCodeFor(total: number, failed: number): 0 | 1 | 3;
@@ -18,3 +19,4 @@ export function rpcFromInfoview(call: { name: string; args: unknown[]; seqNum: n
 export function capabilityVerdict(seen: ApiSeen): boolean;
 export function foreignShow(inPage: Evaluate, inFrame: Evaluate, timeoutMs?: number): Promise<ForeignShowSeen>;
 export function foreignShowFailures(seen: ForeignShowSeen): string[];
+export function focusReturnFailures(round: FocusRound): string[];

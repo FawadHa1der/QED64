@@ -1,12 +1,15 @@
-// tests/adversarial/infoview-actions.mjs runs only against a real page in
-// Chromium; its decisions are pinned here (docs/HARDENING.md #56):
+// tests/adversarial/infoview-actions.mjs runs only against a real page (in
+// Chromium, or Firefox with --browser firefox); its decisions are pinned here
+// (docs/HARDENING.md #56):
 //   * every scenario runs alone, and a selection of none is a refusal (exit 3),
 //     never "0/0 pass" — `--only foreign-show` used to run nothing;
 //   * capability-flag judges `qed64.api` as it was AT DOMContentLoaded, not
 //     only at load;
 //   * foreign-show sends showDocument from inside the InfoView iframe and fails
 //     a page that moves the selection or the focus for a foreign file — it used
-//     to check only the text, which showDocument never touches.
+//     to check only the text, which showDocument never touches;
+//   * focus-return (HARDENING #85) fails Firefox's trap and never passes a
+//     round whose InfoView click did not take the focus.
 // The page half is the real one: lean4monaco's vscode-lean4 Rpc registering
 // wrapEditorRpcApi, as the patched infowebview.js does, over a postMessage
 // model with the browser's semantics (a structured-cloned string delivered as
@@ -16,7 +19,7 @@
 import { describe, expect, test } from "vitest";
 import { Rpc } from "../../frontend/node_modules/lean4monaco/dist/vscode-lean4/vscode-lean4/src/rpc.js";
 import { wrapEditorRpcApi, type EditsEditor } from "../../frontend/src/editor/infoview-edits";
-import { SCENARIOS, apiAtLoad, capabilityVerdict, exitCodeFor, foreignShow, foreignShowFailures, recordApiAtDomContentLoaded, selectScenarios } from "../adversarial/infoview-actions.mjs";
+import { SCENARIOS, apiAtLoad, capabilityVerdict, exitCodeFor, focusReturnFailures, foreignShow, foreignShowFailures, recordApiAtDomContentLoaded, selectScenarios, type EditorView } from "../adversarial/infoview-actions.mjs";
 
 type Probe = (arg: unknown, g: unknown) => unknown;
 /** Playwright: `(${fn.toString()})(arg)` in the target's global scope. */
@@ -25,7 +28,7 @@ const evaluateIn = (g: unknown) => async (fn: Probe, arg?: unknown) => structure
 
 describe("scenario selection", () => {
   test("every scenario runs alone (foreign-show used to ride on conv-generate's page)", () => {
-    expect(SCENARIOS).toEqual(["capability-flag", "try-this-apply", "conv-generate", "foreign-show"]);
+    expect(SCENARIOS).toEqual(["capability-flag", "try-this-apply", "conv-generate", "foreign-show", "focus-return"]);
     for (const name of SCENARIOS) expect(selectScenarios(name)).toEqual([name]);
     expect(selectScenarios("")).toEqual(SCENARIOS);
     expect(selectScenarios("conv-generate|foreign-show")).toEqual(["conv-generate", "foreign-show"]);
@@ -219,5 +222,29 @@ describe("foreign-show", () => {
     const { seen, failures } = await run(shipped, { strayFrame: true, timeoutMs: 100 });
     expect(seen.foreign).toEqual({ answered: false });
     expect(failures).toEqual(["foreign answered without an exception", "own answered without an exception", "own selects its range", "own focuses the editor"]);
+  });
+});
+
+describe("focus-return (UX parity FILL-A1, HARDENING #85)", () => {
+  const view = (focus: string, editorFocus: boolean): EditorView => ({ uri: URI, text: DOC_A, selection: null, focus, editorFocus });
+  const inEditor = view("TEXTAREA", true);
+  test("rounds where the keys come back pass", () => {
+    expect(focusReturnFailures({ kind: "apply", before: inEditor, applied: true, afterAction: inEditor, undone: true })).toEqual([]);
+    expect(focusReturnFailures({ kind: "click", before: inEditor, afterInfoview: view("IFRAME", false), afterAction: inEditor, typed: true })).toEqual([]);
+  });
+  test("the trap Firefox 153 showed fails (the study's log-ff2.json, log-stuck-ff-qed.json)", () => {
+    expect(focusReturnFailures({ kind: "apply", before: inEditor, applied: true, afterAction: view("IFRAME", false), undone: false }))
+      .toEqual(["the editor has the focus after [apply]", "Ctrl/Cmd+Z after [apply] undid it"]);
+    expect(focusReturnFailures({ kind: "click", before: inEditor, afterInfoview: view("IFRAME", false), afterAction: view("IFRAME", false), typed: false }))
+      .toEqual(["the editor has the focus after a click on it", "typed text landed in the editor"]);
+  });
+  test("a round that could not see the trap never passes", () => {
+    expect(focusReturnFailures({ kind: "click", before: inEditor, afterInfoview: inEditor, afterAction: inEditor, typed: true })).toEqual(["the InfoView click took the focus"]);
+    expect(focusReturnFailures({ kind: "apply", before: inEditor, applied: false, afterAction: inEditor, undone: true })).toEqual(["[apply] landed"]);
+    // The unfixed build passed such a click round: the focus was already in the iframe, so the InfoView click moved
+    // nothing, and the second editor click got it back.
+    expect(focusReturnFailures({ kind: "click", before: view("IFRAME", false), afterInfoview: view("IFRAME", false), afterAction: inEditor, typed: true }))
+      .toEqual(["the editor had the focus before the InfoView click"]);
+    expect(focusReturnFailures({ kind: "apply", applied: true, afterAction: inEditor, undone: true })).toEqual(["the editor had the focus before the InfoView click"]);
   });
 });
