@@ -277,13 +277,15 @@ type PageStatus = RelayStatus; // lastDeath is on RelayStatus since the relay co
 // breaker, explained by the pill and the relay's in-document note.
 let everReady = false;
 
-// GAP 4: the first library search of a session (`exact?`/`apply?`/`rw?`)
-// indexes Mathlib for about a minute; past 8 s of elaborating on such a
-// document the pill says so instead of a bare elapsed ticker. UI-only: the
-// timer lives here, never in the relay.
+// GAP 4: the first library search of a Lean session (`exact?`/`apply?`/`rw?`)
+// indexes Mathlib for about a minute, and an edit inside the proof meanwhile
+// drops the partial index and starts over (126 s measured instead of 62 s,
+// UX FILL-A2, HARDENING #88). Past 3 s of elaborating on such a document the
+// pill says both instead of a bare elapsed ticker. UI-only: the timer lives
+// here, never in the relay.
 const SEARCH_RE = /\b(exact\?|apply\?|rw\?)/;
-const SEARCH_HINT = "first library search — indexing Mathlib (about a minute, once per session)";
-const SEARCH_HINT_AFTER_MS = 8000;
+const SEARCH_HINT = "first library search in this Lean session — about a minute; editing this proof restarts it";
+const SEARCH_HINT_AFTER_MS = 3000;
 let docText: () => string = () => "";
 let searchSession = ""; // the session the warm-index fact belongs to (a reboot loses the index)
 let searchIndexWarm = false;
