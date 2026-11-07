@@ -55,11 +55,15 @@
     @media (max-width: 959px) { #repolinks { display: none; } }
     #split { display: flex; flex: 1 1 auto; min-height: 0; position: relative; }
     #editor { flex: 1 1 55%; min-width: 0; }
-    #infoview { flex: 1 1 45%; min-width: 0; border-left: 1px solid #ccc; background: #fff; }
+    #infoview { flex: 1 1 45%; min-width: 0; border-left: 1px solid rgba(128, 128, 128, .35); }
+    /* The InfoView's document is transparent (lean4monaco's css/vscode_webview.css), so its pane paints the editor
+       theme's background, a variable the theme service sets on <body> (#fff until it does). No color-scheme on this
+       page: a frame whose scheme differs from its document's gets an opaque canvas (HARDENING #87). */
+    #infoview, #infoview iframe { background: var(--vscode-editor-background, #fff); }
     /* lean4monaco's IFrameInfoWebview creates a bare <iframe> — browser
        default is 300x150 with a border, which crams the whole InfoView into
        a thumbnail. Fill the pane. */
-    #infoview iframe { display: block; width: 100%; height: 100%; border: none; background: #fff; }
+    #infoview iframe { display: block; width: 100%; height: 100%; border: none; }
     /* Narrow windows and frames (UX L1.4): the bar wraps, the pill gets a row of its own, the InfoView goes below the
        editor. The widgets showcase injects the same stack at the same width into its frame. */
     @media (max-width: 720px) {
@@ -68,7 +72,7 @@
       #pill { max-width: 100%; flex: 1 1 100%; margin-left: 0; }
       #split { flex-direction: column; }
       #editor, #infoview { flex: 1 1 50%; min-height: 0; }
-      #infoview { border-left: 0; border-top: 1px solid #ccc; }
+      #infoview { border-left: 0; border-top: 1px solid rgba(128, 128, 128, .35); }
     }
     #boot {
       position: absolute; inset: 0; z-index: 10; display: flex;

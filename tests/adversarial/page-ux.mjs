@@ -28,6 +28,17 @@
 //                 and across a reload scheduled right after the edit (the
 //                 opener's once-per-tab seed keeps what the page saved).
 //                 Chromium and Firefox.
+//   look          (UX S1.2, I3.6, E8.3, HARDENING #87) one boot in a dark OS:
+//                 the goal is in the editor's JuliaMono (not Menlo); the
+//                 editor is dark (in Chromium from the start; Playwright's
+//                 Firefox shows the page the scheme only through a change
+//                 after load), the InfoView pane and its frame paint the
+//                 editor's background, the InfoView's text reads at 4.5:1 or
+//                 more on it, the page declares no color-scheme. An OS
+//                 change to light follows in the same session. Fold All
+//                 hides lines and no textDocument/foldingRange request
+//                 reaches Lean (folding is by indentation). Chromium;
+//                 Firefox once per change.
 //   layout        (UX L1.4, L1.6, L1.7) at 1400, 768, 721 and 375 px
 //                 wide, the bar with Copy link shown: no scroll either way,
 //                 the split fills from the bar to the window's bottom,
@@ -47,7 +58,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { arg, browserName, fetchJson, launchBrowser, onlyMatches, resolveTarget, root, runDir, teeLog } from "./harness.mjs";
 
-export const SCENARIOS = ["a11y-status", "share-link", "example-undo", "buffer-flush", "layout"];
+export const SCENARIOS = ["a11y-status", "share-link", "example-undo", "buffer-flush", "look", "layout"];
 /** The scenarios `--only` selects, in run order. An empty selection is refused (exit 3), never "0/0 pass". */
 export const selectScenarios = (only) => SCENARIOS.filter((name) => !only || onlyMatches(name, only));
 /** 0 all pass, 1 a scenario failed, 3 nothing was judged. */
@@ -65,7 +76,7 @@ const SHARE_CODEZ = "KYDwhgtgDgNsAEAKK8CO8Bc8AKAnA9lAJRIAWKWxZ6WqJl8g5ERqYC88gF+
 // example-undo: the visitor's own text, stored before the page loads. The lane picks only the Init example ("init"),
 // never one that imports Mathlib: a fresh context would download the Mathlib environment.
 const OWN = "-- my work\ntheorem mine : 2 + 2 = 4 := rfl\n";
-// layout: a proof whose goal shows with the cursor at 2:3.
+// look, layout: an indented proof (one fold), the cursor at 2:3 shows its goal.
 const LOOK_DOC = "example (p q : Prop) (hp : p) (hq : q) : p ∧ q := by\n  constructor\n  · exact hp\n  · exact hq\n";
 // layout: main.ts PHASE_LABEL.headerRefused, the longest label the pill shows.
 const LONG_LABEL = "this import is not available here — check the module name (this playground serves a curated Mathlib)";
@@ -79,7 +90,37 @@ async function waitFor(pred, ms, every = 200) {
 }
 const text = (page) => page.evaluate(() => globalThis.qed64.editor.getModel().getValue());
 const cursorAt = (page, lineNumber, column) => page.evaluate(([l, c]) => { const e = globalThis.qed64.editor; e.setPosition({ lineNumber: l, column: c }); e.focus(); }, [lineNumber, column]);
+/** WCAG relative luminance of a computed "rgb(…)" colour; NaN when unreadable (so every comparison fails). */
+function luminance(css) {
+  const m = /rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/.exec(String(css ?? ""));
+  if (!m) return NaN;
+  const lin = (v) => { const c = Number(v) / 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+  return 0.2126 * lin(m[1]) + 0.7152 * lin(m[2]) + 0.0722 * lin(m[3]);
+}
+const contrast = (fg, bg) => { const a = luminance(fg), b = luminance(bg); return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05); };
+
 // ---------- in-page probes (Playwright sends each as source text: self-contained) ----------
+/** look: the editor's background, the InfoView pane's and its frame's, the InfoView's text colour, the goal's font
+ * (found by its `⊢`, not by the InfoView's class names), the font variable lean4monaco gives the frame, and the
+ * session. */
+function lookProbe() {
+  const bg = (e) => (e ? getComputedStyle(e).backgroundColor : null);
+  const frame = [...document.querySelectorAll("#infoview iframe")].pop() ?? null;
+  const fd = frame?.contentDocument ?? null;
+  let goal = null;
+  if (fd?.body) { const w = fd.createTreeWalker(fd.body, 4 /* SHOW_TEXT */); for (let n = w.nextNode(); n; n = w.nextNode()) if (n.data.includes("⊢")) { goal = n.parentElement; break; } }
+  const st = globalThis.qed64.status();
+  return {
+    editorBg: bg(document.querySelector("#editor .monaco-editor-background")),
+    paneBg: bg(document.getElementById("infoview")), frameBg: bg(frame),
+    textFg: fd?.body ? fd.defaultView.getComputedStyle(fd.body).color : null,
+    goalFont: goal ? fd.defaultView.getComputedStyle(goal).fontFamily : null,
+    frameFont: fd?.documentElement.style.getPropertyValue("--vscode-editor-font-family") ?? null,
+    frameClass: fd?.documentElement.className ?? null,
+    colorScheme: getComputedStyle(document.documentElement).colorScheme || "normal",
+    session: st.session, phase: st.phase,
+  };
+}
 /** layout: the page's boxes. A string label goes to the pill through the page's own status sink first, in the same
  * turn, so no status render replaces it before the measurement. */
 function layoutProbe(label) {
@@ -360,6 +401,63 @@ async function main() {
       };
       const failures = Object.keys(checks).filter((k) => !checks[k]);
       record("buffer-flush", failures.length === 0, `failed ${JSON.stringify(failures)}; hidden ${JSON.stringify(hidden)}; before the reload ${JSON.stringify(reloadBefore)}; stored after ${JSON.stringify(storedAfterReload)}; page errors ${JSON.stringify(errors)}`);
+      await context.close();
+    },
+    "look": async () => {
+      // UX S1.2, I3.6, E8.3. On the base build the editor is forced light in a dark OS, the InfoView's code font is
+      // Menlo, and nothing folds (lean4monaco's "editor.folding": false).
+      const { page, context, errors } = await open(LOOK_DOC, { context: { colorScheme: "dark", viewport: { width: 1400, height: 900 } } });
+      await cursorAt(page, 2, 3);
+      const goal = await waitFor(async () => (await frameText(page)).includes("⊢") || null, 30000);
+      const atLoad = await page.evaluate(lookProbe); // before any theme change: lean4monaco re-reads the font on one
+      // Playwright's Firefox does not show the context's colorScheme to this cross-origin-isolated page (matchMedia
+      // reads light at load; impl/N3/probe), but page.emulateMedia reaches it, through the page's listener. Chromium
+      // sees it at load (lean4monaco's own pick at start), and there this changes nothing.
+      await page.emulateMedia({ colorScheme: "dark" });
+      const dark = (await waitFor(async () => { const c = await page.evaluate(lookProbe); return luminance(c.editorBg) < 0.05 && c.paneBg === c.editorBg ? c : null; }, 5000)) ?? (await page.evaluate(lookProbe));
+      await sleep(600); // the boot overlay's fade, for the screenshot
+      await page.screenshot({ path: path.join(dir, `look-dark${firefox ? "-firefox" : ""}.png`) }).catch(() => {});
+      await page.emulateMedia({ colorScheme: "light" });
+      const light = (await waitFor(async () => { const c = await page.evaluate(lookProbe); return luminance(c.editorBg) > 0.8 && c.paneBg === c.editorBg ? c : null; }, 5000)) ?? (await page.evaluate(lookProbe));
+      await page.screenshot({ path: path.join(dir, `look-light${firefox ? "-firefox" : ""}.png`) }).catch(() => {});
+      // Folding after an edit, counting what the client sends: an LSP folding strategy asks again after each change.
+      const fold = await page.evaluate(async (doc) => {
+        let folding = 0, changes = 0;
+        const off = globalThis.qed64.test.lsp.on("in", (m) => { if (m.method === "textDocument/foldingRange") folding += 1; if (m.method === "textDocument/didChange") changes += 1; });
+        const r = await globalThis.qed64.api.setDocument(doc);
+        await globalThis.qed64.api.settled({ version: r.version, timeoutMs: 60000 });
+        await new Promise((res) => setTimeout(res, 1500)); // past Monaco's folding debounce
+        const e = globalThis.qed64.editor;
+        const lines = () => e.getVisibleRanges().reduce((n, x) => n + x.endLineNumber - x.startLineNumber + 1, 0);
+        const before = lines(), text = e.getModel().getValue();
+        e.trigger("page-ux", "editor.foldAll", null);
+        await new Promise((res) => setTimeout(res, 300));
+        const after = lines(), same = e.getModel().getValue() === text;
+        e.trigger("page-ux", "editor.unfoldAll", null);
+        off();
+        return { before, after, same, folding, changes };
+      }, `${LOOK_DOC}-- edited\n`);
+      const paints = (c) => !!c.editorBg && c.paneBg === c.editorBg && c.frameBg === c.editorBg;
+      const checks = {
+        "the goal shows": !!goal,
+        ...(firefox ? {} : { "dark from the start (Chromium)": luminance(atLoad.editorBg) < 0.05 }),
+        "dark: the editor is dark": luminance(dark.editorBg) < 0.05,
+        "dark: the InfoView pane and frame paint the editor's background": paints(dark),
+        "dark: the InfoView's text reads on the pane (4.5:1)": contrast(dark.textFg, dark.paneBg) >= 4.5,
+        "the InfoView's code font is the editor's JuliaMono": /JuliaMono/.test(atLoad.frameFont ?? "") && !/Menlo/.test(atLoad.frameFont ?? "") && /JuliaMono/.test(atLoad.goalFont ?? ""),
+        "the page declares no color-scheme": dark.colorScheme === "normal",
+        "an OS change to light: the editor is light": luminance(light.editorBg) > 0.8,
+        "light: the InfoView pane and frame paint the editor's background": paints(light),
+        "light: the InfoView's text reads on the pane (4.5:1)": contrast(light.textFg, light.paneBg) >= 4.5,
+        "the change restarted nothing": light.session === dark.session && light.phase === "ready",
+        "Fold All hides lines": fold.after < fold.before,
+        "folding leaves the text alone": fold.same,
+        "the tap saw the edit": fold.changes > 0, // else the next check is vacuous
+        "no foldingRange request reaches Lean": fold.folding === 0,
+        "no page errors": errors.length === 0,
+      };
+      const failures = Object.keys(checks).filter((k) => !checks[k]);
+      record("look", failures.length === 0, `failed ${JSON.stringify(failures)}; at load ${JSON.stringify(atLoad)}; dark ${JSON.stringify(dark)}; light ${JSON.stringify(light)}; fold ${JSON.stringify(fold)}; page errors ${JSON.stringify(errors)}`);
       await context.close();
     },
     "layout": async () => {

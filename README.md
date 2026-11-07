@@ -66,6 +66,9 @@ and `/snapshots/` beside it. Then frame `/?embed=1`:
 - **Embed mode** (`?embed=1`) hides the examples menu and the page's own
   controls (Copy link) and leaves persistence to you: listen for the
   `document` event and call `setDocument`.
+- **Look.** The page follows the OS light or dark scheme, also when it
+  changes. In a window or frame 720 px wide or less, it puts the InfoView
+  below the editor.
 - **URL parameters** ([docs/EMBEDDING.md](docs/EMBEDDING.md) §3–§4):
   `#code=<text>` and `#codez=<LZ-string>` (lean4web's spellings: a boot
   document only in a same-origin frame; on the plain page the fragment is a

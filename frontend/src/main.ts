@@ -564,12 +564,23 @@ async function main() {
       worker: { postMessage() {} },
       messagePort: clientPort,
     } as unknown as { url: string },
+    // Over lean4monaco's defaults (dist/leanmonaco.js start()). No colour theme: lean4monaco picks Visual Studio
+    // Light or Dark from the OS at start, and the listener below follows a change (HARDENING #87).
     vscode: {
-      "workbench.colorTheme": "Visual Studio Light",
       "lean4.input.leader": "\\",
+      // lean4monaco's own editor font, passed at start: its InfoView iframe copies the editor font only when it is
+      // made (and on a theme change), and lean4monaco's later default landed after this page's editor (Menlo goals).
+      "editor.fontFamily": "'Noto Color Emoji', 'JuliaMono'",
+      // Folding by indentation, computed in the browser: Lean's foldingRange waits for the whole file, so each pause
+      // in typing would hold one of the edit coalescer's request slots until the check ends (HARDENING #59, #87).
+      "editor.folding": true,
+      "editor.foldingStrategy": "indentation",
     },
   };
   await leanMonaco.start(options);
+  // lean4monaco reads the OS colour scheme once, at start; follow a change to the other of the same two themes.
+  const darkOs = window.matchMedia("(prefers-color-scheme: dark)");
+  darkOs.addEventListener("change", () => leanMonaco.updateVSCodeOptions({ "workbench.colorTheme": darkOs.matches ? "Visual Studio Dark" : "Visual Studio Light" }));
   registerImportCompletion();
   // Chrome's form-state restore can reset the picker (and fire `change`)
   // long after load — pin it to the content we actually open.
