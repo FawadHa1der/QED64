@@ -90,6 +90,12 @@
 //                 editor's selection alone. Its embed half (no splitter
 //                 under ?embed=1) is page-api.mjs embed-code. Chromium and
 //                 Firefox.
+//   references-rename (UX E5.3, E5.4, HARDENING #90) in a namespace example,
+//                 Shift+F12 on `def bar` lists its 5 uses in the peek view; F2
+//                 offers `bar`, and `baz` gives native Lean's text (`Foo.bar`
+//                 included); one Ctrl/Cmd+Z restores the text. On `return`,
+//                 whose documentHighlight answers its `do`, Shift+F12 finds no
+//                 references and the cursor stays. Chromium.
 //
 // Usage: node tests/adversarial/page-ux.mjs [--url http://localhost:5199/] [--only <scenario>] [--browser chromium|firefox] [--run-dir <dir>]
 // Run it through the host browser lock. Exit 0 all pass, 1 a scenario failed,
@@ -102,7 +108,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { arg, browserName, fetchJson, launchBrowser, onlyMatches, resolveTarget, root, runDir, teeLog } from "./harness.mjs";
 
-export const SCENARIOS = ["a11y-status", "share-link", "example-undo", "buffer-flush", "look", "layout", "show-editor", "content-halt", "file-actions", "splitter-drag"];
+export const SCENARIOS = ["a11y-status", "share-link", "example-undo", "buffer-flush", "look", "layout", "show-editor", "content-halt", "file-actions", "splitter-drag", "references-rename"];
 /** The scenarios `--only` selects, in run order. An empty selection is refused (exit 3), never "0/0 pass". */
 export const selectScenarios = (only) => SCENARIOS.filter((name) => !only || onlyMatches(name, only));
 /** 0 all pass, 1 a scenario failed, 3 nothing was judged. */
@@ -134,6 +140,11 @@ const HALT_DOC = "example : True := trivial\n\n#eval (IO.Process.exit 3 : IO Uni
 const HALTED_LABEL = "the checker keeps crashing on this content — edit the file to retry";
 // file-actions: the visitor's text, and the file they open (both Init only).
 const FILE_B = "theorem b : 2 + 2 = 4 := rfl\n";
+// references-rename: the UX study's namespace example with `Nat` for `ℕ` (Init only), native Lean's text after F2 → baz
+// on `def bar` (the study, live.lean-lang.org, Lean 4.35), and a `return` whose documentHighlight answers its `do`.
+const REFS_DOC = "namespace Foo\ndef bar (n : Nat) : Nat := n + 1\ntheorem bar_pos (n : Nat) : 0 < bar n := Nat.succ_pos n\nend Foo\n\nexample : Foo.bar 1 = 2 := rfl\nopen Foo in\nexample : bar 2 = 3 := rfl\nexample (n : Nat) : 0 < Foo.bar n := Foo.bar_pos n\n";
+const REFS_RENAMED = "namespace Foo\ndef baz (n : Nat) : Nat := n + 1\ntheorem bar_pos (n : Nat) : 0 < baz n := Nat.succ_pos n\nend Foo\n\nexample : baz 1 = 2 := rfl\nopen Foo in\nexample : baz 2 = 3 := rfl\nexample (n : Nat) : 0 < baz n := Foo.bar_pos n\n";
+const DO_DOC = "def f : IO Unit := do\n  return ()\n";
 
 // ---------- helpers, copied from infoview-actions.mjs (lanes do not import each other's internals; `text` and
 // `cursorAt` are for the scenarios that follow) ----------
@@ -765,6 +776,48 @@ async function main() {
       };
       const failures = Object.keys(checks).filter((k) => !checks[k]);
       record("splitter-drag", failures.length === 0, `failed ${JSON.stringify(failures)}; shares ${[b0, mid, b1, b2].map((b) => share(b).toFixed(3)).join(" → ")}; during the drag ${JSON.stringify({ dragging: mid.dragging, framePointer: mid.framePointer })}; after ${JSON.stringify({ dragging: b1.dragging, framePointer: b1.framePointer, monacoW: followed?.monacoW, editorW: followed?.editor.w, frameW: followed?.frameW, infoviewInner: followed?.infoviewInner })}; at the edge ${JSON.stringify({ splitVar: b2.splitVar, inlineFlex: b2.inlineFlex })}; page errors ${JSON.stringify(errors)}`);
+      await context.close();
+    },
+    "references-rename": async () => {
+      // UX E5.3, E5.4. On the base build no reference or rename provider is registered: Shift+F12 and F2 do nothing.
+      const { page, context, errors } = await open(REFS_DOC, { context: { viewport: { width: 1400, height: 900 } } });
+      const cursor = () => page.evaluate(() => { const p = globalThis.qed64.editor.getPosition(); return `${p.lineNumber}:${p.column}`; });
+      await cursorAt(page, 2, 6); // inside `bar` of `def bar`
+      await page.keyboard.press("Shift+F12");
+      const rows = (await waitFor(async () => (await page.locator(".peekview-widget .ref-tree .monaco-list-row").count()) || null, 15000)) ?? 0;
+      const tree = await page.locator(".peekview-widget .ref-tree").first().innerText().catch(() => "");
+      await page.screenshot({ path: path.join(dir, `references${firefox ? "-firefox" : ""}.png`) }).catch(() => {});
+      await page.keyboard.press("Escape");
+      await waitFor(async () => (await page.locator(".peekview-widget").count()) === 0 || null, 5000);
+      await cursorAt(page, 2, 6);
+      await page.keyboard.press("F2");
+      const input = page.locator(".rename-input").first();
+      const offered = await input.waitFor({ state: "visible", timeout: 10000 }).then(() => input.inputValue(), () => null);
+      // The box takes the keyboard 100 ms after it shows (renameWidget.js _show); keys before that go to the editor.
+      const boxFocused = offered !== null && !!(await waitFor(() => page.evaluate(() => document.activeElement?.classList.contains("rename-input") || null), 5000, 50));
+      if (boxFocused) { await page.keyboard.press("ControlOrMeta+a"); await page.keyboard.type("baz"); await page.keyboard.press("Enter"); }
+      const after = await waitFor(async () => { const t = await text(page); return t !== REFS_DOC ? t : null; }, 10000);
+      await page.keyboard.press("ControlOrMeta+z"); // Monaco gives the editor the keyboard back after a rename
+      const undone = await waitFor(async () => ((await text(page)) === REFS_DOC ? true : null), 5000);
+      // The `return` fallback: a peek or a jump to `do` would mean the guard let the keyword through.
+      const phase = await page.evaluate(async (doc) => {
+        const r = await globalThis.qed64.api.setDocument(doc);
+        return globalThis.qed64.api.settled({ version: r.version, timeoutMs: 120000 }).then((s) => s.phase, (e) => `threw ${e}`);
+      }, DO_DOC);
+      await cursorAt(page, 2, 4); // inside `return`
+      await page.keyboard.press("Shift+F12");
+      const none = await waitFor(async () => (await page.locator(".monaco-editor-overlaymessage").first().innerText().catch(() => "")) || null, 10000);
+      const onReturn = { message: none, peeks: await page.locator(".peekview-widget").count(), cursor: await cursor() };
+      const checks = {
+        "Shift+F12 lists the 5 references": rows === 5 && /def bar/.test(tree),
+        "F2 offers the name under the cursor": offered === "bar",
+        "baz gives native Lean's text": after === REFS_RENAMED,
+        "one undo restores the text": !!undone,
+        "on `return`, no references and the cursor stays": phase === "ready" && /No references found/.test(none ?? "") && onReturn.peeks === 0 && onReturn.cursor === "2:4",
+        "no page errors": errors.length === 0,
+      };
+      const failures = Object.keys(checks).filter((k) => !checks[k]);
+      record("references-rename", failures.length === 0, `failed ${JSON.stringify(failures)}; rows ${rows}; tree ${JSON.stringify(tree.slice(0, 300))}; offered ${JSON.stringify(offered)}; after ${JSON.stringify(after)}; undone ${!!undone}; on return ${JSON.stringify({ phase, ...onReturn })}; page errors ${JSON.stringify(errors)}`);
       await context.close();
     },
   };

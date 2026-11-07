@@ -10,6 +10,8 @@ import {
   type FailureCause, type ProgressInfo, type RelayStatus, type ResidentPolicy, type StatusSink,
 } from "../../lib";
 import { registerImportCompletion } from "./import-completion";
+import * as monaco from "monaco-editor";
+import { registerSingleDocRefs, type RefsLanguages } from "./editor/single-doc-refs";
 import { selfWiden } from "./self-widen";
 import { installInfoviewEditorApi, type EditsEditor } from "./editor/infoview-edits";
 import { codeFromHash, createPageApi, pageStatusSink, sharedLinkFlags, type EditorLike } from "./page-api";
@@ -641,6 +643,15 @@ async function main() {
   const darkOs = window.matchMedia("(prefers-color-scheme: dark)");
   darkOs.addEventListener("change", () => leanMonaco.updateVSCodeOptions({ "workbench.colorTheme": darkOs.matches ? "Visual Studio Dark" : "Visual Studio Light" }));
   registerImportCompletion();
+  // Find references and rename for the one document, from the FileWorker's documentHighlight (UX E5.3, E5.4;
+  // editor/single-doc-refs.ts, HARDENING #90): the watchdog that answers them natively does not run here.
+  registerSingleDocRefs(monaco.languages as unknown as RefsLanguages, {
+    request: (method, params, token) => {
+      const client = leanMonaco.clientProvider?.getActiveClient();
+      return client ? client.sendRequest(method, params, token as monaco.CancellationToken) : Promise.reject(new Error("no Lean client"));
+    },
+    status: () => pageApi.api.status(),
+  });
   // Chrome's form-state restore can reset the picker (and fire `change`)
   // long after load — pin it to the content we actually open.
   examplesEl.value = "mathlib";
