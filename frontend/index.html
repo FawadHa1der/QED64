@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>QED64 · Lean InfoView</title>
   <meta name="description" content="Lean 4 and Mathlib in your browser. The real Lean compiler and language server run in this tab as 64-bit WebAssembly: no server checks your proofs.">
   <meta property="og:title" content="QED64: Lean 4 in your browser, 64-bit">
@@ -11,6 +12,8 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='rgb(27,29,41)'/><rect x='10' y='7' width='12' height='18' fill='white'/></svg>">
   <style>
     html, body { height: 100%; margin: 0; font-family: system-ui, sans-serif; }
+    /* A column: the bar at its own height (its fonts set it, and it wraps when narrow), #split the rest (UX L1.7). */
+    body { display: flex; flex-direction: column; }
     #bar {
       display: flex; align-items: center; gap: 14px; padding: 6px 12px;
       background: #1b1d29; color: #cfd2e6; font: 13px/1.5 system-ui, sans-serif;
@@ -29,7 +32,8 @@
     #pageactions button { white-space: nowrap; cursor: pointer; }
     #pageactions button:hover { color: #fff; }
     #pill {
-      display: flex; align-items: center; gap: 7px; margin-left: auto;
+      /* min-width 0: a long label ends in an ellipsis (its whole text is the tooltip) instead of widening the bar. */
+      display: flex; align-items: center; gap: 7px; margin-left: auto; min-width: 0; overflow: hidden;
       background: #262a3d; border: 1px solid #3a3f58; border-radius: 999px;
       padding: 3px 12px; font: 12px ui-monospace, monospace; max-width: 55%;
     }
@@ -43,20 +47,29 @@
     /* #pstatus: the pill's screen-reader echo (main.ts announce, UX A1.3). Clipped to nothing; never display:none,
        which would silence it. Absolute, so it takes no room in the bar or the page's height. */
     #pstatus { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-    /* Source links, after the pill: one line, never wrapping (the bar's height is what #split subtracts). */
+    /* Source links, after the pill: one line, never wrapping. */
     #repolinks { display: flex; gap: 10px; flex: none; white-space: nowrap; font-size: 12px; }
     #repolinks a { color: #9aa0b8; text-decoration: none; }
     #repolinks a:hover { color: #fff; text-decoration: underline; }
-    /* Narrow screens: no links, so the bar is exactly as before (it already overflows a phone). */
+    /* Narrower windows: no links (no room for them beside the pill). */
     @media (max-width: 959px) { #repolinks { display: none; } }
-    #split { display: flex; height: calc(100% - 33px); }
+    #split { display: flex; flex: 1 1 auto; min-height: 0; position: relative; }
     #editor { flex: 1 1 55%; min-width: 0; }
     #infoview { flex: 1 1 45%; min-width: 0; border-left: 1px solid #ccc; background: #fff; }
     /* lean4monaco's IFrameInfoWebview creates a bare <iframe> — browser
        default is 300x150 with a border, which crams the whole InfoView into
        a thumbnail. Fill the pane. */
     #infoview iframe { display: block; width: 100%; height: 100%; border: none; background: #fff; }
-    #split { position: relative; }
+    /* Narrow windows and frames (UX L1.4): the bar wraps, the pill gets a row of its own, the InfoView goes below the
+       editor. The widgets showcase injects the same stack at the same width into its frame. */
+    @media (max-width: 720px) {
+      #bar { flex-wrap: wrap; row-gap: 4px; }
+      #bar .title { min-width: 0; overflow: hidden; text-overflow: ellipsis; flex: 1 1 auto; }
+      #pill { max-width: 100%; flex: 1 1 100%; margin-left: 0; }
+      #split { flex-direction: column; }
+      #editor, #infoview { flex: 1 1 50%; min-height: 0; }
+      #infoview { border-left: 0; border-top: 1px solid #ccc; }
+    }
     #boot {
       position: absolute; inset: 0; z-index: 10; display: flex;
       align-items: center; justify-content: center;

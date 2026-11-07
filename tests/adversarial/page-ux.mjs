@@ -28,6 +28,13 @@
 //                 and across a reload scheduled right after the edit (the
 //                 opener's once-per-tab seed keeps what the page saved).
 //                 Chromium and Firefox.
+//   layout        (UX L1.4, L1.6, L1.7) at 1400, 768, 721 and 375 px
+//                 wide, the bar with Copy link shown: no scroll either way,
+//                 the split fills from the bar to the window's bottom,
+//                 Monaco fills its pane; side by side down to 721 px,
+//                 stacked at 375; a long pill label ends in an ellipsis with
+//                 its tooltip and never widens the bar. Chromium; Firefox
+//                 once per change.
 //
 // Usage: node tests/adversarial/page-ux.mjs [--url http://localhost:5199/] [--only <scenario>] [--browser chromium|firefox] [--run-dir <dir>]
 // Run it through the host browser lock. Exit 0 all pass, 1 a scenario failed,
@@ -40,7 +47,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { arg, browserName, fetchJson, launchBrowser, onlyMatches, resolveTarget, root, runDir, teeLog } from "./harness.mjs";
 
-export const SCENARIOS = ["a11y-status", "share-link", "example-undo", "buffer-flush"];
+export const SCENARIOS = ["a11y-status", "share-link", "example-undo", "buffer-flush", "layout"];
 /** The scenarios `--only` selects, in run order. An empty selection is refused (exit 3), never "0/0 pass". */
 export const selectScenarios = (only) => SCENARIOS.filter((name) => !only || onlyMatches(name, only));
 /** 0 all pass, 1 a scenario failed, 3 nothing was judged. */
@@ -58,6 +65,10 @@ const SHARE_CODEZ = "KYDwhgtgDgNsAEAKK8CO8Bc8AKAnA9lAJRIAWKWxZ6WqJl8g5ERqYC88gF+
 // example-undo: the visitor's own text, stored before the page loads. The lane picks only the Init example ("init"),
 // never one that imports Mathlib: a fresh context would download the Mathlib environment.
 const OWN = "-- my work\ntheorem mine : 2 + 2 = 4 := rfl\n";
+// layout: a proof whose goal shows with the cursor at 2:3.
+const LOOK_DOC = "example (p q : Prop) (hp : p) (hq : q) : p ∧ q := by\n  constructor\n  · exact hp\n  · exact hq\n";
+// layout: main.ts PHASE_LABEL.headerRefused, the longest label the pill shows.
+const LONG_LABEL = "this import is not available here — check the module name (this playground serves a curated Mathlib)";
 
 // ---------- helpers, copied from infoview-actions.mjs (lanes do not import each other's internals; `text` and
 // `cursorAt` are for the scenarios that follow) ----------
@@ -68,6 +79,22 @@ async function waitFor(pred, ms, every = 200) {
 }
 const text = (page) => page.evaluate(() => globalThis.qed64.editor.getModel().getValue());
 const cursorAt = (page, lineNumber, column) => page.evaluate(([l, c]) => { const e = globalThis.qed64.editor; e.setPosition({ lineNumber: l, column: c }); e.focus(); }, [lineNumber, column]);
+// ---------- in-page probes (Playwright sends each as source text: self-contained) ----------
+/** layout: the page's boxes. A string label goes to the pill through the page's own status sink first, in the same
+ * turn, so no status render replaces it before the measurement. */
+function layoutProbe(label) {
+  if (typeof label === "string") globalThis.qed64.ui.idle(label);
+  const box = (sel) => { const e = document.querySelector(sel); if (!e || e.getClientRects().length === 0) return null; const b = e.getBoundingClientRect(); return { x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.width), h: Math.round(b.height) }; };
+  const bar = document.getElementById("bar"), se = document.scrollingElement;
+  return {
+    innerWidth, innerHeight, scrollW: se.scrollWidth, scrollH: se.scrollHeight, barScrollW: bar.scrollWidth, barClientW: bar.clientWidth,
+    bar: box("#bar"), pageactions: box("#pageactions"), pill: box("#pill"), title: document.getElementById("ptext").title,
+    split: box("#split"), editor: box("#editor"), infoview: box("#infoview"), monacoW: globalThis.qed64.editor.getLayoutInfo().width,
+    viewport: document.querySelector('meta[name="viewport"]')?.getAttribute("content") ?? null,
+  };
+}
+/** The InfoView frame's text. */
+const frameText = (page) => page.evaluate(() => [...document.querySelectorAll("#infoview iframe")].pop()?.contentDocument?.body?.innerText ?? "");
 
 // ---------- init scripts (Playwright sends each as source text: self-contained) ----------
 /** a11y-status: every text #pstatus (the announcer) and #ptext (the pill) take, from the end of parsing:
@@ -333,6 +360,53 @@ async function main() {
       };
       const failures = Object.keys(checks).filter((k) => !checks[k]);
       record("buffer-flush", failures.length === 0, `failed ${JSON.stringify(failures)}; hidden ${JSON.stringify(hidden)}; before the reload ${JSON.stringify(reloadBefore)}; stored after ${JSON.stringify(storedAfterReload)}; page errors ${JSON.stringify(errors)}`);
+      await context.close();
+    },
+    "layout": async () => {
+      // UX L1.4, L1.6, L1.7. On the base build #split subtracts 33 px for a 38 px bar (every page scrolls), a long
+      // label widens the bar past the window, and at 375 px the page scrolls sideways with the panes side by side.
+      const { page, context, errors } = await open(LOOK_DOC, { context: { viewport: { width: 1400, height: 900 } } });
+      await cursorAt(page, 2, 3);
+      await waitFor(async () => (await frameText(page)).includes("⊢") || null, 30000);
+      await sleep(600); // the boot overlay's fade
+      const near = (a, b, tol = 1.5) => Math.abs(a - b) <= tol;
+      const steps = [];
+      let m375 = null;
+      for (const [width, height] of [[1400, 900], [768, 900], [721, 900], [375, 812], [1400, 900]]) {
+        await page.setViewportSize({ width, height });
+        await sleep(400); // Monaco's automaticLayout (a ResizeObserver)
+        const stacked = width <= 720;
+        const m = await page.evaluate(layoutProbe);
+        const { bar, split, editor, infoview } = m;
+        const checks = {
+          "no sideways scroll": m.scrollW <= m.innerWidth,
+          "no vertical scroll": m.scrollH <= m.innerHeight,
+          "the bar fits": m.barScrollW <= m.barClientW,
+          "Copy link shows in the bar": !!m.pageactions && m.pageactions.x + m.pageactions.w <= m.innerWidth,
+          "the split runs from the bar to the window's bottom": !!split && near(split.y, bar.y + bar.h) && near(split.y + split.h, m.innerHeight),
+          ...(stacked
+            ? {
+              "the InfoView is below the editor, both full width": infoview.y >= editor.y + editor.h - 1.5 && near(editor.w, m.innerWidth) && near(infoview.w, m.innerWidth),
+              "both panes have room": editor.h >= 150 && infoview.h >= 150,
+              "the stacked InfoView shows the goal": (await frameText(page)).includes("⊢"),
+              "a viewport meta": /^width=device-width/.test(m.viewport ?? ""),
+            }
+            : { "side by side": near(infoview.y, editor.y) && infoview.x >= editor.x + editor.w - 1.5 }),
+          "Monaco fills its pane": near(m.monacoW, editor.w, 2),
+        };
+        const long = await page.evaluate(layoutProbe, LONG_LABEL);
+        Object.assign(checks, {
+          "a long label: no sideways scroll": long.scrollW <= long.innerWidth,
+          "a long label: the bar fits": long.barScrollW <= long.barClientW,
+          "a long label: the tooltip carries it whole": long.title === LONG_LABEL,
+        });
+        if (width === 1400 && steps.length === 0) await page.screenshot({ path: path.join(dir, `layout-1400-long${firefox ? "-firefox" : ""}.png`) }).catch(() => {});
+        if (stacked) { m375 = m; await page.screenshot({ path: path.join(dir, `layout-375${firefox ? "-firefox" : ""}.png`) }).catch(() => {}); }
+        await page.evaluate(() => globalThis.qed64.ui.idle("ready"));
+        steps.push({ width, failures: Object.keys(checks).filter((k) => !checks[k]), bar: m.bar, pill: long.pill });
+      }
+      const failed = steps.filter((s) => s.failures.length > 0);
+      record("layout", failed.length === 0 && errors.length === 0, `failed ${JSON.stringify(failed.map((s) => [s.width, s.failures]))}; bars ${JSON.stringify(steps.map((s) => [s.width, s.bar?.h, s.pill?.w]))}; 375: ${JSON.stringify(m375)}; page errors ${JSON.stringify(errors)}`);
       await context.close();
     },
   };
