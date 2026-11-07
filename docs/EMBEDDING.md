@@ -303,8 +303,9 @@ In embed mode the page:
 1. **does not read or write `localStorage["qed64.buffer"]`** (the embedder
    owns persistence through the `document` event and `setDocument`);
 2. hides the examples menu and the plain page's own controls (the bar's
-   `#pageactions`: Copy link). They are in the markup, never rendered, and
-   none of their listeners is installed.
+   `#pageactions`: Copy link; the boot card's `#bootshow`: Show the editor
+   while Lean loads). They are in the markup, never rendered, and none of
+   their listeners is installed.
 
 ### 3.1 The boot document (both modes)
 
@@ -991,7 +992,8 @@ a reload recovers it.
   own words ("a deploy mixed versions") on the same throw's uncaught error
   event, which can arrive first and before the hello. What to do: offer a
   reload (the stock page shows a standing "Updated — reload" button beside
-  its pill; a halt before the first `ready` gets the failure card's Reload).
+  its pill; a halt before any session served gets the failure card's
+  Reload).
   The relay reboots meanwhile and usually serves again; `lastDeath` clears
   at that `ready`, so keep the fact yourself (the page API's `death` event
   carries the cause, §2.4, and a boot that halts carries it as

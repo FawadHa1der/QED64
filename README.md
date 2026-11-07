@@ -64,8 +64,9 @@ and `/snapshots/` beside it. Then frame `/?embed=1`:
   your page, so your page needs the COOP/COEP headers too. A cross-origin
   frame cannot boot, so you cannot frame the live site from another origin.
 - **Embed mode** (`?embed=1`) hides the examples menu and the page's own
-  controls (Copy link) and leaves persistence to you: listen for the
-  `document` event and call `setDocument`.
+  controls (Copy link, Show the editor while Lean loads) and leaves
+  persistence to you: listen for the `document` event and call
+  `setDocument`.
 - **Look.** The page follows the OS light or dark scheme, also when it
   changes. In a window or frame 720 px wide or less, it puts the InfoView
   below the editor.

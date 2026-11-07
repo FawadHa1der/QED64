@@ -462,10 +462,16 @@ idle otherwise; the boot overlay is dismissed at the first `ready` or
 the pill for screen readers: it hears the labels of `busy` and `idle` and the
 page's own notes (a `progress` without `info`), but never the boot's streamed
 progress, `elaborating`, or the same label twice, and it stays silent under
-`?embed=1`, where the embedder announces. A `halted` status renders in two ways: if no session ever
-reached `ready`, the boot-failure card ("QED64 could not start: <message>",
-Reload); otherwise the pill reads `halted — <reason>` and the relay's
-in-document diagnostic explains. The harness oracle is
+`?embed=1`, where the embedder announces. A `halted` status renders in three ways
+(HARDENING #72, #88): a stack pause finishes the boot and says so; before any
+session served, the boot-failure card ("QED64 could not start", with its advice
+for a stale page, a browser without Memory64 or a cut download, else the
+message; Reload, none for a browser without Memory64), and the pill says the
+same; otherwise the boot finishes (the editor shows), the pill reads
+`PHASE_LABEL.halted` (or the cut-connection words) with the death in its
+tooltip, and the relay's in-document diagnostic explains. On the plain page the
+boot card offers "Show the editor while Lean loads" once the editor exists; it
+only hides the card, which a failure brings back. The harness oracle is
 `globalThis.qed64 = { artifacts, relay, ui, status: () => relay.status(),
 editor }`; `relay.session.lean` is the `LeanSession`
 (`relay.session.lean.telemetry()` feeds the heap meter and the e2e memory
