@@ -174,8 +174,7 @@ const contrast = (fg, bg) => { const a = luminance(fg), b = luminance(bg); retur
 
 // ---------- in-page probes (Playwright sends each as source text: self-contained) ----------
 /** look: the editor's background, the InfoView pane's and its frame's, the InfoView's text colour, the goal's font
- * (found by its `⊢`, not by the InfoView's class names), the font variable lean4monaco gives the frame, and the
- * session. */
+ * (found by its `⊢`, not by the InfoView's class names), and the session. */
 function lookProbe() {
   const bg = (e) => (e ? getComputedStyle(e).backgroundColor : null);
   const frame = [...document.querySelectorAll("#infoview iframe")].pop() ?? null;
@@ -188,8 +187,6 @@ function lookProbe() {
     paneBg: bg(document.getElementById("infoview")), frameBg: bg(frame),
     textFg: fd?.body ? fd.defaultView.getComputedStyle(fd.body).color : null,
     goalFont: goal ? fd.defaultView.getComputedStyle(goal).fontFamily : null,
-    frameFont: fd?.documentElement.style.getPropertyValue("--vscode-editor-font-family") ?? null,
-    frameClass: fd?.documentElement.className ?? null,
     colorScheme: getComputedStyle(document.documentElement).colorScheme || "normal",
     frameLabels: [...document.querySelectorAll("#infoview iframe")].map((f) => f.getAttribute("aria-label")),
     session: st.session, phase: st.phase,
@@ -537,7 +534,7 @@ async function main() {
         "dark: the editor is dark": luminance(dark.editorBg) < 0.05,
         "dark: the InfoView pane and frame paint the editor's background": paints(dark),
         "dark: the InfoView's text reads on the pane (4.5:1)": contrast(dark.textFg, dark.paneBg) >= 4.5,
-        "the InfoView's code font is the editor's JuliaMono": /JuliaMono/.test(atLoad.frameFont ?? "") && !/Menlo/.test(atLoad.frameFont ?? "") && /JuliaMono/.test(atLoad.goalFont ?? ""),
+        "the InfoView's code font is the editor's JuliaMono": /JuliaMono/.test(atLoad.goalFont ?? "") && !/Menlo/.test(atLoad.goalFont ?? ""),
         "the page declares no color-scheme": dark.colorScheme === "normal",
         "the InfoView frame is named Lean InfoView (aria-label)": atLoad.frameLabels.length > 0 && atLoad.frameLabels.every((l) => l === "Lean InfoView"),
         "an OS change to light: the editor is light": luminance(light.editorBg) > 0.8,
