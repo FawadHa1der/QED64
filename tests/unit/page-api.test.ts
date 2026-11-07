@@ -19,8 +19,10 @@ import { LspRelay, type RelaySession, type RelayStatus, type RestartOptions } fr
 import { tapRelay, type LspMessage } from "../../frontend/src/relay-taps";
 import { createCheckFallback } from "../../frontend/src/check-fallback";
 import { STAGES, createBootChecklist } from "../../frontend/src/boot-checklist";
-import { CAPABILITY_BOOT_NOTICE, STALE_BOOT_NOTICE, STALE_NOTICE, bootFailLabel, createStaleWatch, isStaleDeath } from "../../frontend/src/stale-notice";
-import { deathCause } from "../../lib/failure";
+import {
+  CAPABILITY_BOOT_NOTICE, NETWORK_BOOT_NOTICE, NETWORK_HALT_LABEL, STALE_BOOT_NOTICE, STALE_NOTICE, bootFailLabel, createStaleWatch, isNetworkCause, isStaleDeath,
+} from "../../frontend/src/stale-notice";
+import { WORKER_SCRIPT_LOAD_FAILED, deathCause } from "../../lib/failure";
 import type { JsonRpcMessage, WorkerStatus } from "../../lib/client";
 
 /** lean4web's `#codez=` value for one Lean text: `compressToBase64(text).replace(/=*$/, "")` of lz-string 1.5.0.
@@ -1034,9 +1036,25 @@ describe("the boot card's words for a failed boot (bootFailLabel)", () => {
     expect(CAPABILITY_BOOT_NOTICE).toMatch(/desktop Chrome or Firefox/); // iOS browsers are all WebKit
     expect(CAPABILITY_BOOT_NOTICE).toMatch(/the link you were sent/);
   });
-  it("a stale cause keeps its notice (HARDENING #74), any other failure its own message", () => {
+  it("a stale cause keeps its notice (HARDENING #74), a network cause gets the download words, any other failure its own message", () => {
     expect(bootFailLabel("Failed to fetch dynamically imported module: /assets/x.js", { kind: "stale" })).toBe(STALE_BOOT_NOTICE);
-    expect(bootFailLabel("Failed to fetch", { kind: "network", code: "RUNTIME_FETCH_FAILED" })).toBe("Failed to fetch");
+    expect(bootFailLabel("Failed to fetch", { kind: "network", code: "RUNTIME_FETCH_FAILED" })).toBe(NETWORK_BOOT_NOTICE);
     expect(bootFailLabel("could not allocate 16 GiB", { kind: "oom" })).toBe("could not allocate 16 GiB");
+  });
+  it("a cut download or a worker script that did not load gets the download words; stale outranks them (UX FILL-A7, HARDENING #88)", () => {
+    // HARDENING #63's snapshot cut, and the death a cut connection leaves when a replacement worker's script cannot load.
+    expect(bootFailLabel("the transfer of mathlib.snapz ended early: received 1000000 of 2000000 bytes", { kind: "network" })).toBe(NETWORK_BOOT_NOTICE);
+    expect(bootFailLabel("crash", { kind: "other", code: WORKER_SCRIPT_LOAD_FAILED })).toBe(NETWORK_BOOT_NOTICE);
+    expect(bootFailLabel("Failed to fetch dynamically imported module: /assets/x.js", { kind: "stale", code: WORKER_SCRIPT_LOAD_FAILED })).toBe(STALE_BOOT_NOTICE);
+    // deathCause's own classification of a bare worker error before its hello is what isNetworkCause reads.
+    expect(isNetworkCause(deathCause("crash", "", { beforeHello: true, bare: true }))).toBe(true);
+    expect(isNetworkCause({ kind: "corrupt" })).toBe(false);
+    expect(isNetworkCause({ kind: "other", code: "crash" })).toBe(false);
+    expect(isNetworkCause(null)).toBe(false);
+    expect(isNetworkCause(undefined)).toBe(false);
+    // main.ts ui.idle turns a label matching this into a boot failure; the pill's halt and could-not-start words must not.
+    for (const words of [NETWORK_BOOT_NOTICE, NETWORK_HALT_LABEL, `could not start — ${NETWORK_BOOT_NOTICE}`]) {
+      expect(words).not.toMatch(/^FAILED|failed — reload|restart failed/);
+    }
   });
 });

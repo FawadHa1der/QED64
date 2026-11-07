@@ -37,7 +37,8 @@
 //   lasting  cut every .snapz response until the relay halts, then stop
 //            cutting and reload the page. PASS before the reload: halted,
 //            lastDeath bootFailed with cause kind network, more than 1 cut,
-//            exactly 1 runtime start (was 3), the boot card failed; after
+//            exactly 1 runtime start (was 3), the boot card failed and says
+//            "the download was interrupted" (UX FILL-A7, HARDENING #88); after
 //            the reload: ready, 0 deaths, no renderer crash.
 //   manifest (HARDENING #65, not in the default list) refuse the pinned
 //            runtime manifest /runtime/runtime-manifest.<buildId>.json with
@@ -262,6 +263,7 @@ function checksOf(row) {
     ["lastDeath.cause.kind is network", L.lastDeath?.cause?.kind === "network"],
     ["api.status().boot is {failed: true}", L.boot?.failed === true],
     ["the page's boot card shows failed", /\bfailed\b/.test(L.bootcard ?? "")],
+    ["the card says the download was interrupted (UX FILL-A7)", /^the download was interrupted/.test(L.bootlabel ?? "")],
     ["exactly 1 runtime start before the halt (was 3)", row.runtimeStarts === 1],
     ["after the network returns, a reload reaches ready", row.reload?.readyAfterMs != null],
     ["0 deaths after the reload", R.deaths === 0],
