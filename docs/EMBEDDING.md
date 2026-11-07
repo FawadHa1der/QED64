@@ -272,7 +272,7 @@ editing one in place changes neither what the editor receives nor
 | `boot` | `{stage, phase, subject, label, loaded, total, unit, done, failed, message, error}` | every boot step: the first boot, every reboot, widen and restart, the snapshot prefetch included (§7.1) |
 | `ready` | `{session, version, refused, header}` | once per (session, version), at a final verdict |
 | `document` | `{uri, version, length, text}` | every didOpen/didChange the relay forwards. This is the persistence hook in embed mode. The checker sees the newest of these; a text replaced inside the session's coalescing window (§7.8) never reaches it, so wait per version with `settled({version})` (which accepts a later one), never for a verdict at that exact version. |
-| `diagnostics` | `{uri, version, diagnostics, origin: "lean" \| "qed64"}` | every `publishDiagnostics` the editor receives. `qed64` = the page's own notes. |
+| `diagnostics` | `{uri, version, diagnostics, origin: "lean" \| "qed64"}` | every `publishDiagnostics` the editor receives. `qed64` = the page's own notes. A `lean` error may end in QED64's stack-limit note (§7.10). |
 | `fileProgress` | `{uri, version, processing}` | `$/lean/fileProgress`, coalesced to at most one per 100 ms on a timer (rAF does not run in hidden frames), and flushed before the next `status` |
 | `death` | `{session, kind, reason, message, cause, seq, exitCode, willReboot, halted}` | a session died (once per session); `cause.kind` `"stale"`: the site was updated under the page, offer a reload (§7.2) |
 | `reboot` | `{reason, fromSession, toSession}` | the relay replaced the session |
@@ -789,7 +789,9 @@ document, or one step before the loop opens, passes `files` /
   ```
 
   lean4game does this behind a translation layer of its own
-  (`GameTranslation.attachServer(relay.clientPort)`). The InfoView's static
+  (`GameTranslation.attachServer(relay.clientPort)`). To add QED64's note
+  to Lean's stack-guard errors on this wiring, put the port pair of §7.10
+  between the relay and the language client. The InfoView's static
   files (`@leanprover/infoview/dist`, lean4monaco's `webview.js`) are
   lean4monaco's to serve: copy them as QED64's `frontend/vite.config.ts`
   and lean4game's `client/vite.config.ts` do.
@@ -1039,6 +1041,8 @@ a reload recovers it.
     `accepted: false` while halted, as for the breaker). A `didOpen` of
     another document does not resume: a consumer that switches documents
     calls `rearm()`.
+  - Lean's own stack-guard errors, with the checker alive, are not this
+    pause: §7.10.
 - Every other death is `other`, or `oom` when its message says so.
 - A death while booting carries the boot `stage`. Booting lasts until the
   relay's `arm()` resolves, so a death during the replay and the arm carries
@@ -1613,7 +1617,10 @@ STACK_LIMIT_NOTE: string;
   `Lean.Widget.getInteractiveDiagnostics` reply, where Lean puts the words
   inside `expr` embeds; it reads both, and classifies a reply's entry as it
   does the same diagnostic's publish. A warning or info that quotes the
-  words (an `#eval` printing them) is not one. A count is
+  words (an `#eval` printing them) is not one; an error that quotes a
+  phrase (a string literal in a type mismatch, `#guard_msgs`' expected
+  text) is taken for one, since the words alone cannot tell a quote from
+  the guard. A count is
   `diagnostics.filter(isStackLimitDiagnostic).length`.
 - **`annotateStackLimit(diagnostics)`** appends `"\n\n" + STACK_LIMIT_NOTE`
   after Lean's words on each such error that does not carry it yet: a string
@@ -1626,8 +1633,9 @@ STACK_LIMIT_NOTE: string;
   checked, because Lean ran out of the browser's stack; this is a limit of
   running Lean in a browser, not a mistake found in the proof, and the proof
   is not verified; what helps (a long file in smaller parts, a long proof in
-  helper lemmas, desktop Lean or live.lean-lang.org). `lib/stack-limit.ts`
-  holds its one wording; compare with the constant, not a copy of its text.
+  helper lemmas, a deep `decide` or computation in smaller cases, desktop
+  Lean or live.lean-lang.org). `lib/stack-limit.ts` holds its one wording;
+  compare with the constant, not a copy of its text.
 
 `LspRelay` forwards these errors untouched. A library consumer adds the note
 where it reads messages, one call each: `params.diagnostics =
@@ -1635,6 +1643,21 @@ annotateStackLimit(params.diagnostics)` in its `publishDiagnostics` handler,
 and `result = annotateStackLimit(result)` on a `getInteractiveDiagnostics`
 reply or any other RPC result that is a diagnostic array. Or it says the
 same in its own words, keyed on `isStackLimitDiagnostic`.
+
+A consumer that hands `relay.clientPort` straight to lean4monaco (§6.1 (b))
+has no such handler: it puts a `MessageChannel` between the two (a sketch,
+not run by any lane):
+
+```ts
+const { port1, port2 } = new MessageChannel();
+relay.clientPort.onmessage = ({ data: m }) => {
+  if (m.method === "textDocument/publishDiagnostics") m.params = { ...m.params, diagnostics: annotateStackLimit(m.params.diagnostics) };
+  else if (m.method === undefined && Array.isArray(m.result)) m.result = annotateStackLimit(m.result);
+  port1.postMessage(m);
+};
+port1.onmessage = ({ data }) => relay.clientPort.postMessage(data);
+// lean4monaco's WorkerDirect gets port2 as its messagePort
+```
 
 The stock page, in both modes, does both through its relay taps, before its
 page API and the editor see the frame: the editor's hover and markers, the
@@ -1644,7 +1667,10 @@ such errors, its pill reads "ready — N place(s) not checked (browser stack
 limit)" with the note in its tooltip (labels are internal, §9), and
 `#pstatus` announces that once on the plain page. `status()`, `settled()`
 and the `ready` event are unchanged: `ready` says the check finished, not
-that every command was verified.
+that every command was verified. A page-tier embedder that compares, counts
+or strips such messages imports `STACK_LIMIT_NOTE` and
+`isStackLimitDiagnostic` from `qed64/embed` (in an event's message the
+note is the suffix `"\n\n" + STACK_LIMIT_NOTE`, never added twice).
 
 Not covered: a tactic that catches the guard's error and reports one of its
 own (Mathlib's `ennreal_num`; Verso's `tryCatchRuntimeEx`, the proof
@@ -2110,7 +2136,8 @@ reads them there, because `docs/history/` is not in the package's `files`.
     array reply, which only changes `getInteractiveDiagnostics`) and in the
     `diagnostics` event, whose origin stays `lean` with the same severity,
     range and count. A byte-for-byte comparison of such a message with
-    Lean's must strip the `"\n\n" + STACK_LIMIT_NOTE` suffix. At `ready`,
+    Lean's must strip the `"\n\n" + STACK_LIMIT_NOTE` suffix (the constant
+    from `qed64/embed`, §7.10). At `ready`,
     while Lean's latest publish holds N of them, the pill reads "ready — N
     place(s) not checked (browser stack limit)" with the note in its tooltip,
     a frame's pill too; a test that records `#ptext` records that label on

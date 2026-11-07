@@ -4,7 +4,9 @@
 // never "0/0 pass". Its verdicts are inline check maps in the lane; a run of its
 // scenarios against the build before each change is their negative control.
 import { describe, expect, test } from "vitest";
-import { SCENARIOS, exitCodeFor, selectScenarios } from "../adversarial/page-ux.mjs";
+import { NOTE_START, SCENARIOS, STACK_LABEL, exitCodeFor, selectScenarios } from "../adversarial/page-ux.mjs";
+import { STACK_LIMIT_NOTE } from "../../lib/stack-limit";
+import { stackLimitLabel } from "../../frontend/src/stack-limit-notes";
 
 describe("page-ux scenario selection", () => {
   test("every scenario runs alone, in SCENARIOS order", () => {
@@ -18,5 +20,12 @@ describe("page-ux scenario selection", () => {
     expect(exitCodeFor(0, 0)).toBe(3);
     expect(exitCodeFor(1, 0)).toBe(0);
     expect(exitCodeFor(1, 1)).toBe(1);
+  });
+});
+
+describe("page-ux stack-limit's words", () => {
+  test("are the page's: the pill's label and the note's first words, not copies that can drift", () => {
+    expect(STACK_LABEL).toBe(stackLimitLabel(1));
+    expect(STACK_LIMIT_NOTE.startsWith(NOTE_START)).toBe(true);
   });
 });

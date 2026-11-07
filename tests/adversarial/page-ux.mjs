@@ -109,19 +109,23 @@
 //                 the InfoView's messages at the cursor and the InfoView's
 //                 getInteractiveDiagnostics reply; the pill reads "ready — 1
 //                 place not checked (browser stack limit)" with the note in its
-//                 tooltip, and #pstatus announces that once. A native
-//                 maxRecDepth error in the same file stays exactly Lean's, with
-//                 no note. An edit that makes the proof shallow brings plain
-//                 "ready" back. Each "(a)" check passes on a build without the
-//                 note too, so its "(b)" partner fails for the right reason.
-//                 Chromium; Firefox once per change.
+//                 tooltip, and #pstatus announces that once, with no plain
+//                 "ready" before it. A native maxRecDepth error in the same
+//                 file stays exactly Lean's, with no note. An edit that makes
+//                 the proof shallow brings plain "ready" back. The same
+//                 document under ?embed=1 (top level, through setDocument):
+//                 the note on its diagnostics event, the pill counts it too
+//                 and #pstatus stays silent. Each "(a)" check passes on a
+//                 build without the note too, so its "(b)" partner fails for
+//                 the right reason. Chromium; Firefox once per change.
 //
 // Usage: node tests/adversarial/page-ux.mjs [--url http://localhost:5199/] [--only <scenario>] [--browser chromium|firefox] [--run-dir <dir>]
 // Run it through the host browser lock. Exit 0 all pass, 1 a scenario failed,
 // 3 infrastructure refusal (an --only that selects no scenario included).
 // Embed-mode checks live in page-api.mjs embed-code, which already frames the
-// page. Verdicts are inline check maps; only the selection is exported, for
-// tests/unit/page-ux.test.ts.
+// page; stack-limit's short ?embed=1 pass is the exception. Verdicts are
+// inline check maps; only the selection and stack-limit's two words are
+// exported, for tests/unit/page-ux.test.ts.
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -176,9 +180,9 @@ const stackDoc = (k) => `set_option maxRecDepth 64 in\nexample : (List.range 100
 const STACK_GUARD = "maximum recursion depth has been reached: the WebAssembly runtime's stack is exhausted";
 const STACK_NATIVE = "maximum recursion depth has been reached\nuse `set_option maxRecDepth <num>` to increase limit\nuse `set_option diagnostics true` to get diagnostic information";
 // frontend/src/stack-limit-notes.ts stackLimitLabel(1), and the first words of lib/stack-limit.ts STACK_LIMIT_NOTE (the
-// rest is read from the pill's tooltip, so the lane holds no second copy of the note).
-const STACK_LABEL = "ready — 1 place not checked (browser stack limit)";
-const NOTE_START = "QED64: this was not checked.";
+// lane holds no second copy of the note; tests/unit/page-ux.test.ts pins both to the page's constants).
+export const STACK_LABEL = "ready — 1 place not checked (browser stack limit)";
+export const NOTE_START = "QED64: this was not checked.";
 
 // ---------- helpers, copied from infoview-actions.mjs (lanes do not import each other's internals; `text` and
 // `cursorAt` are for the scenarios that follow) ----------
@@ -939,14 +943,32 @@ async function main() {
       await sleep(1000);
       const reset = await page.evaluate(() => ({ title: document.getElementById("ptext").title, said: globalThis.__said.at(-1) ?? null, deaths: globalThis.qed64.relay.stats.workerDeaths, relay: globalThis.qed64.status().relay }));
       const ds2 = await leanDiags();
-      fs.writeFileSync(path.join(dir, `stack-limit${firefox ? "-firefox" : ""}.json`), JSON.stringify({ k, diagnostics: ds, rpc, said, title, hover, infoview: iv.slice(0, 4000), after: ds2 }, null, 2));
+      await context.close();
+      // The same document under ?embed=1 (EMBEDDING §12: a frame's pill counts it too, #pstatus stays silent there). Top
+      // level, so through setDocument: a #code= boot document is honoured only in a same-origin frame.
+      const em = await open(null, { init: [recordDiagnostics, recordStatusText], query: { embed: "1" }, wait: "none" });
+      const embedPhase = await em.page.evaluate(async (t) => {
+        for (let i = 0; i < 600 && !globalThis.qed64?.api; i++) await new Promise((r) => setTimeout(r, 100));
+        await globalThis.qed64.api.whenReady();
+        const r = await globalThis.qed64.api.setDocument(t);
+        return globalThis.qed64.api.settled({ version: r.version, timeoutMs: 120000 }).then((s) => s.phase, (e) => `threw ${e}`);
+      }, doc).catch((e) => `threw ${e}`);
+      const embedLabel = await waitFor(async () => ((await em.page.textContent("#ptext")) === STACK_LABEL ? STACK_LABEL : null), 10000) ?? await em.page.textContent("#ptext");
+      await sleep(1000); // late frames
+      const embed = await em.page.evaluate((phrase) => ({
+        title: document.getElementById("ptext").title, pstatus: document.getElementById("pstatus")?.textContent ?? null, said: globalThis.__said.slice(),
+        guard: (globalThis.__diags.filter((d) => d.origin === "lean").at(-1)?.diagnostics ?? []).filter((d) => d.severity === 1 && d.message.startsWith(phrase)).map((d) => d.message),
+      }), STACK_GUARD);
+      await em.context.close();
+      fs.writeFileSync(path.join(dir, `stack-limit${firefox ? "-firefox" : ""}.json`), JSON.stringify({ k, diagnostics: ds, rpc, said, title, hover, infoview: iv.slice(0, 4000), after: ds2, embed: { phase: embedPhase, label: embedLabel, ...embed } }, null, 2));
       const checks = {
         "0 deaths, never halted": deaths0 === 0 && reset.deaths === 0 && reset.relay === "serving",
         "(a) exactly one guard error, on deepLegal": guard.length === 1 && g.range.start.line === 3,
         "(a) it stays an error, Lean's words first": g?.severity === 1 && g.message.startsWith(STACK_GUARD),
         "(a) the native maxRecDepth error is exactly Lean's": native.length === 1 && native[0].message === STACK_NATIVE && native[0].range.start.line === 1,
         "(a) two errors in all, none on the plain theorem": errs.length === 2 && !ds.some((d) => d.range.start.line === 5),
-        "(b) the diagnostics event carries the note after Lean's words": !!note && note.startsWith(NOTE_START) && g?.message.endsWith(`\n\n${note}`) && count(g.message, NOTE_START) === 1,
+        "(b) the diagnostics event carries the note once, after Lean's words": count(g?.message ?? "", `\n\n${NOTE_START}`) === 1 && g.message.indexOf(`\n\n${NOTE_START}`) >= STACK_GUARD.length,
+        "(b) the event's note is the tooltip's": !!note && !!g?.message.endsWith(`\n\n${note}`),
         "(a) the hover shows Lean's error": hover.includes(STACK_GUARD),
         "(b) the hover shows the note": hover.includes(NOTE_START),
         "(a) the InfoView shows Lean's error": iv.includes(STACK_GUARD),
@@ -956,14 +978,17 @@ async function main() {
         "(b) the pill counts it": label === STACK_LABEL,
         "(b) its tooltip has the note": !!note && note.startsWith(NOTE_START),
         "(b) #pstatus announces it once, last": count(said.join("\u0000"), STACK_LABEL) === 1 && said.at(-1) === STACK_LABEL,
+        "(b) no plain ready announced before it": said.includes(STACK_LABEL) && !said.slice(0, said.indexOf(STACK_LABEL)).includes("ready"),
         "an edit that makes it shallow checks ready": after === "ready",
         "then the pill is plain ready again": !!plain && reset.title === "ready" && reset.said === "ready",
         "then only the native error remains": ds2.filter((d) => d.severity === 1).map((d) => d.message).join() === STACK_NATIVE,
-        "no page errors": errors.length === 0,
+        "(b) under ?embed=1 the diagnostics event carries the note too": embed.guard.length === 1 && count(embed.guard[0], `\n\n${NOTE_START}`) === 1,
+        "(b) under ?embed=1 the pill counts it too, the note in its tooltip": embedPhase === "ready" && embedLabel === STACK_LABEL && embed.title.includes(`\n\n${NOTE_START}`),
+        "under ?embed=1 #pstatus stays silent": embed.pstatus === "" && embed.said.every((t) => !t),
+        "no page errors": errors.length === 0 && em.errors.length === 0,
       };
       const failures = Object.keys(checks).filter((key) => !checks[key]);
-      record("stack-limit", failures.length === 0, `failed ${JSON.stringify(failures)}; K ${k}; pill ${JSON.stringify(label)}; errors ${JSON.stringify(errs.map((d) => [d.range.start.line, d.message.slice(0, 90)]))}; guard tail ${JSON.stringify(g?.message.slice(-120) ?? null)}; hover ${JSON.stringify(hover.slice(0, 160))}; announced ${JSON.stringify(said.slice(-4))}; after the edit ${after}, pill plain ${!!plain}; page errors ${JSON.stringify(errors)}; record stack-limit${firefox ? "-firefox" : ""}.json`);
-      await context.close();
+      record("stack-limit", failures.length === 0, `failed ${JSON.stringify(failures)}; K ${k}; pill ${JSON.stringify(label)}; errors ${JSON.stringify(errs.map((d) => [d.range.start.line, d.message.slice(0, 90)]))}; guard tail ${JSON.stringify(g?.message.slice(-120) ?? null)}; hover ${JSON.stringify(hover.slice(0, 160))}; announced ${JSON.stringify(said.slice(-4))}; after the edit ${after}, pill plain ${!!plain}; ?embed=1 ${embedPhase}, pill ${JSON.stringify(embedLabel)}, #pstatus ${JSON.stringify(embed.pstatus)} (${embed.said.length} changes); page errors ${JSON.stringify([...errors, ...em.errors])}; record stack-limit${firefox ? "-firefox" : ""}.json`);
     },
   };
 

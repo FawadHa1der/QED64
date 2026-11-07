@@ -153,8 +153,9 @@ async function headerModeNow() {
 }
 /** Wait for a TERMINAL state: the phase enum from `qed64.status()` (ready /
  * headerRefused / halted — the relay's status is the oracle, the pill is
- * `render(status)` of the same datum), with the pill labels as the fallback
- * for a page that has not installed the tap yet. Returns {ok, ms, s, terminal}. */
+ * `render(status)` of the same datum plus page facts such as HARDENING #92's
+ * stack-limit count), with the pill labels as the fallback for a page that has
+ * not installed the tap yet. Returns {ok, ms, s, terminal}. */
 async function waitTerminal(ms, minMs = 0) {
   const t0 = Date.now();
   for (;;) {

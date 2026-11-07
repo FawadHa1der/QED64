@@ -462,8 +462,14 @@ and no note; the "already declared" error is then simply the user's error.
 
 **The page** (`frontend/src/main.ts`): the pill is `render(status)` —
 `PHASE_LABEL[phase]`, busy for `booting | starting | elaborating | dead`,
-idle otherwise; the boot overlay is dismissed at the first `ready` or
-`headerRefused`. A visually hidden polite live region, `#pstatus`, repeats
+idle otherwise — plus page facts: widening, wedged, the search hint and, at
+`ready`, the count of Lean's stack-guard errors ("ready — N places not
+checked (browser stack limit)", HARDENING #92); the boot overlay is
+dismissed at the first `ready` or `headerRefused`. The page's relay taps
+(`frontend/src/relay-taps.ts`) append QED64's note to Lean's stack-guard
+errors before the editor, the InfoView and the page API see them
+(`frontend/src/stack-limit-notes.ts`, EMBEDDING §7.10); Lean's words come
+first and the error stays an error. A visually hidden polite live region, `#pstatus`, repeats
 the pill for screen readers: it hears the labels of `busy` and `idle` and the
 page's own notes (a `progress` without `info`), but never the boot's streamed
 progress, `elaborating`, or the same label twice, and it stays silent under
