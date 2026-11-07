@@ -1854,3 +1854,46 @@ reads them there, because `docs/history/` is not in the package's `files`.
   1.5 s (the user's decision, 2026-11-06); the value stays each embedder's
   choice. Docs only: `EMBED_API_REVISION` and the worker `REVISION` are
   unchanged.
+- **The stock page's do-now UX batch (2026-11-06, page tier; HARDENING #77's
+  third follow-up, #85, #86, #87):** what a `?embed=1` frame shows or does
+  differently.
+  - **Restart File restarts the session** (F1.13). In both modes the
+    InfoView's Restart File now calls `restart()` with no arguments (before,
+    it re-checked nothing). An embedder sees a `reboot` with reason `"user"`
+    that it did not ask for, and a sticky `initialBytes` from its own
+    `restart()` resets to the page default, as after any explicit restart
+    (§2.3).
+  - **Firefox focus** (FILL-A1, #85): a click on the framed page while the
+    InfoView holds the focus first focuses the page's window, so the keys
+    reach the editor; the InfoView's actions do the same.
+  - **`#codez=` is percent-decoded** before it is decompressed (F1.9), so a
+    link copied from live.lean-lang.org's address bar (`%2B`, `%2F`) opens,
+    as a boot document in a same-origin frame and behind the gate on the plain
+    page; raw values are unchanged (§3.1, §4).
+  - **Page-only controls stay hidden** (§3): the bar's `#pageactions` (Copy
+    link) is in the markup and never shown or installed under `?embed=1`; the
+    undoable example pick and the save written on leaving (#86) are plain-page
+    only. A visually hidden `#pstatus` (`role="status"`) is at the end of
+    `<body>` and stays empty under `?embed=1`: the embedder announces.
+  - **The look follows the OS** (S1.2, #87): the page no longer forces Visual
+    Studio Light. lean4monaco picks Light or Dark from the frame's
+    `prefers-color-scheme` at start (a browser may derive it from the
+    embedding page's `color-scheme`; not checked), and the page follows a
+    change. The InfoView pane paints the editor theme's background. The bar
+    and pill stay dark and the boot card light in both schemes; the page's
+    blue is `#4664ee` and pending boot-stage text `#6b7190` (A1.5). The page
+    declares no `color-scheme`.
+  - **The layout** (L1.4, L1.6, L1.7, #87): the page is a flex column, and
+    `#split` no longer subtracts a fixed bar height. At 720 px wide or less
+    (the frame's own width) the bar wraps and the InfoView goes below the
+    editor, so a frame that narrow now stacks whoever frames it; an embedder
+    that injects its own stack rule at that width can drop it (v1.1's
+    `layout=`, §5, is still the planned control). A long pill label ends in an
+    ellipsis instead of widening the bar. The page has a viewport meta.
+  - **The editor** (I3.6, E8.3): goals in the InfoView use the editor's
+    JuliaMono, not Menlo; the editor folds by indentation, computed in the
+    browser (a fold gutter; no `textDocument/foldingRange` reaches Lean).
+  - The page's head gains a description, `og:` tags and an inline SVG icon
+    (B1.4; not visible in a frame). Every element id is unchanged.
+  - No API change: `EMBED_API_REVISION` and the worker `REVISION` are
+    unchanged.
