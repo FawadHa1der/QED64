@@ -7,12 +7,19 @@
 // QED64's explanation after Lean's words. Lean's limits that desktop Lean has too (maxRecDepth, maxHeartbeats,
 // "(kernel) deep recursion detected") are other errors, and are left alone.
 
-/** Patch 0036's two phrases, the only Lean words that mean "the browser's stack ran out": Core.checkSystem (the fork's
- * src/Lean/CoreM.lean:524-529) and the kernel's scope_rec_depth (src/runtime/interrupt.cpp:97-101). Upstream Lean has
- * neither. Lean's plain maxRecDepth error starts with the same six words as the first, so no shorter rule will do.
- * Exported for the tests, not through the barrel: tests/integration/stack-guard-phrases.test.ts finds both in the
- * runtime's lean.wasm, so a kernel release that rewords them fails at its adoption, not silently in the browser. */
+/** Patch 0036's two phrases: Core.checkSystem (the fork's src/Lean/CoreM.lean:524-529) and the kernel's scope_rec_depth
+ * (src/runtime/interrupt.cpp:97-101). Upstream Lean has neither. Lean's plain maxRecDepth error starts with the same six
+ * words as the first, so no shorter rule will do. Exported for the tests, not through the barrel:
+ * tests/integration/stack-guard-phrases.test.ts finds both in the runtime's lean.wasm, so a kernel release that rewords
+ * them fails at its adoption, not silently in the browser. Remove them and that test only when every runtime a caller
+ * of these helpers is pinned to carries GUARD_CODE (old pins count: the helpers are published API; a release's
+ * `kernel.patch` tells which runtimes have it). */
 export const GUARD_PHRASES = ["the WebAssembly runtime's stack is exhausted", "the WebAssembly engine's stack is exhausted"] as const;
+
+/** The LSP `code` both guard errors carry on a runtime that has the kernel's stack-error code (planned for v4.36, K8 row
+ * 14; no runtime has it yet), in a publish and in an RPC reply's entry alike. It says what the words only suggest, and
+ * no quoted text can forge it. Monaco shows it after the source in the hover and the F8 peek: `Lean 4(wasm.stackExhausted)`. */
+export const GUARD_CODE = "wasm.stackExhausted";
 
 /** QED64's explanation, appended after Lean's words: the one wording source (the stock page's editor and InfoView, its
  * pill tooltip, and an embedder that calls `annotateStackLimit`). It does not repeat why a browser has less stack:
@@ -21,7 +28,7 @@ export const STACK_LIMIT_NOTE = "QED64: this was not checked. Lean ran out of th
 
 /** The fields these helpers read of an LSP `Diagnostic` (`message` a string), or of Lean's `InteractiveDiagnostic` as a
  * `Lean.Widget.getInteractiveDiagnostics` reply carries it (`message` a TaggedText, as JSON). */
-export interface StackLimitDiagnostic { severity?: number; message?: unknown; isSilent?: boolean }
+export interface StackLimitDiagnostic { severity?: number; message?: unknown; isSilent?: boolean; code?: unknown }
 
 /** A message's text to search: a string is itself; anything else (a TaggedText) is its JSON. Lean puts an interactive
  * message's words inside `expr` embeds, so the JSON reads them wherever they sit; the phrases and the note hold no
@@ -31,12 +38,14 @@ function textOf(message: unknown): string {
   try { return JSON.stringify(message) ?? ""; } catch { return ""; }
 }
 
-/** Is this an error (severity 1, not `isSilent`) whose message, or a message nesting it, is the guard's? Then the
- * command it sits on was not checked. Warnings and infos that quote the words are not. An error that merely quotes a
- * phrase (a string literal in a type mismatch, `#guard_msgs`' expected text) is taken for the guard's too: the words
- * alone cannot tell a quote from the guard (HARDENING #92). */
+/** Is this an error (severity 1, not `isSilent`) that carries GUARD_CODE, or whose message, or a message nesting it, is
+ * the guard's? Then the command it sits on was not checked. Warnings and infos that quote the words are not. An error
+ * that merely quotes a phrase (a string literal in a type mismatch, `#guard_msgs`' expected text) is taken for the
+ * guard's too on a runtime without the code: the words alone cannot tell a quote from the guard (HARDENING #92). A
+ * diagnostic with no message is not one, code or no code. */
 export function isStackLimitDiagnostic(d: StackLimitDiagnostic): boolean {
-  if (d?.severity !== 1 || d.isSilent === true) return false;
+  if (d?.severity !== 1 || d.isSilent === true || d.message == null) return false;
+  if (d.code === GUARD_CODE) return true;
   const text = textOf(d.message);
   return GUARD_PHRASES.some((p) => text.includes(p));
 }

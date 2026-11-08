@@ -6,7 +6,7 @@
 import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
-import { GUARD_PHRASES, STACK_LIMIT_NOTE, annotateStackLimit, isStackLimitDiagnostic, type StackLimitDiagnostic } from "../../lib/stack-limit";
+import { GUARD_CODE, GUARD_PHRASES, STACK_LIMIT_NOTE, annotateStackLimit, isStackLimitDiagnostic, type StackLimitDiagnostic } from "../../lib/stack-limit";
 import * as embed from "../../lib/index";
 
 const root = path.resolve(__dirname, "../..");
@@ -97,6 +97,64 @@ describe("isStackLimitDiagnostic", () => {
   it("reads anything malformed as not the guard's", () => {
     for (const message of [null, undefined, 42, {}, { foo: 1 }, []]) expect(isStackLimitDiagnostic(err(message))).toBe(false);
     expect(isStackLimitDiagnostic(null as unknown as StackLimitDiagnostic)).toBe(false);
+  });
+});
+
+// No runtime carries the code yet (kernel K8 row 14), so these diagnostics are built here. `REWORDED` is what the code
+// is for: English no phrase matches.
+describe("the guard's LSP code", () => {
+  const REWORDED = "the browser's stack ran out";
+  const coded = (message: unknown, extra: Partial<StackLimitDiagnostic> = {}) => err(message, { code: GUARD_CODE, ...extra });
+
+  it("is the kernel's string", () => {
+    expect(GUARD_CODE).toBe("wasm.stackExhausted");
+  });
+
+  it("recognises the guard by the code alone, as a publish string and as an InfoView reply's TaggedText", () => {
+    expect(isStackLimitDiagnostic(err(REWORDED))).toBe(false);
+    expect(isStackLimitDiagnostic(coded(REWORDED))).toBe(true);
+    expect(isStackLimitDiagnostic(coded({ tag: [{ expr: { text: REWORDED } }, { text: "" }] }))).toBe(true);
+  });
+
+  it("recognises the first runtime's form too: the code on today's English", () => {
+    for (const p of fx.published.filter((x) => x.guard)) expect(isStackLimitDiagnostic(coded(p.text)), p.id).toBe(true);
+  });
+
+  it("still recognises today's runtimes by their words: no code, or another one", () => {
+    expect(isStackLimitDiagnostic(err(P1))).toBe(true);
+    expect(isStackLimitDiagnostic(err(P1, { code: "lean.someNamedError" }))).toBe(true);
+    expect(isStackLimitDiagnostic(err(P1, { code: 7 }))).toBe(true);
+  });
+
+  it("is not satisfied by another code, or by the name in other positions", () => {
+    for (const code of ["ENGINE_STACK_OVERFLOW", "wasm.stackexhausted", "", 0, null, { value: GUARD_CODE }, [GUARD_CODE]]) {
+      expect(isStackLimitDiagnostic(err(REWORDED, { code })), JSON.stringify(code)).toBe(false);
+    }
+    expect(isStackLimitDiagnostic(err(GUARD_CODE))).toBe(false);
+  });
+
+  it("counts only errors the editor shows, as the words do", () => {
+    expect(isStackLimitDiagnostic(coded(REWORDED, { severity: 2 }))).toBe(false);
+    expect(isStackLimitDiagnostic(coded(REWORDED, { severity: 3 }))).toBe(false);
+    expect(isStackLimitDiagnostic(coded(REWORDED, { severity: undefined }))).toBe(false);
+    expect(isStackLimitDiagnostic(coded(REWORDED, { isSilent: true }))).toBe(false);
+  });
+
+  it("does not make a diagnostic with no message one, which annotate could not extend", () => {
+    for (const message of [null, undefined]) {
+      expect(isStackLimitDiagnostic(coded(message))).toBe(false);
+      const input = [coded(message)];
+      expect(annotateStackLimit(input)).toBe(input);
+    }
+  });
+
+  it("gets the note after Lean's words, the code and the verdict kept, and only once", () => {
+    const [str] = annotateStackLimit([coded(REWORDED)]);
+    expect(str).toEqual(coded(REWORDED + SUFFIX));
+    const tag = { tag: [{ expr: { text: REWORDED } }, { text: "" }] };
+    const once = annotateStackLimit([coded(tag)]);
+    expect(once).toEqual([coded({ append: [tag, { text: SUFFIX }] })]);
+    expect(annotateStackLimit(once)).toBe(once);
   });
 });
 

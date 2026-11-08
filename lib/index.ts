@@ -17,7 +17,7 @@
 
 /** Semver of the library contract (docs/EMBEDDING.md §1, §7), final since 1.0.0:
  * minor = additive; a break is the next major, with a migration note in §12. */
-export const EMBED_API_REVISION = "1.2.0";
+export const EMBED_API_REVISION = "1.3.0";
 
 // runtime
 export { LeanSession, MEMORY64_PROBE, probeMemory64 } from "./client";

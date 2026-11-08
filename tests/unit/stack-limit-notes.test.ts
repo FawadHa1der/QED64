@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { LspRelay, type RelaySession, type RestartOptions } from "../../lib/lsp-relay";
-import { STACK_LIMIT_NOTE, isStackLimitDiagnostic } from "../../lib/stack-limit";
+import { GUARD_CODE, STACK_LIMIT_NOTE, isStackLimitDiagnostic } from "../../lib/stack-limit";
 import { tapRelay, type LspMessage, type RelayTaps } from "../../frontend/src/relay-taps";
 import { installStackLimitNotes, stackLimitLabel } from "../../frontend/src/stack-limit-notes";
 import type { JsonRpcMessage, WorkerStatus } from "../../lib/client";
@@ -86,6 +86,18 @@ describe("installStackLimitNotes", () => {
     expect(reply(11)).toEqual([diag(2, { append: [E_RPC, { text: SUFFIX }] }), diag(0, { text: N1 })]);
     expect(reply(12)).toEqual(goals);
     expect(reply(13)).toEqual([{ title: "Try this", kind: "quickfix" }]);
+  });
+
+  it("annotates by the guard's LSP code alone, in a publish and in an array reply, and the relay keeps the code", async () => {
+    installStackLimitNotes(taps);
+    const coded = (message: unknown) => ({ ...diag(2, message), code: GUARD_CODE });
+    const tag = { tag: [{ expr: { text: "reworded" } }, { text: "" }] };
+    current().answer(publish([coded("reworded")]));
+    current().answer({ jsonrpc: "2.0", id: 14, result: [coded(tag)] });
+    await flush();
+    const got = toClient.find((m) => m.method === "textDocument/publishDiagnostics")!.params as { diagnostics: unknown[] };
+    expect(got.diagnostics).toEqual([coded(`reworded${SUFFIX}`)]);
+    expect(toClient.find((m) => m.id === 14)!.result).toEqual([coded({ append: [tag, { text: SUFFIX }] })]);
   });
 
   it("replaces the message's params by a copy: a caller of taps.toClient keeps its own params and array unchanged", async () => {

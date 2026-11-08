@@ -1,10 +1,10 @@
 # Embedding QED64 — contract v1
 
 Status: **v1, final.** The page API is `1.0.0` (`frontend/src/page-api.ts`
-`API_REVISION`), and `qed64/embed` is `EMBED_API_REVISION` `1.2.0` (final
+`API_REVISION`), and `qed64/embed` is `EMBED_API_REVISION` `1.3.0` (final
 at `1.0.0`, declared 2026-11-01, architecture review D13; `1.1.0` adds the
-v2 runtime manifest's fields, `1.2.0` the stack-limit helpers of §7.10;
-§12).
+v2 runtime manifest's fields, `1.2.0` the stack-limit helpers of §7.10,
+`1.3.0` their reading of the guard's LSP `code`; §12).
 The v1 draft (daf9b63) was reviewed by the two consumers of the time:
 - the widgets showcase: `qed64-showcase/docs/QED64-EMBEDDING-V1-REVIEW.md`;
 - lean4game: 24 items, adversarially verified.
@@ -1605,22 +1605,26 @@ was detected". Recursion that gets past the guard kills the checker
 instead: that is the stack pause of §7.2.
 
 ```ts
-interface StackLimitDiagnostic { severity?: number; message?: unknown; isSilent?: boolean }
+interface StackLimitDiagnostic { severity?: number; message?: unknown; isSilent?: boolean; code?: unknown }
 isStackLimitDiagnostic(d: StackLimitDiagnostic): boolean;
 annotateStackLimit<D extends StackLimitDiagnostic>(diagnostics: D[]): D[];
 STACK_LIMIT_NOTE: string;
 ```
 
 - **`isStackLimitDiagnostic(d)`**: true for an error (`severity` 1, not
-  `isSilent`) whose message holds either phrase. The message is an LSP
+  `isSilent`) with an LSP `code` of `wasm.stackExhausted`, or whose message
+  holds either phrase. No runtime sets the code yet (it is planned for
+  v4.36); once one does, the code decides even if the words change, and
+  Monaco shows it in the hover and the F8 peek as
+  `Lean 4(wasm.stackExhausted)`. The message is an LSP
   `Diagnostic`'s string, or the TaggedText (JSON) of an entry of a
   `Lean.Widget.getInteractiveDiagnostics` reply, where Lean puts the words
   inside `expr` embeds; it reads both, and classifies a reply's entry as it
   does the same diagnostic's publish. A warning or info that quotes the
   words (an `#eval` printing them) is not one; an error that quotes a
   phrase (a string literal in a type mismatch, `#guard_msgs`' expected
-  text) is taken for one, since the words alone cannot tell a quote from
-  the guard. A count is
+  text) is taken for one on a runtime without the code, since the words
+  alone cannot tell a quote from the guard. A count is
   `diagnostics.filter(isStackLimitDiagnostic).length`.
 - **`annotateStackLimit(diagnostics)`** appends `"\n\n" + STACK_LIMIT_NOTE`
   after Lean's words on each such error that does not carry it yet: a string
@@ -1674,7 +1678,7 @@ note is the suffix `"\n\n" + STACK_LIMIT_NOTE`, never added twice).
 
 Not covered: a tactic that catches the guard's error and reports one of its
 own (Mathlib's `ennreal_num`; Verso's `tryCatchRuntimeEx`, the proof
-sheets' "Could not prove:") leaves no words to match.
+sheets' "Could not prove:") leaves no words or code to match.
 
 ---
 
@@ -2145,3 +2149,10 @@ reads them there, because `docs/history/` is not in the package's `files`.
     `settled()`, `ready` and every other event are unchanged.
   - `API_REVISION` and the worker `REVISION` are unchanged.
   - `EMBED_API_REVISION` → `1.2.0`.
+- **The stack-limit helpers read the guard's LSP `code` (2026-11-08, library
+  tier; HARDENING #92):** `isStackLimitDiagnostic` and `annotateStackLimit`
+  also recognise an error whose `code` is `wasm.stackExhausted`, and
+  `StackLimitDiagnostic` gains the optional `code` (§7.10). The phrases still
+  work, so nothing changes on today's runtimes, none of which sets the code.
+  - `API_REVISION` and the worker `REVISION` are unchanged.
+  - `EMBED_API_REVISION` → `1.3.0`.
